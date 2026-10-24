@@ -2,6 +2,9 @@
 
 2026-10-24 개발 시작 기준입니다. 각 레포는 별도 Git 저장소이며, 이 저장소는 전체 프로젝트와 문서 연결을 관리합니다.
 
+- [상세 기술 스택·런타임·통신·CI 개발 기준](technology-stack.md)
+- [OMX·LeRobot 버전 호환성과 확정 절차](omx-compatibility.md)
+
 ## 개발 레포
 
 - [roport-pinky](https://github.com/kernel-robot-8th/roport-pinky): Ubuntu 24.04, ROS 2 Jazzy, Python 3.12, colcon. 주행·도킹·현장 명령 실행을 담당합니다.

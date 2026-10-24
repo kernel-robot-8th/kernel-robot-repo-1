@@ -13,6 +13,8 @@ Confluence의 상세 문서를 찾아볼 수 있는 안내입니다. 원문 전�
 
 ## 구조와 인터페이스
 
+- [레포별 상세 기술 스택](technology-stack.md)
+- [OMX·LeRobot 버전 호환성](omx-compatibility.md)
 - [System Architecture](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/2555942)
 - [HW Architecture](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/2752514)
 - [SW Architecture](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/2261010)
