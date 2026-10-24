@@ -33,3 +33,9 @@ python3 -c "import roport_pinky; import rclpy"
 ```
 
 현재 실행 노드·모터 명령은 없습니다. CI는 ROS 패키지 빌드와 설치 후 import만 검사합니다.
+
+## 상세 설계 기준
+
+- [레포별 기술 스택·통신·CI 계획](https://github.com/kernel-robot-8th/kernel-robot-repo-1/blob/main/docs/technology-stack.md)
+
+문서의 현재 구현과 후속 개발 기준을 구분합니다. 실장비·GPU 확인 전 의존성 업그레이드를 확정하지 않습니다.
