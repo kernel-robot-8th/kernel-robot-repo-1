@@ -54,6 +54,7 @@ OMX 로봇팔과 Pinky 이동로봇을 연동해 면세품 보관·운송·인�
 
 ## 문서와 협업
 
+- [개발 레포·기술 스택·CI 안내](docs/repositories.md)
 - [설계·요구사항·검증 문서 안내](docs/README.md)
 - [Jira 작업 목록](https://fp-team1.atlassian.net/jira/projects/FFT1)
 - [Git-flow 및 PR 운영 규칙 논의](https://github.com/kernel-robot-8th/kernel-robot-repo-1/issues/1): 현재 합의 전 초안입니다.

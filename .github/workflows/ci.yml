@@ -1,0 +1,35 @@
+name: Documentation CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Check whitespace
+        run: git show --format= --check HEAD
+      - name: Check local Markdown links
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          for path in Path('.').rglob('*.md'):
+              if '.git' in path.parts:
+                  continue
+              for target in re.findall(r'\]\(([^)]+)\)', path.read_text()):
+                  if '://' in target or target.startswith(('#', 'mailto:')):
+                      continue
+                  local = target.split('#', 1)[0]
+                  assert (path.parent / local).exists(), (path, target)
+          PY
