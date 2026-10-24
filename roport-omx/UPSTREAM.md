@@ -1,8 +1,8 @@
 # Upstream source
 
 - Source: https://github.com/huggingface/lerobot
-- Ref: `v0.4.4`
-- Commit: `8fff0fde7c79f23a93d845d1a50e985de01f8b8a`
+- Ref: `v0.6.1`
+- Commit: `7e241bd630a3719a56157a497ce5d08f244784f1`
 - License: Apache-2.0; see [lerobot/LICENSE](lerobot/LICENSE).
 
 Tracked upstream files were imported with `git archive` without modification.

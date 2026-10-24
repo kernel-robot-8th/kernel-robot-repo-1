@@ -23,6 +23,8 @@ class SourceChecks(unittest.TestCase):
             trees[path] = ast.parse(path.read_bytes(), filename=str(path))
         self.assertTrue(trees)
         config = tomllib.loads((ROOT / "lerobot/pyproject.toml").read_text())
+        version = config["project"]["version"]
+        self.assertIn(f"`v{version}`", (ROOT / "UPSTREAM.md").read_text())
         for target in config["project"]["scripts"].values():
             module, name = target.split(":")
             tree = trees[ROOT / "lerobot/src" / (module.replace(".", "/") + ".py")]

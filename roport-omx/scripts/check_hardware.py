@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Read-only OMX v0.4.4 bus probe. Never calls LeRobot.connect()."""
+"""Read-only OMX v0.6.1 bus probe. Never calls LeRobot.connect()."""
 
 import argparse
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-# OmxFollower v0.4.4: XL430 body IDs 11–13, XL330 wrist/gripper IDs 14–16.
+# OmxFollower v0.6.1: XL430 body IDs 11–13, XL330 wrist/gripper IDs 14–16.
 MOTORS = {11: 1060, 12: 1060, 13: 1060, 14: 1200, 15: 1200, 16: 1200}
 
 
