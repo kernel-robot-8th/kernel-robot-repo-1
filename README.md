@@ -34,3 +34,9 @@ uv build
 API 실행: `uv run uvicorn roport_control_server.app:app --host 127.0.0.1 --port 8000`
 
 `/healthz`는 프로세스 상태만 확인합니다. 로봇·DB·모델 준비 상태를 뜻하지 않습니다.
+
+## 상세 설계 기준
+
+- [레포별 기술 스택·통신·CI 계획](https://github.com/kernel-robot-8th/kernel-robot-repo-1/blob/main/docs/technology-stack.md)
+
+문서의 현재 구현과 후속 개발 기준을 구분합니다. 실장비·GPU 확인 전 의존성 업그레이드를 확정하지 않습니다.
