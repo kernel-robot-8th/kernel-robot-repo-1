@@ -25,18 +25,9 @@ jobs:
         working-directory: roport-pinky
     steps:
       - uses: actions/checkout@v4
-      - name: Install colcon
+      - name: Install CI build dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends python3-colcon-common-extensions
-      - name: Build workspace
-        run: |
-          source /opt/ros/jazzy/setup.bash
-          colcon build --packages-select roport_pinky --event-handlers console_direct+
-      - name: Check upstream Python syntax
-        run: python3 -m compileall -q src/pinky_pro
-      - name: Import installed package
-        run: |
-          source /opt/ros/jazzy/setup.bash
-          source install/setup.bash
-          python3 -c "import roport_pinky; import rclpy"
+          apt-get install -y --no-install-recommends python3-colcon-common-extensions ros-jazzy-xacro ros-jazzy-rosidl-default-generators
+      - name: Build interfaces and description; test receive-check logic (no hardware)
+        run: bash ci/test.sh

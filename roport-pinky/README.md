@@ -34,7 +34,7 @@ source install/setup.bash
 python3 -c "import roport_pinky; import rclpy"
 ```
 
-현재 실행 노드·모터 명령은 없습니다. CI는 ROS 패키지 빌드와 설치 후 import만 검사합니다.
+팀 패키지에는 아직 실행 노드·모터 명령이 없습니다. 아래 원본 Pinky Pro에는 실장비 실행 코드가 포함돼 있습니다.
 
 ## Pinky Pro 원본
 
@@ -48,4 +48,13 @@ rosdep install --from-paths src --ignore-src -r -y
 colcon build
 ```
 
-CI는 팀 패키지 빌드와 원본 Python 구문 검사만 수행합니다. Pinky Pro 전체 빌드·시뮬레이션·실로봇 동작은 아직 검증하지 않았습니다. 원본에 포함된 장치·캘리브레이션·네트워크 설정은 각 장비에 맞게 확인해야 합니다.
+기본 CI 실행: `bash ci/test.sh` — 팀 패키지·원본 인터페이스·description 빌드, URDF 전개와 수신 검사 로직을 검증합니다.
+
+실로봇 bringup이 이미 실행 중인 상태에서 같은 `ROS_DOMAIN_ID`로 실행합니다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+python3 scripts/check_hardware.py --namespace / --output /tmp/pinky-check.json
+```
+
+`odom`·`joint_states`·`scan`에서 timestamp가 증가하는 메시지를 각각 3개 수신합니다. 명령을 발행하거나 bringup을 실행하지 않습니다. 실패 시 exit code 1과 JSON 결과를 남깁니다. 수신 성공만으로 실로봇/시뮬레이터 구별이나 동작 안전성을 판정하지 않습니다. ARM64 드라이버·전체 시뮬레이션·실주행은 별도 검증이 필요합니다.
