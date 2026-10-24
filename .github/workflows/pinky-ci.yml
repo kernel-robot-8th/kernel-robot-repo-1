@@ -1,7 +1,13 @@
-name: CI
+name: roport-pinky CI
 on:
   push:
+    paths:
+      - 'roport-pinky/**'
+      - '.github/workflows/pinky-ci.yml'
   pull_request:
+    paths:
+      - 'roport-pinky/**'
+      - '.github/workflows/pinky-ci.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -16,6 +22,7 @@ jobs:
     defaults:
       run:
         shell: bash
+        working-directory: roport-pinky
     steps:
       - uses: actions/checkout@v4
       - name: Install colcon

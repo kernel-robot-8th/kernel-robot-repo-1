@@ -22,11 +22,12 @@ jobs:
         run: |
           python3 - <<'PY'
           import re
+          import subprocess
           from pathlib import Path
 
-          for path in Path('.').rglob('*.md'):
-              if '.git' in path.parts:
-                  continue
+          tracked = subprocess.check_output(['git', 'ls-files', '-z', '*.md']).decode().split('\0')
+          for filename in filter(None, tracked):
+              path = Path(filename)
               for target in re.findall(r'\]\(([^)]+)\)', path.read_text()):
                   if '://' in target or target.startswith(('#', 'mailto:')):
                       continue

@@ -34,7 +34,7 @@ OMX 로봇팔과 Pinky 이동로봇을 연동해 면세품 보관·운송·인�
 
 - 프로젝트 주제·사용자 요구사항 초안·역할 분담·OMX 학습 정리와 일부 Pinky 시나리오 작성이 완료되었습니다.
 - System Requirements와 HW Architecture는 작성 중이며, SW Architecture는 리뷰 중입니다.
-- 현재 `main`에는 프로젝트 소스와 설치·실행 절차가 아직 등록되지 않았습니다.
+- 구성요소별 초기 코드·실행 안내·CI가 등록되어 있습니다. 업무 기능·실로봇 연동은 아직 구현·검증 전입니다.
 - 시나리오와 설계 문서의 작성 상태를 기능 구현·통합 검증 상태와 구분합니다.
 
 ## 팀
@@ -52,9 +52,29 @@ OMX 로봇팔과 Pinky 이동로봇을 연동해 면세품 보관·운송·인�
 
 팀원별 GitHub 계정 링크는 이름과 계정의 대응을 확인한 뒤 추가합니다.
 
+## 저장소 구조
+
+```text
+kernel-robot-repo-1/
+├── roport-pinky/
+├── roport-omx/
+├── roport-control-server/
+├── roport-ai-server/
+├── roport-service-server/
+├── roport-web/
+│   └── apps/
+│       ├── service/
+│       └── admin/
+├── docs/
+└── .github/workflows/
+```
+
+하나의 저장소에서 관리하고 각 디렉토리의 환경·빌드·CI는 분리합니다.
+상세 기술 스택은 [Issue #2](https://github.com/kernel-robot-8th/kernel-robot-repo-1/issues/2)에서 검토 중입니다.
+
 ## 문서와 협업
 
-- [개발 레포·기술 스택·CI 안내](docs/repositories.md)
+- [디렉토리·기술 스택·CI 안내](docs/repositories.md)
 - [설계·요구사항·검증 문서 안내](docs/README.md)
 - [Jira 작업 목록](https://fp-team1.atlassian.net/jira/projects/FFT1)
 - [Git-flow 및 PR 운영 규칙 논의](https://github.com/kernel-robot-8th/kernel-robot-repo-1/issues/1): 현재 합의 전 초안입니다.

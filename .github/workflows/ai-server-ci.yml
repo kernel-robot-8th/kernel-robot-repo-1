@@ -1,7 +1,13 @@
-name: CI
+name: roport-ai-server CI
 on:
   push:
+    paths:
+      - 'roport-ai-server/**'
+      - '.github/workflows/ai-server-ci.yml'
   pull_request:
+    paths:
+      - 'roport-ai-server/**'
+      - '.github/workflows/ai-server-ci.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -12,6 +18,9 @@ jobs:
   python:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: roport-ai-server
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,5 +30,5 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run python -c "import roport_omx"
+      - run: uv run pytest
       - run: uv build
