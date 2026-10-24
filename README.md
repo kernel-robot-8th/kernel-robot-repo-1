@@ -31,9 +31,3 @@ mvn spring-boot:run
 ```
 
 상태 확인: `http://127.0.0.1:8080/actuator/health`. 현재 업무 API·인증·DB는 없습니다.
-
-## 상세 설계 기준
-
-- [레포별 기술 스택·통신·CI 계획](https://github.com/kernel-robot-8th/kernel-robot-repo-1/blob/main/docs/technology-stack.md)
-
-문서의 현재 구현과 후속 개발 기준을 구분합니다. 실장비·GPU 확인 전 의존성 업그레이드를 확정하지 않습니다.
