@@ -28,7 +28,20 @@ PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기�
 ```bash
 python3 -m pip install uv==0.13.5
 uv sync --locked
-uv run ruff check .
+uv run ruff check src
 uv run python -c "import roport_omx"
 uv build
 ```
+
+## LeRobot 원본
+
+[lerobot/](lerobot/)에 공식 `v0.4.4` 소스를 포함했습니다. 원본 커밋과 라이선스는 [UPSTREAM.md](UPSTREAM.md)에 기록합니다.
+
+기존 코어 패키지와 별도 환경에서 설치합니다. 다음 명령은 소스 설치만 수행하며 로봇을 구동하지 않습니다.
+
+```bash
+cd lerobot
+python -m pip install -e .
+```
+
+CI는 팀 코어 패키지 검사와 원본 Python 구문 검사만 수행합니다. LeRobot 전체 테스트, GPU 학습, OMX 드라이버·실장비 호환성은 아직 검증하지 않았습니다.

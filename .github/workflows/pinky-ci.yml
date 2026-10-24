@@ -32,7 +32,9 @@ jobs:
       - name: Build workspace
         run: |
           source /opt/ros/jazzy/setup.bash
-          colcon build --event-handlers console_direct+
+          colcon build --packages-select roport_pinky --event-handlers console_direct+
+      - name: Check upstream Python syntax
+        run: python3 -m compileall -q src/pinky_pro
       - name: Import installed package
         run: |
           source /opt/ros/jazzy/setup.bash

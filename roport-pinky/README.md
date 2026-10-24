@@ -29,9 +29,23 @@ Ubuntu 24.04에 ROS 2 Jazzy와 colcon을 설치한 뒤 실행합니다.
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-colcon build
+colcon build --packages-select roport_pinky
 source install/setup.bash
 python3 -c "import roport_pinky; import rclpy"
 ```
 
 현재 실행 노드·모터 명령은 없습니다. CI는 ROS 패키지 빌드와 설치 후 import만 검사합니다.
+
+## Pinky Pro 원본
+
+[src/pinky_pro/](src/pinky_pro/)에 공식 소스를 포함했습니다. 커밋과 라이선스는 [src/UPSTREAM.md](src/UPSTREAM.md)에 기록합니다. 원본은 Ubuntu 24.04 / ROS 2 Jazzy를 안내합니다.
+
+원본 전체를 빌드하려면 의존성을 준비한 ROS 환경에서 실행합니다. 설치 명령은 시스템 패키지를 추가하며, 빌드 자체는 모터를 구동하지 않습니다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+rosdep install --from-paths src --ignore-src -r -y
+colcon build
+```
+
+CI는 팀 패키지 빌드와 원본 Python 구문 검사만 수행합니다. Pinky Pro 전체 빌드·시뮬레이션·실로봇 동작은 아직 검증하지 않았습니다. 원본에 포함된 장치·캘리브레이션·네트워크 설정은 각 장비에 맞게 확인해야 합니다.
