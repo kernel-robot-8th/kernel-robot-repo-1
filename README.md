@@ -34,3 +34,9 @@ npm run dev --workspace @roport/admin -- --port 5174
 
 각 앱의 `dist/`를 별도로 배포할 수 있습니다. 현재 기능은 준비 화면뿐입니다.
 브라우저에 전달하는 환경변수에 비밀키를 넣지 않습니다.
+
+## 상세 설계 기준
+
+- [레포별 기술 스택·통신·CI 계획](https://github.com/kernel-robot-8th/kernel-robot-repo-1/blob/main/docs/technology-stack.md)
+
+문서의 현재 구현과 후속 개발 기준을 구분합니다. 실장비·GPU 확인 전 의존성 업그레이드를 확정하지 않습니다.
