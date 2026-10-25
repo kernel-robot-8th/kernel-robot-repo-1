@@ -9,9 +9,11 @@
 
 ## Git 및 검증
 
+- **Git 작업 전에 [.agents/rules/git-flow.md](.agents/rules/git-flow.md)를 반드시 읽는다.** 이 저장소에서는 `feature/{이름 또는 계정}/{작업내용}`, `task/{큰 작업내용}`, `release/YYYYMMDD`를 사용하며 도구의 기본 `codex/*` 접두사를 사용하지 않는다.
+- 분기 기준과 PR 대상은 Issue #1의 Git-flow를 따른다. 필요한 `develop`/`task`/`release`가 없으면 임의로 main에서 새 작업을 시작하지 말고 초기 구성을 확인한다.
 - 커밋과 PR 제목: `[FFT1-번호] type: 제목`. 실제 Jira 티켓을 사용한다. 허용 type은 루트 `scripts/check-commit-message.mjs`가 기준이다.
 - Node.js 24에서 루트 `npm ci`로 Husky를 설치한다. 커밋 검사 테스트는 `npm run test:commit`이다.
-- main 직접 변경·병합은 사용자의 명시적 지시가 있을 때만 한다. 관련 없는 변경은 기존 PR에 섞지 않고 이력을 임의로 다시 쓰지 않는다.
+- main/develop/task/release에는 구현 커밋을 직접 push하지 않는다. 사용자 지시 없이 병합하지 않으며, 관련 없는 변경을 기존 PR에 섞거나 공유 이력을 임의로 다시 쓰지 않는다.
 - 변경한 모듈의 CI 명령을 실행한다. 성공·실패와 미검증 항목을 구분하고 원격 push/CI 결과를 확인한 뒤 완료를 알린다.
 - 빌드·단위 테스트·시뮬레이션 성공을 실로봇 검증 완료로 표현하지 않는다.
 
