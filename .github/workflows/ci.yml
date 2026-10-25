@@ -17,7 +17,7 @@ jobs:
         with:
           fetch-depth: 2
       - name: Check whitespace
-        run: git show --format= --check HEAD
+        run: git show --format= --check HEAD -- . ':!roport-omx/lerobot' ':!roport-pinky/src/pinky_pro'
       - name: Check local Markdown links
         run: |
           python3 - <<'PY'
@@ -27,6 +27,8 @@ jobs:
 
           tracked = subprocess.check_output(['git', 'ls-files', '-z', '*.md']).decode().split('\0')
           for filename in filter(None, tracked):
+              if filename.startswith(('roport-omx/lerobot/', 'roport-pinky/src/pinky_pro/')):
+                  continue
               path = Path(filename)
               for target in re.findall(r'\]\(([^)]+)\)', path.read_text()):
                   if '://' in target or target.startswith(('#', 'mailto:')):
