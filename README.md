@@ -83,3 +83,21 @@ kernel-robot-repo-1/
 코드·실행 방법·코드 변경 이력은 GitHub에서 관리합니다.
 PR에는 관련 Jira 키와 검증 결과를 기록합니다.
 Confluence와 Jira 링크는 해당 워크스페이스 접근 권한이 필요할 수 있습니다.
+
+## 커밋 메시지
+
+```text
+[FFT1-34] feat: 예약 API 추가
+[FFT1-34] bugfix: 로봇 상태 갱신 오류 수정
+[FFT1-34] chore: 개발 환경 설정
+[FFT1-34] docs: 실행 방법 정리
+[FFT1-34] test: 예약 테스트 추가
+```
+
+형식은 `[FFT1-번호] type: 제목`입니다. 번호는 실제 Jira 티켓 번호를 사용합니다.
+허용 type: `feat`, `bugfix`, `chore`, `docs`, `test`, `refactor`, `perf`, `style`, `build`, `ci`, `revert`.
+PR 제목도 같은 형식을 사용합니다. Git-flow의 실제 merge commit은 검사에서 제외합니다.
+
+저장소 루트에서 **Node.js 24로 `npm ci`를 한 번 실행**하면 Husky가 설치됩니다.
+이후 어느 디렉토리에서 커밋해도 `commit-msg` hook이 검사하며, CI에서도 PR 제목과 새 커밋을 확인합니다.
+검사 규칙 테스트: `npm run test:commit`.
