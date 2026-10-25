@@ -16,6 +16,26 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Ensure component labels and colors
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while read -r label color; do
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/labels/${label}" \
+              -f color="${color}" \
+              -f description="Changes in the ${label} component" >/dev/null 2>&1 ||
+              gh api --method POST "repos/${GITHUB_REPOSITORY}/labels" \
+                -f name="${label}" \
+                -f color="${color}" \
+                -f description="Changes in the ${label} component" >/dev/null
+          done <<'LABELS'
+          pinky e11d48
+          omx 8b5cf6
+          control-server 2563eb
+          ai-server f97316
+          service-server 059669
+          web 0891b2
+          LABELS
       - uses: actions/labeler@v7
         with:
           configuration-path: .github/labeler.yml

@@ -28,7 +28,7 @@ RO:PORT는 `kernel-robot-8th/kernel-robot-repo-1` 하나에서 개발하는 mono
 - `ai-server-ci.yml`: uv lock 검증·Ruff·준비 상태 테스트·패키지 빌드
 - `service-server-ci.yml`: Maven 테스트·JAR 빌드·artifact 저장
 - `web-ci.yml`: 두 웹 앱 타입 검사·빌드·artifact 저장
-- `labeler.yml`: PR 변경 경로에 따라 `area/*` 구성요소 라벨 자동 적용
+- `labeler.yml`: PR 변경 경로에 따라 구성요소 라벨 자동 적용. 각 라벨은 고유 색상으로 관리합니다.
 - `ci.yml`: 추적 중인 Markdown의 로컬 링크·공백 검사
 
 GitHub Actions의 작업 디렉토리, 의존성 캐시 키와 artifact 경로도 각 디렉토리를 기준으로 설정합니다.

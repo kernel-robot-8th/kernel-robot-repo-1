@@ -33,6 +33,6 @@ uv run pytest
 uv build
 ```
 
-API 실행: `uv run uvicorn roport_ai_server.app:app --host 127.0.0.1 --port 8000`
+API 실행: `uv run uvicorn app:app --app-dir src --host 127.0.0.1 --port 8000`
 
 `/healthz`는 프로세스 상태만 확인합니다. 로봇·DB·모델 준비 상태를 뜻하지 않습니다.
