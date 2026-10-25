@@ -7,11 +7,12 @@
 - 기술 스택과 실행 명령은 각 모듈의 manifest·lockfile 및 `.github/workflows/`를 기준으로 확인한다. 제안한 설계를 구현된 기능처럼 기록하지 않는다.
 - 원본 오픈소스는 LICENSE와 출처·태그·SHA를 보존한다. 버전 갱신 시 정식 릴리스 태그를 확인하고 소스·UPSTREAM 기록·관련 검사를 함께 갱신한다.
 
-## Git 및 검증
+## Git
 
-- 커밋과 PR 제목: `[FFT1-번호] type: 제목`. 실제 Jira 티켓을 사용한다. 허용 type은 루트 `scripts/check-commit-message.mjs`가 기준이다.
-- Node.js 24에서 루트 `npm ci`로 Husky를 설치한다. 커밋 검사 테스트는 `npm run test:commit`이다.
-- main 직접 변경·병합은 사용자의 명시적 지시가 있을 때만 한다. 관련 없는 변경은 기존 PR에 섞지 않고 이력을 임의로 다시 쓰지 않는다.
+- 브랜치·커밋·push·PR·리뷰·병합 및 PR 템플릿은 [.agents/rules/git-flow.md](.agents/rules/git-flow.md)를 따른다. Git 작업 전에 해당 규칙을 읽는다.
+
+## 검증
+
 - 변경한 모듈의 CI 명령을 실행한다. 성공·실패와 미검증 항목을 구분하고 원격 push/CI 결과를 확인한 뒤 완료를 알린다.
 - 빌드·단위 테스트·시뮬레이션 성공을 실로봇 검증 완료로 표현하지 않는다.
 
