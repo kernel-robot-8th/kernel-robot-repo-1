@@ -2,11 +2,11 @@ name: roport-omx CI
 on:
   push:
     paths:
-      - 'roport-omx/**'
+      - 'services/roport-omx/**'
       - '.github/workflows/omx-ci.yml'
   pull_request:
     paths:
-      - 'roport-omx/**'
+      - 'services/roport-omx/**'
       - '.github/workflows/omx-ci.yml'
   workflow_dispatch:
 permissions:
@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: roport-omx
+        working-directory: services/roport-omx
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

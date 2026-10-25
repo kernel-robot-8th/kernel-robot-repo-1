@@ -56,20 +56,21 @@ OMX 로봇팔과 Pinky 이동로봇을 연동해 면세품 보관·운송·인�
 
 ```text
 kernel-robot-repo-1/
-├── roport-pinky/
-├── roport-omx/
-├── roport-control-server/
-├── roport-ai-server/
-├── roport-service-server/
-├── roport-web/
-│   └── apps/
-│       ├── service/
-│       └── admin/
+├── services/
+│   ├── roport-pinky/
+│   ├── roport-omx/
+│   ├── roport-control-server/
+│   ├── roport-ai-server/
+│   ├── roport-service-server/
+│   └── roport-web/
+│       └── apps/
+│           ├── service/
+│           └── admin/
 ├── docs/
 └── .github/workflows/
 ```
 
-하나의 저장소에서 관리하고 각 디렉토리의 환경·빌드·CI는 분리합니다.
+하나의 저장소의 `services/` 아래에서 관리하고 각 디렉토리의 환경·빌드·CI는 분리합니다.
 상세 기술 스택은 [Issue #2](https://github.com/kernel-robot-8th/kernel-robot-repo-1/issues/2)에서 검토 중입니다.
 
 ## 문서와 협업
