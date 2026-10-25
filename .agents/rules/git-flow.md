@@ -20,6 +20,7 @@
 - 이름은 영문 소문자·숫자, 단어 구분은 하이픈을 사용한다. feature에는 실제 작업자 이름/계정을 넣는다.
 - codex/*, 임의의 새 브랜치 종류, hotfix 규칙을 기본값으로 만들지 않는다. 배포 후 긴급 수정 절차는 별도 합의까지 보류다.
 - Jira 번호는 브랜치 이름에 필수가 아니다. 커밋·PR 제목은 루트의 [FFT1-번호] type: 제목 규칙을 따른다.
+- 커밋 훅 확인은 Node.js 24에서 루트 `npm ci` 후 `npm run test:commit`으로 한다. 허용 커밋 형식은 `scripts/check-commit-message.mjs`가 기준이다.
 
 ## 분기와 PR 대상
 
