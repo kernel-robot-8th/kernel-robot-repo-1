@@ -34,6 +34,7 @@
 ## 리뷰·병합·동기화
 
 - PR 하나에는 하나의 목적을 담는다. 관련 Issue/Jira, 변경 내용, 검증 결과·미검증 항목을 기록한다.
+- PR을 만들거나 설명을 고칠 때 `.github/pull_request_template.md`의 항목과 순서를 따른다. Jira, 변경 내용, 검증한 내용과 미검증 이유를 채우고, 해당 없는 선택 항목만 템플릿 안내대로 뺀다.
 - 작성자 외 팀원 1명 이상 승인 후 PR 작성자가 병합한다. 사용자 지시 없이 에이전트가 병합하지 않는다.
 - feature → task/develop은 Squash and merge가 기본이다. task → develop과 배포·동기화 PR은 merge commit을 사용한다.
 - 작업 전 최신 원격 상태를 확인하고, 진행 중 feature에는 원래 기준 task/develop/release의 변경을 반영한다.
