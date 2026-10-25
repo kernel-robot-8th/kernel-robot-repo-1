@@ -1,6 +1,6 @@
 # RO:PORT 작업 규칙
 
-- 이 저장소는 단일 모노레포다. 구현 영역은 `roport-pinky`, `roport-omx`, `roport-control-server`, `roport-ai-server`, `roport-service-server`, `roport-web`이다.
+- 이 저장소는 단일 모노레포다. 구현 영역은 `services/roport-pinky`, `services/roport-omx`, `services/roport-control-server`, `services/roport-ai-server`, `services/roport-service-server`, `services/roport-web`이다.
 - 작업 경로의 하위 `AGENTS.md`를 함께 읽는다. `CLAUDE.md`는 같은 디렉토리의 `AGENTS.md`를 가리키는 상대 symlink로 유지하고 내용을 복제하지 않는다.
 - 한국어로 결론부터 간결하게 답한다. 기존 코드·호출 흐름·설정부터 확인하고 필요한 최소 변경만 한다.
 - 별도 저장소·submodule·새 의존성·추상화는 요청 범위를 충족하는 데 필요한 경우에만 추가한다. 설명은 기존 README에 짧게 남기고 별도 문서는 요청받았거나 꼭 필요한 경우에만 만든다.

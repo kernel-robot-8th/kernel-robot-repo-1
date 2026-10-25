@@ -17,7 +17,7 @@ CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 이 디렉토리는 단일 저장소의 구성요소입니다. 아래 명령은 이 디렉토리에서 실행합니다.
 
 - [프로젝트 개요](https://github.com/kernel-robot-8th/kernel-robot-repo-1)
-- [요구사항·설계 문서](../docs/README.md)
+- [요구사항·설계 문서](../../docs/README.md)
 - [Jira](https://fp-team1.atlassian.net/jira/projects/FFT1)
 
 PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기록합니다.
@@ -33,6 +33,6 @@ uv run pytest
 uv build
 ```
 
-API 실행: `uv run uvicorn roport_ai_server.app:app --host 127.0.0.1 --port 8000`
+API 실행: `uv run uvicorn app:app --app-dir src --host 127.0.0.1 --port 8000`
 
 `/healthz`는 프로세스 상태만 확인합니다. 로봇·DB·모델 준비 상태를 뜻하지 않습니다.

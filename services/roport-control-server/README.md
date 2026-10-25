@@ -1,10 +1,10 @@
-# roport-web
+# roport-control-server
 
-RO:PORT · GATE CREW — 고객 서비스 웹·어드민 웹
+RO:PORT · GATE CREW — 작업 배정·상태 관리·ROS 2 Bridge
 
 ## 기술 스택
 
-Node.js 24 / React 19 / TypeScript 7 / Vite 8 / npm workspaces. apps/service와 apps/admin을 별도 빌드합니다.
+Python 3.12 / FastAPI / Uvicorn / uv / pytest / Ruff. 작업 상태 저장은 PostgreSQL 기준이며 DB 연결·마이그레이션은 후속 구현입니다. ROS 2 Jazzy Bridge는 API와 별도 프로세스로 실행합니다.
 
 ## 현재 범위
 
@@ -17,7 +17,7 @@ CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 이 디렉토리는 단일 저장소의 구성요소입니다. 아래 명령은 이 디렉토리에서 실행합니다.
 
 - [프로젝트 개요](https://github.com/kernel-robot-8th/kernel-robot-repo-1)
-- [요구사항·설계 문서](../docs/README.md)
+- [요구사항·설계 문서](../../docs/README.md)
 - [Jira](https://fp-team1.atlassian.net/jira/projects/FFT1)
 
 PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기록합니다.
@@ -26,13 +26,13 @@ PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기�
 ## 개발 방법
 
 ```bash
-npm ci
-npm run typecheck
-npm run build
-npm run dev --workspace @roport/service
-# 별도 터미널
-npm run dev --workspace @roport/admin -- --port 5174
+python3 -m pip install uv==0.13.5
+uv sync --locked
+uv run ruff check .
+uv run pytest
+uv build
 ```
 
-각 앱의 `dist/`를 별도로 배포할 수 있습니다. 현재 기능은 준비 화면뿐입니다.
-브라우저에 전달하는 환경변수에 비밀키를 넣지 않습니다.
+API 실행: `uv run uvicorn roport_control_server.app:app --host 127.0.0.1 --port 8000`
+
+`/healthz`는 프로세스 상태만 확인합니다. 로봇·DB·모델 준비 상태를 뜻하지 않습니다.

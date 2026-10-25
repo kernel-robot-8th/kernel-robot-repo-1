@@ -2,11 +2,11 @@ name: roport-pinky CI
 on:
   push:
     paths:
-      - 'roport-pinky/**'
+      - 'services/roport-pinky/**'
       - '.github/workflows/pinky-ci.yml'
   pull_request:
     paths:
-      - 'roport-pinky/**'
+      - 'services/roport-pinky/**'
       - '.github/workflows/pinky-ci.yml'
   workflow_dispatch:
 permissions:
@@ -22,7 +22,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: roport-pinky
+        working-directory: services/roport-pinky
     steps:
       - uses: actions/checkout@v4
       - name: Install CI build dependencies

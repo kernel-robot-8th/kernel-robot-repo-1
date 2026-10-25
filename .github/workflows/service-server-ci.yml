@@ -2,11 +2,11 @@ name: roport-service-server CI
 on:
   push:
     paths:
-      - 'roport-service-server/**'
+      - 'services/roport-service-server/**'
       - '.github/workflows/service-server-ci.yml'
   pull_request:
     paths:
-      - 'roport-service-server/**'
+      - 'services/roport-service-server/**'
       - '.github/workflows/service-server-ci.yml'
   workflow_dispatch:
 permissions:
@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 20
     defaults:
       run:
-        working-directory: roport-service-server
+        working-directory: services/roport-service-server
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -28,10 +28,10 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
-          cache-dependency-path: roport-service-server/pom.xml
+          cache-dependency-path: services/roport-service-server/pom.xml
       - run: mvn --batch-mode --no-transfer-progress verify
       - uses: actions/upload-artifact@v4
         with:
           name: service-jar
-          path: roport-service-server/target/*.jar
+          path: services/roport-service-server/target/*.jar
           if-no-files-found: error

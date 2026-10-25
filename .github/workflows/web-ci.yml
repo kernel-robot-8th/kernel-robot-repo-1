@@ -2,11 +2,11 @@ name: roport-web CI
 on:
   push:
     paths:
-      - 'roport-web/**'
+      - 'services/roport-web/**'
       - '.github/workflows/web-ci.yml'
   pull_request:
     paths:
-      - 'roport-web/**'
+      - 'services/roport-web/**'
       - '.github/workflows/web-ci.yml'
   workflow_dispatch:
 permissions:
@@ -20,19 +20,19 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: roport-web
+        working-directory: services/roport-web
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: roport-web/package-lock.json
+          cache-dependency-path: services/roport-web/package-lock.json
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
       - uses: actions/upload-artifact@v4
         with:
           name: web-dist
-          path: roport-web/apps/*/dist/
+          path: services/roport-web/apps/*/dist/
           if-no-files-found: error

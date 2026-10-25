@@ -1,0 +1,25 @@
+changed-files-labels-limit: 6
+
+pinky:
+  - changed-files:
+      - any-glob-to-any-file: 'services/roport-pinky/**'
+
+omx:
+  - changed-files:
+      - any-glob-to-any-file: 'services/roport-omx/**'
+
+control-server:
+  - changed-files:
+      - any-glob-to-any-file: 'services/roport-control-server/**'
+
+ai-server:
+  - changed-files:
+      - any-glob-to-any-file: 'services/roport-ai-server/**'
+
+service-server:
+  - changed-files:
+      - any-glob-to-any-file: 'services/roport-service-server/**'
+
+web:
+  - changed-files:
+      - any-glob-to-any-file: 'services/roport-web/**'

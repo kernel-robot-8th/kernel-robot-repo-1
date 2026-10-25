@@ -1,10 +1,10 @@
-# roport-service-server
+# roport-web
 
-RO:PORT · GATE CREW — 회원·주문·예약·수령 처리 API
+RO:PORT · GATE CREW — 고객 서비스 웹·어드민 웹
 
 ## 기술 스택
 
-Java 21 / Spring Boot 4.1.2 / Maven. 업무 데이터는 PostgreSQL 기준이며 DB 연결·마이그레이션·인증은 후속 구현입니다.
+Node.js 24 / React 19 / TypeScript 7 / Vite 8 / npm workspaces. apps/service와 apps/admin을 별도 빌드합니다.
 
 ## 현재 범위
 
@@ -17,7 +17,7 @@ CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 이 디렉토리는 단일 저장소의 구성요소입니다. 아래 명령은 이 디렉토리에서 실행합니다.
 
 - [프로젝트 개요](https://github.com/kernel-robot-8th/kernel-robot-repo-1)
-- [요구사항·설계 문서](../docs/README.md)
+- [요구사항·설계 문서](../../docs/README.md)
 - [Jira](https://fp-team1.atlassian.net/jira/projects/FFT1)
 
 PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기록합니다.
@@ -25,11 +25,14 @@ PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기�
 
 ## 개발 방법
 
-Java 21과 Maven 3.9 이상을 사용합니다.
-
 ```bash
-mvn verify
-mvn spring-boot:run
+npm ci
+npm run typecheck
+npm run build
+npm run dev --workspace @roport/service
+# 별도 터미널
+npm run dev --workspace @roport/admin -- --port 5174
 ```
 
-상태 확인: `http://127.0.0.1:8080/actuator/health`. 현재 업무 API·인증·DB는 없습니다.
+각 앱의 `dist/`를 별도로 배포할 수 있습니다. 현재 기능은 준비 화면뿐입니다.
+브라우저에 전달하는 환경변수에 비밀키를 넣지 않습니다.

@@ -13,3 +13,10 @@ dev = ["ruff==0.17.2", "pytest==9.1.1", "httpx==0.28.1"]
 
 [tool.ruff]
 target-version = "py312"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.hatch.build.targets.wheel]
+only-include = ["src/app.py"]
+sources = ["src"]

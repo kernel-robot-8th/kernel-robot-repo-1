@@ -2,11 +2,11 @@ name: roport-control-server CI
 on:
   push:
     paths:
-      - 'roport-control-server/**'
+      - 'services/roport-control-server/**'
       - '.github/workflows/control-server-ci.yml'
   pull_request:
     paths:
-      - 'roport-control-server/**'
+      - 'services/roport-control-server/**'
       - '.github/workflows/control-server-ci.yml'
   workflow_dispatch:
 permissions:
@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: roport-control-server
+        working-directory: services/roport-control-server
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
