@@ -58,3 +58,16 @@ python3 scripts/check_hardware.py --namespace / --output /tmp/pinky-check.json
 ```
 
 `odom`·`joint_states`·`scan`에서 timestamp가 증가하는 메시지를 각각 3개 수신합니다. 명령을 발행하거나 bringup을 실행하지 않습니다. 실패 시 exit code 1과 JSON 결과를 남깁니다. 수신 성공만으로 실로봇/시뮬레이터 구별이나 동작 안전성을 판정하지 않습니다. ARM64 드라이버·전체 시뮬레이션·실주행은 별도 검증이 필요합니다.
+
+## 시연 공간 지도
+
+[maps/](maps/)에 시연 공간 지도를 둡니다. 실로봇 Nav2·Gazebo 시뮬레이션·관제 GUI가 같은 파일을 씁니다.
+
+| 파일 | 내용 |
+|---|---|
+| `airport_map.pgm`, `airport_map.yaml` | 실로봇(Pinky Pro)으로 slam_toolbox를 돌려 만든 지도. 92×53칸, 0.05 m/칸, origin (−1.654, −2.094) m, `map_server` 형식 |
+| `airport_map.png` | `airport_map.pgm`과 같은 픽셀(0 점유, 205 미지, 254 빈 곳)의 PNG. 브라우저 등 pgm을 못 읽는 곳에서 사용. 행 0이 지도의 위쪽(+y 끝)입니다 |
+| `map_measured_v12.png` | 실측 도면(단위 cm, 원점 = 콘센트 벽·통로 쪽 모서리). v12에서 인도장 P7(위치 추정) 추가 |
+
+- 지도 좌표(m)는 `map` 프레임입니다. 실측 도면 좌표(cm)와의 변환은 Gazebo world 배치 데이터(`roport_gz_world/layout/roport_airport.yaml`의 `frame`, PR #10)에 있습니다.
+- 지도를 다시 만들면 같은 이름으로 교체하고 PR에 만든 날짜·로봇·방법을 적습니다. 사진(사람이 찍힘)은 올리지 않습니다.
