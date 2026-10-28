@@ -38,7 +38,8 @@ Confluence의 상세 문서를 찾아볼 수 있는 안내입니다. 원문 전�
 - [Jira 프로젝트](https://fp-team1.atlassian.net/jira/projects/FFT1): 담당자·완료 조건·진행 상태
 - [2026-10-21 역할 분담](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/6881282)
 - [스크럼 운영 가이드 · Sprint 2](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/3506572)
-- [Git-flow·PR 운영 규칙 초안](https://github.com/kernel-robot-8th/kernel-robot-repo-1/issues/1)
+- [현재 Git-flow·PR 운영 규칙](../.agents/rules/git-flow.md): `develop`은 사용하지 않고 `main`과 선택적 `task/**`로 운영합니다.
+- [초기 Git-flow 논의](https://github.com/kernel-robot-8th/kernel-robot-repo-1/issues/1): 이전 `develop` 기반 초안입니다.
 
 설계 변경은 Confluence 원문에 결정 내용을 기록하고 관련 Jira와 PR을 연결합니다.
 코드가 추가되면 해당 모듈에 설치·설정·실행·검증 방법을 함께 작성합니다.
