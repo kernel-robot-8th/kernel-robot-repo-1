@@ -4,11 +4,13 @@
 # The originals are included unchanged from the installed pinky_navigation package:
 #   mode:=slam -> pinky_navigation/launch/map_building.launch.xml (slam_toolbox online_sync)
 #   mode:=nav  -> pinky_navigation/launch/bringup_launch.xml (map_server, amcl, Nav2)
+#   mode:=ir   -> no include; pinky_sensor_adc main_node (IR/ultrasonic ADC read only)
 # pinky_bringup/bringup_robot.launch.xml is NOT included: start it separately first.
 """Pinky test console.
 
   ros2 launch pinky_test_console console.launch.py mode:=slam
   ros2 launch pinky_test_console console.launch.py mode:=nav map:=$HOME/roport_maps/room.yaml
+  ros2 launch pinky_test_console console.launch.py mode:=ir   (IR: http://<robot>:8080/ir.html)
   (Gazebo) ... use_sim_time:=true
 """
 
@@ -30,15 +32,14 @@ def launch_setup(context):
         map_path=LaunchConfiguration('map').perform(context),
         port=LaunchConfiguration('port').perform(context),
         use_sim_time=LaunchConfiguration('use_sim_time').perform(context),
+        ir_node=LaunchConfiguration('ir_node').perform(context),
     )
     launch_file, launch_args = included_launch(plan)
-    # pinky_navigation 이 없으면 여기서 PackageNotFoundError 로 바로 알려준다
-    launch_path = os.path.join(
-        get_package_share_directory('pinky_navigation'), 'launch', launch_file)
 
-    return [
+    actions = [
         LogInfo(msg=f'[pinky_test_console] mode={plan.mode} map={plan.map_yaml or "-"} '
-                    f'port={plan.port} use_sim_time={plan.use_sim_time} include={launch_file}'),
+                    f'port={plan.port} use_sim_time={plan.use_sim_time} '
+                    f'include={launch_file or "-"} ir_node={plan.ir_node}'),
         Node(
             package='pinky_test_console',
             executable='web_server',
@@ -49,19 +50,28 @@ def launch_setup(context):
                 'port': plan.port,
                 'mode': plan.mode,
                 'map_dir': LaunchConfiguration('map_dir').perform(context),
+                'ir_dir': LaunchConfiguration('ir_dir').perform(context),
                 'use_sim_time': plan.use_sim_time,
             }],
         ),
-        IncludeLaunchDescription(
+    ]
+    if launch_file:
+        # pinky_navigation 이 없으면 여기서 PackageNotFoundError 로 바로 알려준다
+        launch_path = os.path.join(
+            get_package_share_directory('pinky_navigation'), 'launch', launch_file)
+        actions.append(IncludeLaunchDescription(
             AnyLaunchDescriptionSource(launch_path),
             launch_arguments=launch_args.items(),
-        ),
-    ]
+        ))
+    if plan.ir_node:
+        # ADC 읽기만 한다(모터 구동 없음). 다른 터미널에서 이미 실행 중이면 ir_node:=false
+        actions.append(Node(package='pinky_sensor_adc', executable='main_node', output='screen'))
+    return actions
 
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument('mode', default_value='slam', description='slam | nav'),
+        DeclareLaunchArgument('mode', default_value='slam', description='slam | nav | ir'),
         DeclareLaunchArgument('map', default_value='',
                               description='map .yaml path (required for mode:=nav)'),
         DeclareLaunchArgument('port', default_value='8080', description='web port'),
@@ -70,5 +80,10 @@ def generate_launch_description():
                               description='true for Gazebo/MuJoCo simulation'),
         DeclareLaunchArgument('map_dir', default_value='~/roport_maps',
                               description='folder for saved maps'),
+        DeclareLaunchArgument('ir_dir', default_value='~/roport_ir',
+                              description='folder for IR recordings (CSV)'),
+        DeclareLaunchArgument('ir_node', default_value='auto',
+                              description='run pinky_sensor_adc main_node: '
+                                          'auto (mode:=ir) | true | false'),
         OpaqueFunction(function=launch_setup),
     ])

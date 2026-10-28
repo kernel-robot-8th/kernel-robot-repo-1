@@ -10,6 +10,7 @@
 #   - status panel data (/proc/meminfo, loadavg, CPU temp, battery, console RSS)
 #   - map/costmap sent only when changed (version numbers)
 #   - zero velocity published on shutdown or spin exception
+#   - IR raw value view and timed CSV recording (ir_sensor/range)
 # See LICENSE in this package for the full license text.
 
 import _thread
@@ -42,10 +43,10 @@ from nav2_msgs.action import NavigateToPose
 from nav2_msgs.msg import Costmap
 from nav_msgs.msg import OccupancyGrid, Path
 from slam_toolbox.srv import Reset, SaveMap
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Float32, String, UInt16MultiArray
 from tf2_ros import Buffer, TransformListener
 
-from . import map_store
+from . import ir_record, map_store
 from .sysstats import read_system_stats
 from .teleop import DEADMAN_TIMEOUT, MAX_ANGULAR, MAX_LINEAR, TeleopGuard
 from .web_app import create_app, default_web_dir
@@ -87,9 +88,11 @@ class ConsoleNode(Node):
         self.declare_parameter('port', 8080)
         self.declare_parameter('mode', 'slam')
         self.declare_parameter('map_dir', map_store.DEFAULT_MAP_DIR)
+        self.declare_parameter('ir_dir', ir_record.DEFAULT_IR_DIR)
 
         self.mode = self.get_parameter('mode').value
         self.map_dir = map_store.resolve_map_dir(self.get_parameter('map_dir').value)
+        self.ir = ir_record.IrRecorder(self.get_parameter('ir_dir').value)
 
         self.lock = threading.Lock()
 
@@ -126,6 +129,10 @@ class ConsoleNode(Node):
         self.create_subscription(
             Float32, 'battery/voltage', lambda m: self._battery_cb('voltage', m), 10)
 
+        # ---- IR (pinky_sensor_adc main_node, 12비트 원시값 3개, 기본 20 Hz) ----
+        self.create_subscription(
+            UInt16MultiArray, 'ir_sensor/range', lambda m: self.ir.add_sample(m.data), 10)
+
         # ---- TF2: map -> base_link ----
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=False)
@@ -157,6 +164,7 @@ class ConsoleNode(Node):
 
         self.get_logger().info(
             f'pinky_test_console started (mode={self.mode}, map_dir={self.map_dir}, '
+            f'ir_dir={self.ir.ir_dir}, '
             f'limits: {MAX_LINEAR} m/s, {MAX_ANGULAR} rad/s, deadman {DEADMAN_TIMEOUT} s)')
 
     # ---------------- 콜백 ----------------
@@ -301,6 +309,7 @@ class ConsoleNode(Node):
         return {
             'mode': self.mode,
             'map_dir': self.map_dir,
+            'ir_dir': self.ir.ir_dir,
             'max_linear': MAX_LINEAR,
             'max_angular': MAX_ANGULAR,
             'deadman_sec': DEADMAN_TIMEOUT,
@@ -425,6 +434,27 @@ class ConsoleNode(Node):
 
     def list_maps(self):
         return {'map_dir': self.map_dir, 'maps': map_store.list_maps(self.map_dir)}
+
+    # ---------------- IR 측정 ----------------
+    def ir_snapshot(self):
+        return self.ir.snapshot()
+
+    def ir_start(self, label, duration):
+        """IrRecordError 가능 (라벨·시간 검사, 기록 중)."""
+        state = self.ir.start(label, duration)
+        self.get_logger().info(f'[WEB] IR record start: {label} ({duration:g} s)')
+        return state
+
+    def ir_cancel(self):
+        return self.ir.cancel()
+
+    def ir_records(self):
+        records = self.ir.list_records()
+        return {'ir_dir': self.ir.ir_dir, 'records': records,
+                'suggestion': ir_record.suggest_thresholds(records)}
+
+    def ir_record_path(self, name):
+        return self.ir.record_path(name)
 
 
 ############################################################

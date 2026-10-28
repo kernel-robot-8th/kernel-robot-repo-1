@@ -415,3 +415,28 @@ canvas {
 }
 
 .mt { margin-top: 10px; }
+
+/* ---------- IR 측정 화면 (ir.html) ---------- */
+.ir-page #left { flex-direction: column; align-items: stretch; gap: 14px; }
+.ir-link { margin-left: auto; text-decoration: none; }
+.ir-live { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 10px; }
+.ir-ch { text-align: center; }
+.ir-name { font-size: 12px; color: var(--text-muted); }
+.ir-val { font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ir-bar { height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.ir-bar > div { height: 100%; width: 0; background: var(--accent); }
+.ir-ch:nth-child(2) .ir-bar > div { background: var(--blue-end); }
+.ir-ch:nth-child(3) .ir-bar > div { background: var(--ok); }
+.ir-c0 { background: var(--accent); }
+.ir-c1 { background: var(--blue-end); }
+.ir-c2 { background: var(--ok); }
+.ir-stale { color: var(--warn); }
+#chart { max-width: none; aspect-ratio: 900 / 260; cursor: default; margin-bottom: 6px; }
+.ir-steps { margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; }
+.ir-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.ir-select { flex: 0 0 90px; }
+.ir-table-wrap { overflow-x: auto; }
+.ir-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.ir-table th, .ir-table td { padding: 4px 6px; border-bottom: 1px solid var(--border-subtle); text-align: right; white-space: nowrap; }
+.ir-table th:first-child, .ir-table td:first-child { text-align: left; }
+.ir-table a { color: var(--accent); text-decoration: none; }
