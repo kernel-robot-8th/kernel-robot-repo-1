@@ -3,7 +3,8 @@
 import os
 from dataclasses import dataclass
 
-VALID_MODES = ('slam', 'nav', 'ir')
+VALID_MODES = ('slam', 'nav', 'ir', 'marker')
+NO_INCLUDE_MODES = ('ir', 'marker')   # pinky_navigation 을 include 하지 않는 모드
 
 
 class LaunchArgError(ValueError):
@@ -70,11 +71,11 @@ def resolve_plan(mode, map_path='', port='8080', use_sim_time='false', ir_node='
 
 
 def included_launch(plan):
-    """pinky_navigation 에서 include 할 launch 파일 이름과 인자. mode:=ir 은 (None, {}).
+    """pinky_navigation 에서 include 할 launch 파일 이름과 인자. mode:=ir|marker 는 (None, {}).
 
     bringup_robot.launch.xml(모터·라이다)은 포함하지 않는다: 사용자가 먼저 따로 실행.
     """
-    if plan.mode == 'ir':
+    if plan.mode in NO_INCLUDE_MODES:
         return None, {}
     sim_time = 'True' if plan.use_sim_time else 'False'
     if plan.mode == 'slam':
@@ -82,3 +83,14 @@ def included_launch(plan):
         return 'map_building.launch.xml', {'use_sim_time': sim_time}
     # 원본 bringup_launch.xml = map_server + amcl + Nav2 (지도 지정)
     return 'bringup_launch.xml', {'map': plan.map_yaml, 'use_sim_time': sim_time}
+
+
+def resolve_rotate_180(camera, text='auto'):
+    """마커 확인 화면의 180° 회전. auto 이면 로봇 카메라(picamera2)일 때만 회전.
+
+    이전 Pinky 주행 코드(Picamera2)가 카메라 영상을 180° 돌려 썼다.
+    """
+    t = str(text).strip().lower()
+    if t == 'auto':
+        return str(camera).strip() == 'picamera2'
+    return parse_bool(t, 'rotate_180')

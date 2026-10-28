@@ -28,6 +28,7 @@ class FakeNode:
         self.guard = TeleopGuard()
         self.navigating = navigating
         self.ir_dir = '/nonexistent-ir'
+        self.jpeg = None
 
     def get_info(self):
         return {'mode': 'slam'}
@@ -101,6 +102,16 @@ class FakeNode:
     def ir_record_path(self, name):
         return os.path.join(self.ir_dir, validate_filename(name))
 
+    def marker_snapshot(self):
+        return {'fps': 9.5, 'detections': [], 'checklist': [], 'error': None}
+
+    def marker_jpeg(self):
+        return self.jpeg
+
+    def marker_reset(self):
+        self.calls.append(('marker_reset',))
+        return True
+
 
 @pytest.fixture
 def node():
@@ -115,7 +126,8 @@ def client(node):
 
 
 def test_index_and_assets(client):
-    for path in ('/', '/app.js', '/style.css', '/index.html', '/ir.html', '/ir.js'):
+    for path in ('/', '/app.js', '/style.css', '/index.html', '/ir.html', '/ir.js',
+                 '/marker.html', '/marker.js'):
         r = client.get(path)
         assert r.status_code == 200, path
 
@@ -133,7 +145,7 @@ def test_security_headers(client):
     assert client.get('/api/status').headers['Cache-Control'] == 'no-store'
 
 
-@pytest.mark.parametrize('page', ['index.html', 'ir.html'])
+@pytest.mark.parametrize('page', ['index.html', 'ir.html', 'marker.html'])
 def test_html_has_no_external_or_inline_code(page):
     html = open(os.path.join(WEB_DIR, page)).read()
     assert 'http://' not in html.split('-->', 1)[1]
@@ -248,3 +260,16 @@ def test_save_map_conflict_then_overwrite(client, node):
 def test_map_name_error_type():
     with pytest.raises(MapNameError):
         map_base_path('/x', '../../etc/passwd')
+
+
+def test_marker_api(client, node):
+    assert client.get('/api/marker').get_json()['fps'] == 9.5
+    r = client.get('/api/marker/frame.jpg')
+    assert r.status_code == 204          # 아직 영상 없음
+    node.jpeg = b'\xff\xd8fake'
+    r = client.get('/api/marker/frame.jpg')
+    assert r.status_code == 200 and r.mimetype == 'image/jpeg' and r.data == node.jpeg
+    assert r.headers['Cache-Control'] == 'no-store'
+    assert client.post('/api/marker/reset', data='x').status_code == 400
+    assert client.post('/api/marker/reset', json={}).get_json() == {'success': True}
+    assert node.calls[-1] == ('marker_reset',)

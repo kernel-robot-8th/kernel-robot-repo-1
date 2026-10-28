@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<!-- pinky_test_console ArUco 마커 인식 확인 화면. 인라인 코드·CDN 없음. -->
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pinky 마커 테스트</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="ir-page">
+
+<header id="topbar">
+  <div class="brand">Pinky Pro <span>마커 테스트</span></div>
+  <span class="chip" title="서버 연결 상태"><span id="connDot" class="chip-dot"></span><span id="connText">연결 중</span></span>
+  <span class="chip" id="fpsChip">- fps</span>
+  <a class="btn btn-outline btn-small ir-link" href="/">← 콘솔</a>
+</header>
+
+<div id="main">
+  <div id="left">
+    <section class="panel-card">
+      <div class="section-title"><span>카메라 (초록 = 표에 있는 ID, 빨강 = 표에 없는 ID, 보라 점 = 마커 왼쪽 위)</span></div>
+      <img id="frame" class="mk-frame" alt="카메라 영상" src="/api/marker/frame.jpg">
+      <div class="status-msg err" id="camError" role="status"></div>
+    </section>
+
+    <section class="panel-card">
+      <div class="section-title"><span>지금 보이는 마커</span></div>
+      <div class="ir-table-wrap"><table class="ir-table" id="dets"><thead><tr>
+        <th>ID</th><th>이름</th><th>크기(표)</th><th>화면 크기</th><th>추정 거리</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="tiny-note" id="distNote"></div>
+    </section>
+
+    <section class="panel-card">
+      <div class="section-title"><span>확인 순서</span></div>
+      <ol class="ir-steps">
+        <li><b>ID 확인</b>: 인쇄한 마커를 한 장씩 카메라 앞에 대고, 화면의 ID·이름이 종이에 적힌 라벨과 같은지 봅니다. 오른쪽 목록에 ✓가 생깁니다.</li>
+        <li><b>방향</b>: 보라 점이 종이의 왼쪽 위 모서리에 찍히면 위아래가 맞게 붙인 것입니다.</li>
+        <li><b>거리</b>: 시험 시트(ID 0)를 줄자로 거리를 바꿔 가며 대고, 「인식률」이 떨어지는 거리를 기록합니다(정면·45°).</li>
+        <li><b>부착 후</b>: 로봇을 실제 정차 자리에 두고 벽 마커(P·Gate)가 보이는지 확인합니다.</li>
+      </ol>
+      <div class="tiny-note">이 화면은 인식만 확인합니다. 모터는 움직이지 않습니다. 결과는 Jira FFT1-74 또는 Confluence 「ArUco 마커 ID 표」의 시험 기록표에 적습니다.</div>
+    </section>
+  </div>
+
+  <div id="right">
+    <section class="panel-card">
+      <div class="section-title">
+        <span>마커 확인 목록</span>
+        <button id="btnReset" class="btn btn-outline btn-small" type="button" title="✓ 기록 지우기">초기화</button>
+      </div>
+      <div class="tiny-note" id="summary">-</div>
+      <div class="ir-table-wrap"><table class="ir-table" id="checklist"><thead><tr>
+        <th>ID</th><th>이름</th><th>✓</th><th>인식률</th><th>마지막</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="tiny-note">인식률 = 최근 5초 동안 이 ID가 보인 프레임 비율. 마커 표(markers_yaml)를 주지 않으면 본 ID만 나옵니다.</div>
+    </section>
+  </div>
+</div>
+
+<script src="marker.js"></script>
+</body>
+</html>

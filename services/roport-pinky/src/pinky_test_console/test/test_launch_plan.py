@@ -8,6 +8,7 @@ from pinky_test_console.launch_plan import (
     included_launch,
     parse_bool,
     resolve_plan,
+    resolve_rotate_180,
 )
 
 LAUNCH_FILE = os.path.join(
@@ -208,3 +209,26 @@ def test_launch_ir_node_disabled(monkeypatch):
     from launch_ros.actions import Node
     actions = _run_setup(monkeypatch, mode='ir', ir_node='false')
     assert [a.node_executable for a in actions if isinstance(a, Node)] == ['web_server']
+
+
+def test_marker_mode_plan():
+    plan = resolve_plan('marker')
+    assert plan.mode == 'marker' and plan.ir_node is False
+    assert included_launch(plan) == (None, {})
+
+
+def test_rotate_180_auto_only_for_robot_camera():
+    assert resolve_rotate_180('picamera2') is True
+    assert resolve_rotate_180('v4l2:0') is False
+    assert resolve_rotate_180('v4l2:0', 'true') is True
+    assert resolve_rotate_180('picamera2', 'false') is False
+    with pytest.raises(LaunchArgError, match='rotate_180'):
+        resolve_rotate_180('picamera2', 'sideways')
+
+
+def test_launch_marker_passes_camera_params(monkeypatch):
+    from launch_ros.actions import Node
+    actions = _run_setup(monkeypatch, mode='marker', camera='v4l2:2', camera_hfov_deg='62')
+    nodes = [a for a in actions if isinstance(a, Node)]
+    assert [n.node_executable for n in nodes] == ['web_server']
+    assert not [a for a in actions if isinstance(a, _FakeInclude)]

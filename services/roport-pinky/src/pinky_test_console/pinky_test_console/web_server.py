@@ -11,6 +11,7 @@
 #   - map/costmap sent only when changed (version numbers)
 #   - zero velocity published on shutdown or spin exception
 #   - IR raw value view and timed CSV recording (ir_sensor/range)
+#   - ArUco marker recognition check (camera preview, ID checklist)
 # See LICENSE in this package for the full license text.
 
 import _thread
@@ -42,11 +43,12 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.msg import Costmap
 from nav_msgs.msg import OccupancyGrid, Path
+from sensor_msgs.msg import Image
 from slam_toolbox.srv import Reset, SaveMap
 from std_msgs.msg import Float32, String, UInt16MultiArray
 from tf2_ros import Buffer, TransformListener
 
-from . import ir_record, map_store
+from . import ir_record, map_store, marker_detect
 from .sysstats import read_system_stats
 from .teleop import DEADMAN_TIMEOUT, MAX_ANGULAR, MAX_LINEAR, TeleopGuard
 from .web_app import create_app, default_web_dir
@@ -89,10 +91,18 @@ class ConsoleNode(Node):
         self.declare_parameter('mode', 'slam')
         self.declare_parameter('map_dir', map_store.DEFAULT_MAP_DIR)
         self.declare_parameter('ir_dir', ir_record.DEFAULT_IR_DIR)
+        self.declare_parameter('camera', 'picamera2')
+        self.declare_parameter('rotate_180', False)
+        self.declare_parameter('markers_yaml', '')
+        self.declare_parameter('camera_hfov_deg', 0.0)
 
         self.mode = self.get_parameter('mode').value
         self.map_dir = map_store.resolve_map_dir(self.get_parameter('map_dir').value)
         self.ir = ir_record.IrRecorder(self.get_parameter('ir_dir').value)
+        self.marker = None
+        self.marker_error = None
+        if self.mode == 'marker':
+            self._start_marker()
 
         self.lock = threading.Lock()
 
@@ -456,6 +466,59 @@ class ConsoleNode(Node):
     def ir_record_path(self, name):
         return self.ir.record_path(name)
 
+    # ---------------- 마커 인식 확인 ----------------
+    def _start_marker(self):
+        """카메라를 열고 인식 스레드를 시작한다. 실패해도 콘솔은 뜨고 화면에 오류를 보인다."""
+        try:
+            kind, arg = marker_detect.parse_camera_spec(self.get_parameter('camera').value)
+            path = os.path.expanduser(str(self.get_parameter('markers_yaml').value))
+            dict_name, table = marker_detect.load_marker_table(path)
+            if kind == 'picamera2':
+                source = marker_detect.PiCameraSource()
+            elif kind == 'v4l2':
+                source = marker_detect.V4l2Source(arg)
+            else:
+                source = marker_detect.PushSource()
+                self.create_subscription(Image, arg, lambda m: self._image_cb(source, m), 2)
+            self.marker = marker_detect.MarkerWorker(
+                source, marker_detect.MarkerDetector(dict_name), table,
+                rotate_180=bool(self.get_parameter('rotate_180').value),
+                hfov_deg=float(self.get_parameter('camera_hfov_deg').value))
+            self.marker.start()
+            self.get_logger().info(f'[MARKER] camera={kind}:{arg} dict={dict_name} '
+                                   f'table={len(table)} markers')
+        except Exception as e:  # noqa: BLE001 - picamera2 없음·장치 없음·yaml 오류
+            self.marker_error = f'{type(e).__name__}: {e}'
+            self.get_logger().error(f'[MARKER] camera not started: {self.marker_error}')
+
+    def _image_cb(self, source, msg):
+        try:
+            source.push(marker_detect.ros_image_to_bgr(
+                msg.height, msg.width, msg.encoding, msg.step, msg.data))
+        except marker_detect.MarkerError as e:
+            self.marker_error = str(e)
+
+    def marker_snapshot(self):
+        if self.marker is None:
+            return {'error': self.marker_error or 'camera not started (mode:=marker ?)',
+                    'fps': None, 'detections': [], 'checklist': []}
+        snap = self.marker.snapshot()
+        snap['error'] = snap['error'] or self.marker_error
+        return snap
+
+    def marker_jpeg(self):
+        return self.marker.jpeg() if self.marker is not None else None
+
+    def marker_reset(self):
+        if self.marker is None:
+            return False
+        self.marker.reset_seen()
+        return True
+
+    def close_marker(self):
+        if self.marker is not None:
+            self.marker.stop()
+
 
 ############################################################
 # 실행부
@@ -503,6 +566,7 @@ def main(args=None):
         pass
     finally:
         node.publish_stop_on_exit()
+        node.close_marker()
         executor.shutdown(timeout_sec=1.0)
         # spin 스레드가 wait 중인 채로 노드를 없애면 C++ terminate(abort)가 난다
         if spin_thread.is_alive() and spin_thread is not threading.current_thread():
