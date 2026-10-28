@@ -1,0 +1,88 @@
+# RO:PORT 시연 공간 배치 데이터 (Gazebo world 생성 원본)
+#
+# 출처: 시연 공간 실측 맵 v11 (layout/map_measured_v11.png), SLAM 지도 maps/airport_map.pgm
+# 좌표계(실측): 단위 cm, 원점 = 콘센트 벽·통로 쪽 모서리, x = 길이 방향, y = 창가 방향
+# 이 파일을 고친 뒤 world를 다시 생성한다:
+#   python3 -m roport_gz_world.generate_world        (패키지 폴더에서 실행)
+#
+# provisional: true 는 실측 전 임시값이다(Jira FFT1-96, FFT1-97에서 확정 후 교체).
+
+units: cm
+
+# 실측 좌표 → SLAM 지도(map) 좌표: map = R(yaw) * (실측 / 100) + (x_m, y_m)
+# airport_map.pgm 벽 점유 칸에 실측 벽 선분을 맞춘 값 (평균 오차 1.7 cm, 최대 5.4 cm, 지도 칸 5 cm).
+# world 좌표 = map 좌표이므로 로봇은 world (0, 0)에서 SLAM 시작 위치(실측 약 152, 202)에 나타난다.
+frame:
+  x_m: -1.520
+  y_m: -2.0225
+  yaw_deg: 0.10
+
+defaults:
+  wall_thickness: 0.5        # 가벽 두께 (실측)
+  wall_height: 20            # provisional: 실측 필요
+  object_height: 15          # provisional: Pinky 라이다 높이 12.5 cm 보다 높게(SLAM에 보였음)
+  line_width: 2              # 바닥 라인 폭 (실측)
+
+# 벽: 선분(from → to) 중심선, 충돌 있음
+walls:
+  - {name: outer_aisle, from: [0, 0], to: [443, 0]}           # 아래 = 통로(콘센트 벽)
+  - {name: outer_right, from: [443, 0], to: [443, 220]}
+  - {name: outer_window, from: [443, 220], to: [0, 220]}      # 위 = 창가
+  - {name: outer_left, from: [0, 220], to: [0, 0]}
+  # 03 공용 내부공간: 왼쪽 벽 x = 138 (G 138), 아래 벽 y = 220 - 128.2 (f 128.2)
+  - {name: zone03_left, from: [138, 91.8], to: [138, 220]}
+  # 입구 66: 오른쪽 벽에서 66 cm 열림 (443 - 66 = 377)
+  - {name: zone03_bottom, from: [138, 91.8], to: [377, 91.8]}
+  # 아래쪽 칸막이: x는 치수(I 141), 길이는 도면 픽셀 추정
+  - {name: partition_warehouse, from: [138, 0], to: [138, 54], provisional: true}
+  - {name: partition_delivery, from: [279, 0], to: [279, 49], provisional: true}
+
+# 물체: 축 정렬 상자 (min/max 모서리), 충돌 있음
+objects:
+  # T자 구조물: 벽에서 46.5, 세로 11.7 x 41, 위에서 35 (ㅍ 35)
+  - {name: t_vertical, min: [184.5, 144.0], max: [196.2, 185.0]}
+  # 가로 61 x 10.5, 위에서 50.9 (E 50.9)
+  - {name: t_bar, min: [196.2, 158.6], max: [257.2, 169.1]}
+  # 상자 67 x 21.5: T 끝에서 68, 위에서 60.5 (ㄷ 60.5)
+  - {name: box_67x21_5, min: [325.2, 138.0], max: [392.2, 159.5]}
+  # 카메라 받침 32 x 15: 벽에서 64, 03 아래 벽에 붙음
+  - {name: camera_base, min: [202.0, 91.8], max: [234.0, 106.8]}
+  # 선반 테이블: 도면에 치수 없음. 라이다 높이 단면을 SLAM 지도 관측값으로 둠
+  # (도면 픽셀 추정 x 199.9~264.9 · 깊이 14.9 와 달리 SLAM에는 x 192~257, 앞면 약 7.5)
+  - {name: shelf_table, min: [192.0, 0.0], max: [257.0, 7.5], provisional: true}
+  # OMX3 받침 46.8 x 45.5: 위치 추정(점선). SLAM에 보이지 않아 라이다(12.5 cm)보다 낮게 둠
+  - {name: omx3_base, min: [43.2, 0.0], max: [90.0, 45.5], height: 8, provisional: true}
+
+# 바닥 라인: 흰 테이프, 폭 2 cm, 시각용(충돌 없음, 라이다에 안 보임)
+lines:
+  # 물류창고 루프 93.5 x 90.5: 왼쪽 벽에서 20.2 (a), 바닥에서 72.8 (b)
+  - {name: warehouse_loop, points: [[20.2, 72.8], [113.7, 72.8], [113.7, 163.3], [20.2, 163.3]], closed: true}
+  # 긴 라인 265 (⑥)
+  - {name: main_line, points: [[113.7, 72.8], [378.7, 72.8]]}
+  # P5·P6 연결 21.5: 간격 45.2, 루프 중앙 대칭 가정
+  - {name: stub_p5, points: [[44.35, 163.3], [44.35, 184.8]], provisional: true}
+  - {name: stub_p6, points: [[89.55, 163.3], [89.55, 184.8]], provisional: true}
+  # P4 정차 구역 연결 27: 루프 중앙
+  - {name: stub_p4, points: [[66.95, 72.8], [66.95, 45.8]], provisional: true}
+  # 인도장 연결 31 (①): x는 도면 픽셀 추정
+  - {name: stub_delivery, points: [[231.0, 72.8], [231.0, 41.8]], provisional: true}
+  # P1~P3 분기 40.5 (②): P3 = 긴 라인 끝, P2 = P3 - 36 (④), P1 = P2 - 31.4 (③)
+  - {name: branch_p1, points: [[311.3, 72.8], [311.3, 32.3]]}
+  - {name: branch_p2, points: [[342.7, 72.8], [342.7, 32.3]]}
+  - {name: branch_p3, points: [[378.7, 72.8], [378.7, 32.3]]}
+
+# ArUco 마커 위치 표시판: 충돌 없음. 무늬·크기는 별도 작업에서 확정.
+# Gazebo GPU 라이다는 visual 을 보고 거리를 재므로, 실제 SLAM 지도에 마커가 보이지 않은 것과
+# 맞추려고 표시판 윗면을 라이다 높이(12.5 cm)보다 낮게(10 cm) 둔다.
+# facing_deg: 마커 앞면이 향하는 방향(실측 좌표, 0 = +x)
+markers:
+  defaults: {size: 10, center_height: 5, provisional: true}
+  items:
+    - {name: G1, center: [138.5, 120.9], facing_deg: 0}
+    - {name: G2, center: [138.5, 158.8], facing_deg: 0}
+    - {name: G3, center: [138.5, 204.8], facing_deg: 0}
+    - {name: P1, center: [311.3, 26.2], facing_deg: 90}
+    - {name: P2, center: [342.7, 26.2], facing_deg: 90}
+    - {name: P3, center: [378.7, 26.2], facing_deg: 90}
+    - {name: P5, center: [44.35, 193.0], facing_deg: -90}
+    - {name: P6, center: [89.55, 193.0], facing_deg: -90}
