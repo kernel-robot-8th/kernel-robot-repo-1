@@ -59,6 +59,12 @@ python3 scripts/check_hardware.py --namespace / --output /tmp/pinky-check.json
 
 `odom`·`joint_states`·`scan`에서 timestamp가 증가하는 메시지를 각각 3개 수신합니다. 명령을 발행하거나 bringup을 실행하지 않습니다. 실패 시 exit code 1과 JSON 결과를 남깁니다. 수신 성공만으로 실로봇/시뮬레이터 구별이나 동작 안전성을 판정하지 않습니다. ARM64 드라이버·전체 시뮬레이션·실주행은 별도 검증이 필요합니다.
 
+## 테스트 웹 콘솔
+
+[src/pinky_test_console/](src/pinky_test_console/README.md)은 SLAM 지도 제작과 Nav2·카메라 실행 시 메모리 확인을 위한 브라우저 콘솔입니다.
+원본 Pinky Pro 웹 서버(Apache-2.0)를 바탕으로 웹 조종(0.10 m/s·0.6 rad/s 서버 제한, 0.3 s deadman, 정지 버튼)과 상태 패널을 더했습니다.
+로그인 없이 로봇을 움직이므로 강의실 Wi-Fi 안에서만 사용합니다. 빌드는 `colcon build --packages-up-to pinky_test_console`입니다.
+
 ## 시연 공간 지도
 
 [maps/](maps/)에 시연 공간 지도를 둡니다. 실로봇 Nav2·Gazebo 시뮬레이션·관제 GUI가 같은 파일을 씁니다.

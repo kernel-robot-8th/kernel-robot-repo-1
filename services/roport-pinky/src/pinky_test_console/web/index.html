@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<!--
+  Derived from Pinky Pro (https://github.com/pinklab-art/pinky_pro,
+    commit 014a09f289e6988894fbffde2624fdb1e257815b)
+    original file: pinky_navigation/scripts/index.html
+  Original work licensed under the Apache License, Version 2.0.
+  Modified for pinky_test_console (2026): stop bar, teleop pad, status panel,
+    map save/list, CSS/JS split into style.css/app.js (no inline code, no CDN).
+-->
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pinky Test Console</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">Pinky Pro <span>Test Console</span></div>
+  <span class="chip" title="서버 연결 상태"><span id="connDot" class="chip-dot"></span><span id="connText">연결 중</span></span>
+  <span class="chip" id="modeChip">mode: -</span>
+  <a class="btn btn-outline btn-small ir-link" href="ir.html" title="IR 원시값 측정·기록">IR 측정</a>
+  <span id="estopStatus" class="status-msg" role="status"></span>
+  <button id="btnEstop" type="button" title="속도 0 발행 + Nav2 목표 취소 (단축키: Space / Esc)">■ 정지 STOP</button>
+</header>
+
+<div id="main">
+  <div id="left">
+    <div class="map-card">
+      <div class="map-card-header">
+        <div class="map-title">Map · <span id="poseText">pose -</span></div>
+        <span class="chip" id="updateText">-</span>
+      </div>
+
+      <canvas id="mapCanvas" width="720" height="720"></canvas>
+
+      <div class="map-hint" id="mapHint">
+        지도에서 <b>클릭 후 드래그</b>하면 Nav2 목표(위치 + 방향)가 전송됩니다.
+      </div>
+    </div>
+  </div>
+
+  <div id="right">
+
+    <!-- 상태 패널 -->
+    <section class="panel-card">
+      <div class="section-title">
+        <span>System status (1 s)</span>
+        <button id="btnBaseline" class="btn btn-outline btn-small" type="button"
+                title="현재 메모리 사용량을 기준으로 저장 (Nav2·카메라 실행 전에 누르기)">기준 저장</button>
+      </div>
+      <div class="info-line"><span>Memory used</span><span class="value" id="memUsed">-</span></div>
+      <div class="bar" id="memBar"><div></div></div>
+      <div class="info-line"><span>MemAvailable</span><span class="value" id="memAvail">-</span></div>
+      <div class="info-line"><span>Δ used since 기준</span><span class="value" id="memDelta">-</span></div>
+      <div class="info-line"><span>Swap used</span><span class="value" id="swapUsed">-</span></div>
+      <div class="info-line"><span>Load avg (1/5/15)</span><span class="value" id="loadAvg">-</span></div>
+      <div class="info-line"><span>CPU temp</span><span class="value" id="cpuTemp">-</span></div>
+      <div class="info-line"><span>Battery</span><span class="value" id="battPct">-</span></div>
+      <div class="info-line"><span>Battery voltage</span><span class="value" id="battVolt">-</span></div>
+      <div class="info-line"><span>Console RSS (peak)</span><span class="value" id="consoleRss">-</span></div>
+      <div class="tiny-note">사용량 = MemTotal − MemAvailable. Console RSS는 이 웹 콘솔 프로세스만의 메모리입니다.</div>
+    </section>
+
+    <!-- Teleop -->
+    <section class="panel-card">
+      <div class="section-title"><span>Teleop</span><span id="teleopState">idle</span></div>
+      <div class="pad" id="pad">
+        <button class="pad-btn pad-up" data-dir="fwd" type="button" aria-label="forward">▲</button>
+        <button class="pad-btn pad-left" data-dir="left" type="button" aria-label="turn left">◀</button>
+        <div class="pad-center" id="cmdText">0.00 m/s<br>0.00 rad/s</div>
+        <button class="pad-btn pad-right" data-dir="right" type="button" aria-label="turn right">▶</button>
+        <button class="pad-btn pad-down" data-dir="back" type="button" aria-label="backward">▼</button>
+      </div>
+      <div class="slider-row">
+        <label for="speedScale">Speed</label>
+        <input type="range" id="speedScale" min="20" max="100" step="10" value="100">
+        <span id="speedText">100%</span>
+      </div>
+      <div class="tiny-note" id="teleopHint">
+        버튼을 누르고 있는 동안 / 키보드 WASD·방향키. 손을 떼면 정지.
+      </div>
+      <div id="teleopStatus" class="status-msg"></div>
+    </section>
+
+    <!-- Nav2 주행 제어 -->
+    <section class="panel-card" id="navCard">
+      <div class="section-title"><span>Nav2 Navigation</span></div>
+      <div class="nav-status-row">
+        <span id="navStatusDot" class="nav-status-dot"></span>
+        <span id="navStatusText">상태 확인 중...</span>
+      </div>
+      <div class="row">
+        <button id="btnModeGoal" class="btn btn-outline mode-btn active" type="button">Set Goal</button>
+        <button id="btnModeInit" class="btn btn-outline mode-btn" type="button">Set Initial Pose</button>
+      </div>
+      <div class="tiny-note" id="modeHint">Click &amp; drag on the map to set the goal position and heading.</div>
+      <div class="row mt">
+        <button id="btnNavStop" class="btn btn-danger" type="button" disabled>■ Cancel goal</button>
+      </div>
+      <div id="navStopStatus" class="status-msg"></div>
+    </section>
+
+    <!-- SLAM -->
+    <section class="panel-card" id="slamCard">
+      <div class="section-title"><span>SLAM Mapping (slam_toolbox)</span></div>
+      <div class="row">
+        <input type="text" id="mapNameInput" class="text-input" maxlength="64"
+               pattern="[A-Za-z0-9_\-]{1,64}" placeholder="map name (A-Z a-z 0-9 _ -)" value="classroom">
+      </div>
+      <div class="row">
+        <button id="btnSlamReset" class="btn btn-outline" type="button">Reset Map</button>
+        <button id="btnSlamSave" class="btn btn-primary" type="button">Save Map</button>
+      </div>
+      <div id="slamStatus" class="status-msg"></div>
+    </section>
+
+    <!-- 저장된 지도 -->
+    <section class="panel-card">
+      <div class="section-title">
+        <span>Saved maps</span>
+        <button id="btnMapsRefresh" class="btn btn-outline btn-small" type="button">새로고침</button>
+      </div>
+      <div class="tiny-note" id="mapDirText">-</div>
+      <ul class="map-list" id="mapList"></ul>
+      <input type="text" readonly class="text-input cmd-box" id="navCmd"
+             placeholder="지도를 누르면 nav 모드 실행 명령이 여기에 표시됩니다">
+    </section>
+
+    <!-- Layers -->
+    <section class="panel-card">
+      <div class="section-title"><span>Layers</span></div>
+      <div class="layer-row">
+        <label class="toggle">
+          <div class="toggle-left"><span class="legend-dot legend-global"></span><span>Global costmap</span></div>
+          <div><input type="checkbox" id="toggleGlobal" checked><div class="switch"><div class="switch-knob"></div></div></div>
+        </label>
+        <label class="toggle">
+          <div class="toggle-left"><span class="legend-dot legend-local"></span><span>Local costmap</span></div>
+          <div><input type="checkbox" id="toggleLocal" checked><div class="switch"><div class="switch-knob"></div></div></div>
+        </label>
+      </div>
+      <div class="legend-row mt">
+        <span class="legend-item"><span class="legend-dot legend-free"></span>Free</span>
+        <span class="legend-item"><span class="legend-dot legend-obstacle"></span>Obstacle</span>
+        <span class="legend-item"><span class="legend-dot legend-unknown"></span>Unknown</span>
+      </div>
+      <div class="tiny-note">map frame 기준(RViz와 동일). costmap을 끄면 서버 전송량도 줄어듭니다.</div>
+    </section>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
