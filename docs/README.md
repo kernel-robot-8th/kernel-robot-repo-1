@@ -19,6 +19,8 @@ Confluence의 상세 문서를 찾아볼 수 있는 안내입니다. 원문 전�
 - [OMX HW Spec](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/8519691)
 - [Interface Specification](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/2752522)
 
+- [ArUco 마커 ID 표와 인쇄 파일](aruco/README.md): 위치·게이트·선반·포장물품·트레이 마커 (FFT1-74)
+
 2026-10-24 확인 시 Interface Specification 본문은 비어 있습니다.
 구현 시 API·ROS 토픽·메시지 필드·단위·오류·타임아웃을 양쪽 모듈 담당자가 확인해 기록해야 합니다.
 

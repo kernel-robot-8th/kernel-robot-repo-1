@@ -1,0 +1,53 @@
+# RO:PORT ArUco 마커 ID 표 (v1, Jira FFT1-74)
+#
+# 이 파일이 원본이다. 고친 뒤 인쇄 시트와 이미지를 다시 만든다:
+#   python3 docs/aruco/generate_markers.py
+#
+# size_mm: 검은 사각형(마커) 한 변. quiet_mm: 마커 둘레 흰 여백(인쇄 시 자르는 선까지).
+# 위치·부착 높이는 강의실 실측 후 갱신한다(v1은 실측 전 배정).
+
+version: 1
+dictionary: DICT_4X4_50
+
+reserved:
+  - {ids: [0, 0], use: "인식 거리 시험용(운영 마커로 쓰지 않음)"}
+  - {ids: [27, 34], use: "예비"}
+  - {ids: [35, 49], use: "스마트카트 고객 추종용(FFT1-86 담당이 배정)"}
+
+markers:
+  # 대기·충전·정차 구역: 벽에 부착
+  - {id: 1, name: P1, group: place, size_mm: 150, quiet_mm: 10, mount: wall, use: "스마트카트 대기·충전"}
+  - {id: 2, name: P2, group: place, size_mm: 150, quiet_mm: 10, mount: wall, use: "스마트카트 대기·충전"}
+  - {id: 3, name: P3, group: place, size_mm: 150, quiet_mm: 10, mount: wall, use: "스마트카트 대기·충전"}
+  - {id: 4, name: P4, group: place, size_mm: 100, quiet_mm: 10, mount: wall, use: "물류 상차 정차 구역"}
+  - {id: 5, name: P5, group: place, size_mm: 150, quiet_mm: 10, mount: wall, use: "물류 Pinky 대기·충전"}
+  - {id: 6, name: P6, group: place, size_mm: 150, quiet_mm: 10, mount: wall, use: "물류 Pinky 대기·충전"}
+  - {id: 7, name: P7, group: place, size_mm: 100, quiet_mm: 10, mount: wall, use: "인도장 스마트카트 정차 구역"}
+  # 게이트: 벽에 부착
+  - {id: 8, name: G1, group: gate, size_mm: 150, quiet_mm: 10, mount: wall, use: "Gate 1"}
+  - {id: 9, name: G2, group: gate, size_mm: 150, quiet_mm: 10, mount: wall, use: "Gate 2"}
+  - {id: 10, name: G3, group: gate, size_mm: 150, quiet_mm: 10, mount: wall, use: "Gate 3"}
+  # OMX 적재 선반 2x2: 칸 안쪽 벽에 수직 부착, 포스트잇(76 mm) 안에 들어가는 크기. 좌우는 OMX에서 본 기준
+  - {id: 11, name: S1, group: shelf, size_mm: 60, quiet_mm: 8, mount: shelf_wall, use: "선반 위 왼쪽 칸"}
+  - {id: 12, name: S2, group: shelf, size_mm: 60, quiet_mm: 8, mount: shelf_wall, use: "선반 위 오른쪽 칸"}
+  - {id: 13, name: S3, group: shelf, size_mm: 60, quiet_mm: 8, mount: shelf_wall, use: "선반 아래 왼쪽 칸"}
+  - {id: 14, name: S4, group: shelf, size_mm: 60, quiet_mm: 8, mount: shelf_wall, use: "선반 아래 오른쪽 칸"}
+  # 포장물품: 윗면에 하늘을 보게 부착
+  - {id: 15, name: PKG1, group: package, size_mm: 60, quiet_mm: 6, mount: top, use: "포장물품 1"}
+  - {id: 16, name: PKG2, group: package, size_mm: 60, quiet_mm: 6, mount: top, use: "포장물품 2"}
+  - {id: 17, name: PKG3, group: package, size_mm: 60, quiet_mm: 6, mount: top, use: "포장물품 3"}
+  - {id: 18, name: PKG4, group: package, size_mm: 60, quiet_mm: 6, mount: top, use: "포장물품 4"}
+  - {id: 19, name: PKG5, group: package, size_mm: 60, quiet_mm: 6, mount: top, use: "포장물품 5"}
+  - {id: 20, name: PKG6, group: package, size_mm: 60, quiet_mm: 6, mount: top, use: "포장물품 6"}
+  - {id: 21, name: PKG7, group: package, size_mm: 60, quiet_mm: 6, mount: top, use: "포장물품 7"}
+  - {id: 22, name: PKG8, group: package, size_mm: 60, quiet_mm: 6, mount: top, use: "포장물품 8"}
+  # Pinky 트레이(120 x 145 mm) 모서리: 모든 트레이에 같은 ID 4개. 위에서 볼 때 Pinky 앞쪽이 위
+  - {id: 23, name: T_FL, group: tray, size_mm: 20, quiet_mm: 4, mount: top, copies: 3, use: "트레이 앞 왼쪽 모서리"}
+  - {id: 24, name: T_FR, group: tray, size_mm: 20, quiet_mm: 4, mount: top, copies: 3, use: "트레이 앞 오른쪽 모서리"}
+  - {id: 25, name: T_RR, group: tray, size_mm: 20, quiet_mm: 4, mount: top, copies: 3, use: "트레이 뒤 오른쪽 모서리"}
+  - {id: 26, name: T_RL, group: tray, size_mm: 20, quiet_mm: 4, mount: top, copies: 3, use: "트레이 뒤 왼쪽 모서리"}
+
+# 인식 거리 시험 시트: ID 0을 운영 마커와 같은 크기로 인쇄
+range_test:
+  id: 0
+  sizes_mm: [150, 100, 60, 20]
