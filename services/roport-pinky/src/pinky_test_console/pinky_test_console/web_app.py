@@ -3,7 +3,7 @@
 #   original file: pinky_navigation/scripts/nav2_web_server.py (Flask routes part)
 # Original work licensed under the Apache License, Version 2.0.
 # Modified for pinky_test_console (2026): routes split out of the ROS node,
-#   teleop/estop/status/map-list APIs added, JSON input validation,
+#   teleop/estop/status/map-list/IR record APIs added, JSON input validation,
 #   static files restricted to the web/ folder, security headers.
 # See LICENSE in this package for the full license text.
 """Flask 라우트. ROS 를 직접 import 하지 않고 node 객체의 메서드만 호출한다.
@@ -16,10 +16,11 @@ import os
 
 from flask import Flask, abort, jsonify, request, send_from_directory
 
+from .ir_record import IrRecordError
 from .map_store import MapNameError
 
 # web/ 폴더에서 이 파일들만 서빙 (원본은 스크립트 폴더 전체를 static 으로 노출했음)
-STATIC_FILES = {'index.html', 'app.js', 'style.css'}
+STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js'}
 
 SECURITY_HEADERS = {
     'Content-Security-Policy': (
@@ -179,6 +180,43 @@ def create_app(node, web_dir):
         if result.get('exists'):
             code = 409
         return jsonify(result), code
+
+    # ---------------- IR 측정 ----------------
+    @app.route('/api/ir')
+    def api_ir():
+        return jsonify(node.ir_snapshot())
+
+    @app.route('/api/ir/record', methods=['POST'])
+    def api_ir_record():
+        data = _json_body()
+        label = data.get('label', '')
+        if isinstance(label, str):
+            label = label.strip()
+        try:
+            state = node.ir_start(label, _number(data, 'duration'))
+        except IrRecordError as e:
+            return jsonify({'success': False, 'msg': str(e)}), 400
+        return jsonify({'success': True, 'recording': state})
+
+    @app.route('/api/ir/cancel', methods=['POST'])
+    def api_ir_cancel():
+        _json_body()
+        return jsonify({'success': node.ir_cancel()})
+
+    @app.route('/api/ir/records')
+    def api_ir_records():
+        return jsonify(node.ir_records())
+
+    @app.route('/api/ir/records/<name>')
+    def api_ir_record_file(name):
+        try:
+            path = node.ir_record_path(name)
+        except IrRecordError:
+            abort(404)
+        if not os.path.isfile(path):
+            abort(404)
+        return send_from_directory(os.path.dirname(path), os.path.basename(path),
+                                   as_attachment=True, mimetype='text/csv')
 
     return app
 

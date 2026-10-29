@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+from pinky_test_console.ir_record import validate_filename, validate_label
 from pinky_test_console.map_store import map_base_path, MapNameError
 from pinky_test_console.teleop import TeleopGuard
 
@@ -26,6 +27,7 @@ class FakeNode:
         self.calls = []
         self.guard = TeleopGuard()
         self.navigating = navigating
+        self.ir_dir = '/nonexistent-ir'
 
     def get_info(self):
         return {'mode': 'slam'}
@@ -82,6 +84,23 @@ class FakeNode:
         self.calls.append(('save', name, overwrite))
         return {'success': True, 'name': name}
 
+    def ir_snapshot(self):
+        return {'latest': [1, 2, 3]}
+
+    def ir_start(self, label, duration):
+        validate_label(label)  # 실제 노드와 같은 검사
+        self.calls.append(('ir_start', label, duration))
+        return {'label': label}
+
+    def ir_cancel(self):
+        return True
+
+    def ir_records(self):
+        return {'ir_dir': self.ir_dir, 'records': [], 'suggestion': None}
+
+    def ir_record_path(self, name):
+        return os.path.join(self.ir_dir, validate_filename(name))
+
 
 @pytest.fixture
 def node():
@@ -96,7 +115,7 @@ def client(node):
 
 
 def test_index_and_assets(client):
-    for path in ('/', '/app.js', '/style.css', '/index.html'):
+    for path in ('/', '/app.js', '/style.css', '/index.html', '/ir.html', '/ir.js'):
         r = client.get(path)
         assert r.status_code == 200, path
 
@@ -114,11 +133,36 @@ def test_security_headers(client):
     assert client.get('/api/status').headers['Cache-Control'] == 'no-store'
 
 
-def test_html_has_no_external_or_inline_code():
-    html = open(os.path.join(WEB_DIR, 'index.html')).read()
+@pytest.mark.parametrize('page', ['index.html', 'ir.html'])
+def test_html_has_no_external_or_inline_code(page):
+    html = open(os.path.join(WEB_DIR, page)).read()
     assert 'http://' not in html.split('-->', 1)[1]
     assert 'https://' not in html.split('-->', 1)[1]
     assert '<script>' not in html and 'style=' not in html and 'onclick' not in html
+
+
+def test_ir_api(client, node, tmp_path):
+    assert client.get('/api/ir').get_json() == {'latest': [1, 2, 3]}
+    r = client.post('/api/ir/record', json={'label': 'carpet', 'duration': 10})
+    assert r.status_code == 200 and node.calls[-1] == ('ir_start', 'carpet', 10.0)
+    for body in ({'label': 'a b', 'duration': 5}, {'label': 'x', 'duration': 'ten'},
+                 {'label': 'x'}):
+        assert client.post('/api/ir/record', json=body).status_code == 400, body
+    assert client.post('/api/ir/record', data='label=x',
+                       content_type='application/x-www-form-urlencoded').status_code == 400
+    assert client.post('/api/ir/cancel', json={}).get_json() == {'success': True}
+    assert client.get('/api/ir/records').get_json()['records'] == []
+
+
+def test_ir_record_download(client, node, tmp_path):
+    node.ir_dir = str(tmp_path)
+    (tmp_path / '20261028_120000_carpet.csv').write_text('t_sec,ir0,ir1,ir2\n')
+    (tmp_path / 'secret.txt').write_text('no')
+    r = client.get('/api/ir/records/20261028_120000_carpet.csv')
+    assert r.status_code == 200 and r.data.startswith(b't_sec')
+    assert 'attachment' in r.headers['Content-Disposition']
+    for name in ('secret.txt', '..%2Fsecret.txt', '20261028_120000_missing.csv'):
+        assert client.get('/api/ir/records/' + name).status_code == 404, name
 
 
 def test_post_requires_json(client, node):

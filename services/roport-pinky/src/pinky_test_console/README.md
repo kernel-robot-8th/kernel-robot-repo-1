@@ -4,6 +4,7 @@ Pinky Pro(ROS 2 Jazzy, Ubuntu 24.04, Raspberry Pi 5) 테스트용 웹 콘솔.
 
 1. SLAM(slam_toolbox)으로 강의실 지도를 만들고 `~/roport_maps/`에 저장
 2. Nav2·카메라를 띄웠을 때 메모리·CPU 상태 확인
+3. IR 라인 센서 원시값을 보고 카펫·테이프 위에서 기록(`mode:=ir`, [IR 측정](#ir-측정-modeir))
 
 원본 Pinky Pro 웹 서버(`pinky_navigation/scripts/nav2_web_server.py`, `index.html`, Apache-2.0)를 바탕으로 했습니다.
 원본 출처와 수정 내용은 각 파일 상단에 적었습니다. 라이선스 전문은 [LICENSE](LICENSE)에 있습니다.
@@ -33,6 +34,7 @@ Pinky Pro(ROS 2 Jazzy, Ubuntu 24.04, Raspberry Pi 5) 테스트용 웹 콘솔.
 | 수동 조종 | 화면 방향 버튼(누르고 있는 동안) + 키보드 WASD·방향키, 속도 비율 슬라이더 |
 | 정지 | 상단 큰 버튼: 속도 0 발행 + Nav2 목표 취소 |
 | 상태 패널(1 s) | MemAvailable·사용량·스왑, loadavg, CPU 온도, 배터리 %/V, **콘솔 프로세스 RSS**, 기준 대비 메모리 증가량 |
+| IR 측정(`ir.html`) | `ir_sensor/range` 원시값 3개 실시간 표시·10 s 그래프, 라벨·시간 지정 CSV 기록(`~/roport_ir/`), 평균·표준편차, carpet/tape 참고 임계값 |
 
 ### 조종 안전 규칙 (서버에서 강제)
 
@@ -119,14 +121,35 @@ ros2 launch pinky_test_console console.launch.py mode:=nav map:=$HOME/roport_map
 
 | 인자 | 기본값 | 설명 |
 |---|---|---|
-| `mode` | `slam` | `slam` = slam_toolbox(원본 map_building과 동일 설정) + 콘솔, `nav` = 원본 bringup_launch(map_server+AMCL+Nav2) + 콘솔 |
+| `mode` | `slam` | `slam` = slam_toolbox(원본 map_building과 동일 설정) + 콘솔, `nav` = 원본 bringup_launch(map_server+AMCL+Nav2) + 콘솔, `ir` = 콘솔 + IR 센서 노드만 |
 | `map` | (없음) | `mode:=nav`일 때 필수. `.yaml` 경로(`~` 허용). 없거나 확장자가 틀리면 launch가 시작 전에 실패 |
 | `port` | `8080` | 웹 포트(1–65535) |
 | `ip` | `0.0.0.0` | 바인드 주소. 노트북 단독 시험이면 `127.0.0.1` 권장 |
 | `use_sim_time` | `false` | Gazebo/MuJoCo 시뮬레이션이면 `true` |
 | `map_dir` | `~/roport_maps` | 지도 저장 폴더 |
+| `ir_dir` | `~/roport_ir` | IR 기록 CSV 폴더 |
+| `ir_node` | `auto` | `pinky_sensor_adc main_node`를 함께 실행. `auto` = `mode:=ir`일 때만, `true`/`false`로 강제 |
 
 잘못된 값(예: `mode:=explore`, `mode:=nav`인데 map 없음, `port:=99999`)은 노드를 하나도 띄우기 전에 오류로 끝납니다.
+
+## IR 측정 (mode:=ir)
+
+라인 인식 임계값을 정하기 위해 바닥 IR 센서(TCRT5000 × 3) 원시값을 기록합니다. **모터는 움직이지 않습니다**(bringup 불필요, 센서 노드는 ADC만 읽음).
+
+```bash
+# 로봇
+ros2 launch pinky_test_console console.launch.py mode:=ir
+# 이미 다른 터미널에서 main_node 를 띄웠다면: ... mode:=ir ir_node:=false
+```
+
+브라우저에서 `http://<로봇IP>:8080/ir.html`(콘솔 상단 **IR 측정** 버튼)을 엽니다.
+
+1. **채널 확인**: 원본 노드는 `data = [adc2, adc1, adc0]` 순서로 보냅니다. 어느 `ir[n]`이 좌·중·우인지는 센서를 하나씩 가려 확인하고 기록해 둡니다.
+2. 로봇을 손으로 옮겨 놓고 프리셋 라벨(`carpet`, `tape_center`, `tape_left`, `tape_right`, `tape_edge`)을 골라 5~30 s 기록합니다. 기록 중에는 로봇을 움직이지 않습니다.
+3. `carpet*`와 `tape*` 기록이 모두 있으면 채널별 **참고 임계값**(두 평균의 중간)과 **분리도**(|차이| / 표준편차 합)를 보여 줍니다. 확정값이 아니라 판단 자료입니다.
+4. CSV(`t_sec, ir0, ir1, ir2`)는 표의 ↓로 내려받거나 로봇의 `~/roport_ir/`에서 가져옵니다.
+
+센서 간격(약 20 mm, Pinky Pro HW Spec)과 테이프 폭(20 mm)이 비슷해서, 가운데 센서가 테이프 중앙에 있으면 좌·우 센서는 테이프 밖에 놓입니다. `tape_edge` 기록으로 가장자리에서 값이 어떻게 변하는지도 확인하세요.
 
 ## 메모리 측정 방법
 
@@ -202,13 +225,14 @@ colcon test-result --verbose
 # 또는: source install/setup.bash && python3 -m pytest src/pinky_test_console/test -v
 ```
 
-`python3-flask`가 없으면 Flask가 필요한 테스트 27개는 건너뜁니다(나머지 101개는 실행).
+`python3-flask`가 없으면 Flask가 필요한 테스트 30개는 건너뜁니다(나머지 119개는 실행).
 
 | 파일 | 검증 내용 |
 |---|---|
 | `test_teleop.py` | 속도 상한·NaN/문자열 처리, 0.3 s deadman, 정지 후 0 반복, 10 Hz+watchdog 타임라인 |
-| `test_launch_plan.py` | `mode`/`map`/`port`/`use_sim_time` 검사, include 대상(map_building / bringup_launch), bringup_robot 미포함 |
-| `test_web_app.py` | JSON 강제, 잘못된 입력 시 정지, 정적 파일 화이트리스트, 보안 헤더, 지도 이름 주입 차단, Nav2 취소 순서 |
+| `test_launch_plan.py` | `mode`/`map`/`port`/`use_sim_time`/`ir_node` 검사, include 대상(map_building / bringup_launch / ir은 없음), bringup_robot 미포함 |
+| `test_web_app.py` | JSON 강제, 잘못된 입력 시 정지, 정적 파일 화이트리스트, 보안 헤더, 지도 이름 주입 차단, Nav2 취소 순서, IR API·CSV 다운로드 경로 검사 |
+| `test_ir_record.py` | IR 최근값·주기, 시간 지정 기록·CSV, 센서 없음 처리, 라벨·파일 이름 검사, 참고 임계값 |
 | `test_map_store.py` | 지도 이름·폴더 검사(쉘 메타문자·개행 거부), 목록 |
 | `test_sysstats.py` | `/proc/meminfo`·loadavg·온도·RSS 파싱 |
 | `test_node_ros.py` | 실제 rclpy로 노드를 띄워 `/cmd_vel` 10 Hz·상한·deadman·정지 확인 |
@@ -230,6 +254,9 @@ colcon test-result --verbose
 | POST | `/api/nav/stop` | Nav2 목표 취소 |
 | POST | `/api/slam/reset` | SLAM 초기화 |
 | POST | `/api/slam/save_map` `{name, overwrite}` | 지도 저장 (이미 있으면 409) |
+| GET | `/api/ir` | IR 최근값·주기·최근 10 s 기록·기록 진행 상태 |
+| POST | `/api/ir/record` `{label, duration}` / `/api/ir/cancel` | IR 기록 시작(1–60 s) / 취소 |
+| GET | `/api/ir/records`, `/api/ir/records/<파일>` | 기록 목록·통계·참고 임계값 / CSV 다운로드 |
 
 POST는 `Content-Type: application/json`만 받습니다. 다른 웹사이트가 숨은 form으로 로봇을 움직이는 CSRF를 막기 위해서입니다.
 

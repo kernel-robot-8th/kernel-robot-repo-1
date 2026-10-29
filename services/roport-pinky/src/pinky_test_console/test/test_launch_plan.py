@@ -106,6 +106,20 @@ def test_included_launch_nav(map_yaml):
         'bringup_launch.xml', {'map': map_yaml, 'use_sim_time': 'True'})
 
 
+def test_ir_mode_plan():
+    plan = resolve_plan('ir', map_path='/ignored.yaml')
+    assert plan.mode == 'ir' and plan.map_yaml == '' and plan.ir_node is True
+    assert included_launch(plan) == (None, {})
+    assert resolve_plan('ir', ir_node='false').ir_node is False
+
+
+def test_ir_node_only_on_request_in_other_modes():
+    assert resolve_plan('slam').ir_node is False
+    assert resolve_plan('slam', ir_node='true').ir_node is True
+    with pytest.raises(LaunchArgError, match='ir_node'):
+        resolve_plan('slam', ir_node='maybe')
+
+
 def test_robot_bringup_never_included(map_yaml):
     for plan in (resolve_plan('slam'), resolve_plan('nav', map_path=map_yaml)):
         name, _ = included_launch(plan)
@@ -180,3 +194,17 @@ def test_launch_nav_without_map_fails(monkeypatch):
 def test_launch_bad_port_fails(monkeypatch):
     with pytest.raises(LaunchArgError, match='port'):
         _run_setup(monkeypatch, mode='slam', port='99999')
+
+
+def test_launch_ir_runs_sensor_node_without_include(monkeypatch):
+    from launch_ros.actions import Node
+    actions = _run_setup(monkeypatch, mode='ir')
+    nodes = [(a.node_package, a.node_executable) for a in actions if isinstance(a, Node)]
+    assert nodes == [('pinky_test_console', 'web_server'), ('pinky_sensor_adc', 'main_node')]
+    assert not [a for a in actions if isinstance(a, _FakeInclude)]
+
+
+def test_launch_ir_node_disabled(monkeypatch):
+    from launch_ros.actions import Node
+    actions = _run_setup(monkeypatch, mode='ir', ir_node='false')
+    assert [a.node_executable for a in actions if isinstance(a, Node)] == ['web_server']
