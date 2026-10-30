@@ -1,5 +1,6 @@
 """Bounded MQTT 5 transport. PUBACK is not execution or durable application ACK."""
 
+import logging
 import math
 import ssl
 from dataclasses import dataclass, field
@@ -58,6 +59,10 @@ class MqttTransport:
         self._incoming: Queue[Delivery] = Queue(maxsize=config.queue_size)
         self._ready = Event()
         self._lock = Lock()
+        self._publish_lock = Lock()
+        self._results_lock = Lock()
+        self._publish_results: dict[int, bool] = {}
+        self.rejected_messages = 0
         self._generation = 0
         self._sub_mid = None
         self._fault: str | None = None
@@ -150,7 +155,10 @@ class MqttTransport:
 
     def _on_message(self, client, userdata, message):
         if len(message.payload) > MAX_MESSAGE_BYTES:
-            self._fail("MQTT message too large")
+            self.rejected_messages += 1
+            logging.getLogger(__name__).warning("Rejected oversized MQTT message")
+            if client.ack(message.mid, message.qos) != mqtt.MQTT_ERR_SUCCESS:
+                self._fail("MQTT rejected-message ACK failed")
             return
         try:
             self._incoming.put_nowait(
@@ -168,8 +176,11 @@ class MqttTransport:
             self._fail("MQTT receive queue full; reconciliation required")
 
     def _on_publish(self, client, userdata, mid, reason, properties):
-        if reason.is_failure:
-            self._fail("MQTT broker rejected publish")
+        with self._results_lock:
+            self._publish_results.pop(mid, None)
+            self._publish_results[mid] = reason.is_failure
+            if len(self._publish_results) > self.config.queue_size:
+                self._publish_results.pop(next(iter(self._publish_results)))
 
     def receive(self, timeout: float = 1) -> Delivery:
         if self._fault:
@@ -189,6 +200,10 @@ class MqttTransport:
 
     def publish(self, destination: str, message: dict, timeout: float = 5) -> None:
         """QoS1, non-retained task messages. Waits for broker PUBACK only."""
+        with self._publish_lock:
+            self._publish(destination, message, timeout)
+
+    def _publish(self, destination: str, message: dict, timeout: float) -> None:
         if not self.ready:
             raise ConnectionError(self._fault or "MQTT subscriptions not ready")
         raw = encode(message)
@@ -223,3 +238,9 @@ class MqttTransport:
             raise TimeoutError(
                 "PUBACK timeout; delivery is unknown, retry with the same command ID"
             )
+        with self._results_lock:
+            rejected = self._publish_results.pop(info.mid, None)
+        if rejected is None:
+            raise ConnectionError("PUBACK result unavailable; reconcile delivery")
+        if rejected:
+            raise ConnectionError("MQTT broker rejected publish")

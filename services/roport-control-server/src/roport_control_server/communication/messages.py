@@ -32,9 +32,10 @@ def topic(site: str, kind: str, device: str, channel: str) -> str:
 
 
 def timestamp(value: str) -> datetime:
-    if not isinstance(value, str):
-        raise TypeError("timestamp must be an ISO 8601 string")
-    result = datetime.fromisoformat(value)
+    try:
+        result = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("timestamp must be an ISO 8601 string") from exc
     if result.tzinfo is None:
         raise ValueError("timestamp requires a UTC offset")
     return result
@@ -106,6 +107,12 @@ def check_command(
         raise ValueError("routing_mismatch")
     if retained:
         raise ValueError("retained_command")
+    if timestamp(message.get("expires_at")) <= timestamp(message["sent_at"]):
+        raise ValueError("expires_at must follow sent_at")
+
+
+def check_expiry(message: dict) -> None:
+    """Only new execution expires; a recorded result remains queryable."""
     if timestamp(message.get("expires_at")) <= datetime.now(UTC):
         raise ValueError("expired_command")
 

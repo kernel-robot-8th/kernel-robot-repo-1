@@ -102,3 +102,35 @@ def test_one_arm_return_is_not_joint_completion():
     assert events[-1]["payload"]["departure_ready"] is False
     with pytest.raises(ValueError, match="joint workcell"):
         topic("test", "robot", "omx1", "cmd")
+
+
+def test_missing_expiry_on_unknown_command_is_rejected_not_typeerror():
+    command = make_command("pinky1")
+    command["type"] = "route.cancel"
+    del command["expires_at"]
+    executor = MockExecutor("pinky1")
+    assert executor.handle(decode(encode(command)))[0]["phase"] == "rejected"
+    assert executor.execution_count == 0
+    assert executor.handle(make_command("pinky1"))[-1]["phase"] == "completed"
+
+
+def test_expired_duplicate_returns_original_result(monkeypatch):
+    from roport_control_server.communication import messages
+
+    executor = MockExecutor("pinky1")
+    command = make_command("pinky1")
+    original = executor.handle(command)
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromisoformat(command["expires_at"]) + timedelta(seconds=1)
+
+    monkeypatch.setattr(messages, "datetime", Later)
+    assert executor.handle(command) == original
+    assert executor.handle(command, retained=True)[0]["phase"] == "rejected"
+    changed = {**command, "execution_id": "different"}
+    assert (
+        executor.handle(changed)[0]["payload"]["error_code"] == "idempotency_conflict"
+    )
+    assert executor.execution_count == 1

@@ -2,11 +2,19 @@
 
 import argparse
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 from queue import Empty
+from time import monotonic
 from uuid import uuid4
 
-from ..communication.messages import CommandHistory, check_command, decode, topic
+from ..communication.messages import (
+    CommandHistory,
+    check_command,
+    check_expiry,
+    decode,
+    topic,
+)
 from ..communication.mqtt import MqttConfig, MqttTransport
 
 SITE = "test"
@@ -101,6 +109,7 @@ class MockExecutor:
             previous = self.history.lookup(command)
             if previous is not None:
                 return previous
+            check_expiry(command)
             if command["type"] != f"{COMMANDS[self.device]}.requested":
                 raise ValueError("unsupported_mock_command")
             payload = command["payload"]
@@ -161,11 +170,20 @@ def run_device(transport: MqttTransport, device: str) -> None:
         transport.ack(delivery)
 
 
-def run_control(transport: MqttTransport, device: str) -> None:
+def run_control(transport: MqttTransport, device: str, timeout: float = 5) -> None:
     command = make_command(device)
     transport.publish(topic(SITE, DEVICES[device], device, "cmd"), command)
-    for _ in range(2):
-        delivery = transport.receive(timeout=5)
+    deadline = monotonic() + timeout
+    last_revision = 0
+    boot_id = None
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("completion timeout; execution result unknown")
+        try:
+            delivery = transport.receive(timeout=remaining)
+        except Empty as exc:
+            raise TimeoutError("completion timeout; execution result unknown") from exc
         event = decode(delivery.payload)
         if any(event[key] != command[key] for key in ("site_id", "task_id", "step_id")):
             raise ValueError("event does not match current test task")
@@ -176,10 +194,29 @@ def run_control(transport: MqttTransport, device: str) -> None:
             event["execution_id"],
         ) != (device, CONTROL, command["command_id"], command["execution_id"]):
             raise ValueError("event does not match current test execution")
-        print(json.dumps(event, ensure_ascii=False), flush=True)
+        phase = event.get("phase")
+        revision = event.get("phase_revision")
+        if (
+            delivery.retained
+            or phase not in {"accepted", "progress", "completed", "failed", "rejected"}
+            or type(revision) is not int
+            or revision < 1
+            or not isinstance(event.get("boot_id"), str)
+            or not event["boot_id"]
+        ):
+            raise ValueError("invalid test event state")
+        if boot_id is not None and boot_id != event["boot_id"]:
+            raise ConnectionError("device restarted; reconcile execution")
+        boot_id = event["boot_id"]
         transport.ack(delivery)
-        if event["phase"] == "rejected":
-            raise RuntimeError("test command rejected")
+        if revision <= last_revision:
+            continue
+        last_revision = revision
+        print(json.dumps(event, ensure_ascii=False), flush=True)
+        if phase in {"failed", "rejected"}:
+            raise RuntimeError(f"test command {phase}")
+        if phase == "completed":
+            return
 
 
 def main() -> None:
@@ -203,6 +240,13 @@ def main() -> None:
             run_device(transport, device)
     except KeyboardInterrupt:
         pass
+    except (ConnectionError, TimeoutError) as exc:
+        print(
+            f"Demo stopped: {exc}. Result may be unknown; reconcile before retry. "
+            "Restarting the mock loses its command history.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
     finally:
         transport.stop()
 

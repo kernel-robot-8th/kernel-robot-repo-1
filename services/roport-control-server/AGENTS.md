@@ -1,7 +1,7 @@
 # 관제 서버
 
 - Python 3.12 / FastAPI / uv를 사용한다. 앱은 `src/roport_control_server/app.py`다.
-- FastAPI는 기존 health 뼈대이며 최종 구조는 PyQt ↔ 별도 관제 실행부 직접 연결이다. 전환은 후속 PR에서 한다.
+- FastAPI는 기존 health 뼈대다. 관제 담당자가 정한 방향은 PyQt ↔ 별도 관제 실행부 직접 연결이며 서비스 WSS는 유지한다. 팀 공동 설계 정합화는 별도이며 현재 실행부 전환 작업은 보류한다.
 - `communication/`은 Paho와 표준 라이브러리만 사용한다. Qt·ROS·DB·관제 실행부를 import하지 않아 팀원이 폴더 단위로 이식할 수 있어야 한다.
 - MQTT 통합 검증에는 Mosquitto가 필요하다. CI처럼 `REQUIRE_MQTT_TESTS=1 uv run pytest`로 skip 없는 검증을 수행한다.
 - 검사: `uv sync --locked`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run pytest`, `uv build`.

@@ -32,16 +32,12 @@ def broker(tmp_path, request):
         if os.environ.get("REQUIRE_MQTT_TESTS") == "1":
             pytest.fail("Mosquitto is required for MQTT integration tests")
         pytest.skip("install Mosquitto or set MOSQUITTO_BIN for integration tests")
-    with socket.socket() as reservation:
-        reservation.bind(("127.0.0.1", 0))
-        port = reservation.getsockname()[1]
+    port = 0
     config = tmp_path / "mosquitto.conf"
-    config.write_text(
-        f"listener {port} 127.0.0.1\nallow_anonymous true\npersistence false\n"
-    )
+    config.write_text("allow_anonymous true\npersistence false\n")
     if getattr(request, "param", False):
         acl = tmp_path / "acl"
-        acl.write_text("topic read #\n")
+        acl.write_text("topic read #\ntopic write roport/v1/test/robot/pinky1/event\n")
         config.write_text(config.read_text() + f"acl_file {acl}\n")
     processes = []
 
@@ -49,12 +45,14 @@ def broker(tmp_path, request):
         process = subprocess.Popen(
             [binary, "-c", str(config)],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
         )
         processes.append(process)
 
         def listening():
-            assert process.poll() is None, "Mosquitto failed to start"
+            if process.poll() is not None:
+                raise RuntimeError(process.stderr.read())
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=0.1):
                     return True
@@ -65,12 +63,25 @@ def broker(tmp_path, request):
         return process
 
     try:
-        yield port, start(), start
+        settings = config.read_text()
+        for attempt in range(3):
+            with socket.socket() as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                port = reservation.getsockname()[1]
+            config.write_text(f"listener {port} 127.0.0.1\n" + settings)
+            try:
+                process = start()
+                break
+            except RuntimeError as exc:
+                if "Address already in use" not in str(exc) or attempt == 2:
+                    raise
+        yield port, process, start
     finally:
         for process in processes:
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=5)
+            process.stderr.close()
 
 
 @pytest.fixture
@@ -201,6 +212,12 @@ def test_broker_publish_rejection_is_not_reported_as_success(clients):
     sender = clients([topic("test", "robot", "pinky1", "event")])
     with pytest.raises(ConnectionError, match="broker rejected publish"):
         sender.publish(topic("test", "robot", "pinky1", "cmd"), make_command("pinky1"))
+    assert sender.ready and sender.fault is None
+    event = MockExecutor("pinky1").handle(make_command("pinky1"))[0]
+    sender.publish(topic("test", "robot", "pinky1", "event"), event)
+    delivery = sender.receive()
+    assert decode(delivery.payload) == event
+    sender.ack(delivery)
 
 
 def test_publish_rejects_wrong_site_or_device(clients):
@@ -271,3 +288,21 @@ def test_demo_runs_in_separate_processes(broker, device):
         finally:
             receiver.terminate()
             receiver.wait(timeout=5)
+
+
+def test_oversized_message_is_dropped_without_poisoning_connection(clients):
+    from roport_control_server.communication.messages import MAX_MESSAGE_BYTES
+
+    destination = topic("test", "robot", "pinky1", "cmd")
+    sender = clients([topic("test", "robot", "pinky1", "event")])
+    receiver = clients([destination])
+    sender._client.publish(
+        destination, b"x" * (MAX_MESSAGE_BYTES + 1), qos=1
+    ).wait_for_publish(2)
+    wait_until(lambda: receiver.rejected_messages == 1)
+    assert receiver.ready and receiver.fault is None
+    command = make_command("pinky1")
+    sender.publish(destination, command)
+    delivery = receiver.receive()
+    assert decode(delivery.payload) == command
+    receiver.ack(delivery)
