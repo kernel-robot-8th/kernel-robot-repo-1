@@ -23,22 +23,7 @@ CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기록합니다.
 실로봇 적용 전 장비·설정·캘리브레이션, 안전 정지·복구 절차를 확인합니다.
 
-## 개발 방법
-
-```bash
-python3 -m pip install uv==0.13.5
-uv sync --locked
-uv run ruff check .
-uv run pytest
-uv build
-```
-
-API 실행: `uv run uvicorn roport_control_server.app:app --host 127.0.0.1 --port 8000`
-
-`/healthz`는 프로세스 상태만 확인합니다. 로봇·DB·모델 준비 상태를 뜻하지 않습니다.
-
 ## UDP 영상 모듈 · FFT1-105
-
 `communication/udp_video.py`는 OMX 카메라 호스트 → AI 수신기로 인코딩된 JPEG/PNG 프레임을 직접 보냅니다. `FrameInfo`, `fragment_frame`, `FrameSender`, `FrameReceiver`는 표준 라이브러리만 사용하므로 이 파일 또는 communication 폴더를 팀원 패키지에 복사할 수 있습니다. 카메라 캡처·인코딩·AI 추론·관제 실행부·UI 영상 표시는 구현하지 않습니다. MQTT 작업 명령/중요 결과와 별도 경로입니다.
 
 - 입력: frame bytes, source/camera/stream, session UUID, 증가하는 frame_id, captured_ns, observation_group, codec. 같은 물품 관측의 두 카메라는 observation_group을 공유할 수 있습니다. frame_id는 세션 내 스트림별 단조 증가이며 재사용하지 않습니다.
@@ -63,3 +48,17 @@ uv run python -m roport_control_server.examples.udp_video_demo send --session 67
 예제는 loopback의 5301(수신)·5302(송신) 포트만 사용합니다. `--port`, `--source-port`, `--camera`, PNG용 `--codec png`를 지원합니다. 실제 적용 시 호출자가 socket과 허용 스트림/세션을 구성하고 장비별 카메라 ID를 합의해야 합니다.
 
 검증: `uv sync --locked`, `uv run ruff check .`, `uv run ruff format --check .`, `env -u PYTHONPATH uv run pytest`, `uv build`. 단위·loopback·별도 프로세스 예제 시험이며 실제 카메라/AI·현장 처리량 측정은 포함하지 않습니다. [Jira FFT1-105](https://fp-team1.atlassian.net/browse/FFT1-105).
+
+## 개발 방법
+
+```bash
+python3 -m pip install uv==0.13.5
+uv sync --locked
+uv run ruff check .
+uv run pytest
+uv build
+```
+
+API 실행: `uv run uvicorn roport_control_server.app:app --host 127.0.0.1 --port 8000`
+
+`/healthz`는 프로세스 상태만 확인합니다. 로봇·DB·모델 준비 상태를 뜻하지 않습니다.
