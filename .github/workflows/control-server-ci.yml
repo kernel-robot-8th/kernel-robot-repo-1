@@ -18,6 +18,9 @@ jobs:
   python:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+      REQUIRE_UI_TESTS: "1"
     defaults:
       run:
         working-directory: services/roport-control-server
@@ -31,7 +34,4 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pytest
-        env:
-          QT_QPA_PLATFORM: offscreen
-          REQUIRE_UI_TESTS: "1"
       - run: uv build
