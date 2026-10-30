@@ -100,6 +100,7 @@ class _Pending:
     size: int
     crc: int
     deadline: float
+    started_at: float
     chunks: dict[int, bytes] = field(default_factory=dict)
 
 
@@ -136,6 +137,7 @@ class FrameReceiver:
         self._pending: dict[Stream, _Pending] = {}
         self._latest: dict[Stream, int] = {}
         self.reserved_bytes = 0
+        self.last_reassembly_seconds: float | None = None
 
     def _drop(self, key: Stream, reason: str):
         self.reserved_bytes -= self._pending.pop(key).size
@@ -149,6 +151,7 @@ class FrameReceiver:
 
     def feed(self, packet: bytes, peer: Peer) -> tuple[FrameInfo, bytes] | None:
         now = time.monotonic()
+        self.stats["received_datagrams"] += 1
         self.expire(now)
         if peer not in {entry[0] for entry in self.streams.values()}:
             self.stats["untrusted_peer"] += 1
@@ -177,7 +180,7 @@ class FrameReceiver:
             ):
                 self.stats["capacity"] += 1
                 return None
-            pending = _Pending(info, count, size, crc, now + self.timeout)
+            pending = _Pending(info, count, size, crc, now + self.timeout, now)
             self._pending[key] = pending
             self.reserved_bytes += size
         if (pending.info, pending.count, pending.size, pending.crc) != (
@@ -201,6 +204,8 @@ class FrameReceiver:
         if zlib.crc32(frame) != crc:
             self._drop(key, "checksum")
             return None
+        self.last_reassembly_seconds = now - pending.started_at
+        self.stats["completed_bytes"] += size
         self._drop(key, "completed")
         return info, frame
 

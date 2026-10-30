@@ -77,6 +77,7 @@ def main():
                                     "frame_id": info.frame_id,
                                     "bytes": len(frame),
                                     "stats": receiver.stats,
+                                    "reassembly_seconds": receiver.last_reassembly_seconds,
                                 }
                             ),
                             flush=True,

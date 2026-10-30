@@ -288,3 +288,16 @@ def test_demo_sender_receiver_are_separate_processes(tmp_path):
         finally:
             process.terminate()
             process.wait(timeout=5)
+
+
+def test_reassembly_time_and_counts_use_receiver_clock(info, monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr(video.time, "monotonic", lambda: clock[0])
+    sink = receiver(info)
+    packets = list(video.fragment_frame(b"x" * 2000, info))
+    sink.feed(packets[0], PEER)
+    clock[0] += 0.1
+    assert sink.feed(packets[1], PEER) == (info, b"x" * 2000)
+    assert sink.last_reassembly_seconds == pytest.approx(0.1)
+    assert sink.stats["received_datagrams"] == 2
+    assert sink.stats["completed_bytes"] == 2000
