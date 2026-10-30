@@ -36,3 +36,30 @@ uv build
 API 실행: `uv run uvicorn roport_control_server.app:app --host 127.0.0.1 --port 8000`
 
 `/healthz`는 프로세스 상태만 확인합니다. 로봇·DB·모델 준비 상태를 뜻하지 않습니다.
+
+## UDP 영상 모듈 · FFT1-105
+
+`communication/udp_video.py`는 OMX 카메라 호스트 → AI 수신기로 인코딩된 JPEG/PNG 프레임을 직접 보냅니다. `FrameInfo`, `fragment_frame`, `FrameSender`, `FrameReceiver`는 표준 라이브러리만 사용하므로 이 파일 또는 communication 폴더를 팀원 패키지에 복사할 수 있습니다. 카메라 캡처·인코딩·AI 추론·관제 실행부·UI 영상 표시는 구현하지 않습니다. MQTT 작업 명령/중요 결과와 별도 경로입니다.
+
+- 입력: frame bytes, source/camera/stream, session UUID, 증가하는 frame_id, captured_ns, observation_group, codec. 같은 물품 관측의 두 카메라는 observation_group을 공유할 수 있습니다. frame_id는 세션 내 스트림별 단조 증가이며 재사용하지 않습니다.
+- 시험 프로토콜 v1: network byte order, 120 B 고정 헤더 + 최대 1080 B 조각. datagram 1200 B·프레임 1 MiB·독립 JPEG/PNG만 지원합니다. RTP/H.264 호환 프로토콜은 아닙니다. 실제 영상 포맷 검사는 디코더가 담당합니다.
+- 수신기는 지정한 IPv4+송신 포트, source/camera/stream, session만 받습니다. 새 세션은 담당 코드에서 확인한 뒤 수신기를 새로 구성합니다. IP 허용 목록·CRC32는 암호학적 인증이 아닙니다. **모의 LAN용이며 현장 인증·키 설정·암호화·MTU는 별도 검증 대상**입니다.
+- 스트림당 미완성 프레임 1개만 유지합니다. 최신 프레임이 도착하면 이전 미완성 프레임을 폐기하고 중복·역순 조각을 처리합니다. 기본 0.5초 deadline은 최초 조각 도착 기준이고 중복으로 연장하지 않습니다. 완료/만료한 frame_id는 재조립하지 않습니다. captured_ns는 추적용이며 호스트 간 절대 지연 검사는 별도 시각 동기화가 필요합니다.
+- 최대 32개 허용 스트림, 기본 inflight 16개·예약 payload 8 MiB입니다. 조각 수·크기를 검사한 뒤 할당하고 완료 시 최대 1 MiB의 출력 사본 및 Python 객체 오버헤드가 추가됩니다. `stats`에 폐기 원인/완료 수가 쌓입니다. 트래픽이 없어도 수신 루프에서 `expire()`를 주기적으로 호출하세요.
+
+`FrameSender`는 카메라별 FPS와 IP/UDP 헤더를 포함한 비트율을 제한합니다. 재전송·FEC·혼잡 제어는 없습니다. 프레임 크기/비트율에 따른 전송 시간이 수신 timeout보다 길면 폐기되므로 FPS·압축 크기·timeout을 함께 조정해야 합니다. 9대 카메라의 허용 비트율 합은 실제 Wi-Fi 측정 후 정합니다.
+
+### 로컬 송수신 예제
+
+두 터미널에서 같은 새 session UUID를 사용합니다. 아래 UUID는 1회 시험 예시이며 다시 실행할 때는 새 값을 쓰세요. 파일은 직접 준비한 JPEG/PNG입니다. mock AI는 수신된 바이트 수와 통계만 출력합니다.
+
+```bash
+# 터미널 1
+uv run python -m roport_control_server.examples.udp_video_demo receive --session 673593ea-50ba-4c6d-ab47-8b8d209ee038
+# 터미널 2
+uv run python -m roport_control_server.examples.udp_video_demo send --session 673593ea-50ba-4c6d-ab47-8b8d209ee038 --file /absolute/path/frame.jpg --frames 10 --fps 10 --bitrate 8000000
+```
+
+예제는 loopback의 5301(수신)·5302(송신) 포트만 사용합니다. `--port`, `--source-port`, `--camera`, PNG용 `--codec png`를 지원합니다. 실제 적용 시 호출자가 socket과 허용 스트림/세션을 구성하고 장비별 카메라 ID를 합의해야 합니다.
+
+검증: `uv sync --locked`, `uv run ruff check .`, `uv run ruff format --check .`, `env -u PYTHONPATH uv run pytest`, `uv build`. 단위·loopback·별도 프로세스 예제 시험이며 실제 카메라/AI·현장 처리량 측정은 포함하지 않습니다. [Jira FFT1-105](https://fp-team1.atlassian.net/browse/FFT1-105).
