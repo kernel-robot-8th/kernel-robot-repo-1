@@ -21,7 +21,7 @@ uv run --extra ui python -m roport_control_server.ui          # 상태 없음
 uv run --extra ui python -m roport_control_server.ui --demo   # 모의 데이터
 ```
 
-PyQt6 6.12.0을 선택 의존성 `ui`로 고정했습니다([공식 설치 안내](https://www.riverbankcomputing.com/software/pyqt/download)). 팀원의 상세 위젯도 같은 PyQt6 환경을 사용해야 합니다. Linux 실제 창 실행에는 데스크톱과 Qt platform 라이브러리가 필요하며 headless 시험은 `QT_QPA_PLATFORM=offscreen`을 사용합니다. 기존 FastAPI health 뼈대는 유지하며 실행부 전환은 사용자 요청으로 보류합니다.
+PyQt6 6.12.0을 선택 의존성 `ui`로 고정했습니다([공식 설치 안내](https://www.riverbankcomputing.com/software/pyqt/download)). 팀원의 상세 위젯도 같은 PyQt6 환경을 사용해야 합니다. Linux 실제 창 실행에는 데스크톱과 Qt platform 라이브러리가 필요하며 headless 시험은 `QT_QPA_PLATFORM=offscreen`을 사용하며 Ubuntu의 `libegl1`이 필요합니다(CI에서 설치). 기존 FastAPI health 뼈대는 유지하며 실행부 전환은 사용자 요청으로 보류합니다.
 
 ### 팀원 탭·후속 상태 입력 연결점
 
