@@ -1,4 +1,4 @@
-# RO:PORT ArUco 마커 ID 표 (v1.2, Jira FFT1-74)
+# RO:PORT ArUco 마커 ID 표 (v1.3, Jira FFT1-74)
 #
 # 이 파일이 원본이다. 고친 뒤 인쇄 시트와 이미지를 다시 만든다:
 #   python3 docs/aruco/generate_markers.py
@@ -7,8 +7,10 @@
 # 위치·부착 높이는 강의실 실측 후 갱신한다(v1은 실측 전 배정).
 # v1.1(2026-10-29): 인쇄해 보니 150 mm가 커서 P·Gate를 100 mm로, 포장물품을 60 → 50 mm로 줄임.
 # v1.2(2026-10-31): P7을 물류 Pinky·스마트카트 공용으로, 예비였던 ID 27을 입국장(ARR)에 배정.
+# v1.3(2026-10-31): P4·P7을 20 mm 바닥 부착으로 변경(진입로가 짧고 선반·OMX 자리 때문에 벽 부착 불가).
+#   벽 마커(P1~P3·P5·P6·Gate·ARR)는 인식되는 범위에서 바닥에 최대한 가깝게 붙인다. 선반·포장물품은 OMX용.
 
-version: "1.2"
+version: "1.3"
 dictionary: DICT_4X4_50
 
 reserved:
@@ -17,25 +19,25 @@ reserved:
   - {ids: [35, 49], use: "스마트카트 고객 추종용(FFT1-86 담당이 배정)"}
 
 markers:
-  # 대기·충전·정차 구역: 벽에 부착
+  # 대기·충전 구역(P1~P3·P5·P6)·입국장: 벽, 인식되는 범위에서 바닥에 최대한 가깝게. P4·P7 정차 구역은 바닥
   - {id: 1, name: P1, group: place, size_mm: 100, quiet_mm: 8, mount: wall, use: "스마트카트 대기·충전"}
   - {id: 2, name: P2, group: place, size_mm: 100, quiet_mm: 8, mount: wall, use: "스마트카트 대기·충전"}
   - {id: 3, name: P3, group: place, size_mm: 100, quiet_mm: 8, mount: wall, use: "스마트카트 대기·충전"}
-  - {id: 4, name: P4, group: place, size_mm: 100, quiet_mm: 8, mount: wall, use: "물류 상차 정차 구역"}
+  - {id: 4, name: P4, group: floor, size_mm: 20, quiet_mm: 4, mount: floor, use: "물류 상차 정차 구역(바닥)"}
   - {id: 5, name: P5, group: place, size_mm: 100, quiet_mm: 8, mount: wall, use: "물류 Pinky 대기·충전"}
   - {id: 6, name: P6, group: place, size_mm: 100, quiet_mm: 8, mount: wall, use: "물류 Pinky 대기·충전"}
-  - {id: 7, name: P7, group: place, size_mm: 100, quiet_mm: 8, mount: wall, use: "인도장 정차 구역(물류 Pinky·스마트카트 공용, 한 번에 한 대)"}
+  - {id: 7, name: P7, group: floor, size_mm: 20, quiet_mm: 4, mount: floor, use: "인도장 정차 구역(물류 Pinky·스마트카트 공용, 한 번에 한 대, 바닥)"}
   - {id: 27, name: ARR, group: place, size_mm: 100, quiet_mm: 8, mount: wall, use: "입국장(스마트카트 수령 위치·게이트 안내 출발점)"}
-  # 게이트: 벽에 부착
+  # 게이트: 벽, 인식되는 범위에서 바닥에 최대한 가깝게
   - {id: 8, name: G1, group: gate, size_mm: 100, quiet_mm: 8, mount: wall, use: "Gate 1"}
   - {id: 9, name: G2, group: gate, size_mm: 100, quiet_mm: 8, mount: wall, use: "Gate 2"}
   - {id: 10, name: G3, group: gate, size_mm: 100, quiet_mm: 8, mount: wall, use: "Gate 3"}
-  # OMX 적재 선반 2x2: 칸 안쪽 벽에 수직 부착, 포스트잇(76 mm) 안에 들어가는 크기. 좌우는 OMX에서 본 기준
+  # (OMX용 — 크기·부착은 OMX 담당 확인) OMX 적재 선반 2x2: 칸 안쪽 벽에 수직 부착, 포스트잇(76 mm) 안에 들어가는 크기. 좌우는 OMX에서 본 기준
   - {id: 11, name: S1, group: shelf, size_mm: 60, quiet_mm: 8, mount: shelf_wall, use: "선반 위 왼쪽 칸"}
   - {id: 12, name: S2, group: shelf, size_mm: 60, quiet_mm: 8, mount: shelf_wall, use: "선반 위 오른쪽 칸"}
   - {id: 13, name: S3, group: shelf, size_mm: 60, quiet_mm: 8, mount: shelf_wall, use: "선반 아래 왼쪽 칸"}
   - {id: 14, name: S4, group: shelf, size_mm: 60, quiet_mm: 8, mount: shelf_wall, use: "선반 아래 오른쪽 칸"}
-  # 포장물품: 윗면에 하늘을 보게 부착
+  # (OMX용 — 크기·부착은 OMX 담당 확인) 포장물품: 윗면에 하늘을 보게 부착
   - {id: 15, name: PKG1, group: package, size_mm: 50, quiet_mm: 6, mount: top, use: "포장물품 1"}
   - {id: 16, name: PKG2, group: package, size_mm: 50, quiet_mm: 6, mount: top, use: "포장물품 2"}
   - {id: 17, name: PKG3, group: package, size_mm: 50, quiet_mm: 6, mount: top, use: "포장물품 3"}
