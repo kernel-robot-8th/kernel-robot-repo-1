@@ -71,12 +71,25 @@ async function poll() {
   }
 }
 
-// 영상: 이전 그림이 다 받아진 뒤에 다음 그림을 요청한다(느린 Wi-Fi 에서 요청이 쌓이지 않게)
+// 영상: 이전 그림이 다 받아진 뒤에 다음 그림을 요청한다(느린 Wi-Fi 에서 요청이 쌓이지 않게).
+// 첫 요청도 여기서 시작한다. HTML 의 src 로 시작하면 스크립트가 붙기 전에 load/error 가 끝나
+// 다음 요청이 영영 시작되지 않을 수 있다. 응답이 2 s 넘게 없으면 다시 요청한다.
+const FRAME_STALL_MS = 2000;
+let frameTimer = null;
+
+function requestFrame() {
+  clearTimeout(frameTimer);
+  $("frame").src = "/api/marker/frame.jpg?t=" + Date.now();
+  frameTimer = setTimeout(requestFrame, FRAME_STALL_MS);
+}
+
 function nextFrame() {
-  setTimeout(() => { $("frame").src = "/api/marker/frame.jpg?t=" + Date.now(); }, FRAME_MS);
+  clearTimeout(frameTimer);
+  frameTimer = setTimeout(requestFrame, FRAME_MS);
 }
 $("frame").addEventListener("load", nextFrame);
 $("frame").addEventListener("error", nextFrame);
+requestFrame();
 
 $("btnReset").addEventListener("click", async () => {
   await fetch("/api/marker/reset", {
