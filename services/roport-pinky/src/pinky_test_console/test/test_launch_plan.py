@@ -232,3 +232,15 @@ def test_launch_marker_passes_camera_params(monkeypatch):
     nodes = [a for a in actions if isinstance(a, Node)]
     assert [n.node_executable for n in nodes] == ['web_server']
     assert not [a for a in actions if isinstance(a, _FakeInclude)]
+
+
+def test_camera_env_only_for_picamera_marker():
+    from pinky_test_console.launch_plan import camera_env, PICAMERA_LIB_DIR
+    yes = lambda p: True  # noqa: E731
+    env = {'LD_LIBRARY_PATH': '/opt/ros/jazzy/lib:' + PICAMERA_LIB_DIR}
+    out = camera_env('marker', 'picamera2', env, exists=yes)
+    assert out == {'LD_LIBRARY_PATH': PICAMERA_LIB_DIR + ':/opt/ros/jazzy/lib'}
+    assert camera_env('marker', 'v4l2:0', env, exists=yes) == {}
+    assert camera_env('ir', 'picamera2', env, exists=yes) == {}
+    assert camera_env('marker', 'picamera2', env, exists=lambda p: False) == {}
+    assert camera_env('marker', 'picamera2', {}, exists=yes) == {'LD_LIBRARY_PATH': PICAMERA_LIB_DIR}

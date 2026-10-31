@@ -113,7 +113,8 @@ class PiCameraSource:
         self.camera.start()
 
     def read(self):
-        return cv2.cvtColor(self.camera.capture_array(), cv2.COLOR_RGB2BGR)
+        # Picamera2 의 'RGB888' 은 메모리에 B, G, R 순서로 담긴다(= OpenCV BGR). 변환하지 않는다.
+        return self.camera.capture_array()
 
     def close(self):
         try:

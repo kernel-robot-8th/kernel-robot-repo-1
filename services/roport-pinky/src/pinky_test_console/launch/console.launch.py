@@ -25,7 +25,8 @@ from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from pinky_test_console.launch_plan import included_launch, resolve_plan, resolve_rotate_180
+from pinky_test_console.launch_plan import (
+    camera_env, included_launch, resolve_plan, resolve_rotate_180)
 
 
 def launch_setup(context):
@@ -48,6 +49,7 @@ def launch_setup(context):
             executable='web_server',
             name='pinky_test_console',
             output='screen',
+            additional_env=camera_env(plan.mode, camera, os.environ),
             parameters=[{
                 'ip': LaunchConfiguration('ip').perform(context),
                 'port': plan.port,

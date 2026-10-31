@@ -94,3 +94,20 @@ def resolve_rotate_180(camera, text='auto'):
     if t == 'auto':
         return str(camera).strip() == 'picamera2'
     return parse_bool(t, 'rotate_180')
+
+
+# Pinky 이미지에는 libcamera 0.3(/usr/local, rpicam-apps 빌드)과 ROS 의 ros-jazzy-libcamera(0.7)가
+# 함께 있다. ROS 환경을 source 하면 libpisp 만 /opt/ros/jazzy/lib 쪽이 잡혀 /usr/local 의
+# 카메라 IPA 모듈과 맞지 않아 Picamera2 가 'undefined symbol' 로 죽는다. /usr/local 을 앞에 둔다.
+PICAMERA_LIB_DIR = '/usr/local/lib/aarch64-linux-gnu'
+
+
+def camera_env(mode, camera, environ, exists=os.path.exists):
+    """web_server 프로세스에 줄 추가 환경 변수. mode:=marker + picamera2 일 때만."""
+    if mode != 'marker' or str(camera).strip() != 'picamera2':
+        return {}
+    if not exists(os.path.join(PICAMERA_LIB_DIR, 'libpisp.so.1')):
+        return {}
+    current = environ.get('LD_LIBRARY_PATH', '')
+    paths = [p for p in current.split(':') if p and p != PICAMERA_LIB_DIR]
+    return {'LD_LIBRARY_PATH': ':'.join([PICAMERA_LIB_DIR] + paths)}
