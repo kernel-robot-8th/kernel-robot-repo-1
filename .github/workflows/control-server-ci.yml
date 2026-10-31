@@ -30,5 +30,8 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: sudo apt-get update && sudo apt-get install -y mosquitto
       - run: uv run pytest
+        env:
+          REQUIRE_MQTT_TESTS: '1'
       - run: uv build
