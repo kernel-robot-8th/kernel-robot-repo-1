@@ -1,0 +1,104 @@
+<?xml version="1.0" ?>
+<!-- 자동 생성 파일: 직접 고치지 말고 layout/roport_airport.yaml 을 고친 뒤
+     python3 -m roport_gz_world.generate_world 로 다시 만든다. -->
+<sdf version="1.8">
+  <world name="roport_airport">
+    <physics name="1ms" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 2 0 0 0</pose>
+      <diffuse>1 1 1 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>0 0 -1</direction>
+    </light>
+    <model name="ground">
+      <static>true</static>
+      <link name="ground_link">
+        <collision name="ground_collision"><geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry></collision>
+        <visual name="ground_visual"><pose>0.6931 -0.9186 0 0 0 0.0017</pose><geometry><plane><normal>0 0 1</normal><size>6 4</size></plane></geometry><material><ambient>0.42 0.42 0.43 1</ambient><diffuse>0.42 0.42 0.43 1</diffuse></material></visual>
+      </link>
+    </model>
+    <!-- 가벽 두께 0.5 cm, 충돌 있음 -->
+    <model name="walls">
+      <static>true</static>
+      <link name="walls_link">
+        <visual name="outer_aisle_visual"><pose>0.6950 -2.0186 0.1000 0 0 0.0017</pose><geometry><box><size>4.4350 0.0050 0.2000</size></box></geometry><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material></visual>
+        <collision name="outer_aisle_collision"><pose>0.6950 -2.0186 0.1000 0 0 0.0017</pose><geometry><box><size>4.4350 0.0050 0.2000</size></box></geometry></collision>
+        <visual name="outer_right_visual"><pose>2.9081 -0.9148 0.1000 0 0 1.5725</pose><geometry><box><size>2.2050 0.0050 0.2000</size></box></geometry><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material></visual>
+        <collision name="outer_right_collision"><pose>2.9081 -0.9148 0.1000 0 0 1.5725</pose><geometry><box><size>2.2050 0.0050 0.2000</size></box></geometry></collision>
+        <visual name="outer_window_visual"><pose>0.6912 0.1814 0.1000 0 0 3.1433</pose><geometry><box><size>4.4350 0.0050 0.2000</size></box></geometry><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material></visual>
+        <collision name="outer_window_collision"><pose>0.6912 0.1814 0.1000 0 0 3.1433</pose><geometry><box><size>4.4350 0.0050 0.2000</size></box></geometry></collision>
+        <visual name="outer_left_visual"><pose>-1.5219 -0.9225 0.1000 0 0 -1.5691</pose><geometry><box><size>2.2050 0.0050 0.2000</size></box></geometry><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material></visual>
+        <collision name="outer_left_collision"><pose>-1.5219 -0.9225 0.1000 0 0 -1.5691</pose><geometry><box><size>2.2050 0.0050 0.2000</size></box></geometry></collision>
+        <visual name="zone03_left_visual"><pose>-0.1427 -0.4611 0.1000 0 0 1.5725</pose><geometry><box><size>1.2870 0.0050 0.2000</size></box></geometry><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material></visual>
+        <collision name="zone03_left_collision"><pose>-0.1427 -0.4611 0.1000 0 0 1.5725</pose><geometry><box><size>1.2870 0.0050 0.2000</size></box></geometry></collision>
+        <visual name="zone03_bottom_visual"><pose>1.0534 -1.1000 0.1000 0 0 0.0017</pose><geometry><box><size>2.3950 0.0050 0.2000</size></box></geometry><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material></visual>
+        <collision name="zone03_bottom_collision"><pose>1.0534 -1.1000 0.1000 0 0 0.0017</pose><geometry><box><size>2.3950 0.0050 0.2000</size></box></geometry></collision>
+        <visual name="partition_warehouse_visual"><pose>-0.1405 -1.7501 0.1000 0 0 1.5725</pose><geometry><box><size>0.5450 0.0050 0.2000</size></box></geometry><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material></visual>
+        <collision name="partition_warehouse_collision"><pose>-0.1405 -1.7501 0.1000 0 0 1.5725</pose><geometry><box><size>0.5450 0.0050 0.2000</size></box></geometry></collision>
+        <visual name="partition_delivery_visual"><pose>1.2696 -1.7726 0.1000 0 0 1.5725</pose><geometry><box><size>0.4950 0.0050 0.2000</size></box></geometry><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material></visual>
+        <collision name="partition_delivery_collision"><pose>1.2696 -1.7726 0.1000 0 0 1.5725</pose><geometry><box><size>0.4950 0.0050 0.2000</size></box></geometry></collision>
+      </link>
+    </model>
+    <!-- 물체, 충돌 있음 -->
+    <model name="objects">
+      <static>true</static>
+      <link name="objects_link">
+        <visual name="t_vertical_visual"><pose>0.3806 -0.3742 0.0750 0 0 0.0017</pose><geometry><box><size>0.1170 0.4100 0.1500</size></box></geometry><material><ambient>0.85 0.84 0.78 1</ambient><diffuse>0.85 0.84 0.78 1</diffuse></material></visual>
+        <collision name="t_vertical_collision"><pose>0.3806 -0.3742 0.0750 0 0 0.0017</pose><geometry><box><size>0.1170 0.4100 0.1500</size></box></geometry></collision>
+        <visual name="t_bar_visual"><pose>0.7441 -0.3800 0.0750 0 0 0.0017</pose><geometry><box><size>0.6100 0.1050 0.1500</size></box></geometry><material><ambient>0.85 0.84 0.78 1</ambient><diffuse>0.85 0.84 0.78 1</diffuse></material></visual>
+        <collision name="t_bar_collision"><pose>0.7441 -0.3800 0.0750 0 0 0.0017</pose><geometry><box><size>0.6100 0.1050 0.1500</size></box></geometry></collision>
+        <visual name="box_67x21_5_visual"><pose>2.0644 -0.5287 0.0750 0 0 0.0017</pose><geometry><box><size>0.6700 0.2150 0.1500</size></box></geometry><material><ambient>0.85 0.84 0.78 1</ambient><diffuse>0.85 0.84 0.78 1</diffuse></material></visual>
+        <collision name="box_67x21_5_collision"><pose>2.0644 -0.5287 0.0750 0 0 0.0017</pose><geometry><box><size>0.6700 0.2150 0.1500</size></box></geometry></collision>
+        <visual name="camera_base_visual"><pose>0.6583 -1.0257 0.0750 0 0 0.0017</pose><geometry><box><size>0.3200 0.1500 0.1500</size></box></geometry><material><ambient>0.85 0.84 0.78 1</ambient><diffuse>0.85 0.84 0.78 1</diffuse></material></visual>
+        <collision name="camera_base_collision"><pose>0.6583 -1.0257 0.0750 0 0 0.0017</pose><geometry><box><size>0.3200 0.1500 0.1500</size></box></geometry></collision>
+        <visual name="shelf_table_visual"><pose>0.7249 -1.9811 0.0750 0 0 0.0017</pose><geometry><box><size>0.6500 0.0750 0.1500</size></box></geometry><material><ambient>0.85 0.84 0.78 1</ambient><diffuse>0.85 0.84 0.78 1</diffuse></material></visual>
+        <collision name="shelf_table_collision"><pose>0.7249 -1.9811 0.0750 0 0 0.0017</pose><geometry><box><size>0.6500 0.0750 0.1500</size></box></geometry></collision>
+        <visual name="omx3_base_visual"><pose>-0.8544 -1.7938 0.0400 0 0 0.0017</pose><geometry><box><size>0.4680 0.4550 0.0800</size></box></geometry><material><ambient>0.85 0.84 0.78 1</ambient><diffuse>0.85 0.84 0.78 1</diffuse></material></visual>
+        <collision name="omx3_base_collision"><pose>-0.8544 -1.7938 0.0400 0 0 0.0017</pose><geometry><box><size>0.4680 0.4550 0.0800</size></box></geometry></collision>
+      </link>
+    </model>
+    <!-- 바닥 라인 폭 2.0 cm, 시각용(충돌 없음) -->
+    <model name="floor_lines">
+      <static>true</static>
+      <link name="floor_lines_link">
+        <visual name="warehouse_loop_0_visual"><pose>-0.8518 -1.2933 0.0005 0 0 0.0017</pose><geometry><box><size>0.9550 0.0200 0.0010</size></box></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+        <visual name="warehouse_loop_1_visual"><pose>-0.3851 -0.8400 0.0005 0 0 1.5725</pose><geometry><box><size>0.9250 0.0200 0.0010</size></box></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+        <visual name="warehouse_loop_2_visual"><pose>-0.8534 -0.3883 0.0005 0 0 3.1433</pose><geometry><box><size>0.9550 0.0200 0.0010</size></box></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+        <visual name="warehouse_loop_3_visual"><pose>-1.3201 -0.8416 0.0005 0 0 -1.5691</pose><geometry><box><size>0.9250 0.0200 0.0010</size></box></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+        <visual name="main_line_0_visual"><pose>0.9407 -1.2902 0.0005 0 0 0.0017</pose><geometry><box><size>2.6700 0.0200 0.0010</size></box></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+        <visual name="stub_p5_0_visual"><pose>-1.0795 -0.2812 0.0005 0 0 1.5725</pose><geometry><box><size>0.2350 0.0200 0.0010</size></box></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+        <visual name="stub_p6_0_visual"><pose>-0.6275 -0.2804 0.0005 0 0 1.5725</pose><geometry><box><size>0.2350 0.0200 0.0010</size></box></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+        <visual name="stub_p4_0_visual"><pose>-0.8515 -1.4283 0.0005 0 0 -1.5691</pose><geometry><box><size>0.2900 0.0200 0.0010</size></box></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+        <visual name="stub_delivery_0_visual"><pose>0.7890 -1.4455 0.0005 0 0 -1.5691</pose><geometry><box><size>0.3300 0.0200 0.0010</size></box></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+        <visual name="branch_p1_0_visual"><pose>1.5921 -1.4916 0.0005 0 0 -1.5691</pose><geometry><box><size>0.4250 0.0200 0.0010</size></box></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+        <visual name="branch_p2_0_visual"><pose>1.9061 -1.4910 0.0005 0 0 -1.5691</pose><geometry><box><size>0.4250 0.0200 0.0010</size></box></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+        <visual name="branch_p3_0_visual"><pose>2.2661 -1.4904 0.0005 0 0 -1.5691</pose><geometry><box><size>0.4250 0.0200 0.0010</size></box></geometry><material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material></visual>
+      </link>
+    </model>
+    <!-- ArUco 마커 위치 표시판, 시각용(충돌 없음) -->
+    <model name="markers">
+      <static>true</static>
+      <link name="markers_link">
+        <visual name="marker_G1_visual"><pose>-0.1371 -0.8111 0.0500 0 0 0.0017</pose><geometry><box><size>0.0050 0.1000 0.1000</size></box></geometry><material><ambient>0.85 0.35 0.10 1</ambient><diffuse>0.85 0.35 0.10 1</diffuse></material></visual>
+        <visual name="marker_G2_visual"><pose>-0.1378 -0.4321 0.0500 0 0 0.0017</pose><geometry><box><size>0.0050 0.1000 0.1000</size></box></geometry><material><ambient>0.85 0.35 0.10 1</ambient><diffuse>0.85 0.35 0.10 1</diffuse></material></visual>
+        <visual name="marker_G3_visual"><pose>-0.1386 0.0279 0.0500 0 0 0.0017</pose><geometry><box><size>0.0050 0.1000 0.1000</size></box></geometry><material><ambient>0.85 0.35 0.10 1</ambient><diffuse>0.85 0.35 0.10 1</diffuse></material></visual>
+        <visual name="marker_P1_visual"><pose>1.5925 -1.7551 0.0500 0 0 1.5725</pose><geometry><box><size>0.0050 0.1000 0.1000</size></box></geometry><material><ambient>0.85 0.35 0.10 1</ambient><diffuse>0.85 0.35 0.10 1</diffuse></material></visual>
+        <visual name="marker_P2_visual"><pose>1.9065 -1.7545 0.0500 0 0 1.5725</pose><geometry><box><size>0.0050 0.1000 0.1000</size></box></geometry><material><ambient>0.85 0.35 0.10 1</ambient><diffuse>0.85 0.35 0.10 1</diffuse></material></visual>
+        <visual name="marker_P3_visual"><pose>2.2665 -1.7539 0.0500 0 0 1.5725</pose><geometry><box><size>0.0050 0.1000 0.1000</size></box></geometry><material><ambient>0.85 0.35 0.10 1</ambient><diffuse>0.85 0.35 0.10 1</diffuse></material></visual>
+        <visual name="marker_P5_visual"><pose>-1.0799 -0.0917 0.0500 0 0 -1.5691</pose><geometry><box><size>0.0050 0.1000 0.1000</size></box></geometry><material><ambient>0.85 0.35 0.10 1</ambient><diffuse>0.85 0.35 0.10 1</diffuse></material></visual>
+        <visual name="marker_P6_visual"><pose>-0.6279 -0.0909 0.0500 0 0 -1.5691</pose><geometry><box><size>0.0050 0.1000 0.1000</size></box></geometry><material><ambient>0.85 0.35 0.10 1</ambient><diffuse>0.85 0.35 0.10 1</diffuse></material></visual>
+      </link>
+    </model>
+  </world>
+</sdf>

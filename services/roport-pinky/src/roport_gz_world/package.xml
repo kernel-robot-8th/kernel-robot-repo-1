@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>roport_gz_world</name>
+  <version>0.1.0</version>
+  <description>
+    RO:PORT demo space (measured map v11) as a Gazebo world for Pinky Pro,
+    aligned to the SLAM map frame (airport_map.yaml).
+  </description>
+  <maintainer email="maintainer@example.com">GATE CREW</maintainer>
+  <license>LicenseRef-Proprietary</license>
+
+  <exec_depend>pinky_gz_sim</exec_depend>
+  <exec_depend>pinky_description</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
