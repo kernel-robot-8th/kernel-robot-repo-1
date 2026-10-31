@@ -3,7 +3,7 @@
 #   original file: pinky_navigation/scripts/nav2_web_server.py (Flask routes part)
 # Original work licensed under the Apache License, Version 2.0.
 # Modified for pinky_test_console (2026): routes split out of the ROS node,
-#   teleop/estop/status/map-list/IR record APIs added, JSON input validation,
+#   teleop/estop/status/map-list/IR record/marker check APIs added, JSON input validation,
 #   static files restricted to the web/ folder, security headers.
 # See LICENSE in this package for the full license text.
 """Flask 라우트. ROS 를 직접 import 하지 않고 node 객체의 메서드만 호출한다.
@@ -14,13 +14,15 @@ node 는 web_server.ConsoleNode (테스트에서는 가짜 객체)이다.
 import math
 import os
 
-from flask import Flask, abort, jsonify, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 from .ir_record import IrRecordError
 from .map_store import MapNameError
+from .marker_detect import MarkerError
 
 # web/ 폴더에서 이 파일들만 서빙 (원본은 스크립트 폴더 전체를 static 으로 노출했음)
-STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js'}
+STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js',
+                'marker.html', 'marker.js'}
 
 SECURITY_HEADERS = {
     'Content-Security-Policy': (
@@ -214,6 +216,47 @@ def create_app(node, web_dir):
         except IrRecordError:
             abort(404)
         if not os.path.isfile(path):
+            abort(404)
+        return send_from_directory(os.path.dirname(path), os.path.basename(path),
+                                   as_attachment=True, mimetype='text/csv')
+
+    # ---------------- 마커 인식 확인 ----------------
+    @app.route('/api/marker')
+    def api_marker():
+        return jsonify(node.marker_snapshot())
+
+    @app.route('/api/marker/frame.jpg')
+    def api_marker_frame():
+        jpeg = node.marker_jpeg()
+        if jpeg is None:
+            return Response(status=204)
+        return Response(jpeg, mimetype='image/jpeg', headers={'Cache-Control': 'no-store'})
+
+    @app.route('/api/marker/reset', methods=['POST'])
+    def api_marker_reset():
+        _json_body()
+        return jsonify({'success': node.marker_reset()})
+
+    @app.route('/api/marker/record', methods=['POST'])
+    def api_marker_record():
+        data = _json_body()
+        marker_id = data.get('marker_id')
+        try:
+            state = node.marker_record_start(
+                _number(data, 'distance_cm'), _number(data, 'duration', 5.0),
+                marker_id, data.get('note', ''))
+        except MarkerError as e:
+            return jsonify({'success': False, 'msg': str(e)}), 400
+        return jsonify({'success': True, 'recording': state})
+
+    @app.route('/api/marker/records')
+    def api_marker_records():
+        return jsonify(node.marker_records())
+
+    @app.route('/api/marker/records.csv')
+    def api_marker_records_csv():
+        path = node.marker_records_path()
+        if not path or not os.path.isfile(path):
             abort(404)
         return send_from_directory(os.path.dirname(path), os.path.basename(path),
                                    as_attachment=True, mimetype='text/csv')

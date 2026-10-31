@@ -5,12 +5,14 @@
 #   mode:=slam -> pinky_navigation/launch/map_building.launch.xml (slam_toolbox online_sync)
 #   mode:=nav  -> pinky_navigation/launch/bringup_launch.xml (map_server, amcl, Nav2)
 #   mode:=ir   -> no include; pinky_sensor_adc main_node (IR/ultrasonic ADC read only)
+#   mode:=marker -> no include; camera preview + ArUco recognition in the console process
 # pinky_bringup/bringup_robot.launch.xml is NOT included: start it separately first.
 """Pinky test console.
 
   ros2 launch pinky_test_console console.launch.py mode:=slam
   ros2 launch pinky_test_console console.launch.py mode:=nav map:=$HOME/roport_maps/room.yaml
   ros2 launch pinky_test_console console.launch.py mode:=ir   (IR: http://<robot>:8080/ir.html)
+  ros2 launch pinky_test_console console.launch.py mode:=marker markers_yaml:=~/markers.yaml
   (Gazebo) ... use_sim_time:=true
 """
 
@@ -23,7 +25,8 @@ from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from pinky_test_console.launch_plan import included_launch, resolve_plan
+from pinky_test_console.launch_plan import (
+    camera_env, included_launch, resolve_plan, resolve_rotate_180)
 
 
 def launch_setup(context):
@@ -35,6 +38,7 @@ def launch_setup(context):
         ir_node=LaunchConfiguration('ir_node').perform(context),
     )
     launch_file, launch_args = included_launch(plan)
+    camera = LaunchConfiguration('camera').perform(context)
 
     actions = [
         LogInfo(msg=f'[pinky_test_console] mode={plan.mode} map={plan.map_yaml or "-"} '
@@ -45,12 +49,18 @@ def launch_setup(context):
             executable='web_server',
             name='pinky_test_console',
             output='screen',
+            additional_env=camera_env(plan.mode, camera, os.environ),
             parameters=[{
                 'ip': LaunchConfiguration('ip').perform(context),
                 'port': plan.port,
                 'mode': plan.mode,
                 'map_dir': LaunchConfiguration('map_dir').perform(context),
                 'ir_dir': LaunchConfiguration('ir_dir').perform(context),
+                'camera': camera,
+                'rotate_180': resolve_rotate_180(
+                    camera, LaunchConfiguration('rotate_180').perform(context)),
+                'markers_yaml': LaunchConfiguration('markers_yaml').perform(context),
+                'camera_hfov_deg': float(LaunchConfiguration('camera_hfov_deg').perform(context)),
                 'use_sim_time': plan.use_sim_time,
             }],
         ),
@@ -71,7 +81,7 @@ def launch_setup(context):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument('mode', default_value='slam', description='slam | nav | ir'),
+        DeclareLaunchArgument('mode', default_value='slam', description='slam | nav | ir | marker'),
         DeclareLaunchArgument('map', default_value='',
                               description='map .yaml path (required for mode:=nav)'),
         DeclareLaunchArgument('port', default_value='8080', description='web port'),
@@ -85,5 +95,15 @@ def generate_launch_description():
         DeclareLaunchArgument('ir_node', default_value='auto',
                               description='run pinky_sensor_adc main_node: '
                                           'auto (mode:=ir) | true | false'),
+        DeclareLaunchArgument('camera', default_value='picamera2',
+                              description='mode:=marker camera: '
+                                          'picamera2 | v4l2:<n> | topic:<name>'),
+        DeclareLaunchArgument('rotate_180', default_value='auto',
+                              description='rotate camera image: '
+                                          'auto (picamera2 only) | true | false'),
+        DeclareLaunchArgument('markers_yaml', default_value='',
+                              description='ArUco ID table (docs/aruco/markers.yaml) for names'),
+        DeclareLaunchArgument('camera_hfov_deg', default_value='0',
+                              description='camera horizontal FOV for rough distance (0 = off)'),
         OpaqueFunction(function=launch_setup),
     ])
