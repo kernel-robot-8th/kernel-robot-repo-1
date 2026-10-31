@@ -8,6 +8,11 @@ dependencies = [
     "uvicorn==0.54.0",
 ]
 
+[project.optional-dependencies]
+ui = [
+    "pyqt6==6.12.0",
+]
+
 [build-system]
 requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
