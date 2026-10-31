@@ -111,7 +111,7 @@ class FrameReceiver:
         self,
         streams: dict[Stream, tuple[Peer, UUID]],
         *,
-        timeout: float = 0.5,
+        timeout: float = 1.5,  # 1 MiB takes ~1.19 s at the default 8 Mbps.
         max_inflight: int = 16,
         max_bytes: int = 8 * MAX_FRAME_BYTES,
     ):

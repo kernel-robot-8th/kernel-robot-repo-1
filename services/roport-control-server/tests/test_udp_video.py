@@ -37,15 +37,18 @@ def test_reordered_duplicate_fragments_reassemble_exact_bytes_once(info):
     assert sink.stats["completed"] == 1
 
 
-def test_loss_deadline_is_not_extended_by_duplicate_or_late_restart(info, monkeypatch):
+@pytest.mark.parametrize("limits", [{}, {"timeout": 0.5}])
+def test_loss_deadline_is_not_extended_by_duplicate_or_late_restart(
+    info, monkeypatch, limits
+):
     clock = [10.0]
     monkeypatch.setattr(video.time, "monotonic", lambda: clock[0])
-    sink = receiver(info, timeout=0.5)
+    sink = receiver(info, **limits)
     packets = list(video.fragment_frame(b"x" * 3000, info))
     sink.feed(packets[0], PEER)
-    clock[0] += 0.4
+    clock[0] += sink.timeout * 0.8
     sink.feed(packets[0], PEER)
-    clock[0] += 0.11
+    clock[0] += sink.timeout * 0.21
     sink.expire()
     assert sink.reserved_bytes == 0 and sink.stats["timeout"] == 1
     assert all(sink.feed(packet, PEER) is None for packet in packets)
@@ -155,13 +158,29 @@ def test_sender_size_limits(info, size):
         list(video.fragment_frame(b"x" * size, info))
 
 
-def test_maximum_frame_is_accepted(info):
+@pytest.mark.parametrize("size", [500_000, video.MAX_FRAME_BYTES])
+def test_default_sender_and_receiver_complete_large_paced_frames(
+    info, monkeypatch, size
+):
+    clock = [0.0]
+    monkeypatch.setattr(video.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        video.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay)
+    )
     sink = receiver(info)
-    frame = b"x" * video.MAX_FRAME_BYTES
-    result = None
-    for packet in video.fragment_frame(frame, info):
-        result = sink.feed(packet, PEER)
-    assert result == (info, frame)
+    results = []
+
+    class Socket:
+        def sendto(self, packet, destination):
+            if result := sink.feed(packet, PEER):
+                results.append(result)
+            return len(packet)
+
+    frame = b"x" * size
+    video.FrameSender(Socket(), PEER).send(frame, info)
+    assert results == [(info, frame)]
+    assert 0.5 < sink.last_reassembly_seconds < sink.timeout
+    assert sink.stats["timeout"] == 0 and sink.reserved_bytes == 0
 
 
 def test_sender_paces_packets_and_frames(info, monkeypatch):
