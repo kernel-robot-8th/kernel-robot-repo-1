@@ -2,7 +2,11 @@
 name = "roport-control-server"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["fastapi==0.162.0", "uvicorn==0.54.0"]
+dependencies = [
+    "fastapi==0.162.0",
+    "paho-mqtt==2.1.0",
+    "uvicorn==0.54.0",
+]
 
 [project.optional-dependencies]
 ui = [
