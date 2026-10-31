@@ -16,7 +16,7 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 PAGE_W, PAGE_H = 210.0, 297.0          # A4, mm
-MARGIN_X, TOP, BOTTOM = 15.0, 32.0, 12.0
+MARGIN_X, TOP, BOTTOM = 15.0, 28.0, 12.0
 GAP, LABEL_H = 6.0, 8.0
 CELLS = 6                               # 4x4 비트 + 테두리 1칸씩
 PNG_CELL_PX = 50
