@@ -565,6 +565,12 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        # 터미널 Ctrl+C 는 ros2 launch 와 이 프로세스에 SIGINT 를 각각 보낸다(같은 프로세스 그룹).
+        # 정리 도중 두 번째 신호가 KeyboardInterrupt 로 끊지 않도록 무시하고,
+        # SIGTERM(launch 의 강제 종료 단계)은 기본 동작(즉시 종료)으로 돌린다.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
         node.publish_stop_on_exit()
         node.close_marker()
         executor.shutdown(timeout_sec=1.0)
