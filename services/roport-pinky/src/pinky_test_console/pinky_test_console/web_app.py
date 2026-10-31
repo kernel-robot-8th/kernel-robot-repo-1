@@ -18,6 +18,7 @@ from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 from .ir_record import IrRecordError
 from .map_store import MapNameError
+from .marker_detect import MarkerError
 
 # web/ 폴더에서 이 파일들만 서빙 (원본은 스크립트 폴더 전체를 static 으로 노출했음)
 STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js',
@@ -235,6 +236,30 @@ def create_app(node, web_dir):
     def api_marker_reset():
         _json_body()
         return jsonify({'success': node.marker_reset()})
+
+    @app.route('/api/marker/record', methods=['POST'])
+    def api_marker_record():
+        data = _json_body()
+        marker_id = data.get('marker_id')
+        try:
+            state = node.marker_record_start(
+                _number(data, 'distance_cm'), _number(data, 'duration', 5.0),
+                marker_id, data.get('note', ''))
+        except MarkerError as e:
+            return jsonify({'success': False, 'msg': str(e)}), 400
+        return jsonify({'success': True, 'recording': state})
+
+    @app.route('/api/marker/records')
+    def api_marker_records():
+        return jsonify(node.marker_records())
+
+    @app.route('/api/marker/records.csv')
+    def api_marker_records_csv():
+        path = node.marker_records_path()
+        if not path or not os.path.isfile(path):
+            abort(404)
+        return send_from_directory(os.path.dirname(path), os.path.basename(path),
+                                   as_attachment=True, mimetype='text/csv')
 
     return app
 

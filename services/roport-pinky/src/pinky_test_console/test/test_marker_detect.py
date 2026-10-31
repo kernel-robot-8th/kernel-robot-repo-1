@@ -155,3 +155,53 @@ def test_ros_image_conversion_with_padding():
     assert mono.shape == (1, 2, 3)
     with pytest.raises(MarkerError):
         ros_image_to_bgr(1, 1, 'yuv422', 2, b'\x00\x00')
+
+
+def test_range_recorder_stats_and_csv(tmp_path, table_path):
+    from pinky_test_console.marker_detect import RangeRecorder
+    clock = FakeClock()
+    _, table = load_marker_table(table_path)
+    rec = RangeRecorder(str(tmp_path / 'mk'), table, clock=clock)
+    w = MarkerWorker(PushSource(), MarkerDetector(), table, clock=clock, recorder=rec)
+    rec.start(58, 1, note='벽 높이 2 cm')
+    for i in range(10):
+        clock.t += 0.11
+        w.process(marker_frame(7, side=100) if i % 5 else np.full((480, 640, 3), 255, np.uint8))
+    r = rec.last_result
+    assert r['success'] and r['marker_id'] == 7 and r['name'] == 'P7'
+    assert r['rate'] == pytest.approx(0.8, abs=0.11)        # 빈 화면 2장
+    assert r['side_px_med'] == pytest.approx(100, abs=3)
+    assert r['top_px'] == pytest.approx(80, abs=2) and r['frame_h'] == 480
+    assert r['pred_50mm_px'] == pytest.approx(50, abs=2)    # P7 100 mm 기준
+    rows = rec.records()
+    assert len(rows) == 1 and rows[0]['distance_cm'] == '58.0' and rows[0]['note'] == '벽 높이 2 cm'
+
+
+def test_range_recorder_fixed_id_not_seen(tmp_path):
+    from pinky_test_console.marker_detect import RangeRecorder
+    clock = FakeClock()
+    rec = RangeRecorder(str(tmp_path / 'mk'), clock=clock)
+    rec.start(20, 1, marker_id=4)
+    for _ in range(3):
+        clock.t += 0.4
+        rec.add([{'id': 7, 'corners': [[0, 0], [1, 0], [1, 1], [0, 1]], 'side_px': 1.0}], 480)
+    r = rec.last_result
+    assert r['marker_id'] == 4 and r['rate'] == 0.0 and r['side_px_med'] is None
+
+
+def test_range_recorder_validation_and_no_frames(tmp_path):
+    from pinky_test_console.marker_detect import RangeRecorder
+    clock = FakeClock()
+    rec = RangeRecorder(str(tmp_path / 'mk'), clock=clock)
+    for kw in ({'distance_cm': 0, 'duration': 5}, {'distance_cm': 30, 'duration': 31},
+               {'distance_cm': 30, 'duration': 5, 'marker_id': 50},
+               {'distance_cm': 30, 'duration': 5, 'marker_id': '7'},
+               {'distance_cm': True, 'duration': 5},
+               {'distance_cm': 30, 'duration': 5, 'note': 'a,b'}):
+        with pytest.raises(MarkerError):
+            rec.start(**kw)
+    rec.start(30, 1)
+    with pytest.raises(MarkerError, match='already'):
+        rec.start(30, 1)
+    clock.t += 2
+    assert rec.poll()['success'] is False and rec.records() == []

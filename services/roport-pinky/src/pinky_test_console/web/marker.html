@@ -46,6 +46,31 @@
 
   <div id="right">
     <section class="panel-card">
+      <div class="section-title"><span>거리별 기록</span><a class="btn btn-outline btn-small" id="csvLink" href="/api/marker/records.csv">CSV ↓</a></div>
+      <div class="row">
+        <input id="distance" class="text-input" type="number" min="1" max="500" step="1" placeholder="최앞단~마커 거리 (cm)">
+        <select id="recDuration" class="text-input ir-select" title="기록 시간">
+          <option value="3">3 s</option>
+          <option value="5" selected>5 s</option>
+          <option value="10">10 s</option>
+        </select>
+      </div>
+      <div class="row">
+        <input id="markerId" class="text-input" type="number" min="0" max="49" placeholder="마커 ID (비우면 가장 많이 보인 것)">
+        <input id="note" class="text-input" type="text" maxlength="60" placeholder="메모 (예: 벽 높이 2 cm)">
+      </div>
+      <div class="row">
+        <button id="btnRecord" class="btn btn-primary" type="button">● 기록</button>
+      </div>
+      <div class="bar" id="recBar"><div></div></div>
+      <div class="status-msg" id="recMsg" role="status"></div>
+      <div class="ir-table-wrap"><table class="ir-table" id="ranges"><thead><tr>
+        <th>거리</th><th>ID</th><th>인식률</th><th>화면 크기</th><th>위·아래 px</th><th>50 mm면</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="tiny-note">화면 크기 = 마커 한 변의 픽셀 수(중앙값, 괄호는 최소~최대). 위·아래 px = 마커 윗변·아랫변의 화면 위치(0 = 화면 맨 위). 윗변이 0에 가깝거나 아랫변이 화면 높이에 가까우면 잘리기 직전입니다. 「50 mm면」은 같은 거리에서 50 mm 마커였을 때의 예상 크기입니다.</div>
+    </section>
+
+    <section class="panel-card">
       <div class="section-title">
         <span>마커 확인 목록</span>
         <button id="btnReset" class="btn btn-outline btn-small" type="button" title="✓ 기록 지우기">초기화</button>

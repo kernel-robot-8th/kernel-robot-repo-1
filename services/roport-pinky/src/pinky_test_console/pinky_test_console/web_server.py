@@ -95,12 +95,14 @@ class ConsoleNode(Node):
         self.declare_parameter('rotate_180', False)
         self.declare_parameter('markers_yaml', '')
         self.declare_parameter('camera_hfov_deg', 0.0)
+        self.declare_parameter('marker_record_dir', marker_detect.DEFAULT_RECORD_DIR)
 
         self.mode = self.get_parameter('mode').value
         self.map_dir = map_store.resolve_map_dir(self.get_parameter('map_dir').value)
         self.ir = ir_record.IrRecorder(self.get_parameter('ir_dir').value)
         self.marker = None
         self.marker_error = None
+        self.marker_recorder = None
         if self.mode == 'marker':
             self._start_marker()
 
@@ -480,10 +482,13 @@ class ConsoleNode(Node):
             else:
                 source = marker_detect.PushSource()
                 self.create_subscription(Image, arg, lambda m: self._image_cb(source, m), 2)
+            self.marker_recorder = marker_detect.RangeRecorder(
+                self.get_parameter('marker_record_dir').value, table)
             self.marker = marker_detect.MarkerWorker(
                 source, marker_detect.MarkerDetector(dict_name), table,
                 rotate_180=bool(self.get_parameter('rotate_180').value),
-                hfov_deg=float(self.get_parameter('camera_hfov_deg').value))
+                hfov_deg=float(self.get_parameter('camera_hfov_deg').value),
+                recorder=self.marker_recorder)
             self.marker.start()
             self.get_logger().info(f'[MARKER] camera={kind}:{arg} dict={dict_name} '
                                    f'table={len(table)} markers')
@@ -504,6 +509,9 @@ class ConsoleNode(Node):
                     'fps': None, 'detections': [], 'checklist': []}
         snap = self.marker.snapshot()
         snap['error'] = snap['error'] or self.marker_error
+        self.marker_recorder.poll()
+        snap['recording'] = self.marker_recorder.state()
+        snap['last_record'] = self.marker_recorder.last_result
         return snap
 
     def marker_jpeg(self):
@@ -514,6 +522,22 @@ class ConsoleNode(Node):
             return False
         self.marker.reset_seen()
         return True
+
+    def marker_record_start(self, distance_cm, duration, marker_id=None, note=''):
+        """MarkerError 가능 (카메라 없음, 값 범위, 기록 중)."""
+        if self.marker_recorder is None:
+            raise marker_detect.MarkerError('camera not started (mode:=marker ?)')
+        state = self.marker_recorder.start(distance_cm, duration, marker_id, note)
+        self.get_logger().info(f'[MARKER] range record {distance_cm:g} cm, {duration:g} s')
+        return state
+
+    def marker_records(self):
+        if self.marker_recorder is None:
+            return {'path': None, 'records': []}
+        return {'path': self.marker_recorder.path, 'records': self.marker_recorder.records()}
+
+    def marker_records_path(self):
+        return self.marker_recorder.path if self.marker_recorder is not None else None
 
     def close_marker(self):
         if self.marker is not None:

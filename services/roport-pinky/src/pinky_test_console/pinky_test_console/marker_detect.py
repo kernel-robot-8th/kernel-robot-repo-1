@@ -9,7 +9,9 @@
 아직 못 본 마커 목록을 만든다.
 """
 
+import csv
 import math
+import os
 import re
 import threading
 import time
@@ -182,8 +184,9 @@ class MarkerWorker:
     """카메라를 읽어 인식하고 최신 JPEG·통계를 보관하는 스레드."""
 
     def __init__(self, source, detector, table=None, rotate_180=False, hfov_deg=0.0,
-                 clock=time.monotonic):
+                 clock=time.monotonic, recorder=None):
         self.source, self.detector = source, detector
+        self.recorder = recorder        # RangeRecorder (거리별 기록), 없으면 기록 안 함
         self.table = table or {}
         self.rotate_180, self.hfov_deg = rotate_180, float(hfov_deg)
         self._clock = clock
@@ -205,6 +208,8 @@ class MarkerWorker:
         now = self._clock()
         dets = self.detector.detect(frame)
         h, w = frame.shape[:2]
+        if self.recorder is not None:
+            self.recorder.add(dets, h)
         for d in dets:
             info = self.table.get(d['id'])
             d['name'] = info['name'] if info else None
@@ -290,3 +295,135 @@ class MarkerWorker:
             })
         return {'fps': fps, 'frame': [w, h], 'error': self.error, 'hfov_deg': self.hfov_deg,
                 'window_sec': STATS_WINDOW_SEC, 'detections': last, 'checklist': checklist}
+
+
+DEFAULT_RECORD_DIR = '~/roport_marker'
+RECORD_FILE = 'range_log.csv'
+RECORD_FIELDS = ['time', 'distance_cm', 'marker_id', 'name', 'size_mm', 'frames', 'rate',
+                 'side_px_med', 'side_px_min', 'side_px_max', 'top_px', 'bottom_px', 'frame_h',
+                 'pred_50mm_px', 'note']
+_NOTE_RE = re.compile(r'^[^\x00-\x1f,"]{0,60}$')
+
+
+class RangeRecorder:
+    """거리별 인식 기록: 정해진 시간 동안 프레임을 모아 인식률·화면 크기를 한 줄로 남긴다.
+
+    marker_id 를 주지 않으면 기록 중 가장 많이 보인 ID 를 쓴다. 결과는 <dir>/range_log.csv 에
+    한 줄씩 추가한다(같은 거리에서 50 mm 마커였다면 몇 px 일지도 함께 적는다).
+    """
+
+    def __init__(self, record_dir=DEFAULT_RECORD_DIR, table=None, clock=time.monotonic):
+        self.dir = os.path.abspath(os.path.expanduser(str(record_dir)))
+        self.table = table or {}
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._rec = None
+        self.last_result = None
+
+    @property
+    def path(self):
+        return os.path.join(self.dir, RECORD_FILE)
+
+    def start(self, distance_cm, duration, marker_id=None, note=''):
+        def number(v, lo, hi, name):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+                raise MarkerError(f'{name} must be {lo:g}-{hi:g}')
+            return float(v)
+        distance_cm = number(distance_cm, 1, 500, 'distance_cm')
+        duration = number(duration, 1, 30, 'duration')
+        if marker_id is not None:
+            if isinstance(marker_id, bool) or not isinstance(marker_id, int) \
+                    or not 0 <= marker_id <= 49:
+                raise MarkerError('marker_id must be 0-49 or empty')
+        note = str(note or '').strip()
+        if not _NOTE_RE.fullmatch(note):
+            raise MarkerError('note: up to 60 chars, no comma/quote')
+        with self._lock:
+            if self._rec is not None:
+                raise MarkerError('already recording')
+            self._rec = {'distance_cm': distance_cm, 'duration': duration, 'marker_id': marker_id,
+                         'note': note, 'start': self._clock(), 'frames': []}
+        return self.state()
+
+    def add(self, dets, frame_h):
+        """MarkerWorker.process 가 프레임마다 부른다. dets 는 MarkerDetector.detect 결과."""
+        with self._lock:
+            rec = self._rec
+            if rec is None:
+                return
+            seen = {}
+            for d in dets:
+                ys = [p[1] for p in d['corners']]
+                seen[d['id']] = (d['side_px'], min(ys), max(ys))
+            rec['frames'].append(seen)
+            rec['frame_h'] = frame_h
+        self.poll()
+
+    def poll(self):
+        with self._lock:
+            rec = self._rec
+            if rec is None or self._clock() - rec['start'] < rec['duration']:
+                return None
+            self._rec = None
+        result = self._finish(rec)
+        with self._lock:
+            self.last_result = result
+        return result
+
+    def _finish(self, rec):
+        frames = rec['frames']
+        target = rec['marker_id']
+        if target is None:
+            counts = {}
+            for f in frames:
+                for i in f:
+                    counts[i] = counts.get(i, 0) + 1
+            target = max(counts, key=counts.get) if counts else None
+        hits = [f[target] for f in frames if target is not None and target in f]
+        info = self.table.get(target, {})
+        size = info.get('size_mm') or None
+
+        def med(vals):
+            return round(float(np.median(vals)), 1) if vals else None
+        sides = [h[0] for h in hits]
+        row = {
+            'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'distance_cm': rec['distance_cm'], 'marker_id': target, 'name': info.get('name'),
+            'size_mm': size, 'frames': len(frames),
+            'rate': round(len(hits) / len(frames), 2) if frames else 0.0,
+            'side_px_med': med(sides),
+            'side_px_min': round(min(sides), 1) if sides else None,
+            'side_px_max': round(max(sides), 1) if sides else None,
+            'top_px': med([h[1] for h in hits]), 'bottom_px': med([h[2] for h in hits]),
+            'frame_h': rec.get('frame_h'),
+            'pred_50mm_px': round(med(sides) * 50.0 / size, 1) if sides and size else None,
+            'note': rec['note'],
+        }
+        if not frames:
+            return dict(row, success=False, msg='no frames: camera not running?')
+        self._append(row)
+        return dict(row, success=True)
+
+    def _append(self, row):
+        os.makedirs(self.dir, exist_ok=True)
+        new = not os.path.exists(self.path)
+        with open(self.path, 'a', newline='', encoding='utf-8') as f:
+            w = csv.DictWriter(f, fieldnames=RECORD_FIELDS)
+            if new:
+                w.writeheader()
+            w.writerow({k: ('' if row[k] is None else row[k]) for k in RECORD_FIELDS})
+
+    def state(self):
+        with self._lock:
+            rec = self._rec
+            if rec is None:
+                return None
+            return {'distance_cm': rec['distance_cm'], 'duration': rec['duration'],
+                    'elapsed': round(self._clock() - rec['start'], 1),
+                    'frames': len(rec['frames'])}
+
+    def records(self):
+        if not os.path.isfile(self.path):
+            return []
+        with open(self.path, newline='', encoding='utf-8') as f:
+            return list(csv.DictReader(f))

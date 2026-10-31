@@ -174,7 +174,8 @@ ros2 launch pinky_test_console console.launch.py mode:=marker markers_yaml:=~/ma
 1. **ID 확인**: 마커를 한 장씩 카메라 앞에 대고 화면의 `ID 이름`이 종이 라벨과 같은지 봅니다. 오른쪽 목록에 ✓가 생깁니다(초록 = 표에 있는 ID, 빨강 = 표에 없는 ID).
 2. **방향**: 보라 점이 마커의 왼쪽 위 모서리입니다. 종이의 위아래와 맞는지 확인합니다.
 3. **거리**: 시험 시트(ID 0)를 줄자로 거리를 바꿔 대고, 인식률이 떨어지기 시작하는 거리를 정면·45°에서 기록합니다. 화면의 추정 거리는 `camera_hfov_deg`를 준 경우의 핀홀 근사(보정 전)라 줄자 값을 기준으로 합니다.
-4. 결과는 Confluence 「ArUco 마커 ID 표 및 인쇄본 v1」의 시험 기록표나 Jira FFT1-74에 남깁니다.
+4. **거리별 기록**: 오른쪽 「거리별 기록」에 로봇 최앞단~마커 거리(cm)를 넣고 「기록」을 누르면, 몇 초 동안 인식률·화면 크기(px)·마커 위아래 위치를 모아 표에 한 줄 남깁니다(`~/roport_marker/range_log.csv`, CSV ↓로 내려받기). 같은 거리에서 50 mm 마커였을 때의 예상 크기도 보여 줍니다.
+5. 결과는 Confluence 「ArUco 마커 ID 표」의 시험 기록표나 Jira FFT1-108에 남깁니다.
 
 - 로봇 카메라는 Picamera2로 읽습니다(`python3 -c "import picamera2"`가 되어야 함). 다른 프로그램이 카메라를 쓰고 있으면 열리지 않고, 화면 위에 오류가 표시됩니다.
 - Pinky 이미지에는 libcamera가 두 벌 있습니다(`/usr/local`의 0.3, ROS `ros-jazzy-libcamera`의 0.7). ROS 환경을 source하면 `libpisp`만 ROS 쪽이 잡혀 `ipa_rpi_pisp.so: undefined symbol`로 죽기 때문에, launch가 `mode:=marker camera:=picamera2`일 때 `LD_LIBRARY_PATH` 앞에 `/usr/local/lib/aarch64-linux-gnu`를 붙여 실행합니다.
@@ -286,6 +287,8 @@ colcon test-result --verbose
 | POST | `/api/slam/save_map` `{name, overwrite}` | 지도 저장 (이미 있으면 409) |
 | GET | `/api/marker`, `/api/marker/frame.jpg` | 인식 결과·확인 목록 / 표시를 그린 최신 영상(없으면 204) |
 | POST | `/api/marker/reset` | 확인 ✓ 기록 지우기 |
+| POST | `/api/marker/record` `{distance_cm, duration, marker_id?, note?}` | 거리별 기록(1–30 s) |
+| GET | `/api/marker/records`, `/api/marker/records.csv` | 거리별 기록 목록 / CSV 다운로드 |
 | GET | `/api/ir` | IR 최근값·주기·최근 10 s 기록·기록 진행 상태 |
 | POST | `/api/ir/record` `{label, duration}` / `/api/ir/cancel` | IR 기록 시작(1–60 s) / 취소 |
 | GET | `/api/ir/records`, `/api/ir/records/<파일>` | 기록 목록·통계·참고 임계값 / CSV 다운로드 |

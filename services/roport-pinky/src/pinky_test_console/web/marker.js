@@ -64,6 +64,7 @@ async function poll() {
     $("camError").textContent = s.error ? "카메라: " + s.error : "";
     renderDetections(s);
     renderChecklist(s);
+    renderRecording(s);
   } catch (_) {
     markConnection(false);
   } finally {
@@ -90,6 +91,66 @@ function nextFrame() {
 $("frame").addEventListener("load", nextFrame);
 $("frame").addEventListener("error", nextFrame);
 requestFrame();
+
+// ---------------- 거리별 기록 ----------------
+let wasRecording = false;
+
+function renderRecording(s) {
+  const rec = s.recording;
+  $("btnRecord").disabled = !!rec;
+  const bar = $("recBar").firstElementChild;
+  if (rec) {
+    bar.style.width = Math.min(100, 100 * rec.elapsed / rec.duration).toFixed(0) + "%";
+    $("recMsg").textContent = `기록 중: ${rec.distance_cm} cm, ${rec.elapsed}/${rec.duration} s, ${rec.frames}프레임`;
+  } else {
+    bar.style.width = "0%";
+    if (wasRecording && s.last_record) {
+      const r = s.last_record;
+      $("recMsg").textContent = r.success
+        ? `저장: ${r.distance_cm} cm · ID ${r.marker_id ?? "-"} · 인식률 ${Math.round(r.rate * 100)}%`
+        : `실패: ${r.msg}`;
+      refreshRanges();
+    }
+  }
+  wasRecording = !!rec;
+}
+
+async function startRecord() {
+  const body = { distance_cm: Number($("distance").value), duration: Number($("recDuration").value),
+    note: $("note").value.trim() };
+  const id = $("markerId").value.trim();
+  if (id !== "") body.marker_id = Number(id);
+  try {
+    const res = await fetch("/api/marker/record", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const r = await res.json();
+    if (!r.success) $("recMsg").textContent = "오류: " + (r.msg || res.status);
+  } catch (e) {
+    $("recMsg").textContent = "요청 실패: " + e;
+  }
+}
+
+async function refreshRanges() {
+  try {
+    const data = await (await fetch("/api/marker/records")).json();
+    const tbody = $("ranges").tBodies[0];
+    tbody.textContent = "";
+    for (const r of data.records.slice().reverse()) {
+      const tr = tbody.insertRow();
+      tr.appendChild(cell(r.distance_cm + " cm"));
+      tr.appendChild(cell(r.marker_id === "" ? "-" : `${r.marker_id} ${r.name || ""}`));
+      tr.appendChild(cell(Math.round(Number(r.rate) * 100) + "%"));
+      tr.appendChild(cell(r.side_px_med === "" ? "-" : `${r.side_px_med} (${r.side_px_min}~${r.side_px_max})`));
+      tr.appendChild(cell(r.top_px === "" ? "-" : `${r.top_px} · ${r.bottom_px} / ${r.frame_h}`));
+      tr.appendChild(cell(r.pred_50mm_px === "" ? "-" : r.pred_50mm_px + " px"));
+      tr.title = r.note ? `${r.time} · ${r.note}` : r.time;
+    }
+  } catch (_) { /* 다음 갱신 때 다시 */ }
+}
+
+$("btnRecord").addEventListener("click", startRecord);
+refreshRanges();
 
 $("btnReset").addEventListener("click", async () => {
   await fetch("/api/marker/reset", {

@@ -29,6 +29,7 @@ class FakeNode:
         self.navigating = navigating
         self.ir_dir = '/nonexistent-ir'
         self.jpeg = None
+        self.records_path = None
 
     def get_info(self):
         return {'mode': 'slam'}
@@ -111,6 +112,20 @@ class FakeNode:
     def marker_reset(self):
         self.calls.append(('marker_reset',))
         return True
+
+    def marker_record_start(self, distance_cm, duration, marker_id=None, note=''):
+        from pinky_test_console.marker_detect import MarkerError
+        bad_id = marker_id is not None and not isinstance(marker_id, int)
+        if not 1 <= distance_cm <= 500 or bad_id:
+            raise MarkerError('bad')
+        self.calls.append(('marker_record', distance_cm, duration, marker_id, note))
+        return {'distance_cm': distance_cm}
+
+    def marker_records(self):
+        return {'path': self.records_path, 'records': []}
+
+    def marker_records_path(self):
+        return self.records_path
 
 
 @pytest.fixture
@@ -273,3 +288,16 @@ def test_marker_api(client, node):
     assert client.post('/api/marker/reset', data='x').status_code == 400
     assert client.post('/api/marker/reset', json={}).get_json() == {'success': True}
     assert node.calls[-1] == ('marker_reset',)
+
+
+def test_marker_record_api(client, node, tmp_path):
+    r = client.post('/api/marker/record', json={'distance_cm': 58, 'marker_id': 3, 'note': 'P5'})
+    assert r.status_code == 200 and node.calls[-1] == ('marker_record', 58.0, 5.0, 3, 'P5')
+    for body in ({'distance_cm': 0}, {'distance_cm': 'x'}, {'distance_cm': 30, 'marker_id': 'a'}):
+        assert client.post('/api/marker/record', json=body).status_code == 400, body
+    assert client.get('/api/marker/records').get_json()['records'] == []
+    assert client.get('/api/marker/records.csv').status_code == 404
+    node.records_path = str(tmp_path / 'range_log.csv')
+    (tmp_path / 'range_log.csv').write_text('time,distance_cm\n')
+    r = client.get('/api/marker/records.csv')
+    assert r.status_code == 200 and 'attachment' in r.headers['Content-Disposition']
