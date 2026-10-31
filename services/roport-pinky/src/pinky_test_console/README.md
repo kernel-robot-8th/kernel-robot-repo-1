@@ -177,6 +177,7 @@ ros2 launch pinky_test_console console.launch.py mode:=marker markers_yaml:=~/ma
 4. 결과는 Confluence 「ArUco 마커 ID 표 및 인쇄본 v1」의 시험 기록표나 Jira FFT1-74에 남깁니다.
 
 - 로봇 카메라는 Picamera2로 읽습니다(`python3 -c "import picamera2"`가 되어야 함). 다른 프로그램이 카메라를 쓰고 있으면 열리지 않고, 화면 위에 오류가 표시됩니다.
+- Pinky 이미지에는 libcamera가 두 벌 있습니다(`/usr/local`의 0.3, ROS `ros-jazzy-libcamera`의 0.7). ROS 환경을 source하면 `libpisp`만 ROS 쪽이 잡혀 `ipa_rpi_pisp.so: undefined symbol`로 죽기 때문에, launch가 `mode:=marker camera:=picamera2`일 때 `LD_LIBRARY_PATH` 앞에 `/usr/local/lib/aarch64-linux-gnu`를 붙여 실행합니다.
 - 영상은 640×480, 인식은 콘솔 프로세스 안에서 합니다(OpenCV `cv2.aruco`, Ubuntu 24.04 apt 4.6 호환). 화면 색이 바뀌어 보여도 인식(흑백)에는 영향이 없습니다.
 
 ## 메모리 측정 방법

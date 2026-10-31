@@ -243,4 +243,5 @@ def test_camera_env_only_for_picamera_marker():
     assert camera_env('marker', 'v4l2:0', env, exists=yes) == {}
     assert camera_env('ir', 'picamera2', env, exists=yes) == {}
     assert camera_env('marker', 'picamera2', env, exists=lambda p: False) == {}
-    assert camera_env('marker', 'picamera2', {}, exists=yes) == {'LD_LIBRARY_PATH': PICAMERA_LIB_DIR}
+    only = camera_env('marker', 'picamera2', {}, exists=yes)
+    assert only == {'LD_LIBRARY_PATH': PICAMERA_LIB_DIR}
