@@ -34,7 +34,8 @@ source install/setup.bash
 python3 -c "import roport_pinky; import rclpy"
 ```
 
-팀 패키지에는 아직 실행 노드·모터 명령이 없습니다. 아래 원본 Pinky Pro에는 실장비 실행 코드가 포함돼 있습니다.
+`roport_pinky`에는 아직 실행 노드가 없습니다. IR 라인 추종 노드 v0은 [src/roport_pinky_line/](src/roport_pinky_line/)에 있으며 `cmd_vel`을 발행합니다(실로봇 검증 전).
+아래 원본 Pinky Pro에는 실장비 실행 코드가 포함돼 있습니다.
 
 ## Pinky Pro 원본
 
