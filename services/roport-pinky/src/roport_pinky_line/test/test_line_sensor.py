@@ -89,3 +89,21 @@ def test_hysteresis_band():
 def test_short_message_rejected():
     with pytest.raises(ValueError):
         LineSensor(CAL).update([100, 200])
+    with pytest.raises(ValueError):
+        LineSensor(CAL).update([100, 200, 300, 400])
+
+
+@pytest.mark.parametrize('values', [
+    (0, 0, 0),                   # 원본 드라이버의 I²C 읽기 실패(버퍼 0 그대로 발행)
+    (CARPET[0], 0, CARPET[2]),   # 한 채널만 실패
+    (CARPET[0], 4096, CARPET[2]),
+])
+def test_read_failure_values_rejected_without_touching_history(values):
+    s = LineSensor(CAL)
+    feed(s, (CARPET[0], TAPE[1], CARPET[2]))
+    with pytest.raises(ValueError, match='out of range'):
+        s.update(values)
+    # 버린 샘플은 중앙값 기록에 남지 않는다
+    r = s.update((CARPET[0], TAPE[1], CARPET[2]))
+    assert r.raw == (CARPET[0], TAPE[1], CARPET[2])
+    assert r.on_line == (False, True, False)

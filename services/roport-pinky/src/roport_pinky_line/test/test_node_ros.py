@@ -132,6 +132,24 @@ def test_line_lost_and_ir_timeout_publish_zero(ros):
     assert ros.cmds[-1] == (0.0, 0.0)
 
 
+def test_bad_ir_messages_do_not_feed_watchdog(ros):
+    ros.enable(True)
+    ros.ir(CENTER)
+    ros.wait(lambda: ros.cmds and ros.cmds[-1][0] > 0)
+    ros.ir([100, 200], count=12)   # 20 Hz 로 0.6초 동안 잘못된 메시지만
+    # 보내는 도중(마지막 메시지 뒤 0.3초가 지나기 전)에 이미 멈춰 있어야 한다
+    assert ros.states[-1]['state'] == 'no_ir'
+    assert ros.cmds[-1] == (0.0, 0.0)
+
+
+def test_read_failure_zeros_never_start(ros):
+    ros.ir([0, 0, 0], count=2)
+    ros.enable(True)
+    ros.ir([0, 0, 0], count=20)    # 1초
+    assert all(linear == 0.0 for linear, _ in ros.cmds)
+    assert ros.states[-1]['state'] == 'no_ir'
+
+
 def test_stop_on_exit_publishes_zero_when_enabled(ros):
     ros.enable(True)
     ros.ir(CENTER)

@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from statistics import median
 
 CHANNELS = ('left', 'center', 'right')
+# 12비트 ADC. 원본 드라이버는 I²C 읽기 실패를 확인하지 않고 그 채널을 0으로 발행한다
+# (pinky_sensor_adc main_node.cpp). 테이프 최저 실측값은 258이므로 0은 읽기 실패로 본다.
+ADC_MIN_VALID = 1
+ADC_MAX = 4095
 
 
 @dataclass(frozen=True)
@@ -81,11 +85,15 @@ class LineSensor:
         self._on = [False, False, False]
 
     def update(self, values):
-        if len(values) < 3:
+        if len(values) != 3:
             raise ValueError(f'expected 3 IR values, got {len(values)}')
+        values = [int(v) for v in values]
+        # 한 채널이라도 범위 밖이면 샘플 전체를 버린다(중앙값 기록에도 넣지 않음)
+        if not all(ADC_MIN_VALID <= v <= ADC_MAX for v in values):
+            raise ValueError(f'IR value out of range {ADC_MIN_VALID}..{ADC_MAX}: {values}')
         raw = []
-        for i, h in enumerate(self._history):
-            h.append(int(values[i]))
+        for h, v in zip(self._history, values):
+            h.append(v)
             raw.append(median(h))
         cal = self.cal
         for i, v in enumerate(raw):

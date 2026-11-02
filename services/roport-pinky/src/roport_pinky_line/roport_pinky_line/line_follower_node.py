@@ -5,7 +5,8 @@
 발행  cmd_vel (geometry_msgs/Twist) — 켜져 있을 때만. dry_run 이면 발행하지 않음
       line_follower/state (std_msgs/String, JSON) — 상태·오차·속도·IR 값
 
-정지 경로: 끄기, 라인 놓침, 노드(세 채널 모두 라인), IR 끊김(ir_timeout_sec),
+정지 경로: 끄기, 라인 놓침, 노드(세 채널 모두 라인), IR 끊김(ir_timeout_sec — 유효한 샘플 기준.
+채널 수가 3이 아니거나 값이 1~4095 밖인 메시지는 버리고 수신으로 치지 않는다),
 SIGINT/SIGTERM/SIGHUP 종료 때 0 속도를 발행한다. kill -9·전원 차단에는 보낼 수 없다.
 pinky_bringup 에는 cmd_vel 타임아웃이 없으므로 이 노드를 강제 종료하면 마지막 속도가 남는다.
 """
@@ -93,14 +94,15 @@ class LineFollowerNode(Node):
         self._publish_state()
 
     def _on_ir(self, msg):
-        now = time.monotonic()
-        dt = 0.0 if self._last_ir is None else now - self._last_ir
-        self._last_ir = now
         try:
             reading = self.sensor.update(msg.data)
         except ValueError as e:
+            # 수신 시각을 갱신하지 않는다. 잘못된 입력만 계속 오면 watchdog 이 no_ir 로 정지한다.
             self.get_logger().warn(f'bad IR message: {e}', throttle_duration_sec=2.0)
             return
+        now = time.monotonic()
+        dt = 0.0 if self._last_ir is None else now - self._last_ir
+        self._last_ir = now
         self._last_reading = reading
         cmd = self.follower.step(reading, dt)
         if cmd is not None:
