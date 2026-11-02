@@ -115,6 +115,28 @@ def test_worker_checklist_and_rate(table_path):
     assert not {c['id']: c for c in w.snapshot()['checklist']}[7]['seen']
 
 
+def test_worker_expires_results_when_input_stops(table_path):
+    clock = FakeClock()
+    _, table = load_marker_table(table_path)
+    w = MarkerWorker(PushSource(), MarkerDetector(), table, hfov_deg=60, clock=clock)
+    for _ in range(10):
+        clock.t += 0.1
+        w.process(marker_frame(7))
+    s = w.snapshot()
+    assert not s['stale'] and s['detections'] and s['error'] is None
+    clock.t += 60                                    # 카메라·토픽 입력 중단
+    s = w.snapshot()
+    assert s['stale'] and s['frame_age_sec'] == pytest.approx(60)
+    assert s['fps'] is None and s['detections'] == []
+    assert s['error'].startswith('no camera frames')
+    items = {c['id']: c for c in s['checklist']}
+    assert items[7]['seen'] and items[7]['rate'] == 0.0     # 확인 이력은 유지, 인식률은 만료
+    assert w.jpeg() is None                                  # 멈춘 화면을 내보내지 않음
+    clock.t += 0.1
+    w.process(marker_frame(7))                               # 입력이 돌아오면 다시 표시
+    assert not w.snapshot()['stale'] and w.jpeg() is not None
+
+
 def test_worker_distance_uses_table_size(table_path):
     _, table = load_marker_table(table_path)
     w = MarkerWorker(PushSource(), MarkerDetector(), table, hfov_deg=60)

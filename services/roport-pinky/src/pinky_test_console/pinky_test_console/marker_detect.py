@@ -22,6 +22,8 @@ import numpy as np
 
 DEFAULT_DICT = 'DICT_4X4_50'
 STATS_WINDOW_SEC = 5.0
+# 마지막 프레임이 이보다 오래되면 입력 중단으로 보고 현재 인식 결과·FPS·영상을 내보내지 않는다
+STALE_SEC = 1.0
 FRAME_WIDTH, FRAME_HEIGHT = 640, 480
 JPEG_QUALITY = 70
 _SPEC_RE = re.compile(r'^(picamera2|v4l2:\d{1,2}|topic:/?[A-Za-z_][A-Za-z0-9_/]{0,100})$')
@@ -266,22 +268,37 @@ class MarkerWorker:
             self._hits.clear()
 
     # ---------------- 조회 ----------------
+    def _frame_age(self, now):
+        return None if not self._frame_times else now - self._frame_times[-1]
+
     def jpeg(self):
+        now = self._clock()
         with self._lock:
-            return self._jpeg
+            age = self._frame_age(now)
+            # 멈춘 화면을 정상 영상처럼 보이지 않게 한다
+            return self._jpeg if age is not None and age <= STALE_SEC else None
 
     def snapshot(self):
         now = self._clock()
+        cutoff = now - STATS_WINDOW_SEC
         with self._lock:
-            frames = len(self._frame_times)
-            span = (self._frame_times[-1] - self._frame_times[0]) if frames > 1 else 0.0
+            # 조회 시점 기준 최근 STATS_WINDOW_SEC 만 센다(입력이 끊기면 process 가 정리하지 못함)
+            times = [t for t in self._frame_times if t >= cutoff]
+            frames = len(times)
+            span = (times[-1] - times[0]) if frames > 1 else 0.0
             hits = {}
-            for _, i in self._hits:
-                hits[i] = hits.get(i, 0) + 1
+            for t, i in self._hits:
+                if t >= cutoff:
+                    hits[i] = hits.get(i, 0) + 1
             seen = {i: dict(s) for i, s in self._seen.items()}
-            last = [dict(d, corners=None) for d in self._last]
+            age = self._frame_age(now)
+            stale = age is None or age > STALE_SEC
+            last = [] if stale else [dict(d, corners=None) for d in self._last]
             w, h = self._frame_size
-        fps = round((frames - 1) / span, 1) if span > 0 else None
+        fps = round((frames - 1) / span, 1) if span > 0 and not stale else None
+        error = self.error
+        if error is None and age is not None and stale:
+            error = f'no camera frames for {age:.1f} s'
         checklist = []
         for i in sorted(set(self.table) | set(seen)):
             info = self.table.get(i, {})
@@ -293,8 +310,10 @@ class MarkerWorker:
                 'ago_sec': round(now - s['last'], 1) if s else None,
                 'rate': round(hits.get(i, 0) / frames, 2) if frames else 0.0,
             })
-        return {'fps': fps, 'frame': [w, h], 'error': self.error, 'hfov_deg': self.hfov_deg,
-                'window_sec': STATS_WINDOW_SEC, 'detections': last, 'checklist': checklist}
+        return {'fps': fps, 'frame': [w, h], 'error': error, 'hfov_deg': self.hfov_deg,
+                'window_sec': STATS_WINDOW_SEC, 'detections': last, 'checklist': checklist,
+                'stale': stale,
+                'frame_age_sec': None if age is None else round(age, 1)}
 
 
 DEFAULT_RECORD_DIR = '~/roport_marker'

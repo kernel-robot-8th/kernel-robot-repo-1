@@ -62,6 +62,7 @@ async function poll() {
     markConnection(true);
     $("fpsChip").textContent = s.fps === null ? "- fps" : s.fps + " fps";
     $("camError").textContent = s.error ? "카메라: " + s.error : "";
+    $("frame").style.opacity = s.stale ? "0.3" : "1";  // 입력이 끊기면 마지막 화면을 흐리게
     renderDetections(s);
     renderChecklist(s);
     renderRecording(s);
