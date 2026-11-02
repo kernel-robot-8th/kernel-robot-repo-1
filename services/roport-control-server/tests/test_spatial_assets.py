@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import runpy
 from pathlib import Path
 
@@ -8,6 +9,33 @@ import pytest
 ROOT = Path(__file__).parents[1]
 ASSETS = ROOT / "src/roport_control_server/spatial_assets"
 TOOLS = runpy.run_path(str(ROOT / "tools/prepare_web_assets.py"))
+
+
+def test_model_provenance_matches_canonical_pinky_snapshot_and_urdf_notices():
+    import xml.etree.ElementTree as ET
+
+    canonical = ROOT.parent / "roport-pinky/src/UPSTREAM.md"
+    (commit,) = re.findall(
+        r"^- Commit: `([0-9a-f]{40})`$", canonical.read_text(), re.MULTILINE
+    )
+    sources = json.loads((ASSETS / "models/sources.json").read_text())
+    assert sources["pinky"]["commit"] == commit
+    for kind in ("pinky", "omx"):
+        urdf = (ASSETS / "models" / kind / "robot.urdf").read_text()
+        assert "RO:PORT generated display derivative" in urdf
+        assert sources[kind]["commit"] in urdf
+        assert ET.fromstring(urdf).tag == "robot"
+
+
+def test_thumbnail_sources_match_packaged_models():
+    thumbnails = json.loads((ASSETS / "thumbnails.json").read_text())
+    assert set(thumbnails) == {"pinky-pro.webp", "omx-f.webp"}
+    for filename, source in thumbnails.items():
+        assert (
+            hashlib.sha256((ASSETS / source["model"]).read_bytes()).hexdigest()
+            == source["sha256"]
+        )
+        assert (ASSETS / filename).read_bytes()[8:12] == b"WEBP"
 
 
 def test_prepared_assets_and_licenses_match_pinned_hashes():

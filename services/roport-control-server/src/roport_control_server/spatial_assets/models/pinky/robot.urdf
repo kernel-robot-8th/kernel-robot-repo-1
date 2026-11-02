@@ -1,3 +1,6 @@
+<!-- RO:PORT generated display derivative; xacro expansion / XML formatting.
+     Source: https://github.com/pinklab-art/pinky_pro/tree/014a09f289e6988894fbffde2624fdb1e257815b
+     Apache-2.0; see the accompanying LICENSE. Not device calibration. -->
 <robot name="pinky">
   <link name="base_footprint" />
   <link name="base_link">

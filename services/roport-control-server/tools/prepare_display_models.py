@@ -5,6 +5,7 @@ Run with: env -u PYTHONPATH uv run --isolated --no-project --with trimesh==5.2.0
 """
 
 import json
+import re
 import shutil
 import tempfile
 import urllib.request
@@ -21,7 +22,11 @@ OUT = (
     / "src/roport_control_server/spatial_assets/models"
 )
 OMX_SHA = "b83daec7b98c08d00adb856d7e31f2b0065d3be9"
-PINKY_SHA = "014a09f289e6988894fbffde2624fdb1e257815b"
+(PINKY_SHA,) = re.findall(
+    r"^- Commit: `([0-9a-f]{40})`$",
+    (ROOT / "services/roport-pinky/src/UPSTREAM.md").read_text(),
+    re.MULTILINE,
+)
 
 
 def origin(element):
@@ -46,6 +51,22 @@ def build(name, urdf, package_dir):
     if name == "pinky":
         ET.indent(tree)
         urdf = ET.tostring(tree, encoding="unicode")
+    source = (
+        f"https://github.com/pinklab-art/pinky_pro/tree/{PINKY_SHA}"
+        if name == "pinky"
+        else f"https://github.com/ROBOTIS-GIT/open_manipulator/tree/{OMX_SHA}"
+    )
+    notice = (
+        "<!-- RO:PORT generated display derivative; xacro expansion / XML formatting.\n"
+        f"     Source: {source}\n"
+        "     Apache-2.0; see the accompanying LICENSE. Not device calibration. -->\n"
+    )
+    # XML declarations must remain the first bytes of the document.
+    if urdf.startswith("<?xml"):
+        declaration, body = urdf.split("?>", 1)
+        urdf = declaration + "?>\n" + notice + body.lstrip("\n")
+    else:
+        urdf = notice + urdf
     target = OUT / name
     target.mkdir(parents=True, exist_ok=True)
     (target / "robot.urdf").write_text(urdf)
