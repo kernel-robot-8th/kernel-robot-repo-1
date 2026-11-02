@@ -84,6 +84,16 @@ uv run python -m roport_control_server.examples.udp_video_demo send --session 67
 
 ## 개발 방법
 
+3D 표시 자산은 [FFT1-109](https://fp-team1.atlassian.net/browse/FFT1-109)의 선행 패키징입니다. 화면 구현은 후속 PR이며 현재 기본 PyQt 진입점은 유지합니다.
+Three.js 원본은 Git에 커밋하지 않고 서비스 전용 npm 잠금 파일로 고정합니다. 소스 체크아웃에서 테스트·배포 패키지를 만들기 전 Node.js 24로 한 번 준비합니다.
+
+```bash
+npm ci --ignore-scripts
+npm run prepare:assets
+```
+
+`prepare:assets`는 필요한 JS와 LICENSE만 로컬 `spatial_assets/vendor`에 복사하고 고정 해시를 검증합니다. 설치에는 npm 접근 또는 사전 캐시가 필요하며, 준비 후 빌드는 네트워크를 사용하지 않습니다. wheel/sdist에는 JS·모델·라이선스가 포함되어 설치한 앱의 실행 시 Node.js·npm·CDN이 필요 없습니다. 자원이 누락되거나 해시가 다르면 배포 빌드가 실패합니다. 모델 출처와 재생성 방법은 `spatial_assets/UPSTREAM.md`에 있습니다.
+
 ```bash
 python3 -m pip install uv==0.13.5
 uv sync --locked
