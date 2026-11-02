@@ -64,3 +64,16 @@ python3 scripts/check_hardware.py --namespace / --output /tmp/pinky-check.json
 [src/pinky_test_console/](src/pinky_test_console/README.md)은 SLAM 지도 제작과 Nav2·카메라 실행 시 메모리 확인을 위한 브라우저 콘솔입니다.
 원본 Pinky Pro 웹 서버(Apache-2.0)를 바탕으로 웹 조종(0.10 m/s·0.6 rad/s 서버 제한, 0.3 s deadman, 정지 버튼)과 상태 패널을 더했습니다.
 로그인 없이 로봇을 움직이므로 강의실 Wi-Fi 안에서만 사용합니다. 빌드는 `colcon build --packages-up-to pinky_test_console`입니다.
+
+## 시연 공간 지도
+
+[maps/](maps/)에 시연 공간 지도를 둡니다. 실로봇 Nav2·Gazebo 시뮬레이션·관제 GUI가 같은 파일을 씁니다.
+
+| 파일 | 내용 |
+|---|---|
+| `airport_map.pgm`, `airport_map.yaml` | 실로봇(Pinky Pro)으로 slam_toolbox를 돌려 만든 지도. 92×53칸, 0.05 m/칸, origin (−1.654, −2.094) m, `map_server` 형식 |
+| `airport_map.png` | `airport_map.pgm`과 같은 픽셀(0 점유, 205 미지, 254 빈 곳)의 PNG. 브라우저 등 pgm을 못 읽는 곳에서 사용. 행 0이 지도의 위쪽(+y 끝)입니다 |
+| `map_measured_v12.png` | 실측 도면(단위 cm, 원점 = 콘센트 벽·통로 쪽 모서리). v12에서 인도장 P7(위치 추정) 추가 |
+
+- 지도 좌표(m)는 `map` 프레임입니다. 실측 도면 좌표(cm)와의 변환은 Gazebo world 배치 데이터(`roport_gz_world/layout/roport_airport.yaml`의 `frame`, PR #10)에 있습니다.
+- 지도를 다시 만들면 같은 이름으로 교체하고 PR에 만든 날짜·로봇·방법을 적습니다. 사진(사람이 찍힘)은 올리지 않습니다.
