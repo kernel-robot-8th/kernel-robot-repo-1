@@ -1,4 +1,7 @@
-"""Run a loopback-only control client or a simulated device in separate terminals."""
+"""Run a loopback-only control client or a simulated device in separate terminals.
+
+MockExecutor/make_command are the single shared fake device; tests import them here.
+"""
 
 import argparse
 import json
@@ -8,14 +11,14 @@ from queue import Empty
 from time import monotonic
 from uuid import uuid4
 
-from ..communication.messages import (
+from roport_control_server.adapters.mqtt.messages import (
     CommandHistory,
     check_command,
     check_expiry,
     decode,
     topic,
 )
-from ..communication.mqtt import MqttConfig, MqttTransport
+from roport_control_server.adapters.mqtt.mqtt import MqttConfig, MqttTransport
 
 SITE = "test"
 CONTROL = "control-test"

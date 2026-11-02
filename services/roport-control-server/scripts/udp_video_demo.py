@@ -7,13 +7,13 @@ import time
 from pathlib import Path
 from uuid import UUID
 
-from ..communication.udp_video import (
+from roport_control_server.adapters.udp.udp_frame_protocol import (
     DATAGRAM_BYTES,
     MAX_FRAME_BYTES,
     FrameInfo,
-    FrameReceiver,
-    FrameSender,
 )
+from roport_control_server.adapters.udp.udp_frame_receiver import FrameReceiver
+from roport_control_server.adapters.udp.udp_frame_sender import FrameSender
 
 
 def main():
