@@ -276,10 +276,16 @@ class Layout:
             cx_cm, cy_cm = _point(m.get('center'), name)
             facing = float(m.get('facing_deg', 0.0))
             cx, cy = self.frame.to_world(cx_cm, cy_cm)
+            yaw = math.radians(facing + self.frame.yaw_deg)
+            provisional = bool(m.get('provisional', defaults.get('provisional', False)))
+            if m.get('floor'):
+                # 바닥에 눕힌 1 mm 두께 종이
+                out.append(Box(f'marker_{name}', cx, cy, 0.0005, size / 100.0, size / 100.0,
+                               0.001, yaw, provisional))
+                continue
             # 판의 두께 방향 = facing 방향
             out.append(Box(f'marker_{name}', cx, cy, zc / 100.0, 0.005, size / 100.0,
-                           size / 100.0, math.radians(facing + self.frame.yaw_deg),
-                           bool(m.get('provisional', defaults.get('provisional', False)))))
+                           size / 100.0, yaw, provisional))
         return out
 
     def provisional_names(self):

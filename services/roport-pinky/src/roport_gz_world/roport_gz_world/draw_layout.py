@@ -5,6 +5,7 @@
 """
 
 import argparse
+import math
 import os
 import sys
 
@@ -127,21 +128,32 @@ def draw(layout, path):
                 color=edge, zorder=7,
                 bbox=dict(fc='white', ec='none', pad=0.4, alpha=0.8))
 
-    # 마커
-    for m in (raw.get('markers') or {}).get('items') or []:
+    # 마커: 벽 = 벽을 따라 긴 막대, 바닥 = 작은 사각형
+    markers = (raw.get('markers') or {}).get('items') or []
+    for m in markers:
         mx, my = m['center']
-        ax.add_patch(Rectangle((mx - 4, my - 1.5), 8, 3, fc=C['marker'], ec='none', zorder=6))
-        dy = -6 if my > 200 else 6
-        ax.text(mx + (6 if m['name'].startswith('G') else 0), my + dy, m['name'], fontsize=8,
-                color=C['marker'], ha='left' if m['name'].startswith('G') else 'center',
-                va='center', zorder=7)
+        if m.get('floor'):
+            # 이름은 노드 이름(P4·P7)과 겹치므로 표에만 적는다
+            ax.add_patch(Rectangle((mx - 2, my - 2), 4, 4, fc=C['marker'], ec='none', zorder=8))
+            continue
+        along_y = abs(math.sin(math.radians(m.get('facing_deg', 0)))) < 0.5
+        w_, h_ = (3, 8) if along_y else (8, 3)
+        ax.add_patch(Rectangle((mx - w_ / 2, my - h_ / 2), w_, h_, fc=C['marker'], ec='none',
+                               zorder=6))
+        if along_y:
+            dx = 6 if mx < x1 / 2 else -6
+            ax.text(mx + dx, my, m['name'], fontsize=8, color=C['marker'],
+                    ha='left' if dx > 0 else 'right', va='center', zorder=7)
+        else:
+            ax.text(mx, my + (-6 if my > y1 / 2 else 6), m['name'], fontsize=8,
+                    color=C['marker'], ha='center', va='center', zorder=7)
 
     # 구역 이름
     ax.text(260, 200, '03 공용 내부공간 (Nav2)', fontsize=15, color=C['switch'], ha='center',
             fontweight='bold')
     ax.text(66, 120, '01 물류창고 루프', fontsize=11, color=C['tape'], ha='center')
-    ax.text(170, 30, '01 | 02', fontsize=9, color='#777777', ha='center')
-    ax.text(290, 12, '02 인도장', fontsize=12, color='#8a5a00', ha='center', fontweight='bold')
+    ax.text(260, 25, '02\n인도장', fontsize=11, color='#8a5a00', ha='center', va='center',
+            fontweight='bold')
     ax.text(362, 50, '스마트카트\n대기·충전', fontsize=10, color='#4b3fa0', ha='left',
             va='center')
     ax.text(412, 100, '입구', fontsize=11, color=C['guess'], ha='center', fontweight='bold')
@@ -159,6 +171,12 @@ def draw(layout, path):
     _dim(ax, (124, 72), (124, 163.3), 'c 91.3', rot=90)
     _dim(ax, (20.5, -22), (379.5, -22), 'O 359 (루프 바깥선 → 간선 끝)')
     _dim(ax, (44.85, 205), (89.35, 205), 'S 44.5', offset=(0, 4))
+    _dim(ax, (20.5, 64), (64.1, 64), '43.6', offset=(0, -4))
+    _dim(ax, (111.3, 64), (205.3, 64), '94', offset=(0, -4))
+    _dim(ax, (138, -10), (280, -10), '인도장 142')
+    _dim(ax, (138.25, 125), (196, 125), '58', offset=(0, 4))
+    ax.text(141, 30, 'P 54', fontsize=8.5, color=C['dim'], ha='left', va='center')
+    ax.text(283, 30, 'T 49', fontsize=8.5, color=C['dim'], ha='left', va='center')
     _dim(ax, (308.0, -10), (339.5, -10), 'ㅈ 31.5')
     _dim(ax, (339.5, -10), (378.3, -10), 'ㄱ 38.8')
     for nid, label in (('N16', 'R 25'), ('N01', 'Q 29.9'), ('N11', 'W 41'), ('H2', 'U 40')):
@@ -174,8 +192,27 @@ def draw(layout, path):
             '추정·가정 · 파란 노드 = Nav2 전환 · 점선 회색 물체 = 라이다(12.5 cm)보다 낮음',
             fontsize=8.5, color='#666666', ha='left', va='bottom')
 
+    # 마커 부착 제안 표
+    ids = _marker_ids()
+    mrows = []
+    for m in markers:
+        mx, my = m['center']
+        where = '바닥' if m.get('floor') else '벽'
+        size = m.get('size', (raw.get('markers') or {}).get('defaults', {}).get('size'))
+        mrows.append([m['name'], str(ids.get(m['name'], '—')), where, f'{size * 10:g} mm',
+                      f'{mx:.1f}', f'{my:.1f}'])
+    max_ = fig.add_axes([0.70, 0.01, 0.27, 0.34])
+    max_.axis('off')
+    mtab = max_.table(cellText=mrows, colLabels=['마커', 'ID', '부착', '크기', 'x (cm)', 'y (cm)'],
+                      colWidths=[0.15, 0.12, 0.13, 0.2, 0.2, 0.2], loc='upper center',
+                      cellLoc='center')
+    _style_table(mtab, [C['guess']] * len(mrows))
+    max_.text(0.5, 0.42, 'ArUco 부착 제안 위치(추정)\n벽 마커: 종이 아래 끝을 바닥에 맞춤\n'
+              '바닥 마커: 가로선 앞 빈 바닥 가운데',
+              fontsize=9, color='#666666', ha='center', va='top', transform=max_.transAxes)
+
     # 노드 표
-    tax = fig.add_axes([0.03, 0.01, 0.94, 0.34])
+    tax = fig.add_axes([0.03, 0.01, 0.65, 0.34])
     tax.axis('off')
     rows = []
     for n in sorted(layout.nodes, key=lambda k: (k.id[0] != 'N', int(k.id[1:]))):
@@ -184,8 +221,17 @@ def draw(layout, path):
                      ' · '.join(n.links), note])
     tab = tax.table(cellText=rows, colLabels=['노드', '운영 위치', '역할', 'x (cm)', 'y (cm)',
                                               '연결', '비고'],
-                    colWidths=[0.06, 0.08, 0.28, 0.07, 0.07, 0.2, 0.1], loc='upper center',
+                    colWidths=[0.07, 0.09, 0.3, 0.08, 0.08, 0.22, 0.1], loc='upper center',
                     cellLoc='center')
+    colors = [C['switch'] if r[6] == 'Nav2 전환' else C['guess'] if r[6] == '위치 추정'
+              else C['text'] for r in rows]
+    _style_table(tab, colors)
+
+    fig.savefig(path, dpi=110, metadata={'Software': None})
+    plt.close(fig)
+
+
+def _style_table(tab, row_colors):
     tab.auto_set_font_size(False)
     tab.set_fontsize(9)
     tab.scale(1, 1.22)
@@ -194,13 +240,19 @@ def draw(layout, path):
         if r == 0:
             cell.set_facecolor('#e8ecef')
             cell.set_text_props(fontweight='bold')
-        elif rows[r - 1][6] == '위치 추정':
-            cell.set_text_props(color=C['guess'])
-        elif rows[r - 1][6] == 'Nav2 전환':
-            cell.set_text_props(color=C['switch'])
+        else:
+            cell.set_text_props(color=row_colors[r - 1])
 
-    fig.savefig(path, dpi=110, metadata={'Software': None})
-    plt.close(fig)
+
+def _marker_ids():
+    """docs/aruco/markers.yaml(ArUco 원본)에서 이름 → ID. 없으면 빈 표."""
+    import yaml
+    path = os.path.join(PKG_DIR, '..', '..', '..', '..', 'docs', 'aruco', 'markers.yaml')
+    try:
+        with open(path, encoding='utf-8') as f:
+            return {m['name']: m['id'] for m in yaml.safe_load(f).get('markers') or []}
+    except OSError:
+        return {}
 
 
 def main(argv=None):

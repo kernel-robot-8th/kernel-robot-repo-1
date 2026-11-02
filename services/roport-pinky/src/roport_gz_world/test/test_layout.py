@@ -93,6 +93,29 @@ def test_line_dimensions_from_measurement(layout):
         assert (n10.y - half) - (_node(layout, stop).y - half) == pytest.approx(length)
     assert _node(layout, 'N08').x - _node(layout, 'N09').x == pytest.approx(31.5)  # ㅈ
     assert n12.x - _node(layout, 'N08').x == pytest.approx(38.8)                   # ㄱ
+    # 분기 x: 바깥선 → 바깥선
+    assert _node(layout, 'N18').x + half - (n10.x - half) == pytest.approx(43.6)
+    n07 = _node(layout, 'N07')
+    assert _node(layout, 'N19').x + half - (n07.x - half) == pytest.approx(94.0)
+
+
+def test_delivery_and_warehouse_dimensions(layout):
+    raw = {w['name']: w for w in layout.raw['walls']}
+    p, t = raw['partition_warehouse'], raw['partition_delivery']
+    assert t['from'][0] - p['from'][0] == pytest.approx(142)       # 인도장 가로
+    assert (p['to'][1], t['to'][1]) == (54, 49)                    # P · T
+    objs = {o['name']: o for o in layout.raw['objects']}
+    cam = objs['camera_tripod']
+    assert cam['min'][0] - 138 == pytest.approx(58)                # G1 게이트 벽 → 삼각대
+    omx3 = objs['omx3_base']
+    assert omx3['max'][0] - omx3['min'][0] == pytest.approx(27)    # d
+    # P4 가로선은 OMX3 받침 앞 e 9.6 (Q 29.9 로 계산한 값과 0.5 cm 이내)
+    n01 = _node(layout, 'N01')
+    assert n01.y - layout.line_width / 2 - omx3['max'][1] == pytest.approx(9.6, abs=0.6)
+    # N11 가로선은 OMX1·2 받침 오목 안
+    half = layout.bar_length / 2
+    assert objs['omx12_left']['max'][0] < _node(layout, 'N11').x - half
+    assert _node(layout, 'N11').x + half < objs['omx12_right']['min'][0]
 
 
 def test_node_graph(layout):
@@ -125,10 +148,8 @@ def test_tape_and_bars_from_nodes(layout):
 
 
 def test_nodes_clear_of_obstacles(layout):
-    """테이프 노드가 벽·물체 안에 있지 않은지. N11(P7)은 OMX1·2 받침 치수와 맞지 않아 제외."""
+    """테이프 노드가 벽·물체 안에 있지 않은지."""
     for n in layout.nodes:
-        if n.id == 'N11':
-            continue
         wx, wy = layout.frame.to_world(n.x, n.y)
         clearance = min(_dist_point_box(wx, wy, b) for b in layout.walls + layout.objects
                         if b.sz > LIDAR)
@@ -169,10 +190,10 @@ def test_spawn_point_is_free(layout):
 
 def test_provisional_values_are_marked(layout):
     names = layout.provisional_names()
-    for expected in ('omx3_base', 'omx12_back', 'shelf_02', 'camera_tripod', 'tape_N18_N01',
-                     'bar_N11', 'marker_P5'):
+    for expected in ('omx12_left', 'omx12_right', 'shelf_02', 'marker_P5', 'marker_P7'):
         assert expected in names
-    for measured in ('box_03', 'outer_aisle', 'zone03_bottom', 'tape_N09_H1', 'bar_N16'):
+    for measured in ('box_03', 'outer_aisle', 'zone03_bottom', 'partition_delivery', 'omx3_base',
+                     'camera_tripod', 'tape_N18_N01', 'tape_N19_N11', 'bar_N11', 'bar_N16'):
         assert measured not in names
 
 
@@ -234,7 +255,8 @@ def test_map_pixels(layout):
     assert at(412, 80) == generate_map.FREE         # 03 입구
     assert at(359, 150) == generate_map.OCCUPIED    # 03 상자
     assert at(25, 20) == generate_map.FREE          # 창고박스 11 cm < 라이다
-    assert at(100, 15) == generate_map.OCCUPIED     # OMX3 받침(벽 높이로 둠)
+    assert at(64, 15) == generate_map.OCCUPIED      # OMX3 받침(벽 높이로 둠)
+    assert at(280, 25) == generate_map.OCCUPIED     # 인도장 오른쪽 칸막이 T
     assert at(250, 73.2) == generate_map.FREE       # 테이프는 안 그림
     assert at(200, -10) == generate_map.UNKNOWN     # 벽 바깥
 
