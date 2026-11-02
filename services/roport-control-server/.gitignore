@@ -19,3 +19,7 @@ target/
 
 # Generated offline web assets
 /src/roport_control_server/spatial_assets/vendor/
+
+# Local browser test output
+/test-results/
+/playwright-report/
