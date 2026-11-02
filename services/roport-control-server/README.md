@@ -12,7 +12,7 @@ Python 3.12 / uv / Paho MQTT 2.1.0 / pytest / Ruff.
 ## 현재 범위
 
 MQTT 5 작업 명령·이벤트 모듈과 모의 Pinky·OMX 왕복 예제, 독립 실행 가능한 기본 PyQt 관제 화면을 제공합니다.
-실행부/IPC·DB 연결·UDP 영상은 후속 PR입니다. DB 자체와 업무 CRUD는 만들지 않습니다.
+실행부/IPC·DB 연결은 후속 작업입니다. UDP 전송과 아래의 읽기 전용 3D 화면은 별도 모듈로 제공합니다. DB 자체와 업무 CRUD는 만들지 않습니다.
 CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 배포 환경 미정으로 CD와 자동 배포는 설정하지 않았습니다.
 
@@ -25,7 +25,7 @@ uv run --extra ui python -m roport_control_server.ui          # 상태 없음
 uv run --extra ui python -m roport_control_server.ui --demo   # 모의 데이터
 ```
 
-PyQt6 6.12.0을 선택 의존성 `ui`로 고정했습니다([공식 설치 안내](https://www.riverbankcomputing.com/software/pyqt/download)). 팀원의 상세 위젯도 같은 PyQt6 환경을 사용해야 합니다. Linux 실제 창 실행에는 데스크톱과 Qt platform 라이브러리가 필요하며 headless 시험은 `QT_QPA_PLATFORM=offscreen`을 사용하며 Ubuntu의 `libegl1`이 필요합니다(CI에서 설치). 기존 FastAPI health 뼈대는 유지하며 실행부 전환은 사용자 요청으로 보류합니다.
+3D WebEngine과 Qt ABI를 맞추기 위해 PyQt6 / PyQt6-WebEngine 6.11.0을 선택 의존성 `ui`로 고정했습니다([공식 설치 안내](https://www.riverbankcomputing.com/software/pyqt/download)). 팀원의 상세 위젯도 같은 PyQt6 환경을 사용해야 합니다. Linux 실제 창 실행에는 데스크톱과 Qt platform 라이브러리가 필요하며 headless 시험은 `QT_QPA_PLATFORM=offscreen`을 사용하며 Ubuntu의 `libegl1`이 필요합니다(CI에서 설치). 기존 FastAPI health 뼈대는 유지하며 실행부 전환은 사용자 요청으로 보류합니다.
 
 ### 팀원 탭·후속 상태 입력 연결점
 
@@ -37,6 +37,26 @@ PyQt6 6.12.0을 선택 의존성 `ui`로 고정했습니다([공식 설치 안�
 실행부·IPC·WSS·DB 연결, 실제 UI 재접속 복구, MQTT/UDP 동시 부하 및 실기 통합은 후속 범위입니다. 이번 PR은 화면 뼈대와 위젯/데이터 입력 지점만 제공합니다.
 
 검증: `uv sync --locked --extra ui`, `uv run ruff check .`, `uv run ruff format --check .`, `env -u PYTHONPATH QT_QPA_PLATFORM=offscreen REQUIRE_UI_TESTS=1 uv run --extra ui pytest`, `uv build`. CI는 ui extra 설치와 UI 테스트 실행을 필수로 하며, 기본 의존성만 설치한 환경에서는 UI 테스트를 skip합니다. [Jira FFT1-107](https://fp-team1.atlassian.net/browse/FFT1-107).
+
+## 3D 관제 화면 · FFT1-109
+
+기존 `ui.py` API를 유지하면서 `spatial_ui.py`에 승인한 3열 화면을 추가했습니다. 장비 6대 목록, ROS 지도 회전·확대·평면 보기, 독립 회전 모델과 작업 상태를 표시합니다. 팀원 화면은 같은 `set_detail_widget`로 연결합니다. 실제 지도 모드는 **OFFLINE**이며 모의 주행·관절 동작에는 명시적인 `--demo`가 필요합니다. 카메라 영역은 미연결 자리만 표시합니다.
+
+```bash
+uv sync --locked --extra ui
+env -u PYTHONPATH uv run --extra ui python -m roport_control_server.spatial_ui --demo
+# 실제 지도는 읽기만 수행하며 파일명 stem이 map_id입니다.
+env -u PYTHONPATH uv run --extra ui python -m roport_control_server.spatial_ui --map /absolute/path/airport_map.yaml
+```
+
+- 지도: ROS trinary PNG/PGM, resolution·origin yaw·이미지 Y 반전을 적용합니다. 높이는 이미지에서 추정하지 않고 표시용 0.35 m로 명시합니다. 1백만 픽셀/벽 run 2만 개를 넘는 지도는 거부합니다. `--demo` 지도·배치·동작은 예시입니다.
+- 모델: 공식 Pinky/OMX-F URDF의 origin/axis/mimic을 유지한 로컬 GLB. 바퀴 `l_wheel_joint`/`r_wheel_joint`, OMX `joint1..5`/`gripper_joint_1`은 **표시용 이름**입니다. 실제 ROS 이름과 영점·방향은 담당자 확인이 필요합니다. [출처·라이선스·재생성](src/roport_control_server/spatial_assets/UPSTREAM.md).
+- 작업 표시: `set_source`/`apply_snapshot`은 기존 `Snapshot`/`TaskRow`를 재사용합니다. 동작 애니메이션으로 작업 진행률·완료를 판정하지 않습니다. 실행부·IPC·DB·명령 발행은 없습니다.
+- 화면은 로컬 자원만 읽고 외부 탐색·요청·다운로드를 차단합니다. `RobotSample`/`StateCache`는 UI 내부 표시 값과 갱신 지연을 관리하며 MQTT wire 규격이 아닙니다. `communication/`에는 Qt/ROS 의존성을 추가하지 않았습니다.
+
+MQTT 상태 연결(FFT1-110)·UDP 영상 표시(FFT1-111)는 후속 PR입니다. 이 화면은 명령을 발행하거나 실제 장비·DB에 연결하지 않습니다. 기본 UI와 3D UI는 같은 ui extra를 사용하며, 잠금된 Qt/QtWebEngine 런타임은 모두 6.11.2입니다.
+
+검증: `env -u PYTHONPATH REQUIRE_MQTT_TESTS=1 REQUIRE_UI_TESTS=1 xvfb-run -a uv run --extra ui pytest`. WebGL 시험은 데스크톱 DISPLAY 또는 Xvfb가 필요하며, CI는 Xvfb와 Mesa로 DEMO/OFFLINE 화면·선택/시점·일시 정지/시각 이동·지연/복원을 검사합니다. 화면 확인과 캡처: `uv run --extra ui python tools/check_spatial_ui.py --output /tmp/roport-ui-check` (`--offline`으로 미연결 모드). [Jira FFT1-109](https://fp-team1.atlassian.net/browse/FFT1-109).
 
 ## 관련 문서
 
