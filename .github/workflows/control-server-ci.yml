@@ -43,4 +43,7 @@ jobs:
       - run: xvfb-run -a uv run pytest
         env:
           REQUIRE_MQTT_TESTS: '1'
+          # Hosted runners use Mesa software rendering, which Chromium blocklists.
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          QTWEBENGINE_CHROMIUM_FLAGS: --ignore-gpu-blocklist --disable-gpu-compositing
       - run: uv build
