@@ -17,6 +17,7 @@ def test_standalone_webengine_controls_and_state(tmp_path, mode):
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     env["QT_QPA_PLATFORM"] = "xcb"
+    env["QT_DEBUG_PLUGINS"] = "1"
     result = subprocess.run(
         [
             sys.executable,
