@@ -440,3 +440,7 @@ canvas {
 .ir-table th, .ir-table td { padding: 4px 6px; border-bottom: 1px solid var(--border-subtle); text-align: right; white-space: nowrap; }
 .ir-table th:first-child, .ir-table td:first-child { text-align: left; }
 .ir-table a { color: var(--accent); text-decoration: none; }
+
+/* ---------- 마커 테스트 화면 (marker.html) ---------- */
+.mk-frame { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #000; border-radius: 12px; }
+.ir-table tr.mk-seen td { color: var(--ok); }
