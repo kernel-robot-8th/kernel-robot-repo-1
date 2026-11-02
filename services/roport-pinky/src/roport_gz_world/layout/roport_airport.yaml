@@ -1,16 +1,21 @@
-# RO:PORT 시연 공간 배치 데이터 (Gazebo world 생성 원본)
+# RO:PORT 시연 공간 배치 데이터 v13 (도면·지도·Gazebo world 생성 원본)
 #
-# 출처: 시연 공간 실측 맵 v11 (layout/map_measured_v11.png), SLAM 지도 maps/airport_map.pgm
+# 출처: 강의실 실측 2026-11-02 (Jira FFT1-96). 실측 메모 사진은 사람이 찍혀 저장소에 넣지 않음.
 # 좌표계(실측): 단위 cm, 원점 = 콘센트 벽·통로 쪽 모서리, x = 길이 방향, y = 창가 방향
-# 이 파일을 고친 뒤 world를 다시 생성한다:
-#   python3 -m roport_gz_world.generate_world        (패키지 폴더에서 실행)
+# 이 파일을 고친 뒤 패키지 폴더에서 다시 생성한다:
+#   python3 -m roport_gz_world.generate_world     # worlds/roport_airport.sdf
+#   python3 -m roport_gz_world.generate_map       # ../../maps/airport_map.{pgm,yaml,png}
+#   python3 -m roport_gz_world.draw_layout        # ../../maps/map_measured_v13.png (matplotlib)
 #
-# provisional: true 는 실측 전 임시값이다(Jira FFT1-96, FFT1-97에서 확정 후 교체).
+# 테이프 치수는 "선 바깥 기준"으로 잰 값이다(메모: D·c, R·Q·N11 세로선은 바깥선부터).
+# 아래 좌표는 테이프 중심선이므로 테이프 폭의 절반(1.2 cm)을 더하거나 뺐다.
+# provisional: true 는 이번 실측에 없는 값이다(위치 추정·가정).
 
+version: v13
 units: cm
 
 # 실측 좌표 → SLAM 지도(map) 좌표: map = R(yaw) * (실측 / 100) + (x_m, y_m)
-# airport_map.pgm 벽 점유 칸에 실측 벽 선분을 맞춘 값 (평균 오차 1.7 cm, 최대 5.4 cm, 지도 칸 5 cm).
+# 2026-10-27 SLAM 지도(maps/airport_map_slam_20261027.pgm) 벽 점유 칸에 실측 벽을 맞춘 값.
 # world 좌표 = map 좌표이므로 로봇은 world (0, 0)에서 SLAM 시작 위치(실측 약 152, 202)에 나타난다.
 frame:
   x_m: -1.520
@@ -18,60 +23,86 @@ frame:
   yaw_deg: 0.10
 
 defaults:
-  wall_thickness: 0.5        # 가벽 두께 (실측)
-  wall_height: 20            # provisional: 실측 필요
-  object_height: 15          # provisional: Pinky 라이다 높이 12.5 cm 보다 높게(SLAM에 보였음)
-  line_width: 2              # 바닥 라인 폭 (실측)
+  wall_thickness: 0.5        # 가벽 두께
+  wall_height: 24            # 실측 (맵 벽 높이 24)
+  object_height: 24          # 물체는 벽 높이와 같게 둔다(사용자 결정 2026-11-02)
+  line_width: 2.4            # 흰 마스킹 테이프 24 mm
+
+# 실측 기반 지도(pgm) 설정. 해상도·원점·크기는 SLAM 지도와 같게 둬서 기존 좌표를 바꾸지 않는다.
+map:
+  resolution: 0.05
+  origin: [-1.654, -2.094]
+  width: 92
+  height: 53
+  lidar_height: 12.5         # Pinky 라이다 높이. 이보다 낮은 물체는 지도에 그리지 않음
 
 # 벽: 선분(from → to) 중심선, 충돌 있음
 walls:
-  - {name: outer_aisle, from: [0, 0], to: [443, 0]}           # 아래 = 통로(콘센트 벽)
-  - {name: outer_right, from: [443, 0], to: [443, 220]}
-  - {name: outer_window, from: [443, 220], to: [0, 220]}      # 위 = 창가
-  - {name: outer_left, from: [0, 220], to: [0, 0]}
-  # 03 공용 내부공간: 왼쪽 벽 x = 138 (G 138), 아래 벽 y = 220 - 128.2 (f 128.2)
-  - {name: zone03_left, from: [138, 91.8], to: [138, 220]}
-  # 입구 66: 오른쪽 벽에서 66 cm 열림 (443 - 66 = 377)
-  - {name: zone03_bottom, from: [138, 91.8], to: [377, 91.8]}
-  # 아래쪽 칸막이: x는 치수(I 141), 길이는 도면 픽셀 추정
-  - {name: partition_warehouse, from: [138, 0], to: [138, 54], provisional: true}
-  - {name: partition_delivery, from: [279, 0], to: [279, 49], provisional: true}
+  # 외곽 444.5 x 221: 가로 G 138 + H 306.5, 세로 e 221
+  - {name: outer_aisle, from: [0, 0], to: [444.5, 0]}          # 아래 = 통로(콘센트 벽)
+  - {name: outer_right, from: [444.5, 0], to: [444.5, 221]}
+  - {name: outer_window, from: [444.5, 221], to: [0, 221]}     # 위 = 창가
+  - {name: outer_left, from: [0, 221], to: [0, 0]}
+  # 03 공용 내부공간: 왼쪽 벽 x = G 138, 아래 벽 y = 221 - f 129
+  - {name: zone03_left, from: [138, 92], to: [138, 221]}
+  # 아래 벽 길이 I = H 306.5 - 입구 65 = 241.5
+  - {name: zone03_bottom, from: [138, 92], to: [379.5, 92]}
+  # 01 물류창고 | 02 인도장 칸막이 P 54 (x는 03 왼쪽 벽과 같은 선으로 가정)
+  - {name: partition_warehouse, from: [138, 0], to: [138, 54]}
 
 # 물체: 축 정렬 상자 (min/max 모서리), 충돌 있음
 objects:
-  # T자 구조물: 벽에서 46.5, 세로 11.7 x 41, 위에서 35 (ㅍ 35)
-  - {name: t_vertical, min: [184.5, 144.0], max: [196.2, 185.0]}
-  # 가로 61 x 10.5, 위에서 50.9 (E 50.9)
-  - {name: t_bar, min: [196.2, 158.6], max: [257.2, 169.1]}
-  # 상자 67 x 21.5: T 끝에서 68, 위에서 60.5 (ㄷ 60.5)
-  - {name: box_67x21_5, min: [325.2, 138.0], max: [392.2, 159.5]}
-  # 카메라 받침 32 x 15: 벽에서 64, 03 아래 벽에 붙음
-  - {name: camera_base, min: [202.0, 91.8], max: [234.0, 106.8]}
-  # 선반 테이블: 도면에 치수 없음. 라이다 높이 단면을 SLAM 지도 관측값으로 둠
-  # (도면 픽셀 추정 x 199.9~264.9 · 깊이 14.9 와 달리 SLAM에는 x 192~257, 앞면 약 7.5)
-  - {name: shelf_table, min: [192.0, 0.0], max: [257.0, 7.5], provisional: true}
-  # OMX3 받침 46.8 x 45.5: 위치 추정(점선). SLAM에 보이지 않아 라이다(12.5 cm)보다 낮게 둠
-  - {name: omx3_base, min: [43.2, 0.0], max: [90.0, 45.5], height: 8, provisional: true}
+  # 03 상자 K 67.4 x J 21: 창가 벽에서 N 60.5, 오른쪽 벽에서 L 51.5(ㄴ 51)
+  # (03 아래 벽까지 M 46.9 → 47.5로 0.6 차이)
+  - {name: box_03, min: [325.6, 139.5], max: [393.0, 160.5]}
+  # 03 카메라 삼각대: 받침대 ㄷ 25.8 x ㄹ 25.5, 03 아래 벽에 붙음. x는 v12 위치(03 왼쪽 벽에서 64)
+  - {name: camera_tripod, min: [202.0, 92.0], max: [227.8, 117.5], provisional: true}
+  # 01 창고박스 b 50.8 x a 39, 높이 11 (라이다보다 낮아 지도에 안 그림). 왼쪽 벽·통로 벽 모서리
+  - {name: warehouse_box, min: [0, 0], max: [50.8, 39], height: 11}
+  # 01 OMX3 받침: 깊이 c 33, 오른쪽 끝 = 왼쪽 벽에서 d 127로 해석
+  - {name: omx3_base, min: [50.8, 0], max: [127, 33], provisional: true}
+  # 02 선반 b 50.5 x a 21, 통로 벽에 붙음. x는 N11 기준 가운데 정렬 가정
+  - {name: shelf_02, min: [205.75, 0], max: [256.25, 21], provisional: true}
+  # 02 OMX1·2 받침 (U자, 가로 c 73, 가운데 오목 f 25.6 깊이 e 18.5): 선반 앞(y 21)부터
+  # 왼쪽 깊이 D 30.4 → 51.4, 오른쪽 끝 = 통로 벽에서 G 50.9. 좌우 대칭·x는 N11 기준 가정
+  - {name: omx12_left, min: [194.5, 21], max: [218.2, 51.4], provisional: true}
+  - {name: omx12_back, min: [218.2, 21], max: [243.8, 32.9], provisional: true}
+  - {name: omx12_right, min: [243.8, 21], max: [267.5, 50.9], provisional: true}
 
-# 바닥 라인: 흰 테이프, 폭 2 cm, 시각용(충돌 없음, 라이다에 안 보임)
-lines:
-  # 물류창고 루프 93.5 x 90.5: 왼쪽 벽에서 20.2 (a), 바닥에서 72.8 (b)
-  - {name: warehouse_loop, points: [[20.2, 72.8], [113.7, 72.8], [113.7, 163.3], [20.2, 163.3]], closed: true}
-  # 긴 라인 265 (⑥)
-  - {name: main_line, points: [[113.7, 72.8], [378.7, 72.8]]}
-  # P5·P6 연결 21.5: 간격 45.2, 루프 중앙 대칭 가정
-  - {name: stub_p5, points: [[44.35, 163.3], [44.35, 184.8]], provisional: true}
-  - {name: stub_p6, points: [[89.55, 163.3], [89.55, 184.8]], provisional: true}
-  # P4 정차 구역 연결 27: 루프 중앙
-  - {name: stub_p4, points: [[66.95, 72.8], [66.95, 45.8]], provisional: true}
-  # 인도장 연결 31 (①): x는 도면 픽셀 추정
-  - {name: stub_delivery, points: [[231.0, 72.8], [231.0, 41.8]], provisional: true}
-  # P1~P3 분기 40.5 (②): P3 = 긴 라인 끝, P2 = P3 - 36 (④), P1 = P2 - 31.4 (③)
-  - {name: branch_p1, points: [[311.3, 72.8], [311.3, 32.3]]}
-  - {name: branch_p2, points: [[342.7, 72.8], [342.7, 32.3]]}
-  - {name: branch_p3, points: [[378.7, 72.8], [378.7, 32.3]]}
+# 라인 노드 그래프. 테이프 = 연결(links) 구간 + 정차 노드의 가로선(bar)
+# id 는 Map 페이지 노드 제안 v0.1 번호를 유지한다(N13·N20·H3 삭제, N12 = Nav2 전환).
+nodes:
+  graph_version: line-v13-20261102
+  bar_length: 12             # 정차 노드 가로선 길이(고정, 노드 판정 규칙에 사용)
+  items:
+    # 물류창고 루프 D 93.2 x c 91.3(바깥 기준): 왼쪽 벽에서 a 20.5, 통로 벽에서 b 72
+    - {id: N10, at: [21.7, 73.2], role: 루프 좌하단, links: [N02, N18]}
+    - {id: N02, at: [21.7, 162.1], role: 루프 좌상단, links: [N10, N14]}
+    - {id: N05, at: [112.5, 162.1], role: 루프 우상단, links: [N15, N07]}
+    - {id: N07, at: [112.5, 73.2], role: 루프 우하단·간선, links: [N05, N18, N19]}
+    # P5·P6 분기 R 25(루프 바깥선 → 가로선 바깥선), 간격 S 44.5. 루프 가운데 대칭 가정
+    - {id: N14, at: [44.85, 162.1], role: P5 분기, links: [N02, N15, N16]}
+    - {id: N16, at: [44.85, 187.1], role: P5 물류 대기·충전, place: P5, bar: x, links: [N14]}
+    - {id: N15, at: [89.35, 162.1], role: P6 분기, links: [N14, N05, N17]}
+    - {id: N17, at: [89.35, 187.1], role: P6 물류 대기·충전, place: P6, bar: x, links: [N15]}
+    # P4 분기 Q 29.9(간선 바깥선 → 가로선 바깥선). OMX3 앞에서 e 9.6. x는 루프 가운데 가정
+    - {id: N18, at: [67.1, 73.2], role: P4 분기, links: [N10, N07, N01], provisional: true}
+    - {id: N01, at: [67.1, 43.3], role: P4 창고 상차, place: P4, bar: x, links: [N18],
+       provisional: true}
+    # P7 = OMX1·2 진입선 W 41(간선 바깥선 → 가로선 바깥선). x는 v12 추정
+    - {id: N19, at: [231.0, 73.2], role: P7 분기, links: [N07, N09, N11], provisional: true}
+    - {id: N11, at: [231.0, 32.2], role: P7 인도장(물류·스마트카트 공용), place: P7, bar: x,
+       links: [N19], provisional: true}
+    # P1·P2 분기 U 40, P1–P2 간격 ㅈ 31.5, P2 → 간선 끝 ㄱ 38.8 (간격은 선 중심 기준 가정)
+    - {id: N09, at: [308.0, 73.2], role: P1 분기, links: [N19, N08, H1]}
+    - {id: H1, at: [308.0, 33.2], role: P1 스마트카트 대기·충전, place: P1, bar: x, links: [N09]}
+    - {id: N08, at: [339.5, 73.2], role: P2 분기, links: [N09, N12, H2]}
+    - {id: H2, at: [339.5, 33.2], role: P2 스마트카트 대기·충전, place: P2, bar: x, links: [N08]}
+    # 간선 끝: 루프 왼쪽 바깥선에서 O 359 = 03 아래 벽 끝(입구 시작)과 같은 x
+    - {id: N12, at: [378.3, 73.2], role: 간선 끝·Nav2 전환, bar: y, nav2_switch: true,
+       links: [N08]}
 
-# ArUco 마커 위치 표시판: 충돌 없음. 무늬·크기는 별도 작업에서 확정.
+# ArUco 마커 위치 표시판: 충돌 없음. 위치는 이번 실측에 없어 모두 추정값.
 # Gazebo GPU 라이다는 visual 을 보고 거리를 재므로, 실제 SLAM 지도에 마커가 보이지 않은 것과
 # 맞추려고 표시판 윗면을 라이다 높이(12.5 cm)보다 낮게(10 cm) 둔다.
 # facing_deg: 마커 앞면이 향하는 방향(실측 좌표, 0 = +x)
@@ -81,8 +112,8 @@ markers:
     - {name: G1, center: [138.5, 120.9], facing_deg: 0}
     - {name: G2, center: [138.5, 158.8], facing_deg: 0}
     - {name: G3, center: [138.5, 204.8], facing_deg: 0}
-    - {name: P1, center: [311.3, 26.2], facing_deg: 90}
-    - {name: P2, center: [342.7, 26.2], facing_deg: 90}
-    - {name: P3, center: [378.7, 26.2], facing_deg: 90}
-    - {name: P5, center: [44.35, 193.0], facing_deg: -90}
-    - {name: P6, center: [89.55, 193.0], facing_deg: -90}
+    - {name: ARR, center: [432.0, 220.5], facing_deg: -90}
+    - {name: P1, center: [308.0, 0.5], facing_deg: 90}
+    - {name: P2, center: [339.5, 0.5], facing_deg: 90}
+    - {name: P5, center: [44.85, 220.5], facing_deg: -90}
+    - {name: P6, center: [89.35, 220.5], facing_deg: -90}

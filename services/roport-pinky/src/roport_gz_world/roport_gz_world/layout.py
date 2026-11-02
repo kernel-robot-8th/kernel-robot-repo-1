@@ -1,6 +1,7 @@
 """배치 데이터(layout/*.yaml) 읽기·검사·좌표 변환.
 
-배치 데이터는 실측 좌표계(cm)로 적고, world 는 SLAM 지도(map) 좌표계(m)로 만든다.
+배치 데이터는 실측 좌표계(cm)로 적고, world·지도는 SLAM 지도(map) 좌표계(m)로 만든다.
+바닥 테이프는 노드 그래프(nodes)의 연결 구간과 정차 가로선에서 만든다.
 map = R(yaw) * (실측 / 100) + (x_m, y_m)
 """
 
@@ -50,6 +51,30 @@ class Box:
     provisional: bool = False
 
 
+@dataclass(frozen=True)
+class Node:
+    """라인 그래프 노드. 좌표는 실측 cm(테이프 중심선)."""
+
+    id: str
+    x: float
+    y: float
+    role: str
+    links: tuple
+    place: str = ''
+    bar: str = ''              # 정차 가로선 방향: 'x'(가로) · 'y'(세로) · ''(없음)
+    nav2_switch: bool = False
+    provisional: bool = False
+
+
+@dataclass(frozen=True)
+class MapSpec:
+    resolution: float
+    origin: tuple
+    width: int
+    height: int
+    lidar_height: float        # cm
+
+
 def _point(value, where):
     if (not isinstance(value, (list, tuple)) or len(value) != 2
             or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)):
@@ -93,9 +118,15 @@ class Layout:
         self.object_height = _positive(d.get('object_height'), 'defaults.object_height')
         self.line_width = _positive(d.get('line_width'), 'defaults.line_width')
         self.raw = data
+        self.version = str(data.get('version', ''))
+        self.map = self._map_spec(data.get('map'))
         self.walls = self._walls(data.get('walls') or [])
         self.objects = self._objects(data.get('objects') or [])
-        self.lines = self._lines(data.get('lines') or [])
+        spec = data.get('nodes') or {}
+        self.graph_version = str(spec.get('graph_version', ''))
+        self.bar_length = _positive(spec.get('bar_length', 12), 'nodes.bar_length')
+        self.nodes = self._nodes(spec.get('items') or [])
+        self.lines = self._lines(data.get('lines') or []) + self._tape_from_nodes()
         self.markers = self._markers(data.get('markers') or {})
         names = [b.name for b in self.walls + self.objects + self.lines + self.markers]
         dup = {n for n in names if names.count(n) > 1}
@@ -147,6 +178,91 @@ class Layout:
                     extend=True, provisional=bool(line.get('provisional', False))))
         return out
 
+    @staticmethod
+    def _map_spec(m):
+        if m is None:
+            return None
+        try:
+            spec = MapSpec(float(m['resolution']), (float(m['origin'][0]), float(m['origin'][1])),
+                           int(m['width']), int(m['height']), float(m['lidar_height']))
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            raise LayoutError(
+                f'map needs resolution, origin [x, y], width, height, lidar_height: {e}') from None
+        if spec.resolution <= 0 or spec.width <= 0 or spec.height <= 0:
+            raise LayoutError('map: resolution, width, height must be positive')
+        return spec
+
+    def _nodes(self, items):
+        nodes = []
+        for i, n in enumerate(items):
+            nid = n.get('id')
+            if not nid:
+                raise LayoutError(f'node #{i} needs an id')
+            x, y = _point(n.get('at'), nid)
+            bar = n.get('bar', '')
+            if bar not in ('', 'x', 'y'):
+                raise LayoutError(f"{nid}: bar must be 'x' or 'y', got {bar!r}")
+            nodes.append(Node(nid, x, y, str(n.get('role', '')), tuple(n.get('links') or []),
+                              str(n.get('place', '')), bar, bool(n.get('nav2_switch', False)),
+                              bool(n.get('provisional', False))))
+        ids = [n.id for n in nodes]
+        dup = {i for i in ids if ids.count(i) > 1}
+        if dup:
+            raise LayoutError(f'duplicate node ids: {sorted(dup)}')
+        by_id = {n.id: n for n in nodes}
+        for n in nodes:
+            for other in n.links:
+                if other not in by_id:
+                    raise LayoutError(f'{n.id}: unknown link {other}')
+                if n.id not in by_id[other].links:
+                    raise LayoutError(f'{n.id} -> {other}: link must be listed on both nodes')
+                o = by_id[other]
+                # 테이프는 x축 또는 y축 방향으로만 붙인다
+                if abs(n.x - o.x) > 1e-6 and abs(n.y - o.y) > 1e-6:
+                    raise LayoutError(f'{n.id} -> {other}: link must be axis-aligned')
+        return nodes
+
+    def edges(self):
+        """양방향 연결을 한 번씩: [(Node, Node), ...]."""
+        by_id = {n.id: n for n in self.nodes}
+        seen, out = set(), []
+        for n in self.nodes:
+            for other in n.links:
+                key = tuple(sorted((n.id, other)))
+                if key not in seen:
+                    seen.add(key)
+                    out.append((n, by_id[other]))
+        return out
+
+    @staticmethod
+    def edge_provisional(a, b):
+        """위치를 추정한 분기 줄기(추정 정차 노드로 가는 구간)만 추정으로 본다.
+        간선 위의 추정 분기점은 간선 자체(실측)를 추정으로 만들지 않는다."""
+        return (a.provisional and bool(a.bar)) or (b.provisional and bool(b.bar))
+
+    def _tape_from_nodes(self):
+        """노드 연결 구간 + 정차 가로선 → 바닥 테이프 상자."""
+        out = []
+        for a, b in self.edges():
+            out.append(_segment_box(
+                self.frame, f'tape_{a.id}_{b.id}', (a.x, a.y), (b.x, b.y), self.line_width,
+                0.1, 0.0, extend=True, provisional=self.edge_provisional(a, b)))
+        half = self.bar_length / 2.0
+        for n in self.nodes:
+            if not n.bar:
+                continue
+            dx, dy = (half, 0.0) if n.bar == 'x' else (0.0, half)
+            out.append(_segment_box(
+                self.frame, f'bar_{n.id}', (n.x - dx, n.y - dy), (n.x + dx, n.y + dy),
+                self.line_width, 0.1, 0.0, extend=False, provisional=n.provisional))
+        return out
+
+    def room(self):
+        """벽 중심선의 바운딩 박스(실측 cm): (x0, y0, x1, y1)."""
+        xs = [p for w in self.raw.get('walls') or [] for p in (w['from'][0], w['to'][0])]
+        ys = [p for w in self.raw.get('walls') or [] for p in (w['from'][1], w['to'][1])]
+        return min(xs), min(ys), max(xs), max(ys)
+
     def _markers(self, spec):
         defaults = spec.get('defaults') or {}
         out = []
@@ -167,6 +283,9 @@ class Layout:
         return out
 
     def provisional_names(self):
-        return sorted({b.name.rsplit('_', 1)[0] if b in self.lines else b.name
+        # 직접 적은 lines 는 구간 번호(_k)를 떼고, 노드에서 만든 tape_·bar_ 는 그대로
+        return sorted({b.name.rsplit('_', 1)[0]
+                       if b in self.lines and not b.name.startswith(('tape_', 'bar_'))
+                       else b.name
                        for b in self.walls + self.objects + self.lines + self.markers
                        if b.provisional})

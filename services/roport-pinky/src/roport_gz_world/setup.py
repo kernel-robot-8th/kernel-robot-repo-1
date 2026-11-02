@@ -16,7 +16,10 @@ setup(
         ('share/' + package_name + '/launch', glob(os.path.join('launch', '*.launch.xml'))),
         ('share/' + package_name + '/worlds', glob(os.path.join('worlds', '*.sdf'))),
         ('share/' + package_name + '/layout', glob(os.path.join('layout', '*'))),
-        ('share/' + package_name + '/maps', glob(os.path.join('maps', '*'))),
+        # 지도는 services/roport-pinky/maps/ 공용 파일(실로봇·관제 GUI와 같은 파일)을 설치한다
+        ('share/' + package_name + '/maps',
+            glob(os.path.join('..', '..', 'maps', 'airport_map*.yaml'))
+            + glob(os.path.join('..', '..', 'maps', 'airport_map*.pgm'))),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

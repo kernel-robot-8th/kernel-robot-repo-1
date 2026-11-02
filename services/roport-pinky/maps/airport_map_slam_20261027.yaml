@@ -1,4 +1,4 @@
-image: airport_map.pgm
+image: airport_map_slam_20261027.pgm
 mode: trinary
 resolution: 0.050
 origin: [-1.654, -2.094, 0]
