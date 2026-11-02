@@ -77,8 +77,9 @@ kernel-robot-repo-1/
 
 - [디렉토리·기술 스택·CI 안내](docs/repositories.md)
 - [설계·요구사항·검증 문서 안내](docs/README.md)
+- [현재 Git-flow 및 PR 운영 규칙](.agents/rules/git-flow.md): `develop` 없이 `main`과 선택적 `task/**`를 사용합니다.
 - [Jira 작업 목록](https://fp-team1.atlassian.net/jira/projects/FFT1)
-- [Git-flow 및 PR 운영 규칙 논의](https://github.com/kernel-robot-8th/kernel-robot-repo-1/issues/1): 현재 합의 전 초안입니다.
+- [초기 Git-flow 논의](https://github.com/kernel-robot-8th/kernel-robot-repo-1/issues/1): 이전 `develop` 기반 초안이며 현재 운영 기준은 위 문서입니다.
 
 요구사항·상세 설계·회의 결정은 Confluence, 작업 담당과 진행 상태는 Jira,
 코드·실행 방법·코드 변경 이력은 GitHub에서 관리합니다.
