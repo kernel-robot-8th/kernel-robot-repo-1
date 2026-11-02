@@ -1,0 +1,42 @@
+[
+  {
+    "name": "l_wheel_joint",
+    "node": "l_wheel",
+    "type": "continuous",
+    "axis": [
+      0.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "name": "r_wheel_joint",
+    "node": "r_wheel",
+    "type": "continuous",
+    "axis": [
+      0.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "name": "caster_rotate_joint",
+    "node": "caster_roate_link",
+    "type": "continuous",
+    "axis": [
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  {
+    "name": "caster_wheel_joint",
+    "node": "caster_wheel",
+    "type": "continuous",
+    "axis": [
+      0.0,
+      1.0,
+      0.0
+    ]
+  }
+]

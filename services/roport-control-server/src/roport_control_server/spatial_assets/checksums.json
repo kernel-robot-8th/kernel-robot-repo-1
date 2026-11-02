@@ -1,0 +1,18 @@
+{
+  "models/omx/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "models/omx/joints.json": "ad64c751eeda6192bb65bad855cfe8df05c7505e2a302f7ccaad6344c5eb0393",
+  "models/omx/robot.glb": "d90fd157693434cc521152513e5973d7b163ca5aee34dc01c8e8f7f4a4b13898",
+  "models/omx/robot.urdf": "d06720f50c71b380daa91f6cf52ae089725bc588617e5f42ed2433b6e665b809",
+  "models/pinky/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "models/pinky/joints.json": "e578e2838f01b9c76eb13b14f5feb7a851a6c6119e2aba0e4ef22337f75af8ec",
+  "models/pinky/robot.glb": "91408f9758ddc1cde591714330db1142556d486dfb0b1b42fd040068224b46a3",
+  "models/pinky/robot.urdf": "11d5c41278001e0fbc23ce626d33d7398b6352440b8f172dce9ecf0182fa6b0c",
+  "models/sources.json": "e433ecf5d0c6c08865a5360d08cb3aa62a8cd19bc270aa8bb27659b515a5a3c5",
+  "vendor/three/LICENSE": "8b378ebe60e2fe500158cb0ac71cb5e8b7d92953c2abcc63a0eb90499653b5bc",
+  "vendor/three/esm/three.core.js": "613e370f76638fdef83926642bf256dc9615684922de1ce1f63a8583e5d78578",
+  "vendor/three/esm/three.module.js": "104f56145899722094556490d787aae0617cc2fc3382f31df02d724ea1aee341",
+  "vendor/three/examples/jsm/controls/OrbitControls.js": "e7fca2fe9e7670a828af9b28084669a5909445b7f36f1f26cee9bf8f2961c32c",
+  "vendor/three/examples/jsm/loaders/GLTFLoader.js": "532ac726e120039acbcd6cf54328c57acbf7b438176afaa6951257126d11bff1",
+  "vendor/three/examples/jsm/utils/BufferGeometryUtils.js": "7bda2a8ba836b2bcf67cb938d4b9e1bb5d1b1bc616817103ed858c0b58296ce7",
+  "vendor/three/examples/jsm/utils/SkeletonUtils.js": "b1632a703206c3d830de9fcbe515696770d04b71a15ee6b50afa6d2c3298c86f"
+}
