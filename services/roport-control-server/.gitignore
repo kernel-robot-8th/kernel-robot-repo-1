@@ -16,3 +16,6 @@ target/
 *.pt
 *.pth
 *.safetensors
+
+# Generated offline web assets
+/src/roport_control_server/spatial_assets/vendor/

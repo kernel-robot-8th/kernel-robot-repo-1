@@ -1,0 +1,77 @@
+[
+  {
+    "name": "joint1",
+    "node": "link1",
+    "type": "revolute",
+    "axis": [
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  {
+    "name": "joint2",
+    "node": "link2",
+    "type": "revolute",
+    "axis": [
+      0.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "name": "joint3",
+    "node": "link3",
+    "type": "revolute",
+    "axis": [
+      0.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "name": "joint4",
+    "node": "link4",
+    "type": "revolute",
+    "axis": [
+      0.0,
+      1.0,
+      0.0
+    ]
+  },
+  {
+    "name": "joint5",
+    "node": "link5",
+    "type": "revolute",
+    "axis": [
+      1.0,
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "name": "gripper_joint_1",
+    "node": "link6",
+    "type": "revolute",
+    "axis": [
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  {
+    "name": "gripper_joint_2",
+    "node": "link7",
+    "type": "revolute",
+    "axis": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "mimic": {
+      "joint": "gripper_joint_1",
+      "multiplier": -1.0,
+      "offset": 0.0
+    }
+  }
+]

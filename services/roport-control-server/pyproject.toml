@@ -17,6 +17,12 @@ ui = [
 requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+artifacts = ["src/roport_control_server/spatial_assets/vendor/**"]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
 [dependency-groups]
 dev = ["ruff==0.17.2", "pytest==9.1.1", "httpx==0.28.1"]
 
