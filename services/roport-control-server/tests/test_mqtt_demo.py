@@ -2,10 +2,10 @@ from collections import deque
 from queue import Empty
 from types import SimpleNamespace
 
+import mqtt_demo as demo
 import pytest
 
-from roport_control_server.communication.messages import encode
-from roport_control_server.examples import mqtt_demo as demo
+from roport_control_server.adapters.mqtt.messages import encode
 
 
 class ScriptedTransport:

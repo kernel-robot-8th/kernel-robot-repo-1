@@ -7,13 +7,16 @@ import subprocess
 import sys
 import time
 from dataclasses import replace
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from mqtt_demo import DEVICES, MockExecutor, make_command
 
-from roport_control_server.communication.messages import decode, encode, topic
-from roport_control_server.communication.mqtt import MqttConfig, MqttTransport
-from roport_control_server.examples.mqtt_demo import DEVICES, MockExecutor, make_command
+from roport_control_server.adapters.mqtt.messages import decode, encode, topic
+from roport_control_server.adapters.mqtt.mqtt import MqttConfig, MqttTransport
+
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
 
 def wait_until(predicate, timeout=5):
@@ -230,12 +233,10 @@ def test_publish_rejects_wrong_site_or_device(clients):
             sender.publish(destination, make_command("pinky1"))
 
 
-def test_communication_folder_is_portable(tmp_path):
-    from pathlib import Path
+def test_mqtt_adapter_folder_is_portable(tmp_path):
+    from roport_control_server.adapters import mqtt
 
-    from roport_control_server import communication
-
-    shutil.copytree(Path(communication.__file__).parent, tmp_path / "communication")
+    shutil.copytree(Path(mqtt.__file__).parent, tmp_path / "mqtt")
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     subprocess.run(
@@ -244,8 +245,8 @@ def test_communication_folder_is_portable(tmp_path):
             "-c",
             """
 import sys
-from communication.mqtt import MqttConfig, MqttTransport
-from communication.messages import topic
+from mqtt.mqtt import MqttConfig, MqttTransport
+from mqtt.messages import topic
 MqttTransport(MqttConfig('localhost', 'portable-test'), [topic('test', 'robot', 'pinky1', 'cmd')])
 assert not any(name in sys.modules for name in ['fastapi', 'rclpy', 'PyQt5', 'PyQt6', 'psycopg'])
 assert 'roport_control_server' not in sys.modules
@@ -262,7 +263,7 @@ assert 'roport_control_server' not in sys.modules
 def test_demo_runs_in_separate_processes(broker, device):
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
-    command = [sys.executable, "-m", "roport_control_server.examples.mqtt_demo"]
+    command = [sys.executable, str(SCRIPTS / "mqtt_demo.py")]
     with subprocess.Popen(
         [*command, device, "--port", str(broker[0])],
         stdout=subprocess.PIPE,
@@ -291,7 +292,7 @@ def test_demo_runs_in_separate_processes(broker, device):
 
 
 def test_oversized_message_is_dropped_without_poisoning_connection(clients):
-    from roport_control_server.communication.messages import MAX_MESSAGE_BYTES
+    from roport_control_server.adapters.mqtt.messages import MAX_MESSAGE_BYTES
 
     destination = topic("test", "robot", "pinky1", "cmd")
     sender = clients([topic("test", "robot", "pinky1", "event")])

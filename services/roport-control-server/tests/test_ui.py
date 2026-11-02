@@ -16,7 +16,8 @@ else:
 
 from PyQt6.QtWidgets import QApplication, QLabel
 
-from roport_control_server import ui
+from roport_control_server.adapters.ui import window as ui
+from roport_control_server.contracts.snapshot import Snapshot, TaskRow
 
 
 @pytest.fixture(scope="module")
@@ -49,9 +50,7 @@ def test_snapshot_replaces_full_view_and_keeps_error_text_plain(window):
     assert window.tasks.item(0, 0).text() == "DEMO-001"
     assert window.tasks.cellWidget(0, 3).value() == 10
     assert "모의 경고" in window.errors.toPlainText()
-    assert window.apply_snapshot(
-        ui.Snapshot("demo", 2, errors=("<b>literal error</b>",))
-    )
+    assert window.apply_snapshot(Snapshot("demo", 2, errors=("<b>literal error</b>",)))
     assert window.tasks.rowCount() == 0
     assert window.errors.toPlainText() == "<b>literal error</b>"
     assert all(not b.isEnabled() for b in window.action_buttons)
@@ -78,10 +77,10 @@ def test_source_change_clears_previous_rows_and_rejects_late_old_session(window)
     window.set_source("new-session")
     assert window.tasks.rowCount() == 0
     assert not window.apply_snapshot(ui.demo_snapshot(100))
-    assert window.apply_snapshot(ui.Snapshot("new-session", 0))
+    assert window.apply_snapshot(Snapshot("new-session", 0))
     window.set_source(None)
     assert window.connection.text() == "미연결"
-    assert not window.apply_snapshot(ui.Snapshot("new-session", 1))
+    assert not window.apply_snapshot(Snapshot("new-session", 1))
 
 
 def test_teammate_widget_replaces_exact_tab_and_preserves_selection(window):
@@ -115,7 +114,7 @@ def test_worker_thread_cannot_update_widgets(window):
 @pytest.mark.parametrize("value", [-1, 101, 1.5, True])
 def test_invalid_progress_is_rejected(value):
     with pytest.raises(ValueError):
-        ui.TaskRow("id", "Pinky 1", "stage", value, "진행")
+        TaskRow("id", "Pinky 1", "stage", value, "진행")
 
 
 @pytest.mark.parametrize(
@@ -126,7 +125,7 @@ def test_invalid_progress_is_rejected(value):
         {"session_id": ""},
         {"errors": ("x" * 501,)},
         {"errors": tuple("x" for _ in range(21))},
-        {"tasks": (ui.TaskRow("same", "Pinky 1", "stage", 0, "대기"),) * 2},
+        {"tasks": (TaskRow("same", "Pinky 1", "stage", 0, "대기"),) * 2},
     ],
 )
 def test_invalid_snapshot_is_rejected(changes):
@@ -154,13 +153,13 @@ def test_cli_event_loop_opens_and_closes(args):
 import sys
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
-from roport_control_server.ui import main
+import runpy
 original = QApplication.exec
 def briefly(*args):
     QTimer.singleShot(100, QApplication.instance().quit)
     return original()
 QApplication.exec = briefly
-main()
+runpy.run_module("roport_control_server.adapters.ui", run_name="__main__")
 """
     subprocess.run(
         [sys.executable, "-c", script, *args],
