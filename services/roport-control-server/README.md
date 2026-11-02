@@ -12,6 +12,8 @@ Python 3.12 / uv / Paho MQTT 2.1.0 / pytest / Ruff.
 
 ```
 src/roport_control_server/
+  domain/      __init__.py만: Workflow·Allocation·State/Recovery 규칙 자리 (골격, 미구현)
+  executor/    __init__.py만: 관제 실행부 프로세스 자리 (골격, 미구현, FFT1-106)
   contracts/   snapshot.py: TaskRow·Snapshot 표시 계약과 검증 (표준 라이브러리만)
   adapters/
     mqtt/      messages.py·mqtt.py: MQTT 5 명령·이벤트 (폴더 단위 이식)
@@ -29,10 +31,10 @@ tests/         test_layers.py: 아래 import 규칙 검사
 | `adapters/udp/` | 표준 라이브러리, 자기 폴더 |
 | `adapters/ui/` | 표준 라이브러리, PyQt6, `contracts` |
 | `adapters/api/` | 표준 라이브러리, fastapi, `contracts` |
-| `domain/` (미생성) | 표준 라이브러리 |
-| `executor/` (미생성) | 표준 라이브러리, `domain`, `contracts`, `adapters`(ui·api 제외) |
+| `domain/` (골격) | 표준 라이브러리 |
+| `executor/` (골격) | 표준 라이브러리, `domain`, `contracts`, `adapters`(ui·api 제외) |
 
-패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`·`executor/`·`adapters/db/`·`adapters/wss/`는 아직 없으며 설계 목표일 뿐입니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
+패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`·`executor/`는 책임만 적은 골격이고 코드는 아직 없습니다. `adapters/db/`·`adapters/wss/`는 DB 종류와 WSS 메시지 계약이 확정된 뒤 만듭니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
 
 ## 현재 범위
 
