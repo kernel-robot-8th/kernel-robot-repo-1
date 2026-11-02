@@ -34,7 +34,7 @@ source install/setup.bash
 python3 -c "import roport_pinky; import rclpy"
 ```
 
-팀 패키지에는 아직 실행 노드·모터 명령이 없습니다. 아래 원본 Pinky Pro에는 실장비 실행 코드가 포함돼 있습니다.
+팀 패키지에는 아직 실행 노드·모터 명령이 없습니다. 스마트카트 작업 위치는 [src/roport_smartcart/](src/roport_smartcart/)입니다. 아래 원본 Pinky Pro에는 실장비 실행 코드가 포함돼 있습니다.
 
 ## Pinky Pro 원본
 
