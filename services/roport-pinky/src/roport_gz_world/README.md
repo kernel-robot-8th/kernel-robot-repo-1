@@ -18,7 +18,8 @@ world 좌표를 실제 SLAM 지도(`maps/airport_map.yaml`) 좌표계에 맞춰 
 ```bash
 cd services/roport-pinky
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-up-to roport_gz_world
+# Nav2 launch(pinky_navigation)와 웹 콘솔(pinky_test_console)은 roport_gz_world 의존이 아니므로 함께 지정
+colcon build --packages-up-to roport_gz_world pinky_navigation pinky_test_console
 source install/setup.bash
 
 # 터미널 1: Gazebo (GUI 포함, 원본 launch_sim 그대로)
@@ -30,7 +31,7 @@ ros2 launch pinky_navigation gz_bringup_launch.xml \
 ```
 
 - 로봇은 world (0, 0), +x 방향에 나타납니다. 이 자리는 SLAM 지도 원점, 즉 실제 로봇이 SLAM을 시작한 위치(실측 약 x 152, y 202 cm)입니다. AMCL 초기 위치를 (0, 0, 0)으로 주면 됩니다.
-- 웹 콘솔(`pinky_test_console`)로 조종·Nav2를 하려면 터미널 2 대신 다음을 실행합니다.
+- 웹 콘솔(`pinky_test_console`, 위 빌드 명령에 포함)로 조종·Nav2를 하려면 터미널 2 대신 다음을 실행합니다.
   `ros2 launch pinky_test_console console.launch.py mode:=nav map:=<위 지도 경로> use_sim_time:=true`
 - 필요한 apt 패키지: `ros-jazzy-ros-gz ros-jazzy-gz-ros2-control ros-jazzy-navigation2 ros-jazzy-nav2-bringup ros-jazzy-xacro`
 
