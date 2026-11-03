@@ -23,6 +23,9 @@ if not _MISSING:
 
 from pinky_test_console.teleop import MAX_ANGULAR, MAX_LINEAR  # noqa: E402
 
+LAYOUT = __import__('os').path.join(
+    __import__('os').path.dirname(__file__), '..', '..', 'roport_gz_world', 'layout',
+    'roport_airport.yaml')
 TEST_DOMAIN_ID = 199  # 강의실 로봇이 쓰지 않을 높은 번호 (ROS 2 허용 범위 0-232)
 NS = '/pinky_console_pytest'
 
@@ -136,3 +139,48 @@ def test_save_map_without_slam_reports_failure(ros):
     node, _ = ros
     r = node.slam_save_map('room')
     assert r['success'] is False and 'not available' in r['msg']
+
+
+def test_route_mode_commands_and_estop(tmp_path):
+    """mode:=route: 화면 명령이 line_nav/command 로 나가고, 정지 버튼은 경로 주행도 멈춘다."""
+    import json
+    from std_msgs.msg import String
+    from pinky_test_console.web_server import ConsoleNode
+    ctx = Context()
+    rclpy.init(context=ctx, domain_id=TEST_DOMAIN_ID)
+    node = ConsoleNode(context=ctx, namespace=NS, parameter_overrides=[
+        rclpy.parameter.Parameter('map_dir', value=str(tmp_path)),
+        rclpy.parameter.Parameter('mode', value='route'),
+        rclpy.parameter.Parameter('layout_yaml', value=LAYOUT)])
+    probe = rclpy.create_node('probe', context=ctx, namespace=NS)
+    got = []
+    probe.create_subscription(String, 'line_nav/command', lambda m: got.append(json.loads(m.data)),
+                              10)
+    state_pub = probe.create_publisher(String, 'line_nav/state', 10)
+    ex = SingleThreadedExecutor(context=ctx)
+    ex.add_node(node)
+    ex.add_node(probe)
+    th = threading.Thread(target=ex.spin, daemon=True)
+    th.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while node.route_cmd_pub.get_subscription_count() == 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert node.route_snapshot()['stale']
+        node.route_command({'cmd': 'start', 'route': ['N14', 'N16']})
+        node.emergency_stop()
+        deadline = time.monotonic() + 3.0
+        while len(got) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert got == [{'cmd': 'start', 'route': ['N14', 'N16']}, {'cmd': 'stop'}]
+        for _ in range(5):
+            state_pub.publish(String(data=json.dumps({'state': 'follow'})))
+            time.sleep(0.05)
+        snap = node.route_snapshot()
+        assert snap['state'] == {'state': 'follow'} and not snap['stale']
+        assert node.route_graph()['nodes']
+    finally:
+        ex.shutdown(timeout_sec=1.0)
+        node.destroy_node()
+        probe.destroy_node()
+        rclpy.shutdown(context=ctx)

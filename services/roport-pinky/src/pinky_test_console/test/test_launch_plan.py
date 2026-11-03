@@ -274,3 +274,22 @@ def test_camera_env_only_for_picamera_marker():
     assert camera_env('marker', 'picamera2', env, exists=lambda p: False) == {}
     only = camera_env('marker', 'picamera2', {}, exists=yes)
     assert only == {'LD_LIBRARY_PATH': PICAMERA_LIB_DIR}
+
+
+def test_route_requires_robot_and_runs_ir_node():
+    with pytest.raises(LaunchArgError, match='robot'):
+        resolve_plan('route')
+    with pytest.raises(LaunchArgError, match='robot'):
+        resolve_plan('route', robot='d660; rm')
+    plan = resolve_plan('route', robot='pinky_d660')
+    assert plan.robot == 'pinky_d660' and plan.ir_node and plan.ip == '0.0.0.0'
+    assert included_launch(plan) == (None, {})
+
+
+def test_fleet_binds_loopback_by_default():
+    plan = resolve_plan('fleet')
+    assert plan.ip == '127.0.0.1' and not plan.ir_node and plan.robot == ''
+    assert resolve_plan('fleet', ip='0.0.0.0').ip == '0.0.0.0'
+    with pytest.raises(LaunchArgError, match='IPv4'):
+        resolve_plan('fleet', ip='localhost; x')
+    assert resolve_plan('slam', robot='pinky_d660').robot == ''

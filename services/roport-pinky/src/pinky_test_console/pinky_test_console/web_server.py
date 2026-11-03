@@ -13,9 +13,12 @@
 #   - IR raw value view and timed CSV recording (ir_sensor/range)
 #   - ArUco marker recognition check (camera preview, ID checklist)
 #   - AMCL map match check (scan vs map score, node initial poses, CSV record)
+#   - node-route driving page (line_nav/state·command), fleet settings/test control (laptop)
 # See LICENSE in this package for the full license text.
 
 import _thread
+import ipaddress
+import json
 import logging
 import math
 import os
@@ -50,7 +53,7 @@ from std_msgs.msg import Float32, String, UInt16MultiArray
 from std_srvs.srv import Empty
 from tf2_ros import Buffer, TransformListener
 
-from . import amcl_check, ir_record, map_store, marker_detect
+from . import amcl_check, fleet, ir_record, map_store, marker_detect, route_view
 from .sysstats import read_system_stats
 from .teleop import DEADMAN_TIMEOUT, MAX_ANGULAR, MAX_LINEAR, TeleopGuard
 from .web_app import create_app, default_web_dir
@@ -60,6 +63,17 @@ WATCHDOG_PERIOD = 0.02  # s, deadman 검사 주기 (만료 후 최대 20 ms 안�
 BATTERY_STALE_SEC = 15.0  # battery_publisher 는 5 s 주기
 SAVE_MAP_TIMEOUT = 20.0   # s, map_saver_cli 실행 대기
 SCAN_STALE_SEC = 1.0      # 라이다 스캔이 이보다 오래되면 정합 점수를 내지 않음
+ROUTE_STALE_SEC = 1.0     # line_nav/state(약 20 Hz)가 이보다 오래되면 끊김으로 표시
+
+
+def default_layout_yaml():
+    """roport_gz_world 의 배치 yaml(노드 그래프). 설치되지 않았으면 ''."""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        return os.path.join(get_package_share_directory('roport_gz_world'), 'layout',
+                            'roport_airport.yaml')
+    except Exception:  # noqa: BLE001 - PackageNotFoundError
+        return ''
 
 
 ############################################################
@@ -101,6 +115,11 @@ class ConsoleNode(Node):
         self.declare_parameter('marker_record_dir', marker_detect.DEFAULT_RECORD_DIR)
         self.declare_parameter('layout_yaml', '')
         self.declare_parameter('amcl_dir', amcl_check.DEFAULT_AMCL_DIR)
+        self.declare_parameter('robot', '')
+        self.declare_parameter('fleet_file', '~/.roport/fleet.json')
+        self.declare_parameter('repo_dir', '~/dev_ws/roport/kernel-robot-repo-1')
+        self.declare_parameter('ssh_key', '~/.ssh/pinky_ed25519')
+        self.declare_parameter('robot_port', 8080)
 
         self.mode = self.get_parameter('mode').value
         self.map_dir = map_store.resolve_map_dir(self.get_parameter('map_dir').value)
@@ -176,6 +195,14 @@ class ConsoleNode(Node):
         self.amcl_recorder = amcl_check.AmclRecorder(self.get_parameter('amcl_dir').value)
         if self.mode == 'amcl':
             self._start_amcl()
+
+        # ---- 노드 경로 주행 (mode:=route: 로봇의 line_nav 노드와 주고받음) ----
+        self.route_state = None     # (dict, monotonic time)
+        self._route_graph = None
+        self.route_cmd_pub = None
+        if self.mode == 'route':
+            self.route_cmd_pub = self.create_publisher(String, 'line_nav/command', 10)
+            self.create_subscription(String, 'line_nav/state', self._route_state_cb, 10)
 
         # ---- SLAM Toolbox ----
         self.save_map_client = self.create_client(SaveMap, '/slam_toolbox/save_map')
@@ -262,8 +289,10 @@ class ConsoleNode(Node):
             self.publish_twist(0.0, 0.0)
 
     def emergency_stop(self):
-        """화면 상단 정지 버튼: 속도 0 먼저, 그 다음 Nav2 취소."""
+        """화면 상단 정지 버튼: 경로 주행 정지·속도 0 먼저, 그 다음 Nav2 취소."""
         self.teleop_guard.stop()
+        if self.route_cmd_pub is not None:
+            self.route_cmd_pub.publish(String(data=json.dumps({'cmd': 'stop'})))
         self.publish_twist(0.0, 0.0)
         nav_cancelled = self.cancel_goal(wait_sec=0.3)
         self.get_logger().warn('[WEB] EMERGENCY STOP: zero velocity published, '
@@ -344,6 +373,59 @@ class ConsoleNode(Node):
             'deadman_sec': DEADMAN_TIMEOUT,
             'teleop_hz': round(1.0 / TELEOP_PERIOD),
         }
+
+    # ---------------- 노드 경로 주행 ----------------
+    def _route_state_cb(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except ValueError:
+            return
+        if isinstance(data, dict):
+            with self.lock:
+                self.route_state = (data, time.monotonic())
+
+    def route_snapshot(self):
+        with self.lock:
+            st = self.route_state
+        age = None if st is None else round(time.monotonic() - st[1], 2)
+        return {
+            'mode': self.mode,
+            'robot': str(self.get_parameter('robot').value),
+            'available': self.mode == 'route',
+            'state': None if st is None else st[0],
+            'age_sec': age,
+            'stale': st is None or age > ROUTE_STALE_SEC,
+        }
+
+    def route_graph(self):
+        if self._route_graph is None:
+            path = os.path.expanduser(str(self.get_parameter('layout_yaml').value)) \
+                or default_layout_yaml()
+            if not path:
+                raise route_view.RouteCommandError(
+                    'layout not found (install roport_gz_world or set layout:=<yaml>)')
+            self._route_graph = route_view.graph_view(path)
+        return self._route_graph
+
+    def route_command(self, cmd):
+        """cmd = route_view.parse_route_command 결과. line_nav 가 받아 검사·실행한다."""
+        if self.route_cmd_pub is None:
+            raise route_view.RouteCommandError('route commands need mode:=route')
+        self.route_cmd_pub.publish(String(data=json.dumps(cmd)))
+        self.get_logger().info(f'[WEB] line_nav command: {cmd}')
+        return True
+
+    def make_fleet(self):
+        """mode:=fleet 의 FleetManager. 다른 모드는 None."""
+        if self.mode != 'fleet':
+            return None
+        store = fleet.FleetStore(str(self.get_parameter('fleet_file').value))
+        cmds = fleet.Commands(str(self.get_parameter('repo_dir').value),
+                              str(self.get_parameter('ssh_key').value))
+        mgr = fleet.FleetManager(
+            store, cmds, client=fleet.RobotClient(int(self.get_parameter('robot_port').value)))
+        mgr.start_polling()
+        return mgr
 
     def get_status(self):
         stats = read_system_stats()
@@ -728,7 +810,11 @@ def main(args=None):
 
         ip = str(node.get_parameter('ip').value)
         port = int(node.get_parameter('port').value)
-        app = create_app(node, default_web_dir())
+        fleet_mgr = node.make_fleet()
+        allowed = None
+        if fleet_mgr is not None and ipaddress.IPv4Address(ip).is_loopback:
+            allowed = {f'127.0.0.1:{port}', f'localhost:{port}'}
+        app = create_app(node, default_web_dir(), fleet=fleet_mgr, allowed_hosts=allowed)
         # 10 Hz teleop + 2 Hz 상태 요청 로그가 화면을 덮지 않도록
         logging.getLogger('werkzeug').setLevel(logging.WARNING)
         node.get_logger().info(f'Web console: http://{ip}:{port}  (classroom Wi-Fi only)')

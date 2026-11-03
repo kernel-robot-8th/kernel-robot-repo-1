@@ -14,9 +14,9 @@ pytestmark = pytest.mark.skipif(importlib.util.find_spec('flask') is None,
                                 reason='python3-flask not installed')
 
 
-def create_app(node, web_dir):
+def create_app(node, web_dir, **kwargs):
     from pinky_test_console.web_app import create_app as _create_app
-    return _create_app(node, web_dir)
+    return _create_app(node, web_dir, **kwargs)
 
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'web')
@@ -127,6 +127,16 @@ class FakeNode:
     def marker_records_path(self):
         return self.records_path
 
+    def route_snapshot(self):
+        return {'mode': 'route', 'state': {'state': 'idle'}, 'stale': False}
+
+    def route_graph(self):
+        return {'version': 'line-v13', 'nodes': [], 'presets': []}
+
+    def route_command(self, cmd):
+        self.calls.append(('route', cmd))
+        return True
+
     # AMCL
     NODES = [{'id': 'N12', 'x_cm': 378.3, 'y_cm': 73.2, 'yaw_deg': 0.0, 'nav2_switch': True}]
     amcl_path = None
@@ -174,7 +184,9 @@ def client(node):
 
 def test_index_and_assets(client):
     for path in ('/', '/app.js', '/style.css', '/index.html', '/ir.html', '/ir.js',
-                 '/marker.html', '/marker.js', '/amcl.html', '/amcl.js'):
+                 '/marker.html', '/marker.js', '/amcl.html', '/amcl.js', '/route.html',
+                 '/route.js', '/routemap.js', '/fleet.html', '/fleet.js', '/settings.html',
+                 '/settings.js'):
         r = client.get(path)
         assert r.status_code == 200, path
 
@@ -192,7 +204,8 @@ def test_security_headers(client):
     assert client.get('/api/status').headers['Cache-Control'] == 'no-store'
 
 
-@pytest.mark.parametrize('page', ['index.html', 'ir.html', 'marker.html', 'amcl.html'])
+@pytest.mark.parametrize('page', ['index.html', 'ir.html', 'marker.html', 'amcl.html',
+                                  'route.html', 'fleet.html', 'settings.html'])
 def test_html_has_no_external_or_inline_code(page):
     html = open(os.path.join(WEB_DIR, page)).read()
     assert 'http://' not in html.split('-->', 1)[1]
@@ -371,3 +384,65 @@ def test_amcl_nomotion_and_record(client, node, tmp_path):
     (tmp_path / 'amcl_20261103.csv').write_text('time,label\n')
     r = client.get('/api/amcl/records.csv')
     assert r.status_code == 200 and 'attachment' in r.headers['Content-Disposition']
+
+
+def test_route_api(client, node):
+    assert client.get('/api/route').get_json()['state']['state'] == 'idle'
+    assert client.get('/api/route/graph').get_json()['version'] == 'line-v13'
+    r = client.post('/api/route/command', json={'cmd': 'start', 'route': ['N14', 'N16']})
+    assert r.status_code == 200 and node.calls[-1] == ('route', {'cmd': 'start',
+                                                                 'route': ['N14', 'N16']})
+    for body in ({'cmd': 'fly'}, {'cmd': 'start', 'route': ['N14']},
+                 {'cmd': 'start', 'route': ['N14', 'x; rm']}):
+        assert client.post('/api/route/command', json=body).status_code == 400, body
+    assert client.post('/api/route/command', data='cmd=stop',
+                       content_type='application/x-www-form-urlencoded').status_code == 400
+
+
+def test_fleet_routes_absent_without_fleet(client):
+    assert client.get('/api/fleet').status_code == 404
+    assert client.post('/api/fleet/job', json={}).status_code == 404
+
+
+@pytest.fixture
+def fleet_client(node, tmp_path):
+    from test_fleet import FakeClient, FakeRunner, GOOD
+    from pinky_test_console.fleet import Commands, FleetManager, FleetStore
+    store = FleetStore(str(tmp_path / 'fleet.json'))
+    store.upsert(GOOD)
+    mgr = FleetManager(store, Commands('/repo', '/k'), client=FakeClient(), runner=FakeRunner())
+    app = create_app(node, WEB_DIR, fleet=mgr, allowed_hosts={'127.0.0.1:8080'})
+    app.testing = True
+    return app.test_client(), mgr
+
+
+def test_fleet_host_check(fleet_client):
+    c, _ = fleet_client
+    assert c.get('/api/fleet', headers={'Host': 'evil.example'}).status_code == 403
+    assert c.get('/api/fleet', headers={'Host': '127.0.0.1:8080'}).status_code == 200
+
+
+def test_fleet_api(fleet_client):
+    c, mgr = fleet_client
+    h = {'Host': '127.0.0.1:8080'}
+    snap = c.get('/api/fleet', headers=h).get_json()
+    assert snap['robots'][0]['name'] == 'pinky1'
+    r = c.post('/api/fleet/robots', headers=h, json={'name': 'pinky2', 'ip': '192.168.4.22',
+                                                     'role': 'smartcart', 'domain': 16,
+                                                     'calib': 'pinky_764e'})
+    assert r.status_code == 200
+    assert c.post('/api/fleet/robots', headers=h, json={'name': 'X'}).status_code == 400
+    r = c.post('/api/fleet/job', headers=h, json={'name': 'pinky2', 'action': 'set_domain'})
+    assert r.status_code == 200 and r.get_json()['job']['action'] == 'set_domain'
+    assert c.post('/api/fleet/job', headers=h,
+                  json={'name': 'pinky1', 'action': 'deploy', 'ref': 'main'}).status_code == 400
+    r = c.post('/api/fleet/route', headers=h, json={'name': 'pinky1', 'cmd': 'stop'})
+    assert r.status_code == 200 and r.get_json()['result'] == {'success': True}
+    assert c.post('/api/fleet/route', headers=h,
+                  json={'name': 'pinky1', 'cmd': 'start', 'route': ['N1']}).status_code == 400
+    assert c.post('/api/fleet/stop_all', headers=h, json={}).get_json()['success']
+    mgr.client.fail = True
+    r = c.post('/api/fleet/route', headers=h, json={'name': 'pinky1', 'cmd': 'stop'})
+    assert r.status_code == 502
+    assert c.post('/api/fleet/robots/delete', headers=h,
+                  json={'name': 'pinky2'}).status_code == 200

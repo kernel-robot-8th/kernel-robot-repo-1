@@ -7,6 +7,8 @@
 #   mode:=ir   -> no include; pinky_sensor_adc main_node (IR/ultrasonic ADC read only)
 #   mode:=marker -> no include; camera preview + ArUco recognition in the console process
 #   mode:=amcl -> pinky_navigation/launch/localization_launch.xml (map_server, amcl only)
+#   mode:=route -> no include; roport_line_nav line_nav + pinky_sensor_adc (node-route driving)
+#   mode:=fleet -> no include; laptop only (Pinky settings, test control over HTTP/SSH, 127.0.0.1)
 # pinky_bringup/bringup_robot.launch.xml is NOT included: start it separately first.
 """Pinky test console.
 
@@ -16,6 +18,10 @@
   ros2 launch pinky_test_console console.launch.py mode:=marker markers_yaml:=~/markers.yaml
   ros2 launch pinky_test_console console.launch.py mode:=amcl map:=<airport_map.yaml> \
       layout:=<roport_airport.yaml>   (AMCL: http://<robot>:8080/amcl.html)
+  ros2 launch pinky_test_console console.launch.py mode:=route robot:=pinky_d660
+      (route: http://<robot>:8080/route.html, bringup separately)
+  ros2 launch pinky_test_console console.launch.py mode:=fleet
+      (laptop: http://127.0.0.1:8080/fleet.html)
   (Gazebo) ... use_sim_time:=true
 """
 
@@ -39,6 +45,8 @@ def launch_setup(context):
         port=LaunchConfiguration('port').perform(context),
         use_sim_time=LaunchConfiguration('use_sim_time').perform(context),
         ir_node=LaunchConfiguration('ir_node').perform(context),
+        ip=LaunchConfiguration('ip').perform(context),
+        robot=LaunchConfiguration('robot').perform(context),
     )
     launch_file, launch_args = included_launch(plan)
     camera = LaunchConfiguration('camera').perform(context)
@@ -46,7 +54,7 @@ def launch_setup(context):
     actions = [
         LogInfo(msg=f'[pinky_test_console] mode={plan.mode} map={plan.map_yaml or "-"} '
                     f'port={plan.port} use_sim_time={plan.use_sim_time} '
-                    f'include={launch_file or "-"} ir_node={plan.ir_node}'),
+                    f'include={launch_file or "-"} ir_node={plan.ir_node} ip={plan.ip}'),
         Node(
             package='pinky_test_console',
             executable='web_server',
@@ -54,7 +62,7 @@ def launch_setup(context):
             output='screen',
             additional_env=camera_env(plan.mode, camera, os.environ),
             parameters=[{
-                'ip': LaunchConfiguration('ip').perform(context),
+                'ip': plan.ip,
                 'port': plan.port,
                 'mode': plan.mode,
                 'map_dir': LaunchConfiguration('map_dir').perform(context),
@@ -67,9 +75,21 @@ def launch_setup(context):
                 'layout_yaml': os.path.expanduser(LaunchConfiguration('layout').perform(context)),
                 'amcl_dir': LaunchConfiguration('amcl_dir').perform(context),
                 'use_sim_time': plan.use_sim_time,
+                'robot': plan.robot,
+                'fleet_file': LaunchConfiguration('fleet_file').perform(context),
+                'repo_dir': LaunchConfiguration('repo_dir').perform(context),
+                'ssh_key': LaunchConfiguration('ssh_key').perform(context),
             }],
         ),
     ]
+    if plan.mode == 'route':
+        # 경로 주행 노드(cmd_vel 발행). bringup(모터·odom)은 사용자가 먼저 따로 실행
+        actions.append(Node(
+            package='roport_line_nav', executable='line_nav', output='screen',
+            parameters=[{
+                'robot': plan.robot,
+                'layout_file': os.path.expanduser(LaunchConfiguration('layout').perform(context)),
+            }]))
     if launch_file:
         # pinky_navigation 이 없으면 여기서 PackageNotFoundError 로 바로 알려준다
         launch_path = os.path.join(
@@ -87,11 +107,20 @@ def launch_setup(context):
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('mode', default_value='slam',
-                              description='slam | nav | ir | marker | amcl'),
+                              description='slam | nav | ir | marker | amcl | route | fleet'),
         DeclareLaunchArgument('map', default_value='',
                               description='map .yaml path (required for mode:=nav|amcl)'),
         DeclareLaunchArgument('port', default_value='8080', description='web port'),
-        DeclareLaunchArgument('ip', default_value='0.0.0.0', description='bind address'),
+        DeclareLaunchArgument('ip', default_value='',
+                              description='bind address (default 0.0.0.0, fleet 127.0.0.1)'),
+        DeclareLaunchArgument('robot', default_value='',
+                              description='mode:=route IR calibration name (pinky_d660 ...)'),
+        DeclareLaunchArgument('fleet_file', default_value='~/.roport/fleet.json',
+                              description='mode:=fleet robot registry'),
+        DeclareLaunchArgument('repo_dir', default_value='~/dev_ws/roport/kernel-robot-repo-1',
+                              description='mode:=fleet git checkout used for git archive'),
+        DeclareLaunchArgument('ssh_key', default_value='~/.ssh/pinky_ed25519',
+                              description='mode:=fleet SSH key (no passwords)'),
         DeclareLaunchArgument('use_sim_time', default_value='false',
                               description='true for Gazebo/MuJoCo simulation'),
         DeclareLaunchArgument('map_dir', default_value='~/roport_maps',
@@ -112,8 +141,8 @@ def generate_launch_description():
         DeclareLaunchArgument('camera_hfov_deg', default_value='0',
                               description='camera horizontal FOV for rough distance (0 = off)'),
         DeclareLaunchArgument('layout', default_value='',
-                              description='mode:=amcl layout yaml (roport_gz_world/layout/'
-                                          'roport_airport.yaml) for node poses and cm coords'),
+                              description='mode:=amcl|route|fleet layout yaml (default for '
+                                          'route/fleet: roport_gz_world share)'),
         DeclareLaunchArgument('amcl_dir', default_value='~/roport_amcl',
                               description='folder for AMCL check records (CSV)'),
         OpaqueFunction(function=launch_setup),

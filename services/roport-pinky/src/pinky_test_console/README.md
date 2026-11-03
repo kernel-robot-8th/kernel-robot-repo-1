@@ -39,6 +39,9 @@ Pinky Pro(ROS 2 Jazzy, Ubuntu 24.04, Raspberry Pi 5) 테스트용 웹 콘솔.
 | AMCL 테스트(`amcl.html`) | 지도 위 라이다 스캔(벽까지 5·10 cm로 색 구분)·AMCL 위치·표준편차, 정합 점수, 배치 yaml 노드(N12 등) 초기 위치 버튼, 제자리 갱신, 실제 위치와 비교 기록(CSV) |
 | 마커 테스트(`marker.html`) | 카메라 영상에 인식한 마커 표시, ID·이름(`docs/aruco/markers.yaml`)·화면 크기·참고 거리, 표의 마커별 확인 ✓·최근 5 s 인식률 |
 | IR 측정(`ir.html`) | `ir_sensor/range` 원시값 3개 실시간 표시·10 s 그래프, 라벨·시간 지정 CSV 기록(`~/roport_ir/`), 평균·표준편차, carpet/tape 참고 임계값 |
+| 경로 주행(`route.html`, 로봇) | 노드 그래프에서 경로 지정(클릭·경로 예시), 시작·상차 완료·정지, `line_nav/state`(구간·감지 창·회전·IR·이벤트) 표시. 경로 주행은 [roport_line_nav](../roport_line_nav/) |
+| 테스트 관제(`fleet.html`, 노트북) | 등록한 로봇 목록·상태, 로봇별 경로 지정·시작·상차 완료·정지, 전체 정지. 각 로봇의 `mode:=route` 콘솔을 HTTP로 부름(MQTT 없음) |
+| Pinky 설정(`settings.html`, 노트북) | IP로 등록(이름·역할·ROS_DOMAIN_ID·IR 기준값), 연결 확인, 업데이트(브랜치)·릴리즈(`origin/main`) 설치, 빌드, 도메인 읽기·적용, 작업 기록 |
 
 ### 조종 안전 규칙 (서버에서 강제)
 
@@ -125,10 +128,14 @@ ros2 launch pinky_test_console console.launch.py mode:=nav map:=$HOME/roport_map
 
 | 인자 | 기본값 | 설명 |
 |---|---|---|
-| `mode` | `slam` | `slam` = slam_toolbox(원본 map_building과 동일 설정) + 콘솔, `nav` = 원본 bringup_launch(map_server+AMCL+Nav2) + 콘솔, `ir` = 콘솔 + IR 센서 노드만, `marker` = 콘솔 + 카메라 마커 인식만, `amcl` = 원본 localization_launch(map_server+AMCL만, 경로 계획·주행 제어 없음) + 콘솔 |
+| `mode` | `slam` | `slam` = slam_toolbox(원본 map_building과 동일 설정) + 콘솔, `nav` = 원본 bringup_launch(map_server+AMCL+Nav2) + 콘솔, `ir` = 콘솔 + IR 센서 노드만, `marker` = 콘솔 + 카메라 마커 인식만, `amcl` = 원본 localization_launch(map_server+AMCL만, 경로 계획·주행 제어 없음) + 콘솔, `route` = 콘솔 + `roport_line_nav` 경로 주행 노드 + IR 센서 노드(로봇), `fleet` = Pinky 설정·테스트 관제(노트북, 주행·Nav2 노드는 띄우지 않음) |
 | `map` | (없음) | `mode:=nav`·`amcl`일 때 필수. `.yaml` 경로(`~` 허용). 없거나 확장자가 틀리면 launch가 시작 전에 실패 |
 | `port` | `8080` | 웹 포트(1–65535) |
-| `ip` | `0.0.0.0` | 바인드 주소. 노트북 단독 시험이면 `127.0.0.1` 권장 |
+| `ip` | `0.0.0.0` (`fleet`은 `127.0.0.1`) | 바인드 주소. 노트북 단독 시험이면 `127.0.0.1` 권장. `fleet`은 SSH 권한이 있어 기본이 이 PC 전용 |
+| `robot` | (없음) | `mode:=route` 필수. IR 기준값 이름(`pinky_d660`·`pinky_6422`·`pinky_764e`, `roport_pinky_line/config/robots.yaml`) |
+| `fleet_file` | `~/.roport/fleet.json` | `mode:=fleet` 등록 목록(권한 600, 비밀값 없음) |
+| `repo_dir` | `~/dev_ws/roport/kernel-robot-repo-1` | `mode:=fleet`에서 `git archive`할 노트북 저장소 |
+| `ssh_key` | `~/.ssh/pinky_ed25519` | `mode:=fleet` SSH 키. 비밀번호는 받지 않음(BatchMode) |
 | `use_sim_time` | `false` | Gazebo/MuJoCo 시뮬레이션이면 `true` |
 | `map_dir` | `~/roport_maps` | 지도 저장 폴더 |
 | `ir_dir` | `~/roport_ir` | IR 기록 CSV 폴더 |
@@ -136,9 +143,9 @@ ros2 launch pinky_test_console console.launch.py mode:=nav map:=$HOME/roport_map
 | `rotate_180` | `auto` | 영상 180° 회전. `auto` = `picamera2`일 때만(이전 Pinky 코드와 같은 장착 방향) |
 | `markers_yaml` | (없음) | 마커 ID 표 경로. 주면 이름·크기·확인 목록을 보여 줌 |
 | `camera_hfov_deg` | `0` | 카메라 수평 화각(°). 주면 참고 거리 표시(보정 전 근사) |
-| `layout` | (없음) | `mode:=amcl` 배치 yaml(`roport_gz_world/layout/roport_airport.yaml`). 주면 노드 버튼과 실측 좌표(cm) 입력을 씀 |
+| `layout` | (없음) | 배치 yaml(`roport_gz_world/layout/roport_airport.yaml`). `mode:=amcl`은 주면 노드 버튼과 실측 좌표(cm) 입력을 씀. `mode:=route`·`fleet`은 비우면 설치된 `roport_gz_world`의 파일 |
 | `amcl_dir` | `~/roport_amcl` | AMCL 기록 CSV 폴더 |
-| `ir_node` | `auto` | `pinky_sensor_adc main_node`를 함께 실행. `auto` = `mode:=ir`일 때만, `true`/`false`로 강제 |
+| `ir_node` | `auto` | `pinky_sensor_adc main_node`를 함께 실행. `auto` = `mode:=ir`·`route`일 때만, `true`/`false`로 강제 |
 
 잘못된 값(예: `mode:=explore`, `mode:=nav`인데 map 없음, `port:=99999`)은 노드를 하나도 띄우기 전에 오류로 끝납니다.
 
@@ -224,6 +231,51 @@ Gazebo 확인(v13 world·실측 지도, 로봇을 순간 이동한 뒤 초기 �
 | 로봇만 N12로 옮기고 초기 위치를 안 줌 | — | — | 32.8% | 40.6% |
 
 시뮬레이션 결과는 실로봇 시험을 대신하지 않습니다(유리·검은 벽·사람 등 실제 라이다 조건이 다름).
+
+## 경로 주행 (mode:=route, 로봇)
+
+```bash
+# 터미널 1 — 모터·odom
+ros2 launch pinky_bringup bringup_robot.launch.xml
+# 터미널 2 — 콘솔 + 경로 주행 노드 + IR 센서 노드
+ros2 launch pinky_test_console console.launch.py mode:=route robot:=pinky_d660
+```
+
+브라우저에서 `http://<로봇IP>:8080/route.html`을 엽니다(콘솔 상단 **경로 주행** 버튼).
+
+1. 로봇을 첫 노드 위에 첫 구간 방향으로 세웁니다(대기·충전 칸·상차 노드에서 끝난 경로는 그 자리에서 바로 다음 경로).
+2. 지도에서 노드를 차례로 누르거나 「경로 예시」를 고르고 **경로 시작**.
+3. N01·N11에서 반시계 90° 돌고 `loading`이 되면 상차 후 **상차 완료**를 누릅니다.
+4. 상단 **■ 정지**(Space/Esc)는 경로 주행 정지 명령 + 속도 0을 보냅니다.
+
+`roport_gz_world`·`roport_pinky_line`·`roport_line_nav`도 같은 워크스페이스에 빌드돼 있어야 합니다(Pinky 설정의 설치가 함께 보냄).
+`line_follower`(라인 추종 v0)와 같이 실행하지 않습니다.
+
+## Pinky 설정 · 테스트 관제 (mode:=fleet, 노트북)
+
+관제 서버(roport-control-server) Pinky Settings 화면을 전달하기 전에 기능을 시험하는 도구입니다. MQTT는 쓰지 않습니다.
+
+```bash
+ros2 launch pinky_test_console console.launch.py mode:=fleet      # http://127.0.0.1:8080/settings.html
+```
+
+| 작업 | 실행하는 것 |
+|---|---|
+| 연결 확인 | `ssh -i <ssh_key> -o BatchMode=yes pinky@<IP> 'echo ok; hostname'` |
+| 업데이트 설치 / 릴리즈 설치 | `git fetch` → `git rev-parse --verify <ref>` → `git archive <ref> <패키지 4개> \| ssh pinky@<IP> 'tar xf - --strip-components=3 -C ~/pinky_test_ws/src'`. 릴리즈 = `origin/main` |
+| 빌드 | 로봇에서 `colcon build --packages-select pinky_test_console roport_pinky_line roport_line_nav roport_gz_world` |
+| 도메인 읽기 | `grep -n ROS_DOMAIN_ID ~/.bashrc` |
+| 도메인 적용 | 로봇 `~/.bashrc`의 `# roport-domain` 표시 줄을 지우고 `export ROS_DOMAIN_ID=<N>  # roport-domain` 한 줄을 끝에 추가 |
+
+도메인 적용은 **로봇 `~/.bashrc`를 바꿉니다**(사용자 허용 2026-11-03).
+- 표시(`# roport-domain`)가 없는 다른 줄(이전 사용자의 `ROS_DOMAIN_ID`·CycloneDDS 설정 등)은 지우지 않습니다. 끝에 넣은 줄이 나중에 읽혀 우선합니다.
+- 새 터미널부터 적용됩니다.
+- 되돌리려면 로봇에서 `sed -i '/# roport-domain$/d' ~/.bashrc`를 실행합니다.
+- 기체별 값(2026-11-03 결정): d660 14 · 6422 15 · 764e 16.
+
+보안: 이 서버는 기본으로 `127.0.0.1`에만 엽니다. `Host` 헤더가 `127.0.0.1:<port>`·`localhost:<port>`가 아니면 403입니다(DNS rebinding 방지).
+SSH는 키 파일만 쓰고(비밀번호 입력 없음) 명령은 인자 목록으로 실행합니다. IP·이름·브랜치·도메인 값은 서버에서 검사합니다.
+로봇 상태·경로 명령은 각 로봇 콘솔(`mode:=route`, `http://<IP>:8080`)의 `/api/route`를 1초마다 부릅니다. 로봇 콘솔에는 로그인이 없으므로 강의실 Wi-Fi 안에서만 씁니다.
 
 ## 메모리 측정 방법
 
@@ -340,6 +392,12 @@ colcon test-result --verbose
 | GET | `/api/ir` | IR 최근값·주기·최근 10 s 기록·기록 진행 상태 |
 | POST | `/api/ir/record` `{label, duration}` / `/api/ir/cancel` | IR 기록 시작(1–60 s) / 취소 |
 | GET | `/api/ir/records`, `/api/ir/records/<파일>` | 기록 목록·통계·참고 임계값 / CSV 다운로드 |
+| GET | `/api/route`, `/api/route/graph` | `line_nav/state`(없으면 `stale`) / 노드 그래프·경로 예시 |
+| POST | `/api/route/command` `{cmd: start\|stop\|load_done, route?, start_offset_cm?}` | `line_nav/command`로 보냄 (`mode:=route`) |
+| GET | `/api/fleet`, `/api/fleet/jobs`, `/api/fleet/branches` | (`mode:=fleet`) 등록 목록·로봇 상태·작업 기록 / 작업 / `origin/*` 브랜치 |
+| POST | `/api/fleet/robots` `{name, ip, role, domain, calib}`, `/api/fleet/robots/delete` `{name}` | 등록·수정 / 삭제 |
+| POST | `/api/fleet/job` `{name, action: check\|read_domain\|set_domain\|deploy\|build, ref?, release?, domain?}` | SSH·git 작업(로봇마다 한 번에 하나) |
+| POST | `/api/fleet/route` `{name, cmd, route?}`, `/api/fleet/stop_all` | 로봇 콘솔로 경로 명령 / 전체 정지 |
 
 POST는 `Content-Type: application/json`만 받습니다. 다른 웹사이트가 숨은 form으로 로봇을 움직이는 CSRF를 막기 위해서입니다.
 

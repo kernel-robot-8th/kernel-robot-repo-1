@@ -449,3 +449,10 @@ canvas {
 .am-canvas { display: block; width: 100%; height: auto; background: #111827; border-radius: 12px; }
 .am-nodes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .am-nodes .am-switch { border-color: #2563eb; color: #93c5fd; }
+
+/* 경로 주행·테스트 관제·Pinky 설정 (route.html, fleet.html, settings.html) */
+.fleet-page #left { justify-content: flex-start; }
+.form-line { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center;
+  margin-bottom: 8px; font-size: 12px; color: var(--text-muted); }
+.fleet-page details summary { cursor: pointer; font-size: 13px; margin: 4px 0; }
+.fleet-page pre.cmd-box { white-space: pre-wrap; max-height: 220px; overflow: auto; font-size: 11px; }

@@ -17,13 +17,16 @@ import os
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 from .amcl_check import AmclCheckError
+from .fleet import FleetError
 from .ir_record import IrRecordError
 from .map_store import MapNameError
 from .marker_detect import MarkerError
+from .route_view import RouteCommandError, parse_route_command
 
 # web/ 폴더에서 이 파일들만 서빙 (원본은 스크립트 폴더 전체를 static 으로 노출했음)
 STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js',
-                'marker.html', 'marker.js', 'amcl.html', 'amcl.js'}
+                'marker.html', 'marker.js', 'amcl.html', 'amcl.js', 'route.html', 'route.js',
+                'routemap.js', 'fleet.html', 'fleet.js', 'settings.html', 'settings.js'}
 POSE_CM_LIMIT = 1000.0   # 실측 좌표 입력 허용 범위(cm, 시연 공간 444.5 x 221)
 
 SECURITY_HEADERS = {
@@ -75,13 +78,28 @@ def _pose_cm(data, need_yaw=True):
     return x, y, yaw
 
 
-def create_app(node, web_dir):
+def create_app(node, web_dir, fleet=None, allowed_hosts=None):
+    """fleet: fleet.FleetManager(mode:=fleet 일 때만). allowed_hosts: Host 헤더 허용 목록.
+
+    fleet 모드는 SSH 로 로봇에 설치·설정하므로 127.0.0.1 에만 열고, DNS rebinding 으로 다른 사이트가
+    localhost 에 요청하지 못하게 Host 헤더를 검사한다(allowed_hosts).
+    """
     app = Flask(__name__, static_folder=None)
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024
 
     @app.errorhandler(BadRequest)
     def _bad_request(e):
         return jsonify({'success': False, 'msg': str(e)}), 400
+
+    @app.errorhandler(RouteCommandError)
+    @app.errorhandler(FleetError)
+    def _bad_value(e):
+        return jsonify({'success': False, 'msg': str(e)}), 400
+
+    @app.before_request
+    def _check_host():
+        if allowed_hosts is not None and request.host not in allowed_hosts:
+            abort(403)
 
     @app.after_request
     def _headers(resp):
@@ -330,6 +348,84 @@ def create_app(node, web_dir):
             abort(404)
         return send_from_directory(os.path.dirname(path), os.path.basename(path),
                                    as_attachment=True, mimetype='text/csv')
+
+    # ---------------- 노드 경로 주행 (mode:=route) ----------------
+    @app.route('/api/route')
+    def api_route():
+        return jsonify(node.route_snapshot())
+
+    @app.route('/api/route/graph')
+    def api_route_graph():
+        return jsonify(node.route_graph())
+
+    @app.route('/api/route/command', methods=['POST'])
+    def api_route_command():
+        cmd = parse_route_command(_json_body())
+        return jsonify({'success': node.route_command(cmd), 'sent': cmd})
+
+    # ---------------- Pinky 설정·테스트 관제 (mode:=fleet, 노트북) ----------------
+    def _fleet():
+        if fleet is None:
+            abort(404)
+        return fleet
+
+    def _proxy(fn):
+        try:
+            return jsonify({'success': True, 'result': fn()})
+        except OSError as e:     # 로봇 콘솔이 꺼져 있거나 네트워크가 다름
+            return jsonify({'success': False, 'msg': f'robot not reachable: {e}'}), 502
+
+    @app.route('/api/fleet')
+    def api_fleet():
+        return jsonify(_fleet().snapshot())
+
+    @app.route('/api/fleet/robots', methods=['POST'])
+    def api_fleet_upsert():
+        robot = _fleet().store.upsert(_json_body())
+        return jsonify({'success': True, 'robot': robot.__dict__})
+
+    @app.route('/api/fleet/robots/delete', methods=['POST'])
+    def api_fleet_delete():
+        name = _json_body().get('name')
+        if not isinstance(name, str):
+            raise BadRequest("'name' required")
+        _fleet().store.remove(name)
+        return jsonify({'success': True})
+
+    @app.route('/api/fleet/branches')
+    def api_fleet_branches():
+        return jsonify({'branches': _fleet().branches()})
+
+    @app.route('/api/fleet/job', methods=['POST'])
+    def api_fleet_job():
+        data = _json_body()
+        params = {}
+        if 'ref' in data:
+            params['ref'] = data['ref']
+        if data.get('release') is True:
+            params['release'] = True
+        if 'domain' in data:
+            params['domain'] = data['domain']
+        job = _fleet().start_job(data.get('name'), data.get('action'), params)
+        return jsonify({'success': True, 'job': job})
+
+    @app.route('/api/fleet/jobs')
+    def api_fleet_jobs():
+        return jsonify({'jobs': _fleet().jobs()})
+
+    @app.route('/api/fleet/route', methods=['POST'])
+    def api_fleet_route():
+        data = _json_body()
+        name = data.pop('name', None)
+        if not isinstance(name, str):
+            raise BadRequest("'name' required")
+        f = _fleet()
+        return _proxy(lambda: f.route_command(name, data))
+
+    @app.route('/api/fleet/stop_all', methods=['POST'])
+    def api_fleet_stop_all():
+        _json_body()
+        return jsonify({'success': True, 'result': _fleet().stop_all()})
 
     return app
 

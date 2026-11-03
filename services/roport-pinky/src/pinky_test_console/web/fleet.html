@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<!-- pinky_test_console 테스트 관제 화면 (mode:=fleet, 노트북). MQTT 없이 각 로봇 콘솔(mode:=route)을 HTTP 로 부름.
+     인라인 코드·CDN 없음. -->
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pinky 테스트 관제</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="ir-page fleet-page">
+
+<header id="topbar">
+  <div class="brand">RO:PORT <span>Pinky 테스트 관제</span></div>
+  <span class="chip" title="이 노트북 서버 연결"><span id="connDot" class="chip-dot"></span><span id="connText">연결 중</span></span>
+  <a class="btn btn-outline btn-small ir-link" href="settings.html">Pinky 설정 →</a>
+  <span id="estopStatus" class="status-msg" role="status"></span>
+  <button id="btnEstop" type="button" title="등록된 모든 로봇에 경로 정지 + 속도 0 (단축키: Space / Esc)">■ 전체 정지</button>
+</header>
+
+<div id="main">
+  <div id="left">
+    <section class="panel-card">
+      <div class="section-title"><span>로봇 (로봇마다 <code>mode:=route</code> 콘솔이 켜져 있어야 상태가 보임)</span></div>
+      <div class="ir-table-wrap"><table class="ir-table" id="robots"><thead><tr>
+        <th>이름</th><th>역할</th><th>IP</th><th>도메인</th><th>콘솔</th><th>state</th><th>구간</th><th>선택</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="tiny-note">로봇 등록·설치·도메인은 「Pinky 설정」 화면에서. 관제 서버 연동(MQTT)은 아직 없음.</div>
+    </section>
+
+    <section class="panel-card">
+      <div class="section-title"><span>경로 — <b id="selName">로봇을 선택</b></span></div>
+      <canvas id="routeCanvas" class="am-canvas" width="920" height="480"></canvas>
+      <div class="row mt">
+        <select id="presets" class="text-input ir-select"><option value="">경로 예시 선택…</option></select>
+        <button id="btnClear" class="btn btn-outline btn-small" type="button">경로 지우기</button>
+      </div>
+      <div class="tiny-note">경로: <b id="routeText">-</b></div>
+    </section>
+  </div>
+
+  <div id="right">
+    <section class="panel-card">
+      <div class="section-title"><span>선택한 로봇 명령</span></div>
+      <div class="row">
+        <button id="btnStart" class="btn btn-primary" type="button" disabled>▶ 경로 시작</button>
+        <button id="btnLoad" class="btn btn-outline" type="button" disabled>상차 완료</button>
+        <button id="btnStop" class="btn btn-danger" type="button" disabled>■ 정지</button>
+      </div>
+      <div class="status-msg" id="cmdMsg" role="status"></div>
+    </section>
+
+    <section class="panel-card">
+      <div class="section-title"><span>선택한 로봇 상태</span></div>
+      <div class="info-line"><span>state</span><span class="value" id="sState">-</span></div>
+      <div class="info-line"><span>reason</span><span class="value" id="sReason">-</span></div>
+      <div class="info-line"><span>구간</span><span class="value" id="sLeg">-</span></div>
+      <div class="info-line"><span>이동 / 감지 창 (cm)</span><span class="value" id="sTravel">-</span></div>
+      <div class="info-line"><span>IR on_line</span><span class="value" id="sOn">-</span></div>
+      <div class="info-line"><span>odom</span><span class="value" id="sOdom">-</span></div>
+      <div class="info-line"><span>마지막 명령</span><span class="value" id="sLast">-</span></div>
+      <div class="info-line"><span>상태 나이</span><span class="value" id="sAge">-</span></div>
+    </section>
+  </div>
+</div>
+
+<script src="routemap.js"></script>
+<script src="fleet.js"></script>
+</body>
+</html>
