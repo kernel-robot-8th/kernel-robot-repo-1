@@ -12,6 +12,8 @@ from uuid import uuid4
 PROFILE_VERSION = "omx.dedicated/1"
 PHASES = ("GRASPING", "TRANSFERRING", "RELEASING", "RETURNING")
 WAITS = ("WAIT_GRASP", "WAIT_SEATED", "WAIT_RELEASE", "WAIT_SAFE")
+# Supervisor verdict kind required per WAIT (grasp/seated/release/safe), same order.
+VERDICTS = ("GRASPED", "SEATED", "RELEASED", "SAFE")
 BINDINGS = (
     "execution_id",
     "operation",
@@ -32,6 +34,10 @@ BINDINGS = (
 
 class Rejected(ValueError):
     """Input was rejected; an active execution is held on unsafe input."""
+
+    def __init__(self, reason, code=None):
+        super().__init__(reason)
+        self.code = code
 
 
 def finite(value):
@@ -153,6 +159,10 @@ class Profile:
         ):
             raise Rejected("six explicit joint directions required")
         bounds(d.get("joint_bounds"))
+        if not d["use_degrees"] and any(
+            lo < -100 or hi > 100 for lo, hi in d["joint_bounds"][:5]
+        ):
+            raise Rejected("arm joint bounds must use range_m100_100")
         if any(lo < 0 or hi > 100 for lo, hi in [d["joint_bounds"][-1]]):
             raise Rejected("gripper bounds must use range_0_100")
         step = vector(d.get("max_step"))
@@ -231,6 +241,9 @@ class DedicatedHost:
         }:
             self.db.execute("ALTER TABLE executions ADD COLUMN result TEXT")
         self.db.execute(
+            "CREATE TABLE IF NOT EXISTS confirmations (execution_id TEXT NOT NULL, phase_revision INTEGER NOT NULL, verdict_kind TEXT NOT NULL, confirmer TEXT NOT NULL, evidence TEXT NOT NULL, PRIMARY KEY (execution_id, phase_revision))"
+        )
+        self.db.execute(
             "UPDATE executions SET state='RECONCILING', reason='host restarted with uncertain execution', result=NULL WHERE state NOT IN ('SAFE_RETURNED', 'RECONCILING', 'HOLD')"
         )
         self.db.commit()
@@ -283,7 +296,8 @@ class DedicatedHost:
             self.db.commit()
 
     def hold(self, reason):
-        self.state, self.reason = "HOLD", str(reason)
+        if self.state != "HOLD":  # keep the first cause; later rejects are symptoms
+            self.state, self.reason = "HOLD", str(reason)
         self.queue.clear()
         self.pending = None
         self.reset_acknowledged = False
@@ -320,13 +334,8 @@ class DedicatedHost:
                 raise Rejected(f"envelope requires {field}")
         if envelope.get("schema_version") != "1.0" or envelope["type"] != kind:
             raise Rejected("wrong envelope type/schema")
-        sent, expiry = timestamp(envelope["sent_at"]), timestamp(envelope["expires_at"])
-        if (
-            sent > self.wall_clock() + self.profile["timing"]["clock_skew"]
-            or expiry <= self.wall_clock()
-            or expiry <= sent
-        ):
-            raise Rejected("invalid envelope deadline")
+        for field in ("sent_at", "expires_at"):
+            timestamp(envelope[field])  # format only; _deadline() checks expiry
         if (
             envelope["site_id"] != self.profile["site_id"]
             or envelope["source"] != self.profile["control_id"]
@@ -341,6 +350,15 @@ class DedicatedHost:
         ):
             raise Rejected("wrong payload profile/workcell")
         return p
+
+    def _deadline(self, envelope):
+        sent, expiry = timestamp(envelope["sent_at"]), timestamp(envelope["expires_at"])
+        if (
+            sent > self.wall_clock() + self.profile["timing"]["clock_skew"]
+            or expiry <= self.wall_clock()
+            or expiry <= sent
+        ):
+            raise Rejected("invalid envelope deadline")
 
     def _permit_binding(self, p, command):
         c = command["payload"]
@@ -389,16 +407,6 @@ class DedicatedHost:
                 raise Rejected("permit revoked or unproven")
             if type(p.get("evidence_seq")) is not int or p["evidence_seq"] < 0:
                 raise Rejected("invalid evidence sequence")
-            self._fresh(
-                p["source_observed_at"], self.profile["timing"]["permit_max_age"]
-            )
-            expiry = min(timestamp(p["expires_at"]), timestamp(envelope["expires_at"]))
-            if (
-                expiry <= self.wall_clock()
-                or timestamp(p["source_observed_at"])
-                > timestamp(envelope["sent_at"]) + self.profile["timing"]["clock_skew"]
-            ):
-                raise Rejected("invalid permit expiry/source time")
             if self.command and self.state != "SAFE_RETURNED":
                 self._permit_binding(p, self.command)
                 for field in (
@@ -412,6 +420,7 @@ class DedicatedHost:
                 ):
                     if envelope[field] != self.command[field]:
                         raise Rejected("permit envelope binding mismatch")
+            same_source = False
             if self.permit:
                 old = self.permit["payload"]
                 same_source = all(
@@ -423,14 +432,29 @@ class DedicatedHost:
                         "execution_id",
                     )
                 )
-                if same_source and p["evidence_seq"] <= old["evidence_seq"]:
-                    if p["evidence_seq"] == old["evidence_seq"] and p == old:
+                # QoS1 redelivery of older evidence: drop before freshness checks,
+                # leaving the current lease untouched. Same seq must be identical.
+                if same_source and p["evidence_seq"] < old["evidence_seq"]:
+                    return False
+                if same_source and p["evidence_seq"] == old["evidence_seq"]:
+                    if p == old:
                         return False
-                    raise Rejected("out-of-order or altered duplicate permit")
-                if same_source and timestamp(p["source_observed_at"]) <= timestamp(
-                    old["source_observed_at"]
-                ):
-                    raise Rejected("source evidence did not advance")
+                    raise Rejected("altered duplicate permit")
+            self._deadline(envelope)
+            self._fresh(
+                p["source_observed_at"], self.profile["timing"]["permit_max_age"]
+            )
+            expiry = min(timestamp(p["expires_at"]), timestamp(envelope["expires_at"]))
+            if (
+                expiry <= self.wall_clock()
+                or timestamp(p["source_observed_at"])
+                > timestamp(envelope["sent_at"]) + self.profile["timing"]["clock_skew"]
+            ):
+                raise Rejected("invalid permit expiry/source time")
+            if same_source and timestamp(p["source_observed_at"]) <= timestamp(
+                old["source_observed_at"]
+            ):
+                raise Rejected("source evidence did not advance")
             self.permit = deepcopy(envelope)
             self.permit_deadline = self.monotonic_clock() + min(
                 self.profile["timing"]["permit_lease"],
@@ -512,7 +536,7 @@ class DedicatedHost:
     def accept_command(self, envelope, *, retained=False):
         if retained or not isinstance(envelope, dict):
             self._reject("retained/non-object command")
-        self._envelope(envelope, "shelf.execute.requested", retained)
+        p = self._envelope(envelope, "shelf.execute.requested", retained)
         content = encoded(
             {k: v for k, v in envelope.items() if k not in ("message_id", "sent_at")}
         )
@@ -521,18 +545,23 @@ class DedicatedHost:
             (envelope.get("command_id"),),
         ).fetchone()
         if row:
+            # Stored result is returned even after expiry; a conflict never
+            # changes the stored or running execution (HOLD included).
             if row[0] != content:
-                self._reject("same command ID with different content")
+                raise Rejected(
+                    "same command ID with different content",
+                    code="IDEMPOTENCY_CONFLICT",
+                )
             return {
                 "duplicate": True,
                 "state": row[1],
                 "reason": row[2],
                 "result": json.loads(row[3]) if row[3] else None,
             }
+        self._deadline(envelope)  # expiry applies to new commands only
         if self.state not in ("READY", "SAFE_RETURNED"):
             self._reject("host not ready; explicit external reconciliation required")
         try:
-            p = self._envelope(envelope, "shelf.execute.requested", retained)
             for field in (
                 "resource_token",
                 "permit_id",
@@ -758,6 +787,8 @@ class DedicatedHost:
         return self._request("policy.reset")
 
     def infer_request(self):
+        if self.tick() in WAITS:  # normal wait: block motion without holding
+            return None
         return self._request("policy.infer")
 
     def _reply(self, reply, kind, request_kind):
@@ -831,6 +862,8 @@ class DedicatedHost:
             self._reject(str(exc))
 
     def next_action(self):
+        if self.tick() in WAITS:  # normal wait: block motion without holding
+            return None
         self._active()
         if not self.queue:
             return None
@@ -875,6 +908,13 @@ class DedicatedHost:
         return self.state
 
     def confirm(self, evidence):
+        """Consume one supervisor verdict for the current WAIT.
+
+        Required: execution_id, phase, phase_revision, verdict_kind (VERDICTS entry
+        for this WAIT), confirmer, positive, observation_seq, captured_at and,
+        before the last WAIT, next_policy_id. The spec's ``observed_at`` is
+        ``captured_at`` here: the capture time of the bound arm observation.
+        """
         try:
             if not isinstance(evidence, dict):
                 raise Rejected("confirmation must be an object")
@@ -892,6 +932,11 @@ class DedicatedHost:
                     evidence.get(name)
                 ) is not type(expected):
                     raise Rejected("boundary evidence binding mismatch")
+            verdict = VERDICTS[WAITS.index(self.state)]
+            if evidence.get("verdict_kind") != verdict:
+                raise Rejected(f"verdict_kind {verdict} required")
+            if not nonempty(evidence.get("confirmer")):
+                raise Rejected("confirmer identity required")
             if type(evidence.get("positive")) is not bool or not evidence["positive"]:
                 raise Rejected("negative/unproven boundary confirmation")
             self._fresh(
@@ -916,7 +961,6 @@ class DedicatedHost:
                     raise Rejected(
                         "safe return needs measured safe positions of both arms"
                     )
-                self.state = "SAFE_RETURNED"
             else:
                 next_phase = PHASES[index + 1]
                 if (
@@ -925,6 +969,20 @@ class DedicatedHost:
                 ):
                     raise Rejected("next policy identity required")
                 self._entry(next_phase)
+            # Audit the consumed evidence; committed with the state by _persist().
+            self.db.execute(
+                "INSERT INTO confirmations (execution_id, phase_revision, verdict_kind, confirmer, evidence) VALUES (?, ?, ?, ?, ?)",
+                (
+                    self.command["execution_id"],
+                    self.phase_revision,
+                    verdict,
+                    evidence["confirmer"],
+                    encoded(evidence),
+                ),
+            )
+            if index == 3:
+                self.state = "SAFE_RETURNED"
+            else:
                 self.state = next_phase
                 self.phase_revision += 1
             self.reset_acknowledged = False
@@ -933,7 +991,7 @@ class DedicatedHost:
             self.phase_started = self.monotonic_clock()
             self._persist()
             return self.state
-        except (Rejected, KeyError, TypeError) as exc:
+        except (Rejected, KeyError, TypeError, sqlite3.IntegrityError) as exc:
             self._reject(str(exc))
 
     def _event_snapshot(self):

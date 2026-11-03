@@ -18,6 +18,11 @@ CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 
 `GRASPING → WAIT_GRASP → TRANSFERRING → WAIT_SEATED → RELEASING → WAIT_RELEASE → RETURNING → WAIT_SAFE → SAFE_RETURNED` 순서로 진행합니다. 단계 경계와 다음 정책 시작 시 AI reset 응답을 확인하며, 정상 대기와 오류 보류를 구분합니다. 최신 관측·확인 입력 없이 chunk 종료나 그리퍼 위치만으로 완료하지 않습니다. Host는 출발을 허가하지 않습니다.
 
+- `tick()`은 내부 타이머가 없는 호출형 watchdog입니다. 호출 측이 idle·`WAIT_*`를 포함해 실행 중 계속 주기적으로 호출해야 lease·deadline·대기 timeout이 `HOLD`로 반영됩니다. 호출 주기는 현장 프로파일에서 정하며 기본값이 없습니다.
+- `WAIT_*`에서 `next_action()`·`infer_request()`는 `HOLD` 없이 `None`을 반환해 이동만 막습니다. timeout·permit 철회는 그대로 `HOLD`입니다. `HOLD`의 `reason`은 최초 원인을 유지합니다.
+- `confirm()` 입력: `execution_id`, `phase`, `phase_revision`, `verdict_kind`(`WAIT_GRASP`→`GRASPED`, `WAIT_SEATED`→`SEATED`, `WAIT_RELEASE`→`RELEASED`, `WAIT_SAFE`→`SAFE`), `confirmer`, `positive`, `observation_seq`, `captured_at`, 마지막 대기 전에는 `next_policy_id`. 명세의 `observed_at`은 `captured_at`(확인에 묶인 관측 시각)입니다. 소비한 확인은 journal `confirmations` 테이블에 기록합니다.
+- 같은 `command_id`·같은 내용은 만료 후에도 저장 상태/결과를 반환하고, 내용이 다르면 `Rejected.code == "IDEMPOTENCY_CONFLICT"`로 거절하며 진행 중 실행은 바꾸지 않습니다. 같은 실행·boot·도킹의 이전 `evidence_seq` 재전달은 무시합니다.
+
 ```bash
 uv sync --locked
 uv run python scripts/dedicated_demo.py --mock

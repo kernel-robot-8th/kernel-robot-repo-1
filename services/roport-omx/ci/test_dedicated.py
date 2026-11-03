@@ -18,7 +18,14 @@ from dedicated_demo import (
     synthetic_profile,
 )
 
-from roport_omx.dedicated import PHASES, DedicatedHost, Profile, Rejected
+from roport_omx.dedicated import (
+    PHASES,
+    VERDICTS,
+    WAITS,
+    DedicatedHost,
+    Profile,
+    Rejected,
+)
 
 
 class DedicatedTests(unittest.TestCase):
@@ -70,6 +77,8 @@ class DedicatedTests(unittest.TestCase):
             "execution_id": self.command["execution_id"],
             "phase": self.host.phase,
             "phase_revision": self.host.phase_revision,
+            "verdict_kind": VERDICTS[WAITS.index(self.host.state)],
+            "confirmer": "mock-supervisor",
             "positive": True,
             "observation_seq": seq,
             "captured_at": self.clock.stamp(),
@@ -102,7 +111,28 @@ class DedicatedTests(unittest.TestCase):
         self.assertTrue(self.host.accept_command(deepcopy(self.command))["duplicate"])
         changed = deepcopy(self.command)
         changed["payload"]["order_id"] = "other"
-        self.assert_held(lambda: self.host.accept_command(changed))
+        with self.assertRaises(Rejected) as caught:
+            self.host.accept_command(changed)
+        self.assertEqual(caught.exception.code, "IDEMPOTENCY_CONFLICT")
+        self.assertEqual(self.host.state, "GRASPING")
+
+    def test_conflict_keeps_hold_and_expired_duplicate_returns_stored(self):
+        self.start()
+        self.host.hold("operator stop")
+        changed = deepcopy(self.command)
+        changed["payload"]["order_id"] = "other"
+        with self.assertRaises(Rejected) as caught:
+            self.host.accept_command(changed)
+        self.assertEqual(caught.exception.code, "IDEMPOTENCY_CONFLICT")
+        self.assertEqual((self.host.state, self.host.reason), ("HOLD", "operator stop"))
+        self.clock.now += 61  # past the command envelope expiry
+        result = self.host.accept_command(deepcopy(self.command))
+        self.assertTrue(result["duplicate"])
+        self.assertEqual(result["reason"], "operator stop")
+        expired_new = deepcopy(self.command)
+        expired_new["command_id"] = "new-command"
+        with self.assertRaisesRegex(Rejected, "deadline"):
+            self.host.accept_command(expired_new)
 
     def test_transport_retry_dedupes_and_returns_stored_reason(self):
         self.start()
@@ -129,6 +159,8 @@ class DedicatedTests(unittest.TestCase):
             "execution_id": self.command["execution_id"],
             "phase": self.host.phase,
             "phase_revision": self.host.phase_revision,
+            "verdict_kind": VERDICTS[WAITS.index(self.host.state)],
+            "confirmer": "mock-supervisor",
             "positive": True,
             "observation_seq": 2,
             "captured_at": self.clock.stamp(),
@@ -150,6 +182,15 @@ class DedicatedTests(unittest.TestCase):
         with self.assertRaisesRegex(Rejected, "initial permit"):
             self.start()
         self.assertEqual(self.host.state, "READY")
+
+    def test_normalized_arm_bounds_must_stay_in_m100_100(self):
+        profile = synthetic_profile()
+        profile["joint_bounds"][0] = [-500, 500]
+        with self.assertRaisesRegex(Rejected, "range_m100_100"):
+            Profile.from_dict(profile)
+        profile["use_degrees"] = True
+        profile["feature_units"] = ["degrees"] * 5 + ["range_0_100"]
+        Profile.from_dict(profile)
 
     def test_missing_profile_values_and_nonfinite_config(self):
         for key in (
@@ -247,10 +288,35 @@ class DedicatedTests(unittest.TestCase):
         altered["payload"].update(evidence_seq=2, pinky_boot_id="reboot")
         self.assert_held(lambda: self.host.update_permit(altered))
 
-    def test_future_and_out_of_order_permit_hold(self):
+    def test_older_permit_redelivery_ignored_and_altered_duplicate_holds(self):
+        self.start()
+        self.clock.advance()
+        newer = deepcopy(self.permit)
+        newer["payload"].update(
+            evidence_seq=2,
+            source_observed_at=self.clock.stamp(),
+            expires_at=self.clock.stamp(5),
+        )
+        newer.update(sent_at=self.clock.stamp(), expires_at=self.clock.stamp(5))
+        self.assertTrue(self.host.update_permit(newer))
+        deadline = self.host.permit_deadline
+        self.clock.advance(10)  # redelivered seq 1 is now stale and expired
+        self.assertFalse(self.host.update_permit(deepcopy(self.permit)))
+        self.assertEqual(self.host.permit_deadline, deadline)
+        self.assertEqual(self.host.permit["payload"]["evidence_seq"], 2)
+        self.assertEqual(self.host.state, "GRASPING")
+
+    def test_altered_same_seq_permit_holds(self):
         self.start()
         altered = deepcopy(self.permit)
-        altered["payload"].update(evidence_seq=0)
+        altered["payload"]["expires_at"] = self.clock.stamp(4)
+        self.assert_held(lambda: self.host.update_permit(altered))
+        self.assertIn("altered duplicate", self.host.reason)
+
+    def test_older_permit_revocation_still_holds(self):
+        self.start()
+        altered = deepcopy(self.permit)
+        altered["payload"].update(evidence_seq=0, allowed=False)
         self.assert_held(lambda: self.host.update_permit(altered))
 
     def test_future_permit_rejected(self):
@@ -283,6 +349,61 @@ class DedicatedTests(unittest.TestCase):
                 observation_seq=2,
                 captured_at=self.clock.stamp(),
             )
+        )
+
+    def test_wait_polling_blocks_motion_without_hold(self):
+        self.start()
+        self.reset()
+        self.host.validate_candidate(self.candidate())
+        self.host.phase_boundary()
+        for _ in range(3):
+            self.clock.advance(0.5)
+            self.assertIsNone(self.host.next_action())
+            self.assertIsNone(self.host.infer_request())
+            self.assertEqual(self.host.state, "WAIT_GRASP")
+        self.assertEqual(self.host.confirm(self.evidence()), "TRANSFERRING")
+
+    def test_wait_polling_still_holds_on_timeout(self):
+        self.start()
+        self.host.phase_boundary()
+        self.clock.advance(2.1)  # local permit lease (synthetic 2 s) expired
+        self.assert_held(lambda: self.host.next_action())
+        self.assertIn("lease", self.host.reason)
+
+    def test_hold_keeps_first_reason(self):
+        self.start()
+        self.reset()
+        self.host.infer_request()
+        self.clock.advance(1.01)
+        self.assertEqual(self.host.tick(), "HOLD")
+        self.assert_held(lambda: self.host.next_action())
+        self.assert_held(lambda: self.host.reset_request())
+        self.assertIn("inference timeout", self.host.reason)
+
+    def test_confirmation_requires_confirmer_and_verdict_kind_and_is_journaled(self):
+        for change in (
+            {"confirmer": ""},
+            {"confirmer": None},
+            {"verdict_kind": "SEATED"},
+            {"verdict_kind": None},
+        ):
+            with self.subTest(change=change):
+                self.setUp()
+                self.start()
+                self.host.phase_boundary()
+                evidence = {**self.evidence(), **change}
+                self.assert_held(lambda: self.host.confirm(evidence))
+        self.setUp()
+        self.start()
+        self.host.phase_boundary()
+        evidence = self.evidence()
+        self.host.confirm(evidence)
+        with sqlite3.connect(self.path) as journal:
+            row = journal.execute(
+                "SELECT execution_id, phase_revision, verdict_kind, confirmer FROM confirmations"
+            ).fetchone()
+        self.assertEqual(
+            row, (self.command["execution_id"], 2, "GRASPED", "mock-supervisor")
         )
 
     def test_reset_required_before_inference(self):
@@ -390,6 +511,8 @@ class DedicatedTests(unittest.TestCase):
             "execution_id": self.command["execution_id"],
             "phase": self.host.phase,
             "phase_revision": 1,
+            "verdict_kind": "GRASPED",
+            "confirmer": "mock-supervisor",
             "positive": True,
             "observation_seq": 1,
             "captured_at": self.clock.stamp(),
@@ -458,6 +581,8 @@ class DedicatedTests(unittest.TestCase):
                 "execution_id": self.command["execution_id"],
                 "phase": phase,
                 "phase_revision": self.host.phase_revision,
+                "verdict_kind": VERDICTS[index],
+                "confirmer": "mock-supervisor",
                 "positive": True,
                 "observation_seq": seq,
                 "captured_at": self.clock.stamp(),
