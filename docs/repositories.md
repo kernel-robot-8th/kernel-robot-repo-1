@@ -7,14 +7,14 @@ RO:PORT는 `kernel-robot-8th/kernel-robot-repo-1` 하나에서 개발하는 mono
 
 - [roport-pinky](../services/roport-pinky/README.md): ROS 2 Jazzy·Python 3.12, Pinky 주행·도킹 실행부
 - [roport-omx](../services/roport-omx/README.md): Python 코어, OMX 제어·학습 연동 준비
-- [roport-control-server](../services/roport-control-server/README.md): FastAPI, 작업·로봇 관제
+- [roport-control-server](../services/roport-control-server/README.md): FastAPI·Three.js 웹 UI, OFFLINE/DEMO 관제와 MQTT/UDP 모듈
 - [roport-ai-server](../services/roport-ai-server/README.md): FastAPI, AI 추론 서비스 준비
 - [roport-service-server](../services/roport-service-server/README.md): Java 21·Spring Boot, 서비스 업무 API 준비
 - [roport-web](../services/roport-web/README.md): React·TypeScript·Vite, 고객·어드민 웹 앱
 
 이는 현재 초기 코드의 구성입니다. 상세 스택과 OMX·LeRobot 버전은
 [Issue #2](https://github.com/kernel-robot-8th/kernel-robot-repo-1/issues/2)에서 논의하며 아직 최종 확정하지 않았습니다.
-새 라이브러리·DB·실장비 동작을 이번 통합 작업에서 추가하지 않았습니다.
+통합관제 웹 전환의 의존성과 현재 범위는 해당 모듈 README/lockfile을 따릅니다. DB·실장비 연동은 후속입니다.
 
 ## CI
 
@@ -24,7 +24,7 @@ RO:PORT는 `kernel-robot-8th/kernel-robot-repo-1` 하나에서 개발하는 mono
 
 - `pinky-ci.yml`: Jazzy 컨테이너 colcon 빌드·설치 패키지 import
 - `omx-ci.yml`: uv lock 검증·Ruff·import·Python 패키지 빌드
-- `control-server-ci.yml`: uv lock 검증·Ruff·API 테스트·패키지 빌드
+- `control-server-ci.yml`: uv lock·Ruff·API/통신/지도 테스트·Chromium 웹 UI·패키지/자산 검증
 - `ai-server-ci.yml`: uv lock 검증·Ruff·준비 상태 테스트·패키지 빌드
 - `service-server-ci.yml`: Maven 테스트·JAR 빌드·artifact 저장
 - `web-ci.yml`: 두 웹 앱 타입 검사·빌드·artifact 저장
