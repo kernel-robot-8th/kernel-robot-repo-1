@@ -21,7 +21,7 @@ from .fleet import FleetError
 from .ir_record import IrRecordError
 from .map_store import MapNameError
 from .marker_detect import MarkerError
-from .route_view import RouteCommandError, parse_route_command
+from .route_view import RouteCommandError, parse_route_command, plan_to
 
 # web/ 폴더에서 이 파일들만 서빙 (원본은 스크립트 폴더 전체를 static 으로 노출했음)
 STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js',
@@ -358,6 +358,12 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
     def api_route_graph():
         return jsonify(node.route_graph())
 
+    @app.route('/api/route/plan')
+    def api_route_plan():
+        """?from=<노드>&to=<정차 노드> → 최단 경로(테스트 관제의 목적지 클릭)."""
+        start, goal = request.args.get('from', ''), request.args.get('to', '')
+        return jsonify({'route': plan_to(node.route_graph(), start, goal)})
+
     @app.route('/api/route/command', methods=['POST'])
     def api_route_command():
         cmd = parse_route_command(_json_body())
@@ -421,6 +427,22 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
             raise BadRequest("'name' required")
         f = _fleet()
         return _proxy(lambda: f.route_command(name, data))
+
+    @app.route('/api/fleet/logs')
+    def api_fleet_logs():
+        try:
+            after = int(request.args.get('after', '0'))
+        except ValueError:
+            raise BadRequest("'after' must be an integer") from None
+        rows, last = _fleet().log.after(after)
+        return jsonify({'entries': rows, 'last': last})
+
+    @app.route('/api/fleet/logs.csv')
+    def api_fleet_logs_csv():
+        robot = request.args.get('robot') or None
+        name = 'fleet_log' + (f'_{robot}' if robot and robot.isalnum() else '') + '.csv'
+        return Response(_fleet().log.csv_text(robot), mimetype='text/csv',
+                        headers={'Content-Disposition': f'attachment; filename={name}'})
 
     @app.route('/api/fleet/stop_all', methods=['POST'])
     def api_fleet_stop_all():

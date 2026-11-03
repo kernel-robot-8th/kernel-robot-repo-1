@@ -40,7 +40,7 @@ Pinky Pro(ROS 2 Jazzy, Ubuntu 24.04, Raspberry Pi 5) 테스트용 웹 콘솔.
 | 마커 테스트(`marker.html`) | 카메라 영상에 인식한 마커 표시, ID·이름(`docs/aruco/markers.yaml`)·화면 크기·참고 거리, 표의 마커별 확인 ✓·최근 5 s 인식률 |
 | IR 측정(`ir.html`) | `ir_sensor/range` 원시값 3개 실시간 표시·10 s 그래프, 라벨·시간 지정 CSV 기록(`~/roport_ir/`), 평균·표준편차, carpet/tape 참고 임계값 |
 | 경로 주행(`route.html`, 로봇) | 노드 그래프에서 경로 지정(클릭·경로 예시), 시작·상차 완료·정지, `line_nav/state`(구간·감지 창·회전·IR·이벤트) 표시. 경로 주행은 [roport_line_nav](../roport_line_nav/) |
-| 테스트 관제(`fleet.html`, 노트북) | 등록한 로봇 목록·상태, 로봇별 경로 지정·시작·상차 완료·정지, 전체 정지. 각 로봇의 `mode:=route` 콘솔을 HTTP로 부름(MQTT 없음) |
+| 테스트 관제(`fleet.html`, 노트북) | 지도에 로봇별 추정 위치·지나온 구간(로봇 색, 새 경로 시작 때 지움). 출발(P1·P2·P5·P6 또는 현재 위치) 고르고 목적지 정차 노드를 누르면 최단 경로. 시작·상차 완료·정지, 전체 정지. 로그 화면·CSV 저장. 각 로봇의 `mode:=route` 콘솔을 HTTP로 부름(MQTT 없음) |
 | Pinky 설정(`settings.html`, 노트북) | IP로 등록(이름·역할·ROS_DOMAIN_ID·IR 기준값), 연결 확인, 업데이트(브랜치)·릴리즈(`origin/main`) 설치, 빌드, 도메인 읽기·적용, 작업 기록 |
 
 ### 조종 안전 규칙 (서버에서 강제)
@@ -136,6 +136,7 @@ ros2 launch pinky_test_console console.launch.py mode:=nav map:=$HOME/roport_map
 | `fleet_file` | `~/.roport/fleet.json` | `mode:=fleet` 등록 목록(권한 600, 비밀값 없음) |
 | `repo_dir` | `~/dev_ws/roport/kernel-robot-repo-1` | `mode:=fleet`에서 `git archive`할 노트북 저장소 |
 | `ssh_key` | `~/.ssh/pinky_ed25519` | `mode:=fleet` SSH 키. 비밀번호는 받지 않음(BatchMode) |
+| `fleet_log_dir` | `~/roport_fleet_logs` | `mode:=fleet` 날짜별 로그 CSV 폴더 |
 | `use_sim_time` | `false` | Gazebo/MuJoCo 시뮬레이션이면 `true` |
 | `map_dir` | `~/roport_maps` | 지도 저장 폴더 |
 | `ir_dir` | `~/roport_ir` | IR 기록 CSV 폴더 |
@@ -277,6 +278,13 @@ ros2 launch pinky_test_console console.launch.py mode:=fleet      # http://127.0
 SSH는 키 파일만 쓰고(비밀번호 입력 없음) 명령은 인자 목록으로 실행합니다. IP·이름·브랜치·도메인 값은 서버에서 검사합니다.
 로봇 상태·경로 명령은 각 로봇 콘솔(`mode:=route`, `http://<IP>:8080`)의 `/api/route`를 1초마다 부릅니다. 로봇 콘솔에는 로그인이 없으므로 강의실 Wi-Fi 안에서만 씁니다.
 
+테스트 관제(`fleet.html`) 사용 순서:
+1. 오른쪽 표에서 로봇을 고릅니다.
+2. 「출발」에서 P1·P2·P5·P6(또는 마지막으로 도착한 「현재 위치」)를 고르고, 지도에서 주황 테두리 노드(정차 노드 N01·N11·N12·P1·P2·P5·P6)를 누릅니다. 경로는 선 중심 거리 최단 경로로 정합니다.
+3. 로봇을 출발 노드에 첫 구간 방향(칸 바깥)으로 세운 뒤 **경로 시작**.
+- 지도의 로봇 위치는 `line_nav/state`의 구간·이동 거리로 추정한 값입니다(실제 위치 측정 아님).
+- 로그 = 로봇 line_nav 이벤트·state 변화·콘솔 연결 변화·보낸 명령·설치 작업. 화면은 최근 1500줄, 「CSV 저장」은 서버 메모리의 최근 3000줄. 모든 줄은 `fleet_log_dir`(기본 `~/roport_fleet_logs/fleet_YYYYMMDD.csv`)에 자동으로 이어 씁니다. `=`·`+`·`-`·`@`로 시작하는 값은 표 계산 프로그램이 수식으로 읽지 않게 앞에 `'`를 붙입니다.
+
 ## 메모리 측정 방법
 
 1. `bringup_robot` + 콘솔(`mode:=slam` 또는 `mode:=nav`)을 띄운 상태에서 상태 패널의 **기준 저장**을 누릅니다.
@@ -398,6 +406,8 @@ colcon test-result --verbose
 | POST | `/api/fleet/robots` `{name, ip, role, domain, calib}`, `/api/fleet/robots/delete` `{name}` | 등록·수정 / 삭제 |
 | POST | `/api/fleet/job` `{name, action: check\|read_domain\|set_domain\|deploy\|build, ref?, release?, domain?}` | SSH·git 작업(로봇마다 한 번에 하나) |
 | POST | `/api/fleet/route` `{name, cmd, route?}`, `/api/fleet/stop_all` | 로봇 콘솔로 경로 명령 / 전체 정지 |
+| GET | `/api/route/plan?from=<노드>&to=<정차 노드>` | 최단 경로(노드 id 목록) |
+| GET | `/api/fleet/logs?after=<seq>`, `/api/fleet/logs.csv?robot=<이름>` | 로그(seq 이후) / CSV 다운로드 |
 
 POST는 `Content-Type: application/json`만 받습니다. 다른 웹사이트가 숨은 form으로 로봇을 움직이는 CSRF를 막기 위해서입니다.
 

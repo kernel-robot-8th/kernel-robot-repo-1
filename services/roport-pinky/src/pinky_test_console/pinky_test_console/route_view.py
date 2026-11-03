@@ -3,6 +3,7 @@
 ROS·Flask 없이 테스트한다. 경로 자체의 연결 검사는 로봇의 line_nav 노드(roport_line_nav)가 한다.
 """
 
+import heapq
 import math
 import re
 
@@ -11,6 +12,9 @@ import yaml
 NODE_ID = re.compile(r'^[A-Z][A-Z0-9]{0,7}$')
 MAX_ROUTE = 64
 COMMANDS = ('start', 'stop', 'load_done')
+
+# 테스트 관제의 출발 위치(대기·충전 칸). 운영 위치 → 노드
+START_PLACES = ('P1', 'P2', 'P5', 'P6')
 
 # Map 페이지(Confluence 9338886) 경로 예시. 화면의 빠른 선택용
 PRESETS = [
@@ -74,4 +78,51 @@ def graph_view(path):
         })
     ids = {n['id'] for n in nodes}
     presets = [p for p in PRESETS if all(r in ids for r in p['route'])]
-    return {'version': str(spec.get('graph_version', '')), 'nodes': nodes, 'presets': presets}
+    starts = [{'place': n['place'], 'node': n['id']} for n in nodes if n['place'] in START_PLACES]
+    starts.sort(key=lambda s: s['place'])
+    return {'version': str(spec.get('graph_version', '')), 'nodes': nodes, 'presets': presets,
+            'starts': starts, 'goals': [n['id'] for n in nodes if n['bar']]}
+
+
+def plan_to(graph, start, goal):
+    """graph_view 결과에서 start → goal 최단 경로(노드 id 목록, 길이 = 선 중심 거리).
+
+    목적지는 가로선이 있는 정차 노드만(line_nav 경로 규칙). 경로가 없으면 RouteCommandError.
+    """
+    nodes = {n['id']: n for n in graph['nodes']}
+    for nid in (start, goal):
+        if not isinstance(nid, str) or not NODE_ID.match(nid) or nid not in nodes:
+            raise RouteCommandError(f'unknown node {nid!r}')
+    if not nodes[goal]['bar']:
+        raise RouteCommandError(f'{goal} is not a stop node (choose a node with a stop bar)')
+    if start == goal:
+        raise RouteCommandError('start and goal are the same node')
+    dist = {start: 0.0}
+    prev = {}
+    heap = [(0.0, start)]
+    while heap:
+        d, nid = heapq.heappop(heap)
+        if nid == goal:
+            break
+        if d > dist.get(nid, math.inf):
+            continue
+        a = nodes[nid]
+        for other in a['links']:
+            if other not in nodes:
+                continue
+            b = nodes[other]
+            nd = d + math.hypot(b['x'] - a['x'], b['y'] - a['y'])
+            if nd < dist.get(other, math.inf):
+                dist[other] = nd
+                prev[other] = nid
+                heapq.heappush(heap, (nd, other))
+    if goal not in dist:
+        raise RouteCommandError(f'no route from {start} to {goal}')
+    route = [goal]
+    while route[-1] != start:
+        route.append(prev[route[-1]])
+    route.reverse()
+    # 가로선 노드(막다른 칸)는 경로 중간에 올 수 없다(line_nav 규칙). 최단 경로에서는 생기지 않는다.
+    if any(nodes[r]['bar'] for r in route[1:-1]):
+        raise RouteCommandError('route passes through a stop node')
+    return route

@@ -184,3 +184,57 @@ def test_robot_client_allows_only_known_paths():
     with pytest.raises(ValueError):
         c._url('evil.example', '/api/route')
     assert c._url('192.168.4.21', '/api/route') == 'http://192.168.4.21:8080/api/route'
+
+
+class EventClient(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self.state = {'state': 'follow', 'reason': '',
+                      'events': [{'t': 1.0, 'event': 'start', 'detail': 'N14 → N16'}]}
+
+    def request(self, ip, path, body=None):
+        if path == '/api/route' and not self.fail:
+            self.calls.append((ip, path, body))
+            return {'state': self.state, 'stale': False}
+        return super().request(ip, path, body)
+
+
+def test_log_collects_events_once_and_state_changes(store, tmp_path):
+    store.upsert(GOOD)
+    client = EventClient()
+    m = FleetManager(store, Commands('/repo', '/k'), client=client, runner=FakeRunner(),
+                     log=fleet.FleetLog(str(tmp_path / 'logs')))
+    r = store.get('pinky1')
+    m.poll_once(r)
+    m.poll_once(r)                                   # 같은 이벤트는 다시 기록하지 않음
+    client.state = dict(client.state, state='error', reason='node_missed: N16',
+                        events=client.state['events'] + [{'t': 9.5, 'event': 'error',
+                                                          'detail': 'node_missed'}])
+    m.poll_once(r)
+    client.fail = True
+    m.poll_once(r)
+    rows, last = m.log.after(0)
+    kinds = [(x['source'], x['event']) for x in rows]
+    assert kinds == [('console', 'reachable'), ('robot', 'start'), ('state', 'follow'),
+                     ('robot', 'error'), ('state', 'error'), ('console', 'unreachable')]
+    assert last == len(rows) and m.log.after(last)[0] == []
+    path = m.log.path()
+    assert path.startswith(str(tmp_path / 'logs')) and open(path).read().count('\n') == 7
+
+
+def test_log_records_commands_and_jobs(mgr):
+    mgr.route_command('pinky1', {'cmd': 'stop'})
+    mgr.start_job('pinky1', 'check', wait=True)
+    events = [(x['source'], x['event']) for x in mgr.log.after(0)[0]]
+    assert ('fleet', 'command') in events and ('fleet', 'command_result') in events
+    assert ('job', 'check start') in events and ('job', 'check ok') in events
+
+
+def test_log_csv_escapes_formulas():
+    log = fleet.FleetLog(None)
+    log.add('pinky1', 'robot', '=HYPERLINK("x")', '+1')
+    log.add('pinky2', 'robot', 'ok', '-2')
+    text = log.csv_text()
+    assert "'=HYPERLINK" in text and "'+1" in text
+    only = log.csv_text('pinky2')
+    assert 'pinky1' not in only and "'-2" in only

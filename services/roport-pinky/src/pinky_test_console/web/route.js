@@ -84,7 +84,7 @@ function render(snap) {
     }
     tb.appendChild(tr);
   }
-  map.setProgress(s);
+  map.setProgress(s, snap.robot);
   updateButtons();
 }
 

@@ -120,6 +120,7 @@ class ConsoleNode(Node):
         self.declare_parameter('repo_dir', '~/dev_ws/roport/kernel-robot-repo-1')
         self.declare_parameter('ssh_key', '~/.ssh/pinky_ed25519')
         self.declare_parameter('robot_port', 8080)
+        self.declare_parameter('fleet_log_dir', '~/roport_fleet_logs')
 
         self.mode = self.get_parameter('mode').value
         self.map_dir = map_store.resolve_map_dir(self.get_parameter('map_dir').value)
@@ -423,7 +424,8 @@ class ConsoleNode(Node):
         cmds = fleet.Commands(str(self.get_parameter('repo_dir').value),
                               str(self.get_parameter('ssh_key').value))
         mgr = fleet.FleetManager(
-            store, cmds, client=fleet.RobotClient(int(self.get_parameter('robot_port').value)))
+            store, cmds, client=fleet.RobotClient(int(self.get_parameter('robot_port').value)),
+            log=fleet.FleetLog(str(self.get_parameter('fleet_log_dir').value)))
         mgr.start_polling()
         return mgr
 

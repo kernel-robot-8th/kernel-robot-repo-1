@@ -3,7 +3,7 @@ import os
 import pytest
 
 from pinky_test_console.route_view import (PRESETS, RouteCommandError, graph_view,
-                                           parse_route_command)
+                                           parse_route_command, plan_to)
 
 LAYOUT = os.path.join(os.path.dirname(__file__), '..', '..', 'roport_gz_world', 'layout',
                       'roport_airport.yaml')
@@ -44,3 +44,30 @@ def test_graph_view_missing(tmp_path):
     (tmp_path / 'empty.yaml').write_text('nodes: {}\n')
     with pytest.raises(RouteCommandError):
         graph_view(str(tmp_path / 'empty.yaml'))
+
+
+def test_starts_and_goals():
+    g = graph_view(LAYOUT)
+    assert [(s['place'], s['node']) for s in g['starts']] == [
+        ('P1', 'H1'), ('P2', 'H2'), ('P5', 'N16'), ('P6', 'N17')]
+    assert set(g['goals']) == {'N01', 'N11', 'N12', 'N16', 'N17', 'H1', 'H2'}
+
+
+@pytest.mark.parametrize('start, goal, route', [
+    ('N16', 'N01', ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']),
+    ('N17', 'N11', ['N17', 'N15', 'N05', 'N07', 'N19', 'N11']),
+    ('H1', 'N11', ['H1', 'N09', 'N19', 'N11']),
+    ('H2', 'N12', ['H2', 'N08', 'N12']),
+    ('N01', 'N17', ['N01', 'N18', 'N07', 'N05', 'N15', 'N17']),
+])
+def test_plan_to_shortest(start, goal, route):
+    assert plan_to(graph_view(LAYOUT), start, goal) == route
+
+
+@pytest.mark.parametrize('start, goal', [
+    ('N16', 'N14'),            # 목적지가 정차 노드가 아님
+    ('N16', 'N16'), ('N99', 'N01'), ('N16', 'x;y'),
+])
+def test_plan_to_rejects(start, goal):
+    with pytest.raises(RouteCommandError):
+        plan_to(graph_view(LAYOUT), start, goal)

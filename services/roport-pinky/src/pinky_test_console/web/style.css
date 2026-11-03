@@ -456,3 +456,15 @@ canvas {
   margin-bottom: 8px; font-size: 12px; color: var(--text-muted); }
 .fleet-page details summary { cursor: pointer; font-size: 13px; margin: 4px 0; }
 .fleet-page pre.cmd-box { white-space: pre-wrap; max-height: 220px; overflow: auto; font-size: 11px; }
+.fl-row { cursor: pointer; }
+.fl-legend { display: flex; gap: 10px; font-size: 12px; }
+.ir-table td.fl-swatch[data-color="0"], .fl-key[data-color="0"] { color: #d9480f; }
+.ir-table td.fl-swatch[data-color="1"], .fl-key[data-color="1"] { color: #2e4fd8; }
+.ir-table td.fl-swatch[data-color="2"], .fl-key[data-color="2"] { color: #9c36b5; }
+.ir-table td.fl-swatch[data-color="3"], .fl-key[data-color="3"] { color: #0b7285; }
+.fl-log { max-height: 280px; overflow: auto; }
+.fl-log td { font-size: 11px; white-space: nowrap; }
+.fl-log td:last-child { white-space: normal; }
+.fl-log-fleet td, .fl-log-job td { color: #2e4fd8; }
+.fl-log-state td { font-weight: 600; }
+.fl-log-console td { color: #b4441c; }

@@ -117,6 +117,9 @@ class RouteExecutor:
         self._yaw_acc = 0.0      # odom 누적 회전 rad (감기지 않음)
         self._pose = None
         self._now = 0.0
+        self._loaded = False     # 상차 완료를 받았는지(두 번째 회전 표시용)
+        self._leg_s0 = 0.0       # 구간 시작 때 출발 노드 → 센서 거리(표시용 위치 추정)
+        self._progress = 0.0     # 현재 구간 진행률 0~1 (정지·오류 뒤에도 마지막 값 유지)
         self._reset_primitive()
 
     # ------------------------------------------------------------ 명령
@@ -129,6 +132,7 @@ class RouteExecutor:
         self.legs = legs
         self.index = 0
         self.reason = ''
+        self._loaded = False
         self._steps.clear()
         self._log('start', ' → '.join(self.route))
         self._begin_leg(start_offset_cm)
@@ -142,6 +146,7 @@ class RouteExecutor:
         """상차 완료. LOADING 에서만 받는다."""
         if self.state != LOADING:
             return False
+        self._loaded = True
         self._log('load_done', self.legs[self.index].to)
         self._next_step()
         return True
@@ -193,7 +198,34 @@ class RouteExecutor:
             'rotated_deg': round(math.degrees(abs(self._yaw_acc - self._ref_yaw)), 1),
             'events': list(self.events),
         }
+        out.update(self._estimate(leg))
         return out
+
+    _HEADING_DEG = {'E': 0.0, 'N': 90.0, 'W': 180.0, 'S': -90.0}
+
+    def _estimate(self, leg):
+        """화면 표시용 바퀴 축 위치 추정(실측 cm). 그래프 + 이동 거리로 계산, 제어에는 쓰지 않는다."""
+        if leg is None:
+            return {'leg_progress': None, 'pose_est': None}
+        if self.state == FOLLOW:
+            axle = self._leg_s0 + (self._odo - self._ref_odo) - self.cfg.ir_ahead_cm
+            self._progress = min(1.0, max(0.0, axle / leg.length)) if leg.length > 0 else 1.0
+        elif self.state in (PASS, ADVANCE, ROTATE, LOADING, REVERSE, ARRIVED, HANDOFF_STATE):
+            self._progress = 1.0
+        a, b = self.graph.nodes[leg.frm], self.graph.nodes[leg.to]
+        heading = self._HEADING_DEG[leg.heading]
+        if leg.action == LOAD and self.state in (LOADING, ARRIVED):
+            heading += 90.0 if self.state == LOADING else 180.0   # 반시계 90° / 합계 약 180°
+        elif leg.action == PARK and self.state in (REVERSE, ARRIVED):
+            heading += 180.0
+        elif self.state == ROTATE and self._prim:
+            base = 90.0 if leg.action == LOAD and self._loaded else 0.0   # 상차 뒤 두 번째 회전
+            heading += base + self._prim['dir'] * math.degrees(abs(self._yaw_acc - self._ref_yaw))
+        heading = (heading + 180.0) % 360.0 - 180.0
+        f = self._progress
+        return {'leg_progress': round(f, 3), 'pose_est': {
+            'x_cm': round(a.x + (b.x - a.x) * f, 1), 'y_cm': round(a.y + (b.y - a.y) * f, 1),
+            'heading_deg': round(heading, 1)}}
 
     # ------------------------------------------------------------ 내부
     def _log(self, kind, detail=''):
@@ -231,6 +263,8 @@ class RouteExecutor:
         leg = self.legs[self.index]
         self.state = FOLLOW
         self._reset_primitive()
+        self._leg_s0 = 0.0 if s0_cm is None else s0_cm
+        self._progress = 0.0
         c = self.cfg
         target = leg.length - c.half_line_cm      # 센서가 도착 노드 선의 가까운 가장자리에 닿는 거리
         if s0_cm is None:

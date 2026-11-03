@@ -10,6 +10,9 @@
 그대로 넣지 않음), IP·이름·브랜치·도메인은 검사한다. 이 서버는 기본 127.0.0.1 에만 연다(launch_plan).
 """
 
+import csv
+import datetime
+import io
 import ipaddress
 import json
 import os
@@ -40,6 +43,73 @@ ROBOT_PATHS = ('/api/route', '/api/status', '/api/route/command', '/api/estop')
 MAX_RESPONSE = 256 * 1024
 TIMEOUTS = {'check': 15, 'read_domain': 15, 'set_domain': 15, 'deploy': 180, 'build': 900}
 ACTIONS = tuple(TIMEOUTS)
+LOG_FIELDS = ('seq', 'time', 'robot', 'source', 'event', 'detail')
+LOG_KEEP = 3000          # 화면·다운로드용 메모리 기록 줄 수(파일에는 모두 남김)
+
+
+def _csv_cell(value):
+    """표 계산 프로그램이 수식으로 읽지 않게(CSV injection) =,+,-,@ 로 시작하면 ' 를 붙인다."""
+    text = '' if value is None else str(value)
+    return "'" + text if text[:1] in ('=', '+', '-', '@', '\t', '\r') else text
+
+
+class FleetLog:
+    """테스트 관제 기록: 로봇 이벤트·상태 변화·콘솔 연결·명령·작업. 메모리 + 날짜별 CSV 파일."""
+
+    def __init__(self, log_dir=None, keep=LOG_KEEP):
+        self._lock = threading.Lock()
+        self._rows = deque(maxlen=keep)
+        self._seq = 0
+        self.log_dir = None if log_dir is None else os.path.abspath(os.path.expanduser(log_dir))
+        self.file_error = None
+
+    def path(self, now=None):
+        if self.log_dir is None:
+            return None
+        day = (now or datetime.datetime.now()).strftime('%Y%m%d')
+        return os.path.join(self.log_dir, f'fleet_{day}.csv')
+
+    def add(self, robot, source, event, detail=''):
+        now = datetime.datetime.now()
+        with self._lock:
+            self._seq += 1
+            row = {'seq': self._seq, 'time': now.isoformat(timespec='milliseconds'),
+                   'robot': robot, 'source': source, 'event': event, 'detail': str(detail)[:500]}
+            self._rows.append(row)
+            self._write(row, now)
+        return row
+
+    def _write(self, row, now):
+        path = self.path(now)
+        if path is None or self.file_error:
+            return
+        try:
+            os.makedirs(self.log_dir, mode=0o700, exist_ok=True)
+            new = not os.path.exists(path)
+            with open(path, 'a', encoding='utf-8', newline='') as f:
+                w = csv.writer(f)
+                if new:
+                    w.writerow(LOG_FIELDS)
+                w.writerow([_csv_cell(row[k]) for k in LOG_FIELDS])
+        except OSError as e:
+            self.file_error = f'log file not writable: {e}'
+
+    def after(self, seq, limit=500):
+        with self._lock:
+            rows = [r for r in self._rows if r['seq'] > seq]
+            last = self._seq
+        return rows[-limit:], last
+
+    def csv_text(self, robot=None):
+        out = io.StringIO()
+        w = csv.writer(out)
+        w.writerow(LOG_FIELDS)
+        with self._lock:
+            rows = list(self._rows)
+        for r in rows:
+            if robot is None or r['robot'] == robot:
+                w.writerow([_csv_cell(r[k]) for k in LOG_FIELDS])
+        return out.getvalue()
 
 
 class FleetError(ValueError):
@@ -272,7 +342,10 @@ class RobotClient:
 
 
 class FleetManager:
-    def __init__(self, store, commands, client=None, runner=None, poll_sec=1.0):
+    def __init__(self, store, commands, client=None, runner=None, poll_sec=1.0, log=None):
+        self.log = log or FleetLog()
+        self._seen = {}          # 로봇별 이미 기록한 line_nav 이벤트 키
+        self._last = {}          # 로봇별 (콘솔 연결, state, reason)
         self.store = store
         self.cmd = commands
         self.client = client or RobotClient()
@@ -310,7 +383,35 @@ class FleetManager:
             entry.update(ok=False, error=f'console not reachable: {e}')
         with self._lock:
             self._status[robot.name] = entry
+        self._log_poll(robot.name, entry)
         return entry
+
+    def _log_poll(self, name, entry):
+        """새 line_nav 이벤트·state 변화·콘솔 연결 변화만 기록한다."""
+        prev = self._last.get(name, (None, None, None))
+        if entry['ok'] != prev[0]:
+            self.log.add(name, 'console', 'reachable' if entry['ok'] else 'unreachable',
+                         '' if entry['ok'] else entry.get('error', ''))
+        st = (entry.get('route') or {}).get('state') if entry['ok'] else None
+        state = reason = None
+        if isinstance(st, dict):
+            state, reason = st.get('state'), st.get('reason') or ''
+            seen = self._seen.setdefault(name, (set(), deque()))
+            for ev in st.get('events') or []:
+                if not isinstance(ev, dict):
+                    continue
+                key = (ev.get('t'), ev.get('event'), ev.get('detail'))
+                if key in seen[0]:
+                    continue
+                seen[0].add(key)
+                seen[1].append(key)
+                if len(seen[1]) > 500:
+                    seen[0].discard(seen[1].popleft())
+                self.log.add(name, 'robot', ev.get('event'),
+                             f"{ev.get('detail', '')} (robot t={ev.get('t')})")
+            if state != prev[1] or reason != prev[2]:
+                self.log.add(name, 'state', state, reason)
+        self._last[name] = (entry['ok'], state if st else prev[1], reason if st else prev[2])
 
     def snapshot(self):
         now = time.time()
@@ -324,13 +425,22 @@ class FleetManager:
             robots.append(dict(asdict(r), busy=r.name in busy, status=None if st is None else
                                dict(st, age_sec=round(now - st['t'], 1))))
         return {'robots': robots, 'jobs': jobs, 'packages': list(PACKAGES),
-                'release_ref': RELEASE_REF, 'fleet_file': self.store.path}
+                'release_ref': RELEASE_REF, 'fleet_file': self.store.path,
+                'log_file': self.log.path(), 'log_error': self.log.file_error}
 
     # ---------------- 경로 명령 ----------------
     def route_command(self, name, data):
         cmd = parse_route_command(data)
         robot = self.store.get(name)
-        return self.client.request(robot.ip, '/api/route/command', cmd)
+        self.log.add(name, 'fleet', 'command', json.dumps(cmd, ensure_ascii=False))
+        try:
+            res = self.client.request(robot.ip, '/api/route/command', cmd)
+        except (OSError, ValueError) as e:
+            self.log.add(name, 'fleet', 'command_failed', str(e))
+            raise
+        self.log.add(name, 'fleet', 'command_result',
+                     'ok' if res.get('success') else res.get('msg', res))
+        return res
 
     def stop_all(self):
         out = {}
@@ -342,6 +452,7 @@ class FleetManager:
                 except (OSError, ValueError) as e:
                     res[path] = f'failed: {e}'
             out[r.name] = res
+            self.log.add(r.name, 'fleet', 'stop_all', json.dumps(res, ensure_ascii=False))
         return out
 
     # ---------------- 작업(SSH·git) ----------------
@@ -371,6 +482,8 @@ class FleetManager:
                 self._jobs.pop(self._order[0], None)
             self._order.append(job['id'])
             self._busy.add(robot.name)
+        self.log.add(robot.name, 'job', f'{action} start',
+                     json.dumps(job['params'], ensure_ascii=False))
         t = threading.Thread(target=self._run_job, args=(job, steps, TIMEOUTS[action]),
                              daemon=True)
         t.start()
@@ -414,6 +527,7 @@ class FleetManager:
         job['code'] = code
         job['state'] = 'ok' if code == 0 else 'failed'
         job['ended'] = time.time()
+        self.log.add(job['robot'], 'job', f"{job['action']} {job['state']}", f'code={code}')
         with self._lock:
             self._busy.discard(job['robot'])
 

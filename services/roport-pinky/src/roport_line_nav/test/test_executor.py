@@ -172,3 +172,25 @@ def test_robust_to_odom_error_and_tape_offset(graph, odom_scale, yaw_scale):
                                 'odom_yaw_scale': yaw_scale})
     assert ex.state == ARRIVED, ex.as_dict()
     assert sim.sensor.update(sim.raw()).on_line[1]      # 끝나고 진입선 위
+
+
+def test_pose_estimate_follows_route(graph):
+    """화면용 위치 추정: 구간 진행률이 0→1 로 늘고, 끝나면 마지막 노드에 있음."""
+    sim = Sim(graph)
+    sim.place('N14', 'N', 0.0)
+    ex = RouteExecutor(graph)
+    assert ex.as_dict()['pose_est'] is None
+    ex.start(['N14', 'N16'])
+    seen = []
+    while ex.active and sim.t < 120:
+        sim.tick(ex)
+        d = ex.as_dict()
+        if d['state'] == 'follow':
+            seen.append(d['leg_progress'])
+    assert seen and seen == sorted(seen) and seen[-1] > 0.8
+    d = ex.as_dict()
+    assert d['state'] == ARRIVED and d['leg_progress'] == 1.0
+    n16 = graph.nodes['N16']
+    assert d['pose_est']['heading_deg'] == pytest.approx(-90.0)   # 칸에서 바깥(남)을 봄
+    assert d['pose_est']['x_cm'] == pytest.approx(n16.x, abs=0.1)
+    assert d['pose_est']['y_cm'] == pytest.approx(n16.y, abs=0.1)

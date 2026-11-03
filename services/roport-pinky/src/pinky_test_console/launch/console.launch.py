@@ -79,6 +79,7 @@ def launch_setup(context):
                 'fleet_file': LaunchConfiguration('fleet_file').perform(context),
                 'repo_dir': LaunchConfiguration('repo_dir').perform(context),
                 'ssh_key': LaunchConfiguration('ssh_key').perform(context),
+                'fleet_log_dir': LaunchConfiguration('fleet_log_dir').perform(context),
             }],
         ),
     ]
@@ -121,6 +122,8 @@ def generate_launch_description():
                               description='mode:=fleet git checkout used for git archive'),
         DeclareLaunchArgument('ssh_key', default_value='~/.ssh/pinky_ed25519',
                               description='mode:=fleet SSH key (no passwords)'),
+        DeclareLaunchArgument('fleet_log_dir', default_value='~/roport_fleet_logs',
+                              description='mode:=fleet daily log CSV folder'),
         DeclareLaunchArgument('use_sim_time', default_value='false',
                               description='true for Gazebo/MuJoCo simulation'),
         DeclareLaunchArgument('map_dir', default_value='~/roport_maps',

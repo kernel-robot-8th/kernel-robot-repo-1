@@ -446,3 +446,26 @@ def test_fleet_api(fleet_client):
     assert r.status_code == 502
     assert c.post('/api/fleet/robots/delete', headers=h,
                   json={'name': 'pinky2'}).status_code == 200
+
+
+def test_route_plan_api(client, node):
+    from pinky_test_console.route_view import graph_view
+    layout = os.path.join(os.path.dirname(__file__), '..', '..', 'roport_gz_world', 'layout',
+                          'roport_airport.yaml')
+    node.route_graph = lambda: graph_view(layout)
+    r = client.get('/api/route/plan?from=N16&to=N01')
+    assert r.status_code == 200 and r.get_json()['route'][0] == 'N16'
+    assert client.get('/api/route/plan?from=N16&to=N14').status_code == 400
+    assert client.get('/api/route/plan?from=N16').status_code == 400
+
+
+def test_fleet_logs_api(fleet_client):
+    c, mgr = fleet_client
+    h = {'Host': '127.0.0.1:8080'}
+    mgr.log.add('pinky1', 'fleet', 'command', '{"cmd": "stop"}')
+    data = c.get('/api/fleet/logs?after=0', headers=h).get_json()
+    assert data['last'] >= 1 and data['entries'][-1]['event'] == 'command'
+    assert c.get('/api/fleet/logs?after=x', headers=h).status_code == 400
+    r = c.get('/api/fleet/logs.csv?robot=pinky1', headers=h)
+    assert r.status_code == 200 and 'attachment' in r.headers['Content-Disposition']
+    assert r.data.decode().startswith('seq,time,robot')

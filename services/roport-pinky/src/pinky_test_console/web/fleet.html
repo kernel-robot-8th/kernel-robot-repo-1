@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- pinky_test_console 테스트 관제 화면 (mode:=fleet, 노트북). MQTT 없이 각 로봇 콘솔(mode:=route)을 HTTP 로 부름.
-     인라인 코드·CDN 없음. -->
+     지도: 로봇 추정 위치·지나온 구간(로봇 색), 목적지 클릭 → 최단 경로. 로그: 로봇 이벤트·명령·작업. 인라인 코드·CDN 없음. -->
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
@@ -21,33 +21,48 @@
 <div id="main">
   <div id="left">
     <section class="panel-card">
-      <div class="section-title"><span>로봇 (로봇마다 <code>mode:=route</code> 콘솔이 켜져 있어야 상태가 보임)</span></div>
-      <div class="ir-table-wrap"><table class="ir-table" id="robots"><thead><tr>
-        <th>이름</th><th>역할</th><th>IP</th><th>도메인</th><th>콘솔</th><th>state</th><th>구간</th><th>선택</th>
-      </tr></thead><tbody></tbody></table></div>
-      <div class="tiny-note">로봇 등록·설치·도메인은 「Pinky 설정」 화면에서. 관제 서버 연동(MQTT)은 아직 없음.</div>
+      <div class="section-title"><span>지도 — 주황 테두리 노드(정차 노드)를 누르면 선택한 로봇의 목적지</span><span id="legend" class="fl-legend"></span></div>
+      <canvas id="routeCanvas" class="am-canvas" width="1000" height="520"></canvas>
+      <div class="tiny-note">로봇 위치는 line_nav 상태(구간·이동 거리)로 추정한 값. 지나온 구간은 로봇 색으로 남고, 그 로봇이 새 경로를 시작하면 지워짐.</div>
     </section>
 
     <section class="panel-card">
-      <div class="section-title"><span>경로 — <b id="selName">로봇을 선택</b></span></div>
-      <canvas id="routeCanvas" class="am-canvas" width="920" height="480"></canvas>
-      <div class="row mt">
-        <select id="presets" class="text-input ir-select"><option value="">경로 예시 선택…</option></select>
-        <button id="btnClear" class="btn btn-outline btn-small" type="button">경로 지우기</button>
+      <div class="section-title">
+        <span>로그</span>
+        <span class="row">
+          <select id="logRobot" class="text-input ir-select" title="로봇 거르기"><option value="">전체</option></select>
+          <label class="tiny-note"><input id="logFollow" type="checkbox" checked> 최신 따라가기</label>
+          <a id="btnLogCsv" class="btn btn-outline btn-small" href="/api/fleet/logs.csv" download>CSV 저장</a>
+          <button id="btnLogClear" class="btn btn-outline btn-small" type="button" title="화면만 지움(파일·서버 기록은 그대로)">화면 지우기</button>
+        </span>
       </div>
-      <div class="tiny-note">경로: <b id="routeText">-</b></div>
+      <div class="ir-table-wrap fl-log" id="logWrap"><table class="ir-table" id="logs"><thead><tr>
+        <th>시각</th><th>로봇</th><th>구분</th><th>이벤트</th><th>내용</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="tiny-note">자동 저장: <code id="logFile">-</code></div>
     </section>
   </div>
 
   <div id="right">
     <section class="panel-card">
-      <div class="section-title"><span>선택한 로봇 명령</span></div>
-      <div class="row">
+      <div class="section-title"><span>로봇 (각 로봇 <code>mode:=route</code> 콘솔 필요)</span></div>
+      <div class="ir-table-wrap"><table class="ir-table" id="robots"><thead><tr>
+        <th></th><th>이름</th><th>콘솔</th><th>state</th><th>구간</th>
+      </tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section class="panel-card">
+      <div class="section-title"><span>경로 — <b id="selName">로봇을 선택</b></span></div>
+      <div class="form-line"><label for="startSel">출발</label><select id="startSel" class="text-input"></select></div>
+      <div class="form-line"><span>목적지</span><b id="goalText">지도에서 정차 노드를 누름</b></div>
+      <div class="form-line"><span>경로</span><span id="routeText">-</span></div>
+      <div class="row mt">
         <button id="btnStart" class="btn btn-primary" type="button" disabled>▶ 경로 시작</button>
         <button id="btnLoad" class="btn btn-outline" type="button" disabled>상차 완료</button>
         <button id="btnStop" class="btn btn-danger" type="button" disabled>■ 정지</button>
       </div>
       <div class="status-msg" id="cmdMsg" role="status"></div>
+      <div class="tiny-note">출발 위치에 로봇을 첫 구간 방향(칸 바깥)으로 세운 뒤 시작. 상차 노드·대기 칸에서 끝나면 「현재 위치」에서 바로 다음 경로를 고를 수 있음.</div>
     </section>
 
     <section class="panel-card">
