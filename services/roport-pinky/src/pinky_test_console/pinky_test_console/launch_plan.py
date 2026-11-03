@@ -3,7 +3,8 @@
 import os
 from dataclasses import dataclass
 
-VALID_MODES = ('slam', 'nav', 'ir', 'marker')
+VALID_MODES = ('slam', 'nav', 'ir', 'marker', 'amcl')
+MAP_MODES = ('nav', 'amcl')            # map:= 가 필요한 모드
 NO_INCLUDE_MODES = ('ir', 'marker')   # pinky_navigation 을 include 하지 않는 모드
 
 
@@ -14,7 +15,7 @@ class LaunchArgError(ValueError):
 @dataclass(frozen=True)
 class LaunchPlan:
     mode: str
-    map_yaml: str  # nav 모드에서만 사용 (절대경로), slam 모드는 ''
+    map_yaml: str  # nav·amcl 모드에서만 사용 (절대경로), 나머지는 ''
     port: int
     use_sim_time: bool
     ir_node: bool = False  # pinky_sensor_adc main_node 를 함께 실행
@@ -50,10 +51,10 @@ def resolve_plan(mode, map_path='', port='8080', use_sim_time='false', ir_node='
             f"mode must be one of {'|'.join(VALID_MODES)}, got '{mode}'")
 
     map_yaml = ''
-    if m == 'nav':
+    if m in MAP_MODES:
         raw = str(map_path).strip()
         if not raw:
-            raise LaunchArgError('mode:=nav requires map:=<path to map .yaml>')
+            raise LaunchArgError(f'mode:={m} requires map:=<path to map .yaml>')
         map_yaml = os.path.abspath(os.path.expanduser(raw))
         if not map_yaml.endswith('.yaml'):
             raise LaunchArgError(f'map must be a .yaml file: {map_yaml}')
@@ -81,6 +82,9 @@ def included_launch(plan):
     if plan.mode == 'slam':
         # 원본 map_building.launch.xml = slam_toolbox online_sync + mapper_params.yaml
         return 'map_building.launch.xml', {'use_sim_time': sim_time}
+    if plan.mode == 'amcl':
+        # 원본 localization_launch.xml = map_server + amcl 만 (경로 계획·주행 제어 없음 → 자율 주행 없음)
+        return 'localization_launch.xml', {'map': plan.map_yaml, 'use_sim_time': sim_time}
     # 원본 bringup_launch.xml = map_server + amcl + Nav2 (지도 지정)
     return 'bringup_launch.xml', {'map': plan.map_yaml, 'use_sim_time': sim_time}
 
