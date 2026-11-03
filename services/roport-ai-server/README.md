@@ -43,5 +43,5 @@ API 실행: `uv run uvicorn app:app --app-dir src --host 127.0.0.1 --port 8000`
 
 - wire profile: `omx.dedicated/1`, ISO 8601 offset 시각, 최대 60,000-byte strict JSON. 중복 키·비유한 값·잘못된 feature 순서·이전 실행/단계·만료된 관측은 거절합니다.
 - `handle(request, now=UTC_epoch_seconds)`와 `handle_datagram(bytes, now=...)`는 직렬로 호출합니다. 단계 revision이 바뀌면 reset을 다시 확인하며 미등록 모델·provider 오류는 `inference.error`입니다.
-- `dedicated_udp.serve_once(socket, router, allowed_peer=..., clock=...)`는 호출자가 준비한 UDP 소켓에서 지정 peer의 요청 1개를 처리합니다. import·HTTP 서버 시작만으로 소켓을 열지 않습니다. peer 제한은 암호학적 인증이 아니며 현장 네트워크 적용 전 별도 검증이 필요합니다.
+- `dedicated_udp.serve_once(socket, router, allowed_peer=..., clock=...)`는 호출자가 준비한 UDP 소켓에서 지정 peer의 요청 1개를 처리합니다. import·HTTP 서버 시작만으로 소켓을 열지 않습니다. `allowed_peer`는 IPv4 `(host, port)` 2-tuple 전용입니다(IPv6 미지원). 다른 peer의 패킷은 응답 없이 버리고 경고 로그를 남긴 뒤 `"unexpected_policy_peer"`를 반환하며, 처리한 경우 `None`을 반환하므로 호출자는 예외 없이 루프를 계속합니다. peer 제한은 암호학적 인증이 아니며 현장 네트워크 적용 전 별도 검증이 필요합니다.
 - 동기 provider를 강제 중단하지 않습니다. 반환 후 deadline이 지난 후보는 폐기하고 Host도 자체 timeout으로 보류해야 합니다. 모터 구동·완료·Pinky 출발은 AI의 권한이 아닙니다.
