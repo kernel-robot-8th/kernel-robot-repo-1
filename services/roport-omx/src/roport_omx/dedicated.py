@@ -9,6 +9,8 @@ from copy import deepcopy
 from datetime import datetime
 from uuid import uuid4
 
+from .observations import validate_images
+
 PROFILE_VERSION = "omx.dedicated/1"
 PHASES = ("GRASPING", "TRANSFERRING", "RELEASING", "RETURNING")
 WAITS = ("WAIT_GRASP", "WAIT_SEATED", "WAIT_RELEASE", "WAIT_SAFE")
@@ -466,7 +468,7 @@ class DedicatedHost:
         except (Rejected, KeyError, TypeError) as exc:
             self._reject(str(exc))
 
-    def observe(self, arm_id, positions, *, observation_seq, captured_at):
+    def observe(self, arm_id, positions, *, observation_seq, captured_at, images=None):
         try:
             if (
                 arm_id not in self.profile["safe_positions"]
@@ -484,15 +486,17 @@ class DedicatedHost:
                 or timestamp(captured_at) < timestamp(previous["captured_at"])
             ):
                 raise Rejected("observation did not advance")
+            manifest = validate_images(images) if images is not None else None
             self.observations[arm_id] = {
                 "positions": pos,
                 "seq": observation_seq,
                 "captured_at": captured_at,
                 "received": self.monotonic_clock(),
+                **({"images": manifest} if manifest is not None else {}),
             }
             if self.command and self.state != "SAFE_RETURNED":
                 self._arms()
-        except (Rejected, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError) as exc:
             self._reject(str(exc))
 
     def _safe(self, arm_id):
@@ -770,7 +774,12 @@ class DedicatedHost:
                 "positions": list(observation["positions"]),
                 "feature_names": self.profile["feature_names"],
                 "use_degrees": self.profile["use_degrees"],
+                "captured_at": observation["captured_at"],
             }
+            if "images" in observation:
+                request["observation"]["images"] = deepcopy(observation["images"])
+            if len(encoded(request).encode()) > 60000:
+                self._reject("inference request exceeds datagram limit")
             self.last_request_observation = observation["seq"]
         self.pending = {
             "request": deepcopy(request),
