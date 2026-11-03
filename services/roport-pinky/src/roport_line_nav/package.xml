@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>roport_line_nav</name>
+  <version>0.1.0</version>
+  <description>RO:PORT IR line node-route navigation (node detection, 90 deg turns, load/park arrival actions) for logistics Pinky and smart cart</description>
+  <maintainer email="102033640+minjee92@users.noreply.github.com">GATE CREW</maintainer>
+  <license>LicenseRef-Proprietary</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>roport_pinky_line</exec_depend>
+  <!-- 노드 그래프는 roport_gz_world/layout/roport_airport.yaml 을 읽는다(layout_file 로 바꿀 수 있음).
+       roport_gz_world 는 Gazebo 실행 의존이 있어 의존으로 적지 않는다. pinky_sensor_adc 도 같은 이유 -->
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

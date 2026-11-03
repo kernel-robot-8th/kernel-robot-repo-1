@@ -5,7 +5,7 @@ source /opt/ros/jazzy/setup.bash
 set -u
 python3 -m unittest discover -s ci -p 'test_*.py' -v
 # ARM-only drivers and the Gazebo stack require separate hardware/simulation jobs.
-colcon build --packages-select roport_pinky roport_pinky_line roport_smartcart pinky_interfaces pinky_description \
+colcon build --packages-select roport_pinky roport_pinky_line roport_line_nav roport_smartcart pinky_interfaces pinky_description \
   --event-handlers console_direct+ --cmake-args -DBUILD_TESTING=OFF
 set +u
 source install/setup.bash
@@ -32,3 +32,5 @@ print('Built ROS services and expanded Pinky URDF successfully')
 PY
 # Line follower logic and node tests (isolated ROS_DOMAIN_ID/namespace, no hardware).
 python3 -m pytest src/roport_pinky_line/test -q -p no:cacheprovider
+# Node-route navigation: route planning, 2D IR/odom simulator routes, node tests (isolated domain).
+python3 -m pytest src/roport_line_nav/test -q -p no:cacheprovider
