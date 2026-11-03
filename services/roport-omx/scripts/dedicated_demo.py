@@ -8,7 +8,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from roport_omx.dedicated import PHASES, PROFILE_VERSION, DedicatedHost, Profile
+from roport_omx.dedicated import (
+    PHASES,
+    PROFILE_VERSION,
+    VERDICTS,
+    DedicatedHost,
+    Profile,
+)
 
 
 def synthetic_profile():
@@ -197,6 +203,8 @@ def run_mock(operation="INBOUND"):
                 "execution_id": command["execution_id"],
                 "phase": phase,
                 "phase_revision": host.phase_revision,
+                "verdict_kind": VERDICTS[index],
+                "confirmer": "mock-supervisor",
                 "positive": True,
                 "observation_seq": seq,
                 "captured_at": clock.stamp(),
