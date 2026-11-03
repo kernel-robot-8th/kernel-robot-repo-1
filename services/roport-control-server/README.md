@@ -12,8 +12,8 @@ Python 3.12 / uv / Paho MQTT 2.1.0 / pytest / Ruff.
 
 ```
 src/roport_control_server/
-  domain/      __init__.py만: Workflow·Allocation·State/Recovery 규칙 자리 (골격, 미구현)
-  executor/    __init__.py만: 관제 실행부 프로세스 자리 (골격, 미구현, FFT1-106)
+  domain/      dedicated_cycle.py: 분담 작업 순서의 source/mock 규칙; 운영 Workflow는 미구현
+  executor/    dedicated.py: 분담 명령·permit 생성; 관제 실행부 프로세스는 미구현 (FFT1-106)
   contracts/   snapshot.py: TaskRow·Snapshot 표시 계약과 검증 (표준 라이브러리만)
   adapters/
     mqtt/      messages.py·mqtt.py: MQTT 5 명령·이벤트 (폴더 단위 이식)
@@ -34,7 +34,13 @@ tests/         test_layers.py: 아래 import 규칙 검사
 | `domain/` (골격) | 표준 라이브러리 |
 | `executor/` (골격) | 표준 라이브러리, `domain`, `contracts`, `adapters`(ui·api 제외) |
 
-패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`·`executor/`는 책임만 적은 골격이고 코드는 아직 없습니다. `adapters/db/`·`adapters/wss/`는 DB 종류와 WSS 메시지 계약이 확정된 뒤 만듭니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
+패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. 분담 작업의 순수 규칙과 메시지 생성 코드는 있으나 운영 DB·관제 실행부 프로세스는 아직 없습니다. `adapters/db/`·`adapters/wss/`는 DB 종류와 WSS 메시지 계약이 확정된 뒤 만듭니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
+
+## OMX 팔별 분담 · source/mock
+
+`executor/dedicated.py`는 단일 포장품의 `DEDICATED` 명령과 새 Pinky 정차 증거의 permit을 만듭니다. `roport/v1/{site}/workcell/shelf-01/permit`은 관제→Host, QoS1·retain=false이며 만료를 검사합니다. 동일 증거 재전송·관제 heartbeat로 허가 수명을 늘리지 않습니다. 현장 ACL은 관제 publish·해당 Host subscribe로 별도 적용해야 합니다.
+
+`domain/dedicated_cycle.py`는 입고 완료·양팔 안전 → 출발 판단 → 배송 Pinky P7 이탈 → 빈 Pinky3 진입 → 반출의 순서를 검사합니다. Host 결과의 실행·배정·boot와 양팔 관측 시각을 대조하며 배송 준비와 고객 수령을 구분합니다. 현재 객체는 메모리 상태이며 실제 작업 배정·출발 publish·DB/outbox·재시작 복구를 제공하지 않습니다. 운영 실행부에 연결하기 전에는 물리 dispatch를 활성화하지 마세요.
 
 ## 현재 범위
 
