@@ -58,8 +58,8 @@ def draw(layout, path):
     plt.rcParams['font.family'] = _korean_font()
     raw = layout.raw
     x0, y0, x1, y1 = layout.room()
-    fig = plt.figure(figsize=(18, 12.5), dpi=110)
-    ax = fig.add_axes([0.03, 0.37, 0.94, 0.58])
+    fig = plt.figure(figsize=(18, 17), dpi=110)
+    ax = fig.add_axes([0.03, 0.538, 0.94, 0.4265])
     ax.set_aspect('equal')
     ax.set_xlim(x0 - 25, x1 + 25)
     ax.set_ylim(y0 - 40, y1 + 30)
@@ -152,37 +152,73 @@ def draw(layout, path):
     ax.text(260, 200, '03 공용 내부공간 (Nav2)', fontsize=15, color=C['switch'], ha='center',
             fontweight='bold')
     ax.text(66, 120, '01 물류창고 루프', fontsize=11, color=C['tape'], ha='center')
-    ax.text(260, 25, '02\n인도장', fontsize=11, color='#8a5a00', ha='center', va='center',
+    ax.text(262, 11, '02\n인도장', fontsize=11, color='#8a5a00', ha='center', va='center',
             fontweight='bold')
     ax.text(362, 50, '스마트카트\n대기·충전', fontsize=10, color='#4b3fa0', ha='left',
             va='center')
     ax.text(412, 100, '입구', fontsize=11, color=C['guess'], ha='center', fontweight='bold')
 
-    # 주요 치수(cm)
-    _dim(ax, (0, y1 + 18), (138, y1 + 18), 'G 138')
-    _dim(ax, (138, y1 + 18), (x1, y1 + 18), 'H 306.5')
-    _dim(ax, (x1 + 15, 0), (x1 + 15, y1), 'e 221', rot=90)
-    _dim(ax, (150, 92), (150, y1), 'f 129', offset=(5, 25), rot=90)
-    _dim(ax, (138, 85), (379.5, 85), 'I 241.5', offset=(-60, 0))
-    _dim(ax, (379.5, 85), (x1, 85), '입구 65')
-    _dim(ax, (0, 100), (20.5, 100), 'a 20.5', offset=(0, 5))
-    _dim(ax, (8, 0), (8, 72), 'b 72', rot=90)
-    _dim(ax, (20.5, 145), (113.7, 145), 'D 93.2', offset=(0, 4))
-    _dim(ax, (124, 72), (124, 163.3), 'c 91.3', rot=90)
-    _dim(ax, (20.5, -22), (379.5, -22), 'O 359 (루프 바깥선 → 간선 끝)')
-    _dim(ax, (44.85, 205), (89.35, 205), 'S 44.5', offset=(0, 4))
-    _dim(ax, (20.5, 64), (64.1, 64), '43.6', offset=(0, -4))
-    _dim(ax, (111.3, 64), (205.3, 64), '94', offset=(0, -4))
-    _dim(ax, (138, -10), (280, -10), '인도장 142')
-    _dim(ax, (138.25, 125), (196, 125), '58', offset=(0, 4))
-    ax.text(141, 30, 'P 54', fontsize=8.5, color=C['dim'], ha='left', va='center')
-    ax.text(283, 30, 'T 49', fontsize=8.5, color=C['dim'], ha='left', va='center')
-    _dim(ax, (308.0, -10), (339.5, -10), 'ㅈ 31.5')
-    _dim(ax, (339.5, -10), (378.3, -10), 'ㄱ 38.8')
-    for nid, label in (('N16', 'R 25'), ('N01', 'Q 29.9'), ('N11', 'W 41'), ('H2', 'U 40')):
-        n = next(k for k in layout.nodes if k.id == nid)
-        ax.text(n.x + 3, (n.y + (163.3 if nid == 'N16' else 72)) / 2, label, fontsize=8.5,
-                color=C['dim'], ha='left', va='center', zorder=7)
+    # 주요 치수(cm). A–Z = 실측 메모(2026-11-02 전체 도면) 기호 그대로, 한글 기호·기호 없는 치수는
+    # 새 번호(①…)를 매기고 표의 비고에 메모 원래 기호를 적는다.
+    n16, n01, h2 = (next(k for k in layout.nodes if k.id == i) for i in ('N16', 'N01', 'H2'))
+    hw_ = layout.line_width / 2
+    dims = [
+        # (시작, 끝, 기호(None = 새 번호), 값, 구간, 비고, 글자 위치 보정, 회전)
+        ((0, y1 + 18), (138, y1 + 18), 'G', '138', '왼쪽 벽 → 03 왼쪽 벽(게이트 벽)', '',
+         (0, 0), 0),
+        ((138, y1 + 18), (x1, y1 + 18), 'H', '306.5', '03 왼쪽 벽 → 오른쪽 벽', '메모 305 → 재측정',
+         (0, 0), 0),
+        ((x1 + 15, 0), (x1 + 15, y1), 'e', '221', '통로 벽 → 창가 벽', '', (0, 0), 90),
+        ((150, 94), (150, y1), 'f', '127', '03 아래 벽 → 창가 벽', '메모 129. ⑦ 기준 계산(e − 94)',
+         (0, 25), 90),
+        ((138, 85), (379.5, 85), 'I', '241.5', '03 아래 벽 길이(03 왼쪽 벽 → 입구)',
+         '메모 243. H − 입구', (-85, 0), 0),
+        ((379.5, 85), (x1, 85), '입구', '65', '03 입구 폭', '메모 64.5 → 재측정', (0, 0), 0),
+        ((20.5, -22), (379.5, -22), 'O', '359', '루프 왼쪽 바깥선 → 간선 끝(N12) 바깥선', '',
+         (0, 0), 0),
+        ((0, 100), (20.5, 100), 'a', '20.5', '왼쪽 벽 → 루프 왼쪽 바깥선', '', (0, 5), 0),
+        ((8, 0), (8, 72), 'b', '72', '통로 벽 → 간선 바깥선(통로 쪽)', '', (0, 0), 90),
+        ((20.5, 145), (113.7, 145), 'D', '93.2', '루프 가로(바깥선 → 바깥선)', '', (0, 4), 0),
+        ((124, 72), (124, 163.3), 'c', '91.3', '루프 세로(바깥선 → 바깥선)', '', (0, 0), 90),
+        ((44.85, 205), (89.35, 205), 'S', '44.5', 'P5 분기 ↔ P6 분기(선 중심)', '', (0, 4), 0),
+        ((n16.x + 5, 163.3), (n16.x + 5, n16.y + hw_), 'R', '25',
+         '루프 위 바깥선 → P5·P6 가로선 바깥선', '', (4, 0), 90),
+        ((n01.x + 5, 72), (n01.x + 5, n01.y - hw_), 'Q', '29.9',
+         '간선 바깥선(통로 쪽) → P4 가로선 바깥선', '', (4, 0), 90),
+        ((h2.x + 5, 72), (h2.x + 5, h2.y - hw_), 'U', '40',
+         '간선 바깥선(통로 쪽) → P1·P2 가로선 바깥선', '', (4, 0), 90),
+        ((143, 0), (143, 54), 'P', '54', '02 왼쪽 칸막이 길이', '', (0, 0), 90),
+        ((285, 0), (285, 49), 'T', '49', '02 오른쪽 칸막이 길이', '메모 49.5 → 재측정', (0, 0), 90),
+        ((195, 73.2), (195, 31.75), 'W', '41', '간선 → OMX1·2 받침 오목 바닥',
+         'N11 위치 계산에는 ⑨ 사용', (-3.5, 0), 90),
+        ((20.5, 64), (64.1, 64), None, '43.6', '루프 왼쪽 바깥선 → P4 세로선 바깥선', '',
+         (0, -4), 0),
+        ((111.3, 64), (205.3, 64), None, '94', 'N07 세로선 바깥선 → P7 세로선 바깥선', '',
+         (0, -4), 0),
+        ((138, -10), (280, -10), None, '142', '02 인도장 가로(왼쪽 칸막이 → 오른쪽 칸막이)', '',
+         (0, 0), 0),
+        ((308.0, -10), (339.5, -10), None, '31.5', 'P1 분기 ↔ P2 분기(선 중심)', '메모 ㅈ',
+         (0, 0), 0),
+        ((339.5, -10), (378.3, -10), None, '38.8', 'P2 분기 → 간선 끝 N12(선 중심)', '메모 ㄱ',
+         (0, 0), 0),
+        ((138.25, 125), (196, 125), None, '58', '03 왼쪽 벽 → 카메라 삼각대', '', (0, 4), 0),
+        ((293, 0.25), (293, 93.75), None, '93.5', '통로 벽 ↔ 03 아래 벽(안쪽 면 사이)',
+         '11-03 Ⓓ, 메모 ㅂ 94.5(두 벽 포함)', (0, -25), 90),
+        ((247, 93.75), (247, 49.75), None, '44', '03 아래 벽 → OMX1·2 받침 앞면', '11-03 Ⓐ',
+         (0, -11), 90),
+        ((255, 93.75), (255, 35.75), None, '58', '03 아래 벽 → N11 가로선 바깥선(선반 쪽)',
+         '11-03 Ⓑ − V(가로선 ↔ 오목 바닥 4)', (0, -20), 90),
+        ((263, 93.75), (263, 31.75), None, '62', '03 아래 벽 → OMX1·2 받침 오목 바닥', '11-03 Ⓑ',
+         (0, -23), 90),
+    ]
+    drows = []
+    num = 0
+    for p0, p1, key, value, desc, note, off, rot in dims:
+        if key is None:
+            key = chr(0x2460 + num)
+            num += 1
+        _dim(ax, p0, p1, f'{key} {value}', offset=off, rot=rot)
+        drows.append([key, value, desc, note])
 
     ax.set_title(f'시연 공간 실측 도면 {layout.version} (단위 cm · 위 = 창가, 아래 = 통로 · '
                  f'노드 그래프 {layout.graph_version})', fontsize=15, loc='left', pad=12)
@@ -201,7 +237,7 @@ def draw(layout, path):
         size = m.get('size', (raw.get('markers') or {}).get('defaults', {}).get('size'))
         mrows.append([m['name'], str(ids.get(m['name'], '—')), where, f'{size * 10:g} mm',
                       f'{mx:.1f}', f'{my:.1f}'])
-    max_ = fig.add_axes([0.70, 0.01, 0.27, 0.34])
+    max_ = fig.add_axes([0.70, 0.27, 0.27, 0.25])
     max_.axis('off')
     mtab = max_.table(cellText=mrows, colLabels=['마커', 'ID', '부착', '크기', 'x (cm)', 'y (cm)'],
                       colWidths=[0.15, 0.12, 0.13, 0.2, 0.2, 0.2], loc='upper center',
@@ -212,7 +248,7 @@ def draw(layout, path):
               fontsize=9, color='#666666', ha='center', va='top', transform=max_.transAxes)
 
     # 노드 표
-    tax = fig.add_axes([0.03, 0.01, 0.65, 0.34])
+    tax = fig.add_axes([0.03, 0.27, 0.65, 0.25])
     tax.axis('off')
     rows = []
     for n in sorted(layout.nodes, key=lambda k: (k.id[0] != 'N', int(k.id[1:]))):
@@ -226,6 +262,19 @@ def draw(layout, path):
     colors = [C['switch'] if r[6] == 'Nav2 전환' else C['guess'] if r[6] == '위치 추정'
               else C['text'] for r in rows]
     _style_table(tab, colors)
+
+    # 치수 표(두 단)
+    half_rows = (len(drows) + 1) // 2
+    for k, part in enumerate((drows[:half_rows], drows[half_rows:])):
+        dax = fig.add_axes([0.03 + k * 0.48, 0.01, 0.46, 0.24])
+        dax.axis('off')
+        dtab = dax.table(cellText=part, colLabels=['기호', '값 (cm)', '구간', '비고'],
+                         colWidths=[0.07, 0.1, 0.46, 0.37], loc='upper center', cellLoc='center')
+        _style_table(dtab, [C['text']] * len(part))
+        for (r, c), cell in dtab.get_celld().items():
+            if r > 0 and c >= 2:
+                cell.set_text_props(ha='left')
+                cell.PAD = 0.02
 
     fig.savefig(path, dpi=110, metadata={'Software': None})
     plt.close(fig)
