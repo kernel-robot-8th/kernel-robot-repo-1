@@ -5,6 +5,8 @@ Pinky Pro(ROS 2 Jazzy, Ubuntu 24.04, Raspberry Pi 5) 테스트용 웹 콘솔.
 1. SLAM(slam_toolbox)으로 강의실 지도를 만들고 `~/roport_maps/`에 저장
 2. Nav2·카메라를 띄웠을 때 메모리·CPU 상태 확인
 3. IR 라인 센서 원시값을 보고 카펫·테이프 위에서 기록(`mode:=ir`, [IR 측정](#ir-측정-modeir))
+4. 인쇄한 ArUco 마커가 카메라에서 제대로 인식되는지 확인(`mode:=marker`, [마커 테스트](#마커-테스트-modemarker))
+5. 실측 지도로 AMCL 위치가 맞는지 확인(`mode:=amcl`, [AMCL 테스트](#amcl-테스트-modeamcl))
 
 원본 Pinky Pro 웹 서버(`pinky_navigation/scripts/nav2_web_server.py`, `index.html`, Apache-2.0)를 바탕으로 했습니다.
 원본 출처와 수정 내용은 각 파일 상단에 적었습니다. 라이선스 전문은 [LICENSE](LICENSE)에 있습니다.
@@ -34,6 +36,8 @@ Pinky Pro(ROS 2 Jazzy, Ubuntu 24.04, Raspberry Pi 5) 테스트용 웹 콘솔.
 | 수동 조종 | 화면 방향 버튼(누르고 있는 동안) + 키보드 WASD·방향키, 속도 비율 슬라이더 |
 | 정지 | 상단 큰 버튼: 속도 0 발행 + Nav2 목표 취소 |
 | 상태 패널(1 s) | MemAvailable·사용량·스왑, loadavg, CPU 온도, 배터리 %/V, **콘솔 프로세스 RSS**, 기준 대비 메모리 증가량 |
+| AMCL 테스트(`amcl.html`) | 지도 위 라이다 스캔(벽까지 5·10 cm로 색 구분)·AMCL 위치·표준편차, 정합 점수, 배치 yaml 노드(N12 등) 초기 위치 버튼, 제자리 갱신, 실제 위치와 비교 기록(CSV) |
+| 마커 테스트(`marker.html`) | 카메라 영상에 인식한 마커 표시, ID·이름(`docs/aruco/markers.yaml`)·화면 크기·참고 거리, 표의 마커별 확인 ✓·최근 5 s 인식률 |
 | IR 측정(`ir.html`) | `ir_sensor/range` 원시값 3개 실시간 표시·10 s 그래프, 라벨·시간 지정 CSV 기록(`~/roport_ir/`), 평균·표준편차, carpet/tape 참고 임계값 |
 
 ### 조종 안전 규칙 (서버에서 강제)
@@ -57,7 +61,7 @@ Pinky Pro(ROS 2 Jazzy, Ubuntu 24.04, Raspberry Pi 5) 테스트용 웹 콘솔.
 ```bash
 sudo apt update
 sudo apt install -y \
-  python3-flask python3-pytest \
+  python3-flask python3-pytest python3-opencv python3-yaml \
   ros-jazzy-slam-toolbox ros-jazzy-navigation2 ros-jazzy-nav2-bringup ros-jazzy-nav2-map-server
 ```
 
@@ -121,13 +125,19 @@ ros2 launch pinky_test_console console.launch.py mode:=nav map:=$HOME/roport_map
 
 | 인자 | 기본값 | 설명 |
 |---|---|---|
-| `mode` | `slam` | `slam` = slam_toolbox(원본 map_building과 동일 설정) + 콘솔, `nav` = 원본 bringup_launch(map_server+AMCL+Nav2) + 콘솔, `ir` = 콘솔 + IR 센서 노드만 |
-| `map` | (없음) | `mode:=nav`일 때 필수. `.yaml` 경로(`~` 허용). 없거나 확장자가 틀리면 launch가 시작 전에 실패 |
+| `mode` | `slam` | `slam` = slam_toolbox(원본 map_building과 동일 설정) + 콘솔, `nav` = 원본 bringup_launch(map_server+AMCL+Nav2) + 콘솔, `ir` = 콘솔 + IR 센서 노드만, `marker` = 콘솔 + 카메라 마커 인식만, `amcl` = 원본 localization_launch(map_server+AMCL만, 경로 계획·주행 제어 없음) + 콘솔 |
+| `map` | (없음) | `mode:=nav`·`amcl`일 때 필수. `.yaml` 경로(`~` 허용). 없거나 확장자가 틀리면 launch가 시작 전에 실패 |
 | `port` | `8080` | 웹 포트(1–65535) |
 | `ip` | `0.0.0.0` | 바인드 주소. 노트북 단독 시험이면 `127.0.0.1` 권장 |
 | `use_sim_time` | `false` | Gazebo/MuJoCo 시뮬레이션이면 `true` |
 | `map_dir` | `~/roport_maps` | 지도 저장 폴더 |
 | `ir_dir` | `~/roport_ir` | IR 기록 CSV 폴더 |
+| `camera` | `picamera2` | `mode:=marker` 카메라: `picamera2`(로봇) / `v4l2:<번호>`(USB 웹캠) / `topic:<이름>`(sensor_msgs/Image) |
+| `rotate_180` | `auto` | 영상 180° 회전. `auto` = `picamera2`일 때만(이전 Pinky 코드와 같은 장착 방향) |
+| `markers_yaml` | (없음) | 마커 ID 표 경로. 주면 이름·크기·확인 목록을 보여 줌 |
+| `camera_hfov_deg` | `0` | 카메라 수평 화각(°). 주면 참고 거리 표시(보정 전 근사) |
+| `layout` | (없음) | `mode:=amcl` 배치 yaml(`roport_gz_world/layout/roport_airport.yaml`). 주면 노드 버튼과 실측 좌표(cm) 입력을 씀 |
+| `amcl_dir` | `~/roport_amcl` | AMCL 기록 CSV 폴더 |
 | `ir_node` | `auto` | `pinky_sensor_adc main_node`를 함께 실행. `auto` = `mode:=ir`일 때만, `true`/`false`로 강제 |
 
 잘못된 값(예: `mode:=explore`, `mode:=nav`인데 map 없음, `port:=99999`)은 노드를 하나도 띄우기 전에 오류로 끝납니다.
@@ -150,6 +160,70 @@ ros2 launch pinky_test_console console.launch.py mode:=ir
 4. CSV(`t_sec, ir0, ir1, ir2`)는 표의 ↓로 내려받거나 로봇의 `~/roport_ir/`에서 가져옵니다.
 
 센서 간격(약 20 mm, Pinky Pro HW Spec)과 테이프 폭(20 mm)이 비슷해서, 가운데 센서가 테이프 중앙에 있으면 좌·우 센서는 테이프 밖에 놓입니다. `tape_edge` 기록으로 가장자리에서 값이 어떻게 변하는지도 확인하세요.
+
+## 마커 테스트 (mode:=marker)
+
+인쇄한 ArUco 마커가 로봇 카메라에서 맞는 ID로 인식되는지, 얼마나 먼 거리까지 보이는지 확인합니다. **모터는 움직이지 않습니다**(bringup 불필요).
+
+```bash
+# 노트북 → 로봇: ID 표 복사 (docs/aruco/markers.yaml, PR #11)
+scp docs/aruco/markers.yaml pinky@<로봇IP>:~/markers.yaml
+# 로봇
+ros2 launch pinky_test_console console.launch.py mode:=marker markers_yaml:=~/markers.yaml
+# 노트북 USB 웹캠으로 먼저 볼 때: ... mode:=marker camera:=v4l2:0 markers_yaml:=docs/aruco/markers.yaml
+```
+
+브라우저에서 `http://<로봇IP>:8080/marker.html`(콘솔 상단 **마커 테스트** 버튼)을 엽니다.
+
+1. **ID 확인**: 마커를 한 장씩 카메라 앞에 대고 화면의 `ID 이름`이 종이 라벨과 같은지 봅니다. 오른쪽 목록에 ✓가 생깁니다(초록 = 표에 있는 ID, 빨강 = 표에 없는 ID).
+2. **방향**: 보라 점이 마커의 왼쪽 위 모서리입니다. 종이의 위아래와 맞는지 확인합니다.
+3. **거리**: 시험 시트(ID 0)를 줄자로 거리를 바꿔 대고, 인식률이 떨어지기 시작하는 거리를 정면·45°에서 기록합니다. 화면의 추정 거리는 `camera_hfov_deg`를 준 경우의 핀홀 근사(보정 전)라 줄자 값을 기준으로 합니다.
+4. **거리별 기록**: 오른쪽 「거리별 기록」에 로봇 최앞단~마커 거리(cm)를 넣고 「기록」을 누르면, 몇 초 동안 인식률·화면 크기(px)·마커 위아래 위치를 모아 표에 한 줄 남깁니다(`~/roport_marker/range_log.csv`, CSV ↓로 내려받기). 같은 거리에서 50 mm 마커였을 때의 예상 크기도 보여 줍니다.
+5. 결과는 Confluence 「ArUco 마커 ID 표」의 시험 기록표나 Jira FFT1-108에 남깁니다.
+
+- 로봇 카메라는 Picamera2로 읽습니다(`python3 -c "import picamera2"`가 되어야 함). 다른 프로그램이 카메라를 쓰고 있으면 열리지 않고, 화면 위에 오류가 표시됩니다.
+- Pinky 이미지에는 libcamera가 두 벌 있습니다(`/usr/local`의 0.3, ROS `ros-jazzy-libcamera`의 0.7). ROS 환경을 source하면 `libpisp`만 ROS 쪽이 잡혀 `ipa_rpi_pisp.so: undefined symbol`로 죽기 때문에, launch가 `mode:=marker camera:=picamera2`일 때 `LD_LIBRARY_PATH` 앞에 `/usr/local/lib/aarch64-linux-gnu`를 붙여 실행합니다.
+- 영상은 640×480, 인식은 콘솔 프로세스 안에서 합니다(OpenCV `cv2.aruco`, Ubuntu 24.04 apt 4.6 호환). 화면 색이 바뀌어 보여도 인식(흑백)에는 영향이 없습니다.
+
+## AMCL 테스트 (mode:=amcl)
+
+실측 지도(`services/roport-pinky/maps/airport_map.yaml`, SLAM이 아니라 실측 배치로 그린 지도)로 AMCL을 띄웠을 때 위치가 맞는지 확인합니다(Jira FFT1-123). Nav2는 N12(간선 끝) 이후 03 공용 내부공간에서만 쓰므로 **03 구역과 N12만** 확인합니다.
+이 모드는 map_server와 AMCL만 띄웁니다. **경로 계획·주행 제어가 없어서 로봇이 스스로 움직이지 않습니다.** bringup(라이다·바퀴 odom)은 따로 먼저 띄웁니다.
+
+```bash
+# 노트북 → 로봇: 지도와 배치 yaml 복사 (PR #10)
+scp services/roport-pinky/maps/airport_map.{yaml,pgm} \
+    services/roport-pinky/src/roport_gz_world/layout/roport_airport.yaml pinky@<로봇IP>:~/roport_maps/
+# 로봇
+ros2 launch pinky_test_console console.launch.py mode:=amcl \
+    map:=~/roport_maps/airport_map.yaml layout:=~/roport_maps/roport_airport.yaml
+```
+
+브라우저에서 `http://<로봇IP>:8080/amcl.html`(콘솔 상단 **AMCL 테스트** 버튼)을 엽니다.
+
+1. **N12**: 로봇을 N12 가로선 위에 +x 방향(입구 쪽)으로 놓고 「N12 (Nav2)」 버튼 → 「제자리 갱신」을 3~5번 누릅니다. AMCL은 원래 0.15 m 또는 0.1 rad 움직여야 갱신하는데, 제자리 갱신(`request_nomotion_update`)은 로봇을 움직이지 않고 한 번 갱신합니다.
+2. **점수**: 「벽 10 cm 안」이 80% 이상이면 합격 표시(제안 기준)입니다. 화면의 빨간 점이 한 벽에 몰려 있으면 그 벽 위치(배치 yaml)나 실측을 다시 봅니다.
+3. **기록**: 줄자로 잰 실제 위치(cm, 실측 도면 좌표)를 넣고 「기록」을 누르면 AMCL 위치와의 오차, 표준편차, 점수가 `~/roport_amcl/amcl_<날짜>.csv`에 한 줄 남습니다.
+4. **03 안**: 로봇을 손으로(또는 콘솔 조종 0.10 m/s로) 4~5곳에 옮기며 같은 순서로 기록합니다. 예: G1·G2·G3 앞(x 170), 상자 옆, 입구.
+5. CSV를 Jira FFT1-123 댓글에 첨부합니다.
+
+- 정합 점수 = 라이다 스캔 점(최대 360개) 중 지도 점유 칸에서 5·10 cm 안에 든 비율. 스캔을 받은 순간의 TF(map → 라이다)로 점을 옮기므로 로봇을 멈춘 상태에서 봅니다.
+- 실측 좌표(cm) ↔ map(m) 변환은 배치 yaml의 `frame`을 씁니다. `layout:=`이 없으면 노드 버튼 없이 map 좌표(m × 100)로만 입력·기록합니다.
+- 노드·실측 좌표로 주는 초기 위치는 표준편차 5 cm·5°로 보냅니다(콘솔 지도의 「Set Initial Pose」는 RViz 기본 0.5 m). 로봇을 노드에 정확히 놓는 시험이라 좁게 주며, 넓게 주면 제자리 갱신으로 수렴이 느립니다(Gazebo N12: 갱신 15번 뒤 12 cm).
+- 초기 위치가 크게 틀리면 AMCL이 제자리에서 스스로 바로잡지 못합니다. 이때 점수가 떨어지므로(아래 18 cm 시험) 점수가 80% 아래면 로봇 위치·방향을 다시 맞추고 초기 위치를 다시 줍니다.
+
+Gazebo 확인(v13 world·실측 지도, 로봇을 순간 이동한 뒤 초기 위치 → 제자리 갱신 3~5번, 2026-11-03):
+
+| 지점 (실측 cm, 방향) | 위치 오차 | 방향 오차 | 벽 5 cm 안 | 벽 10 cm 안 |
+|---|---|---|---|---|
+| N12 (378.3, 73.2, 0°) | 2.1 cm | 0.2° | — | 99.7% |
+| G1 앞 (170, 120.9, 180°) | 0.6 cm | 0.6° | 100% | 100% |
+| 상자 옆 (300, 125, 90°) | 2.0 cm | 0.3° | 100% | 100% |
+| 입구 (412, 75, 90°) | 3.4 cm | 0.4° | 99.4% | 100% |
+| 초기 위치를 18 cm 틀리게 줌 | 17.2 cm | 4.9° | 52.8% | 78.1% (확인 필요) |
+| 로봇만 N12로 옮기고 초기 위치를 안 줌 | — | — | 32.8% | 40.6% |
+
+시뮬레이션 결과는 실로봇 시험을 대신하지 않습니다(유리·검은 벽·사람 등 실제 라이다 조건이 다름).
 
 ## 메모리 측정 방법
 
@@ -225,13 +299,14 @@ colcon test-result --verbose
 # 또는: source install/setup.bash && python3 -m pytest src/pinky_test_console/test -v
 ```
 
-`python3-flask`가 없으면 Flask가 필요한 테스트 30개는 건너뜁니다(나머지 119개는 실행).
+`python3-flask`가 없으면 Flask가 필요한 테스트 32개는 건너뜁니다(나머지 145개는 실행).
 
 | 파일 | 검증 내용 |
 |---|---|
 | `test_teleop.py` | 속도 상한·NaN/문자열 처리, 0.3 s deadman, 정지 후 0 반복, 10 Hz+watchdog 타임라인 |
 | `test_launch_plan.py` | `mode`/`map`/`port`/`use_sim_time`/`ir_node` 검사, include 대상(map_building / bringup_launch / ir은 없음), bringup_robot 미포함 |
 | `test_web_app.py` | JSON 강제, 잘못된 입력 시 정지, 정적 파일 화이트리스트, 보안 헤더, 지도 이름 주입 차단, Nav2 취소 순서, IR API·CSV 다운로드 경로 검사 |
+| `test_marker_detect.py` | 카메라 입력 지정 검사, ID 표 읽기, 합성 영상 인식·크기, 참고 거리, 확인 목록·인식률, ROS 이미지 변환 |
 | `test_ir_record.py` | IR 최근값·주기, 시간 지정 기록·CSV, 센서 없음 처리, 라벨·파일 이름 검사, 참고 임계값 |
 | `test_map_store.py` | 지도 이름·폴더 검사(쉘 메타문자·개행 거부), 목록 |
 | `test_sysstats.py` | `/proc/meminfo`·loadavg·온도·RSS 파싱 |
@@ -254,6 +329,14 @@ colcon test-result --verbose
 | POST | `/api/nav/stop` | Nav2 목표 취소 |
 | POST | `/api/slam/reset` | SLAM 초기화 |
 | POST | `/api/slam/save_map` `{name, overwrite}` | 지도 저장 (이미 있으면 409) |
+| GET | `/api/marker`, `/api/marker/frame.jpg` | 인식 결과·확인 목록 / 표시를 그린 최신 영상(없으면 204) |
+| POST | `/api/marker/reset` | 확인 ✓ 기록 지우기 |
+| POST | `/api/marker/record` `{distance_cm, duration, marker_id?, note?}` | 거리별 기록(1–30 s) |
+| GET | `/api/marker/records`, `/api/marker/records.csv` | 거리별 기록 목록 / CSV 다운로드 |
+| GET | `/api/amcl?map_v=..` | 지도(버전이 바뀐 경우만 데이터)·스캔 점·정합 점수·AMCL 위치·노드·최근 기록 |
+| POST | `/api/amcl/initialpose` `{node}` 또는 `{x_cm, y_cm, yaw_deg}` | 노드 또는 실측 좌표로 AMCL 초기 위치 |
+| POST | `/api/amcl/nomotion` | AMCL 제자리 갱신 한 번 |
+| POST | `/api/amcl/record` `{label, truth?: {x_cm, y_cm, yaw_deg?}}` / GET `/api/amcl/records.csv` | 기록 한 줄 / CSV 다운로드 |
 | GET | `/api/ir` | IR 최근값·주기·최근 10 s 기록·기록 진행 상태 |
 | POST | `/api/ir/record` `{label, duration}` / `/api/ir/cancel` | IR 기록 시작(1–60 s) / 취소 |
 | GET | `/api/ir/records`, `/api/ir/records/<파일>` | 기록 목록·통계·참고 임계값 / CSV 다운로드 |

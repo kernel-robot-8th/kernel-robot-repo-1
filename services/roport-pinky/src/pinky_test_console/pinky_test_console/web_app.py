@@ -3,7 +3,7 @@
 #   original file: pinky_navigation/scripts/nav2_web_server.py (Flask routes part)
 # Original work licensed under the Apache License, Version 2.0.
 # Modified for pinky_test_console (2026): routes split out of the ROS node,
-#   teleop/estop/status/map-list/IR record APIs added, JSON input validation,
+#   teleop/estop/status/map-list/IR record/marker check APIs added, JSON input validation,
 #   static files restricted to the web/ folder, security headers.
 # See LICENSE in this package for the full license text.
 """Flask 라우트. ROS 를 직접 import 하지 않고 node 객체의 메서드만 호출한다.
@@ -14,13 +14,17 @@ node 는 web_server.ConsoleNode (테스트에서는 가짜 객체)이다.
 import math
 import os
 
-from flask import Flask, abort, jsonify, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
+from .amcl_check import AmclCheckError
 from .ir_record import IrRecordError
 from .map_store import MapNameError
+from .marker_detect import MarkerError
 
 # web/ 폴더에서 이 파일들만 서빙 (원본은 스크립트 폴더 전체를 static 으로 노출했음)
-STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js'}
+STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js',
+                'marker.html', 'marker.js', 'amcl.html', 'amcl.js'}
+POSE_CM_LIMIT = 1000.0   # 실측 좌표 입력 허용 범위(cm, 시연 공간 444.5 x 221)
 
 SECURITY_HEADERS = {
     'Content-Security-Policy': (
@@ -56,6 +60,19 @@ def _number(data, key, default=None):
     if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
         raise BadRequest(f"'{key}' must be a finite number")
     return float(v)
+
+
+def _pose_cm(data, need_yaw=True):
+    """{x_cm, y_cm, yaw_deg} → (x, y, yaw|None). 범위 밖이면 BadRequest."""
+    x, y = _number(data, 'x_cm'), _number(data, 'y_cm')
+    if not (abs(x) <= POSE_CM_LIMIT and abs(y) <= POSE_CM_LIMIT):
+        raise BadRequest(f'x_cm, y_cm must be within ±{POSE_CM_LIMIT:g}')
+    if 'yaw_deg' not in data and not need_yaw:
+        return x, y, None
+    yaw = _number(data, 'yaw_deg', 0.0)
+    if abs(yaw) > 360.0:
+        raise BadRequest('yaw_deg must be within ±360')
+    return x, y, yaw
 
 
 def create_app(node, web_dir):
@@ -214,6 +231,102 @@ def create_app(node, web_dir):
         except IrRecordError:
             abort(404)
         if not os.path.isfile(path):
+            abort(404)
+        return send_from_directory(os.path.dirname(path), os.path.basename(path),
+                                   as_attachment=True, mimetype='text/csv')
+
+    # ---------------- 마커 인식 확인 ----------------
+    @app.route('/api/marker')
+    def api_marker():
+        return jsonify(node.marker_snapshot())
+
+    @app.route('/api/marker/frame.jpg')
+    def api_marker_frame():
+        jpeg = node.marker_jpeg()
+        if jpeg is None:
+            return Response(status=204)
+        return Response(jpeg, mimetype='image/jpeg', headers={'Cache-Control': 'no-store'})
+
+    @app.route('/api/marker/reset', methods=['POST'])
+    def api_marker_reset():
+        _json_body()
+        return jsonify({'success': node.marker_reset()})
+
+    @app.route('/api/marker/record', methods=['POST'])
+    def api_marker_record():
+        data = _json_body()
+        marker_id = data.get('marker_id')
+        try:
+            state = node.marker_record_start(
+                _number(data, 'distance_cm'), _number(data, 'duration', 5.0),
+                marker_id, data.get('note', ''))
+        except MarkerError as e:
+            return jsonify({'success': False, 'msg': str(e)}), 400
+        return jsonify({'success': True, 'recording': state})
+
+    @app.route('/api/marker/records')
+    def api_marker_records():
+        return jsonify(node.marker_records())
+
+    @app.route('/api/marker/records.csv')
+    def api_marker_records_csv():
+        path = node.marker_records_path()
+        if not path or not os.path.isfile(path):
+            abort(404)
+        return send_from_directory(os.path.dirname(path), os.path.basename(path),
+                                   as_attachment=True, mimetype='text/csv')
+
+    # ---------------- AMCL 정합 확인 ----------------
+    @app.route('/api/amcl')
+    def api_amcl():
+        try:
+            map_v = int(request.args.get('map_v', '-1'))
+        except ValueError:
+            map_v = -1
+        return jsonify(node.amcl_snapshot(map_v))
+
+    @app.route('/api/amcl/initialpose', methods=['POST'])
+    def api_amcl_initialpose():
+        """{node: 'N12', yaw_deg?} 또는 {x_cm, y_cm, yaw_deg} (실측 좌표)."""
+        data = _json_body()
+        try:
+            if 'node' in data:
+                n = node.amcl_node(data['node'])
+                yaw = _number(data, 'yaw_deg') if 'yaw_deg' in data else n['yaw_deg']
+                ok = node.amcl_initial_pose_cm(n['x_cm'], n['y_cm'], yaw)
+            else:
+                ok = node.amcl_initial_pose_cm(*_pose_cm(data))
+        except AmclCheckError as e:
+            return jsonify({'success': False, 'msg': str(e)}), 400
+        return jsonify({'success': ok})
+
+    @app.route('/api/amcl/nomotion', methods=['POST'])
+    def api_amcl_nomotion():
+        _json_body()
+        return jsonify({'success': node.amcl_nomotion_update()})
+
+    @app.route('/api/amcl/record', methods=['POST'])
+    def api_amcl_record():
+        """{label, truth?: {x_cm, y_cm, yaw_deg?}} — truth 는 줄자로 잰 실제 위치."""
+        data = _json_body()
+        truth = data.get('truth')
+        if truth is not None:
+            if not isinstance(truth, dict):
+                raise BadRequest("'truth' must be an object")
+            truth = _pose_cm(truth, need_yaw=False)
+        label = data.get('label', '')
+        if isinstance(label, str):
+            label = label.strip()
+        try:
+            row = node.amcl_record(label, truth)
+        except AmclCheckError as e:
+            return jsonify({'success': False, 'msg': str(e)}), 400
+        return jsonify({'success': True, 'row': row})
+
+    @app.route('/api/amcl/records.csv')
+    def api_amcl_records_csv():
+        path = node.amcl_records_path()
+        if not path or not os.path.isfile(path):
             abort(404)
         return send_from_directory(os.path.dirname(path), os.path.basename(path),
                                    as_attachment=True, mimetype='text/csv')

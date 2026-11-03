@@ -8,6 +8,7 @@ from pinky_test_console.launch_plan import (
     included_launch,
     parse_bool,
     resolve_plan,
+    resolve_rotate_180,
 )
 
 LAUNCH_FILE = os.path.join(
@@ -106,6 +107,16 @@ def test_included_launch_nav(map_yaml):
         'bringup_launch.xml', {'map': map_yaml, 'use_sim_time': 'True'})
 
 
+def test_amcl_mode_needs_map_and_includes_localization_only(map_yaml):
+    with pytest.raises(LaunchArgError, match='mode:=amcl requires map'):
+        resolve_plan('amcl')
+    plan = resolve_plan('amcl', map_path=map_yaml)
+    name, args = included_launch(plan)
+    # map_server + amcl 만: Nav2 경로 계획·주행 제어(bringup/navigation)는 띄우지 않음
+    assert name == 'localization_launch.xml'
+    assert args == {'map': map_yaml, 'use_sim_time': 'False'}
+
+
 def test_ir_mode_plan():
     plan = resolve_plan('ir', map_path='/ignored.yaml')
     assert plan.mode == 'ir' and plan.map_yaml == '' and plan.ir_node is True
@@ -181,6 +192,25 @@ def test_launch_nav(monkeypatch, map_yaml):
     assert inc.launch_arguments == {'map': map_yaml, 'use_sim_time': 'True'}
 
 
+def test_launch_amcl_passes_layout(monkeypatch, map_yaml):
+    pytest.importorskip('launch_ros')
+    import launch_ros.actions
+    captured = []
+
+    class CaptureNode(launch_ros.actions.Node):
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(launch_ros.actions, 'Node', CaptureNode)
+    _, inc = _parts(_run_setup(monkeypatch, mode='amcl', map=map_yaml,
+                               layout='~/roport_airport.yaml'))
+    assert inc.source == '/fake/share/pinky_navigation/launch/localization_launch.xml'
+    params = captured[0]['parameters'][0]
+    assert params['layout_yaml'] == os.path.expanduser('~/roport_airport.yaml')
+    assert params['amcl_dir'] == '~/roport_amcl' and params['mode'] == 'amcl'
+
+
 def test_launch_rejects_bad_mode(monkeypatch):
     with pytest.raises(LaunchArgError, match='mode must be one of'):
         _run_setup(monkeypatch, mode='explore')
@@ -208,3 +238,39 @@ def test_launch_ir_node_disabled(monkeypatch):
     from launch_ros.actions import Node
     actions = _run_setup(monkeypatch, mode='ir', ir_node='false')
     assert [a.node_executable for a in actions if isinstance(a, Node)] == ['web_server']
+
+
+def test_marker_mode_plan():
+    plan = resolve_plan('marker')
+    assert plan.mode == 'marker' and plan.ir_node is False
+    assert included_launch(plan) == (None, {})
+
+
+def test_rotate_180_auto_only_for_robot_camera():
+    assert resolve_rotate_180('picamera2') is True
+    assert resolve_rotate_180('v4l2:0') is False
+    assert resolve_rotate_180('v4l2:0', 'true') is True
+    assert resolve_rotate_180('picamera2', 'false') is False
+    with pytest.raises(LaunchArgError, match='rotate_180'):
+        resolve_rotate_180('picamera2', 'sideways')
+
+
+def test_launch_marker_passes_camera_params(monkeypatch):
+    from launch_ros.actions import Node
+    actions = _run_setup(monkeypatch, mode='marker', camera='v4l2:2', camera_hfov_deg='62')
+    nodes = [a for a in actions if isinstance(a, Node)]
+    assert [n.node_executable for n in nodes] == ['web_server']
+    assert not [a for a in actions if isinstance(a, _FakeInclude)]
+
+
+def test_camera_env_only_for_picamera_marker():
+    from pinky_test_console.launch_plan import camera_env, PICAMERA_LIB_DIR
+    yes = lambda p: True  # noqa: E731
+    env = {'LD_LIBRARY_PATH': '/opt/ros/jazzy/lib:' + PICAMERA_LIB_DIR}
+    out = camera_env('marker', 'picamera2', env, exists=yes)
+    assert out == {'LD_LIBRARY_PATH': PICAMERA_LIB_DIR + ':/opt/ros/jazzy/lib'}
+    assert camera_env('marker', 'v4l2:0', env, exists=yes) == {}
+    assert camera_env('ir', 'picamera2', env, exists=yes) == {}
+    assert camera_env('marker', 'picamera2', env, exists=lambda p: False) == {}
+    only = camera_env('marker', 'picamera2', {}, exists=yes)
+    assert only == {'LD_LIBRARY_PATH': PICAMERA_LIB_DIR}

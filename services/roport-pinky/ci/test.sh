@@ -5,7 +5,7 @@ source /opt/ros/jazzy/setup.bash
 set -u
 python3 -m unittest discover -s ci -p 'test_*.py' -v
 # ARM-only drivers and the Gazebo stack require separate hardware/simulation jobs.
-colcon build --packages-select roport_pinky roport_pinky_line pinky_interfaces pinky_description \
+colcon build --packages-select roport_pinky roport_pinky_line roport_smartcart pinky_interfaces pinky_description \
   --event-handlers console_direct+ --cmake-args -DBUILD_TESTING=OFF
 set +u
 source install/setup.bash
@@ -16,6 +16,7 @@ from pathlib import Path
 
 import rclpy
 import roport_pinky
+import roport_smartcart
 import xacro
 from ament_index_python.packages import get_package_share_directory
 from pinky_interfaces.srv import Emotion, SetBrightness, SetLamp, SetLed

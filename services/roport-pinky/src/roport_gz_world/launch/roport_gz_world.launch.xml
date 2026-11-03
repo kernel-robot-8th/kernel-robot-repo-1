@@ -1,0 +1,17 @@
+<?xml version='1.0' ?>
+<!--
+RO:PORT 시연 공간 world 로 Pinky Gazebo 시뮬레이션을 띄운다.
+원본 pinky_gz_sim/launch/launch_sim.launch.xml 을 world 만 바꿔 그대로 include 한다(원본 수정 없음).
+로봇은 world (0, 0) = SLAM 지도 원점(실측 약 x 152, y 202 cm, +x 방향)에 나타난다.
+
+  ros2 launch roport_gz_world roport_gz_world.launch.xml
+-->
+<launch>
+    <arg name="world" default="$(find-pkg-share roport_gz_world)/worlds/roport_airport.sdf"/>
+    <arg name="cam_tilt_deg" default="0"/>
+
+    <include file="$(find-pkg-share pinky_gz_sim)/launch/launch_sim.launch.xml">
+        <arg name="world" value="$(var world)"/>
+        <arg name="cam_tilt_deg" value="$(var cam_tilt_deg)"/>
+    </include>
+</launch>

@@ -10,6 +10,7 @@
 ## Git
 
 - 브랜치·커밋·push·PR·리뷰·병합 및 PR 템플릿은 [.agents/rules/git-flow.md](.agents/rules/git-flow.md)를 따른다. Git 작업 전에 해당 규칙을 읽는다.
+- 코드·문서·로그·이미지를 공개하기 전에 [공개 저장소 보안 규칙](.agents/rules/public-repository-security.md)을 읽고 staged 변경과 push할 이력을 검사한다. 비밀값은 도구 출력·PR·이슈·검사 보고서에도 복사하지 않는다.
 
 ## 검증
 

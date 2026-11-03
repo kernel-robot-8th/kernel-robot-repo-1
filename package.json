@@ -6,7 +6,9 @@
   },
   "scripts": {
     "prepare": "husky",
-    "test:commit": "node --test scripts/check-commit-message.test.mjs"
+    "test:commit": "node --test scripts/check-commit-message.test.mjs",
+    "check:secrets": "sh scripts/check-secrets.sh --log-opts=--all",
+    "test:security": "node --test scripts/check-secrets.test.mjs"
   },
   "devDependencies": {
     "husky": "9.1.7"

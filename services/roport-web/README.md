@@ -6,6 +6,8 @@ RO:PORT · GATE CREW — 고객 서비스 웹·어드민 웹
 
 Node.js 24 / React 19 / TypeScript 7 / Vite 8 / npm workspaces. apps/service와 apps/admin을 별도 빌드합니다.
 
+통합관제 3D 웹 UI는 [roport-control-server](../roport-control-server/README.md)에서 FastAPI와 함께 제공합니다. 이 디렉터리의 고객·업무 어드민 앱과 별도로 관리하며 PyQt 탭을 사용하지 않습니다.
+
 ## 현재 범위
 
 개발 시작용 구조와 CI를 제공합니다. 로봇 제어·업무 기능·모델 추론은 아직 구현하지 않았습니다.

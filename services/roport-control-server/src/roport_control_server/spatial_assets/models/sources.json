@@ -1,0 +1,12 @@
+{
+  "pinky": {
+    "repository": "https://github.com/pinklab-art/pinky_pro",
+    "commit": "014a09f289e6988894fbffde2624fdb1e257815b"
+  },
+  "omx": {
+    "repository": "https://github.com/ROBOTIS-GIT/open_manipulator",
+    "commit": "b83daec7b98c08d00adb856d7e31f2b0065d3be9"
+  },
+  "calibration": "URDF defaults; installed device calibration not verified",
+  "mesh_processing": "Pinky: original visual faces preserved; OMX: target 8000 faces per visual; neutral display colors, metres"
+}

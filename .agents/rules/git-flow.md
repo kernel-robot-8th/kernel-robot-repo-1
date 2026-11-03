@@ -47,3 +47,5 @@ task/robot-navigation
 ## 커밋 검사
 
 Node.js 24에서 저장소 루트의 `npm ci`로 Husky를 설치한다. 허용 제목 형식과 type은 `scripts/check-commit-message.mjs`를 따른다. 검사 테스트는 `npm run test:commit`이다.
+
+커밋·push 전 비밀정보 검사를 위해 [공개 저장소 보안 규칙](public-repository-security.md)에 따라 Gitleaks도 설치한다. staged 변경은 커밋 전에, 로컬 ref의 이력은 push 전에 검사하며 실패를 우회하지 않는다.

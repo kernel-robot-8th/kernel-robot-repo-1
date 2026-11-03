@@ -1,0 +1,10 @@
+{
+  "pinky-pro.webp": {
+    "model": "models/pinky/robot.glb",
+    "sha256": "91408f9758ddc1cde591714330db1142556d486dfb0b1b42fd040068224b46a3"
+  },
+  "omx-f.webp": {
+    "model": "models/omx/robot.glb",
+    "sha256": "d90fd157693434cc521152513e5973d7b163ca5aee34dc01c8e8f7f4a4b13898"
+  }
+}
