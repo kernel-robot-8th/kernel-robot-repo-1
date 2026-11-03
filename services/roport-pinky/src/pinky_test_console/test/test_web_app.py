@@ -127,6 +127,38 @@ class FakeNode:
     def marker_records_path(self):
         return self.records_path
 
+    # AMCL
+    NODES = [{'id': 'N12', 'x_cm': 378.3, 'y_cm': 73.2, 'yaw_deg': 0.0, 'nav2_switch': True}]
+    amcl_path = None
+
+    def amcl_snapshot(self, map_version):
+        self.calls.append(('amcl', map_version))
+        return {'map': None, 'score': None, 'nodes': self.NODES}
+
+    def amcl_node(self, node_id):
+        from pinky_test_console.amcl_check import AmclCheckError
+        for n in self.NODES:
+            if n['id'] == node_id:
+                return n
+        raise AmclCheckError('unknown node')
+
+    def amcl_initial_pose_cm(self, x, y, yaw):
+        self.calls.append(('amcl_init', x, y, yaw))
+        return True
+
+    def amcl_nomotion_update(self):
+        self.calls.append(('nomotion',))
+        return True
+
+    def amcl_record(self, label, truth):
+        from pinky_test_console.amcl_check import validate_label
+        validate_label(label)
+        self.calls.append(('amcl_record', label, truth))
+        return {'label': label}
+
+    def amcl_records_path(self):
+        return self.amcl_path
+
 
 @pytest.fixture
 def node():
@@ -142,7 +174,7 @@ def client(node):
 
 def test_index_and_assets(client):
     for path in ('/', '/app.js', '/style.css', '/index.html', '/ir.html', '/ir.js',
-                 '/marker.html', '/marker.js'):
+                 '/marker.html', '/marker.js', '/amcl.html', '/amcl.js'):
         r = client.get(path)
         assert r.status_code == 200, path
 
@@ -160,7 +192,7 @@ def test_security_headers(client):
     assert client.get('/api/status').headers['Cache-Control'] == 'no-store'
 
 
-@pytest.mark.parametrize('page', ['index.html', 'ir.html', 'marker.html'])
+@pytest.mark.parametrize('page', ['index.html', 'ir.html', 'marker.html', 'amcl.html'])
 def test_html_has_no_external_or_inline_code(page):
     html = open(os.path.join(WEB_DIR, page)).read()
     assert 'http://' not in html.split('-->', 1)[1]
@@ -300,4 +332,42 @@ def test_marker_record_api(client, node, tmp_path):
     node.records_path = str(tmp_path / 'range_log.csv')
     (tmp_path / 'range_log.csv').write_text('time,distance_cm\n')
     r = client.get('/api/marker/records.csv')
+    assert r.status_code == 200 and 'attachment' in r.headers['Content-Disposition']
+
+
+def test_amcl_snapshot_passes_map_version(client, node):
+    assert client.get('/api/amcl?map_v=3').get_json()['nodes'][0]['id'] == 'N12'
+    assert node.calls[-1] == ('amcl', 3)
+    client.get('/api/amcl?map_v=x')
+    assert node.calls[-1] == ('amcl', -1)
+
+
+def test_amcl_initialpose_by_node_and_cm(client, node):
+    assert client.post('/api/amcl/initialpose', json={'node': 'N12'}).status_code == 200
+    assert node.calls[-1] == ('amcl_init', 378.3, 73.2, 0.0)
+    client.post('/api/amcl/initialpose', json={'node': 'N12', 'yaw_deg': 180})
+    assert node.calls[-1] == ('amcl_init', 378.3, 73.2, 180.0)
+    client.post('/api/amcl/initialpose', json={'x_cm': 170, 'y_cm': 150.5, 'yaw_deg': -90})
+    assert node.calls[-1] == ('amcl_init', 170.0, 150.5, -90.0)
+    n = len(node.calls)
+    for body in ({'node': 'N99'}, {'x_cm': 1e6, 'y_cm': 0}, {'x_cm': 'a', 'y_cm': 0},
+                 {'x_cm': 1, 'y_cm': 1, 'yaw_deg': 720}, {'y_cm': 1}):
+        assert client.post('/api/amcl/initialpose', json=body).status_code == 400, body
+    assert len(node.calls) == n   # 잘못된 입력은 초기 위치를 보내지 않음
+
+
+def test_amcl_nomotion_and_record(client, node, tmp_path):
+    assert client.post('/api/amcl/nomotion', json={}).get_json() == {'success': True}
+    truth = {'x_cm': 378.3, 'y_cm': 73.2}
+    r = client.post('/api/amcl/record', json={'label': 'N12', 'truth': truth})
+    assert r.status_code == 200 and node.calls[-1] == ('amcl_record', 'N12', (378.3, 73.2, None))
+    client.post('/api/amcl/record', json={'label': 'G1'})
+    assert node.calls[-1] == ('amcl_record', 'G1', None)
+    for body in ({'label': 'a b'}, {'label': 'x', 'truth': [1, 2]},
+                 {'label': 'x', 'truth': {'x_cm': 1}}):
+        assert client.post('/api/amcl/record', json=body).status_code == 400, body
+    assert client.get('/api/amcl/records.csv').status_code == 404
+    node.amcl_path = str(tmp_path / 'amcl_20261103.csv')
+    (tmp_path / 'amcl_20261103.csv').write_text('time,label\n')
+    r = client.get('/api/amcl/records.csv')
     assert r.status_code == 200 and 'attachment' in r.headers['Content-Disposition']
