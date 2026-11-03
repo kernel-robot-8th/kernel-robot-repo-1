@@ -6,29 +6,13 @@ from math import isfinite
 from uuid import uuid4
 
 from roport_control_server.adapters.mqtt.messages import encode, timestamp
-
-PROFILE = "omx.dedicated/1"
-_ASSIGNMENT = (
-    "operation",
-    "resource_token",
-    "permit_id",
-    "assigned_arm_id",
-    "inactive_arm_id",
-    "order_id",
-    "package_id",
-    "slot_id",
-    "pinky_id",
-    "policy_bundle_version",
-    "feature_schema_version",
-    "calibration_version",
-    "workcell_profile_version",
+from roport_control_server.domain.dedicated_cycle import (
+    PROFILE,
+    dedicated_payload,
 )
-
-
-def _text(value):
-    if not isinstance(value, str) or not value or len(value) > 128:
-        raise ValueError("invalid_identifier")
-    return value
+from roport_control_server.domain.dedicated_cycle import (
+    check_identifier as _text,
+)
 
 
 def _seconds(value):
@@ -57,34 +41,7 @@ def make_dedicated_command(
     roles: dict[str, str],
 ) -> dict:
     """Build one assigned package command; roles come from the approved profile."""
-    if not isinstance(assignment, dict) or set(roles) != {"INBOUND", "OUTBOUND"}:
-        raise ValueError("invalid_assignment")
-    if set(roles.values()) != {"omx1", "omx2"}:
-        raise ValueError("invalid_role_mapping")
-    payload = {key: _text(assignment.get(key)) for key in _ASSIGNMENT}
-    operation = payload["operation"]
-    if operation not in roles:
-        raise ValueError("invalid_operation")
-    active = roles[operation]
-    inactive = roles["OUTBOUND" if operation == "INBOUND" else "INBOUND"]
-    if (payload["assigned_arm_id"], payload["inactive_arm_id"]) != (active, inactive):
-        raise ValueError("invalid_arm_assignment")
-    if payload["pinky_id"] not in (
-        {"pinky1", "pinky2"} if operation == "INBOUND" else {"pinky3"}
-    ):
-        raise ValueError("invalid_pinky_assignment")
-    expected = assignment.get("expected_package_ids")
-    if expected != [payload["package_id"]]:
-        raise ValueError("UNSUPPORTED_PACKAGE_COUNT")
-    if assignment.get("manipulation_mode") != "DEDICATED":
-        raise ValueError("INVALID_COMMAND")
-    payload.update(
-        profile_version=PROFILE,
-        manipulation_mode="DEDICATED",
-        workcell_id="shelf-01",
-        robot_ids=[active],
-        expected_package_ids=expected.copy(),
-    )
+    payload = dedicated_payload(assignment, roles)
     command = {
         "schema_version": "1.0",
         "message_id": str(uuid4()),

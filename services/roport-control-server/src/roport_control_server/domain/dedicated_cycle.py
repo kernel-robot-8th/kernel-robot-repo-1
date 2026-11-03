@@ -4,6 +4,86 @@ from copy import deepcopy
 from datetime import datetime
 from math import isfinite
 
+PROFILE = "omx.dedicated/1"
+_ASSIGNMENT = (
+    "operation",
+    "resource_token",
+    "permit_id",
+    "assigned_arm_id",
+    "inactive_arm_id",
+    "order_id",
+    "package_id",
+    "slot_id",
+    "pinky_id",
+    "policy_bundle_version",
+    "feature_schema_version",
+    "calibration_version",
+    "workcell_profile_version",
+)
+_BINDING = ("site_id", "task_id", "step_id", "command_id", "execution_id")
+
+
+def check_identifier(value):
+    if not isinstance(value, str) or not value or len(value) > 128:
+        raise ValueError("invalid_identifier")
+    return value
+
+
+def dedicated_payload(assignment, roles):
+    """Validated command payload; shared by command creation and cycle begin."""
+    if (
+        not isinstance(assignment, dict)
+        or not isinstance(roles, dict)
+        or set(roles) != {"INBOUND", "OUTBOUND"}
+    ):
+        raise ValueError("invalid_assignment")
+    if set(roles.values()) != {"omx1", "omx2"}:
+        raise ValueError("invalid_role_mapping")
+    payload = {key: check_identifier(assignment.get(key)) for key in _ASSIGNMENT}
+    operation = payload["operation"]
+    if operation not in roles:
+        raise ValueError("invalid_operation")
+    active = roles[operation]
+    inactive = roles["OUTBOUND" if operation == "INBOUND" else "INBOUND"]
+    if (payload["assigned_arm_id"], payload["inactive_arm_id"]) != (active, inactive):
+        raise ValueError("invalid_arm_assignment")
+    if payload["pinky_id"] not in (
+        {"pinky1", "pinky2"} if operation == "INBOUND" else {"pinky3"}
+    ):
+        raise ValueError("invalid_pinky_assignment")
+    expected = assignment.get("expected_package_ids")
+    if expected != [payload["package_id"]]:
+        raise ValueError("UNSUPPORTED_PACKAGE_COUNT")
+    if assignment.get("manipulation_mode") != "DEDICATED":
+        raise ValueError("INVALID_COMMAND")
+    payload.update(
+        profile_version=PROFILE,
+        manipulation_mode="DEDICATED",
+        workcell_id="shelf-01",
+        robot_ids=[active],
+        expected_package_ids=expected.copy(),
+    )
+    return payload
+
+
+def _check_command(command):
+    """Re-validate a built command; arm roles are re-derived from its own payload."""
+    if not isinstance(command, dict) or not isinstance(command.get("payload"), dict):
+        raise ValueError("invalid_command")  # noqa: TRY004 - one rejection type
+    for key in (*_BINDING, "source"):
+        check_identifier(command.get(key))
+    payload = command["payload"]
+    operation = payload.get("operation")
+    if operation not in {"INBOUND", "OUTBOUND"}:
+        raise ValueError("dedicated_operation_required")
+    other = "OUTBOUND" if operation == "INBOUND" else "INBOUND"
+    roles = {
+        operation: payload.get("assigned_arm_id"),
+        other: payload.get("inactive_arm_id"),
+    }
+    if dedicated_payload(payload, roles) != payload:
+        raise ValueError("invalid_command")
+
 
 def _stamp(value):
     try:
@@ -37,7 +117,8 @@ class DedicatedCycle:
         self.pinky_boot_id = None
         self.evidence_seq = -1
         self.evidence_time = float("-inf")
-        self.result = None
+        self.result = None  # recorded completion fact, never refreshed
+        self.arm_safety = None  # latest both-arm safety used for departure
 
     def _fresh(self, observed_at, now):
         if type(now) not in {int, float} or not isfinite(now):
@@ -60,15 +141,11 @@ class DedicatedCycle:
         now,
     ):
         self._fresh(observed_at, now)
+        _check_command(command)
+        if now >= _stamp(command.get("expires_at")):
+            raise ValueError("expired_command")
         payload = command["payload"]
-        operation = payload.get("operation")
-        if payload.get("manipulation_mode") != "DEDICATED" or operation not in {
-            "INBOUND",
-            "OUTBOUND",
-        }:
-            raise ValueError("dedicated_operation_required")
-        if payload.get("expected_package_ids") != [payload.get("package_id")]:
-            raise ValueError("UNSUPPORTED_PACKAGE_COUNT")
+        operation = payload["operation"]
         if p7_cart_id != payload.get("pinky_id") or type(cart_empty) is not bool:
             raise ValueError("p7_assignment_mismatch")
         if not all(
@@ -100,24 +177,17 @@ class DedicatedCycle:
         self.evidence_seq = evidence_seq
         self.evidence_time = _stamp(observed_at)
         self.result = None
+        self.arm_safety = None
         self.state = operation + "_ACTIVE"
 
-    def completed(self, event, *, now):
-        if self.state not in {"INBOUND_ACTIVE", "OUTBOUND_ACTIVE"}:
-            raise ValueError("no_active_assignment")
+    def _check_safe_snapshot(self, event, now):
+        """Host SAFE_RETURNED snapshot of this execution and Host boot."""
         command = self.command
-        p = event.get("payload", {})
+        if not isinstance(event, dict) or not isinstance(event.get("payload"), dict):
+            raise ValueError("invalid_result_event")  # noqa: TRY004
+        p = event["payload"]
         if (
-            any(
-                event.get(k) != command[k]
-                for k in (
-                    "site_id",
-                    "task_id",
-                    "step_id",
-                    "command_id",
-                    "execution_id",
-                )
-            )
+            any(event.get(k) != command[k] for k in _BINDING)
             or event.get("source") != "shelf-01"
             or event.get("target") != command["source"]
         ):
@@ -147,14 +217,35 @@ class DedicatedCycle:
         }:
             raise ValueError("both_arm_observations_required")
         for observation in observations.values():
-            if observation.get("safe") is not True:
+            if not isinstance(observation, dict) or observation.get("safe") is not True:
                 raise ValueError("both_arm_safety_required")
             self._fresh(observation.get("captured_at"), now)
-        expected_location = "slot" if self.state == "INBOUND_ACTIVE" else "pinky"
+        expected_location = (
+            "slot" if command["payload"]["operation"] == "INBOUND" else "pinky"
+        )
         if p.get("location") != expected_location:
             raise ValueError("unexpected_package_location")
+        return deepcopy(observations)
+
+    def completed(self, event, *, now):
+        if self.state not in {"INBOUND_ACTIVE", "OUTBOUND_ACTIVE"}:
+            raise ValueError("no_active_assignment")
+        # Command expiry is not checked: a physical result must never be dropped.
+        self.arm_safety = self._check_safe_snapshot(event, now)
         self.result = deepcopy(event)
-        self.state = command["payload"]["operation"] + "_READY_TO_DEPART"
+        self.state = self.command["payload"]["operation"] + "_READY_TO_DEPART"
+
+    def refresh_arm_safety(self, event, *, now):
+        """Replace departure arm evidence; the recorded completion stays as is."""
+        if self.state not in {"INBOUND_READY_TO_DEPART", "OUTBOUND_READY_TO_DEPART"}:
+            raise ValueError("departure_not_ready")
+        arms = self._check_safe_snapshot(event, now)
+        if any(
+            _stamp(arms[arm]["captured_at"]) < _stamp(old["captured_at"])
+            for arm, old in self.arm_safety.items()
+        ):
+            raise ValueError("arm_observation_regressed")
+        self.arm_safety = arms
 
     def _check_pinky_evidence(self, evidence, now):
         self._fresh(evidence.get("source_observed_at"), now)
@@ -179,9 +270,8 @@ class DedicatedCycle:
     def approve_departure(self, evidence, *, now):
         if self.state not in {"INBOUND_READY_TO_DEPART", "OUTBOUND_READY_TO_DEPART"}:
             raise ValueError("departure_not_ready")
-        self._fresh(self.result.get("observed_at"), now)
-        for observation in self.result["payload"]["arms"].values():
-            self._fresh(observation.get("captured_at"), now)
+        for observation in self.arm_safety.values():
+            self._fresh(observation["captured_at"], now)
         self._check_pinky_evidence(evidence, now)
         if (
             evidence.get("pinky_id") != self.command["payload"]["pinky_id"]
@@ -216,3 +306,4 @@ class DedicatedCycle:
             self.state = "DELIVERY_READY"
         self.command = None
         self.result = None
+        self.arm_safety = None

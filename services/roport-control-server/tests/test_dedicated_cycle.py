@@ -195,3 +195,105 @@ def test_departure_rechecks_each_arm_age_not_only_latest_result_time():
         c.approve_departure(
             {**evidence(cmd), "source_observed_at": stamp(0.2)}, now=NOW + 0.2
         )
+
+
+def at(event, offset):
+    """Same Host snapshot observed later (observed_at and both arms)."""
+    event = deepcopy(event)
+    event["observed_at"] = stamp(offset)
+    for arm in event["payload"]["arms"].values():
+        arm["captured_at"] = stamp(offset)
+    return event
+
+
+def test_stale_arm_safety_is_refreshed_without_rewriting_completion():
+    c, cmd = cycle(), command()
+    begin(c, cmd)
+    done = complete(cmd)
+    c.completed(done, now=NOW)
+    late = {**evidence(cmd), "source_observed_at": stamp(3)}
+    with pytest.raises(ValueError, match="stale_or_future"):
+        c.approve_departure(late, now=NOW + 3)
+    c.refresh_arm_safety(at(done, 3), now=NOW + 3)
+    assert c.result == done  # Completion fact is kept, only safety evidence moves.
+    assert c.approve_departure(late, now=NOW + 3)
+
+
+@pytest.mark.parametrize(
+    "field,value,reason",
+    [
+        ("execution_id", "other", "result_binding_mismatch"),
+        ("boot_id", "restarted", "host_restarted_reconcile"),
+        ("type", "shelf.execute.held", "physical_result_not_complete"),
+    ],
+)
+def test_arm_refresh_is_bound_to_execution_and_host_boot(field, value, reason):
+    c, cmd = cycle(), command()
+    begin(c, cmd)
+    c.completed(complete(cmd), now=NOW)
+    with pytest.raises(ValueError, match=reason):
+        c.refresh_arm_safety({**at(complete(cmd), 1), field: value}, now=NOW + 1)
+
+
+def test_arm_refresh_rejects_unsafe_regressed_or_early_use():
+    c, cmd = cycle(), command()
+    begin(c, cmd)
+    with pytest.raises(ValueError, match="departure_not_ready"):
+        c.refresh_arm_safety(complete(cmd), now=NOW)
+    c.completed(at(complete(cmd), 1), now=NOW + 1)
+    unsafe = at(complete(cmd), 1.5)
+    unsafe["payload"]["arms"]["omx2"]["safe"] = False
+    with pytest.raises(ValueError, match="both_arm_safety"):
+        c.refresh_arm_safety(unsafe, now=NOW + 1.5)
+    older = at(complete(cmd), 1.5)
+    older["payload"]["arms"]["omx1"]["captured_at"] = stamp(0.5)
+    with pytest.raises(ValueError, match="arm_observation_regressed"):
+        c.refresh_arm_safety(older, now=NOW + 1.5)
+
+
+def test_expired_command_cannot_begin_but_late_result_is_kept():
+    expired = command()
+    expired["expires_at"] = stamp(-1)
+    with pytest.raises(ValueError, match="expired_command"):
+        begin(cycle(), expired)
+    c, cmd = cycle(), command()
+    begin(c, cmd)
+    c.completed(at(complete(cmd), 31), now=NOW + 31)  # expires_at is NOW + 30.
+    assert c.state == "INBOUND_READY_TO_DEPART"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda p: p.update(package_id=None, expected_package_ids=[None]),
+        lambda p: p.update(inactive_arm_id="omx1"),
+        lambda p: p.update(assigned_arm_id="omx3", robot_ids=["omx3"]),
+        lambda p: p.update(robot_ids=["omx2"]),
+        lambda p: p.update(slot_id=""),
+        lambda p: p.pop("permit_id"),
+        lambda p: p.update(manipulation_mode="COOPERATIVE"),
+        lambda p: p.update(pinky_id="pinky3"),
+    ],
+)
+def test_begin_revalidates_assignment_payload(change):
+    c, cmd = cycle(), command()
+    change(cmd["payload"])
+    with pytest.raises(ValueError):
+        begin(c, cmd)
+    assert c.state == "EMPTY"
+
+
+@pytest.mark.parametrize("payload", [None, [], "x"])
+def test_begin_rejects_non_object_payload_with_value_error(payload):
+    with pytest.raises(ValueError, match="invalid_command"):
+        cycle().begin(
+            {**command(), "payload": payload},
+            p7_cart_id="pinky1",
+            cart_empty=False,
+            host_boot_id="host-boot",
+            pinky_boot_id="pinky-boot",
+            docking_execution_id="dock",
+            evidence_seq=0,
+            observed_at=stamp(),
+            now=NOW,
+        )
