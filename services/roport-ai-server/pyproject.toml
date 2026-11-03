@@ -18,5 +18,5 @@ target-version = "py312"
 pythonpath = ["src"]
 
 [tool.hatch.build.targets.wheel]
-only-include = ["src/app.py", "src/dedicated_policy.py", "src/dedicated_udp.py"]
+only-include = ["src/app.py", "src/dedicated_policy.py", "src/dedicated_udp.py", "src/act_provider.py", "src/observations.py", "src/udp_frame_protocol.py", "src/udp_frame_receiver.py"]
 sources = ["src"]

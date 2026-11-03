@@ -6,6 +6,8 @@ import time
 from copy import deepcopy
 from datetime import UTC, datetime
 
+from observations import ImageNotReady, validate_images
+
 SCHEMA_VERSION = "omx.dedicated/1"
 MAX_DATAGRAM_BYTES = 60_000
 BINDINGS = (
@@ -293,6 +295,16 @@ class PolicyRouter:
             or observation["use_degrees"] != metadata["use_degrees"]
         ):
             return error("invalid_observation")
+        if "cameras" in metadata:
+            try:
+                images = validate_images(observation.get("images"))
+                if (
+                    set(images) != set(metadata["cameras"])
+                    or observation.get("captured_at") != request["captured_at"]
+                ):
+                    return error("invalid_observation")
+            except (TypeError, ValueError):
+                return error("invalid_observation")
         if request["observation_seq"] <= state["observation_seq"]:
             return error("stale_observation")
         if captured < state["captured_at"]:
@@ -301,6 +313,9 @@ class PolicyRouter:
         state["captured_at"] = captured
         try:
             actions = provider.infer(deepcopy(observation))
+        except ImageNotReady:
+            state["ready"] = False
+            return error("input_not_ready")
         except Exception:  # noqa: BLE001 - provider failures must stay wire errors.
             state["ready"] = False
             return error("inference_failed")

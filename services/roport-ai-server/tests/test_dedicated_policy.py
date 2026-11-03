@@ -84,6 +84,45 @@ def configured():
     ), provider
 
 
+def test_image_input_errors_are_distinct_from_model_failure():
+    from observations import ImageNotReady
+
+    class WaitingPolicy(SyntheticPolicy):
+        def infer(self, observation):
+            raise ImageNotReady("synthetic missing current image")
+
+    provider = WaitingPolicy()
+    router = PolicyRouter(
+        {"synthetic-grasp": provider},
+        {
+            "synthetic-grasp": METADATA
+            | {"cameras": {"side": {"shape": [3, 2, 2], "fps": 30}}}
+        },
+    )
+    assert router.handle(request(), now=NOW)["type"] == "policy.reset.ack"
+    infer = request("policy.infer")
+    assert router.handle(infer, now=NOW)["code"] == "invalid_observation"
+    infer["observation"].update(
+        captured_at=infer["captured_at"],
+        images={
+            "side": {
+                "source": "host1",
+                "camera": "side",
+                "stream": "rgb",
+                "session": "00000000-0000-0000-0000-000000000001",
+                "frame_id": 1,
+                "captured_ns": int(NOW * 1e9),
+                "observation_group": "synthetic",
+            }
+        },
+    )
+    infer["observation"]["captured_at"] = "2026-11-03T00:00:01+00:00"
+    assert router.handle(infer, now=NOW)["code"] == "invalid_observation"
+    infer["observation"]["captured_at"] = infer["captured_at"]
+    assert router.handle(infer, now=NOW)["code"] == "input_not_ready"
+    assert router.handle(infer, now=NOW)["code"] == "reset_required"
+
+
 def test_requires_configured_model_and_reset(configured):
     router, provider = configured
     assert (
