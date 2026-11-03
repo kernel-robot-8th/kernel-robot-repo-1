@@ -89,7 +89,7 @@ def test_line_dimensions_from_measurement(layout):
     assert _node(layout, 'N15').x - _node(layout, 'N14').x == pytest.approx(44.5)   # S
     for stop, length in (('N16', 25), ('N17', 25)):                                # R
         assert _node(layout, stop).y + half - (n05.y + half) == pytest.approx(length)
-    for stop, length in (('N01', 29.9), ('H1', 40), ('H2', 40)):                   # Q U
+    for stop, length in (('N01', 29.9), ('N11', 41), ('H1', 40), ('H2', 40)):      # Q W U
         assert (n10.y - half) - (_node(layout, stop).y - half) == pytest.approx(length)
     assert _node(layout, 'N08').x - _node(layout, 'N09').x == pytest.approx(31.5)  # ㅈ
     assert n12.x - _node(layout, 'N08').x == pytest.approx(38.8)                   # ㄱ
@@ -120,14 +120,12 @@ def test_delivery_and_warehouse_dimensions(layout):
 
 
 def test_omx12_from_zone03_wall(layout):
-    # 2026-11-03 재측정: 03 아래 벽 면(통로 쪽)에서 잰 거리
+    # 2026-11-03 재측정: 03 아래 벽 면(통로 쪽)에서 잰 거리. 오목 바닥은 W·V로 정함(Ⓑ 62 안 씀)
     raw = {w['name']: w for w in layout.raw['walls']}
     face = raw['zone03_bottom']['from'][1] - layout.raw['defaults']['wall_thickness'] / 2
     objs = {o['name']: o for o in layout.raw['objects']}
     n11 = _node(layout, 'N11')
     bar_end = n11.y - layout.line_width / 2           # 가로선의 선반 쪽 바깥선
-    assert face - bar_end == pytest.approx(58)                                   # 가로선(끝)
-    assert face - objs['omx12_back']['max'][1] == pytest.approx(62)              # 오목 바닥
     for name in ('omx12_left', 'omx12_right'):
         assert face - objs[name]['max'][1] == pytest.approx(44)                  # 돌출 앞면
     assert bar_end - objs['omx12_back']['max'][1] == pytest.approx(4)            # V
@@ -135,7 +133,6 @@ def test_omx12_from_zone03_wall(layout):
     assert face - aisle_face == pytest.approx(93.5)                              # Ⓓ 벽 → 벽
     main = _node(layout, 'N19').y
     assert main - objs['omx12_right']['max'][1] == pytest.approx(24, abs=0.6)    # Ⓒ
-    assert main - objs['omx12_back']['max'][1] == pytest.approx(41, abs=0.6)     # W
     # 바닥 P7 마커(2 cm)는 가로선과 오목 바닥 사이
     p7 = next(m for m in layout.raw['markers']['items'] if m['name'] == 'P7')
     assert objs['omx12_back']['max'][1] + 1 < p7['center'][1] < bar_end - 1
