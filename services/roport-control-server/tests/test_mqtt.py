@@ -307,3 +307,20 @@ def test_oversized_message_is_dropped_without_poisoning_connection(clients):
     delivery = receiver.receive()
     assert decode(delivery.payload) == command
     receiver.ack(delivery)
+
+
+def test_workcell_permit_is_qos1_nonretained_and_target_routed(clients):
+    destination = topic("test", "workcell", "shelf-01", "permit")
+    control = clients([topic("test", "workcell", "shelf-01", "event")])
+    host = clients([destination])
+    message = make_command("shelf-01")
+    message["type"] = "workcell.permit"
+    message["payload"] = {"allowed": True, "simulated": True}
+    control.publish(destination, message)
+    delivery = host.receive()
+    assert delivery.qos == 1 and delivery.retained is False
+    assert decode(delivery.payload) == message
+    host.ack(delivery)
+    message["type"] = "shelf.execute.requested"
+    with pytest.raises(ValueError, match="requires workcell.permit"):
+        control.publish(destination, message)

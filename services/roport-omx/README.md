@@ -8,9 +8,23 @@ Python 3.12 코어 패키지 / uv / Ruff. 학습·정책 실행은 LeRobot·PyTo
 
 ## 현재 범위
 
-개발 시작용 구조와 CI를 제공합니다. 로봇 제어·업무 기능·모델 추론은 아직 구현하지 않았습니다.
+팔별 분담 시나리오의 source/mock 실행 코어와 CI를 제공합니다. 실제 로봇 구동·학습된 ACT 정책·물리 파지 판정은 아직 연결하지 않았습니다.
 CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 배포 환경 미정으로 CD와 자동 배포는 설정하지 않았습니다.
+
+## 팔별 분담 실행 코어
+
+`src/roport_omx/dedicated.py`의 `Profile`과 `DedicatedHost`가 입고·반출 담당 팔, 단일 포장품·슬롯, 정차 permit, 양팔 관측, 정책·보정 버전을 검사합니다. SQLite에 명령을 저장한 뒤 접수하고 같은 명령은 재실행하지 않습니다. 재시작 시 불명확한 실행은 `RECONCILING`으로 남깁니다.
+
+`GRASPING → WAIT_GRASP → TRANSFERRING → WAIT_SEATED → RELEASING → WAIT_RELEASE → RETURNING → WAIT_SAFE → SAFE_RETURNED` 순서로 진행합니다. 단계 경계와 다음 정책 시작 시 AI reset 응답을 확인하며, 정상 대기와 오류 보류를 구분합니다. 최신 관측·확인 입력 없이 chunk 종료나 그리퍼 위치만으로 완료하지 않습니다. Host는 출발을 허가하지 않습니다.
+
+```bash
+uv sync --locked
+uv run python scripts/dedicated_demo.py --mock
+bash ci/test.sh
+```
+
+예제의 자세·시간 제한·물품 ID는 synthetic fixture입니다. 코어는 검사한 6개 위치 목표를 데이터로 반환할 뿐, 시리얼·토크·모터 호출을 제공하지 않습니다. `HOLD`도 소프트웨어의 후보 차단 상태이며 물리 정지를 증명하지 않습니다. 현장 실행에는 실측 프로파일, 영상·센서/감독자 확인 입력, 실제 정지·지지·수동 회수 절차와 별도 장비 어댑터가 필요합니다. 팔 5축 정규화/°와 그리퍼 0~100 단위를 섞지 마세요.
 
 ## 관련 문서
 
