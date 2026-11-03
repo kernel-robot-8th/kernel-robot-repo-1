@@ -26,6 +26,25 @@ bash ci/test.sh
 
 예제의 자세·시간 제한·물품 ID는 synthetic fixture입니다. 코어는 검사한 6개 위치 목표를 데이터로 반환할 뿐, 시리얼·토크·모터 호출을 제공하지 않습니다. `HOLD`도 소프트웨어의 후보 차단 상태이며 물리 정지를 증명하지 않습니다. 현장 실행에는 실측 프로파일, 영상·센서/감독자 확인 입력, 실제 정지·지지·수동 회수 절차와 별도 장비 어댑터가 필요합니다. 팔 5축 정규화/°와 그리퍼 0~100 단위를 섞지 마세요.
 
+### 세 모듈 연결 예제와 개발 브랜치
+
+통합 브랜치에서는 관제의 명령·정차 permit을 Host에 넣고, 실제 localhost UDP 소켓으로 AI fixture 후보를 받는 연속 예제를 실행할 수 있습니다.
+
+```bash
+uv run python scripts/dedicated_integration.py --mock
+```
+
+입고 완료·출발 판단·P7 이탈 뒤에 빈 Pinky3 반출을 배정합니다. `DELIVERY_READY`는 배송 준비이며 고객 수령 완료가 아닙니다. MQTT envelope는 이 예제에서 메모리상 encode/decode하고, 실제 broker 왕복은 관제의 localhost Mosquitto 검사에서 따로 확인합니다. 물체 이동·접촉·하중·학습 성능을 재현하는 시뮬레이션은 아닙니다. MuJoCo는 실제 기구·그리퍼·물품·선반의 접촉 모델을 준비한 뒤 후속 물리 검증에 검토합니다.
+
+개발 브랜치는 `task/omx`를 기준으로 나눕니다. 현재 PR은 생성하지 않습니다.
+
+- `feature/jsh0116/omx-dedicated-control`: 관제 명령·permit·P7 작업 순서.
+- `feature/jsh0116/omx-dedicated-host`: Host 프로파일·상태기계·SQLite 이력과 단독 mock 예제.
+- `feature/jsh0116/omx-dedicated-ai`: 정책 라우터·UDP adapter와 wheel 구성.
+- `feature/jsh0116/omx-dedicated-integration`: 위 세 브랜치를 합친 연결 예제와 회귀 검사. 검토할 때는 각 기능 브랜치부터 확인하고 통합 브랜치에서 연결 변경을 확인합니다.
+
+의존성: 통합 예제·검사에는 세 모듈의 위 구현이 모두 필요합니다. 학습된 ACT provider·영상 전처리, 실측 프로파일·하드웨어 정지, 운영 DB/outbox·재시작 조정, 현장 MQTT ACL은 별도 연결해야 합니다. core CI와 달리 이 통합 검사는 임시 loopback 소켓을 사용합니다.
+
 ## 관련 문서
 
 이 디렉토리는 단일 저장소의 구성요소입니다. 아래 명령은 이 디렉토리에서 실행합니다.
