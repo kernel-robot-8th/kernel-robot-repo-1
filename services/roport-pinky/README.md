@@ -34,14 +34,14 @@ source install/setup.bash
 python3 -c "import roport_pinky; import rclpy"
 ```
 
-팀 패키지에는 아직 실행 노드·모터 명령이 없습니다. 스마트카트 작업 위치는 [src/roport_smartcart/](src/roport_smartcart/)입니다. 아래 원본 Pinky Pro에는 실장비 실행 코드가 포함돼 있습니다.
+팀 패키지 중 실행 노드는 IR 라인 추종 노드 v0([src/roport_pinky_line/](src/roport_pinky_line/), `cmd_vel` 발행, 실로봇 1~3단계 시험 2026-11-03)뿐입니다. 스마트카트 작업 위치는 [src/roport_smartcart/](src/roport_smartcart/)입니다. 아래 원본 Pinky Pro에는 실장비 실행 코드가 포함돼 있습니다.
 
 ## 시연 공간 Gazebo world
 
-[src/roport_gz_world/](src/roport_gz_world/README.md)는 시연 공간 실측 맵(v11)을 Gazebo world로 만든 패키지입니다.
+[src/roport_gz_world/](src/roport_gz_world/README.md)는 시연 공간 실측 배치(v13)를 Gazebo world로 만든 패키지입니다.
 world 좌표를 실제 SLAM 지도 좌표계에 맞춰 두어 시뮬레이션 Nav2에서 실제 지도를 그대로 씁니다.
 `colcon build --packages-up-to roport_gz_world` 후 `ros2 launch roport_gz_world roport_gz_world.launch.xml`로 실행합니다.
-일부 치수와 OMX 구역은 실측 전 임시값입니다.
+가정값(`provisional`)은 패키지 README에 정리돼 있습니다.
 
 ## Pinky Pro 원본
 
