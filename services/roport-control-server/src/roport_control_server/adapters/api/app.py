@@ -18,6 +18,9 @@ ASSETS = Path(__file__).resolve().parents[2] / "spatial_assets"
 
 
 def create_app(map_path=None):
+    # shortcut: per-worker demo limit; measure with AI load before scaling out.
+    stream_slots = asyncio.BoundedSemaphore(8)
+
     @asynccontextmanager
     async def lifespan(app):
         # Only the server operator supplies a local path; no file-upload/path API.
@@ -70,7 +73,9 @@ def create_app(map_path=None):
         ):
             await websocket.close(code=1008)
             return
-        await websocket.accept()
+        if stream_slots.locked():
+            await websocket.close(code=1013)
+            return
         display = Display(demo=mode == "demo")
 
         async def send():
@@ -98,17 +103,19 @@ def create_app(map_path=None):
                     return
                 await asyncio.sleep(0.05)
 
-        tasks = [asyncio.create_task(send()), asyncio.create_task(receive())]
-        try:
-            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                task.result()
-        except (WebSocketDisconnect, TimeoutError, OSError):
-            pass
-        finally:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+        # No await between the capacity check and acquisition on this event loop.
+        async with stream_slots:
+            await websocket.accept()
+            try:
+                async with asyncio.TaskGroup() as group:
+                    tasks = [group.create_task(send()), group.create_task(receive())]
+                    try:
+                        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    finally:
+                        for task in tasks:
+                            task.cancel()
+            except* (WebSocketDisconnect, TimeoutError, OSError):
+                pass
 
     app.mount("/ui", StaticFiles(directory=ASSETS, html=True), name="ui")
     return app

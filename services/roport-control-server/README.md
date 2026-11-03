@@ -24,6 +24,8 @@ scripts/       mqtt_demo.py·udp_video_demo.py: 모의 예제 (wheel 미포함, 
 tests/         test_layers.py: 아래 import 규칙 검사
 ```
 
+`spatial_assets/index.html`·`scene.js`·`style.css`가 브라우저 표시 계층이며 `adapters/api/app.py`가 정적 파일과 REST/WebSocket을 제공합니다. 기존 `adapters/ui`·Qt 표시 계층은 제거됐습니다.
+
 | 위치 | 허용 import |
 | --- | --- |
 | `contracts/` | 표준 라이브러리 |
@@ -60,7 +62,11 @@ uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --por
 
 ### 접속·지도·운영
 
-현장 LAN의 다른 PC에서도 보려면 위 명령의 `--host`를 `0.0.0.0`으로 바꾸고 브라우저에서 `http://<서버-LAN-IP>:8000/ui/`를 엽니다. 방화벽은 허용된 현장 망으로 제한합니다. 이번 버전은 인증 없는 모의/읽기 전용 뼈대이며 인터넷 공개·운영 데이터 연결 전 인증/권한·HTTPS/WSS 또는 VPN이 필요합니다. FastAPI와 화면을 같은 origin으로 제공해 별도 CORS 허용이 필요 없습니다. TLS 프록시 사용 시 신뢰할 프록시만 허용하고 WebSocket upgrade와 Host/scheme을 보존합니다.
+현장 LAN의 다른 PC에서도 보려면 위 명령의 `--host`를 `0.0.0.0`으로 바꾸고 브라우저에서 `http://<서버-LAN-IP>:8000/ui/`를 엽니다. 방화벽은 허용된 현장 망으로 제한합니다. 이번 버전은 인증 없는 모의/읽기 전용 뼈대이며 인터넷 공개·운영 데이터 연결 전 인증/권한·HTTPS/WSS 또는 VPN이 필요합니다. FastAPI와 화면을 같은 origin으로 제공해 별도 CORS 허용이 필요 없습니다.
+
+상태 WebSocket은 **worker당 OFFLINE/DEMO 합계 8개**로 제한합니다. 초과 접속은 handshake 전에 거절되므로 실제 HTTP 응답은 403이며 브라우저는 기존 재접속 정책을 따릅니다. 연결 종료·오류 시 송수신 작업을 정리하고 자리를 반환합니다. 현재는 worker 1개로 운영하며, 8개는 AI 병행 부하를 보장하는 측정값이 아닌 임시 상한입니다. HTTP 요청·IP별 제한은 포함하지 않습니다.
+
+TLS 역방향 프록시는 WebSocket upgrade, 브라우저의 `Origin`, 외부 `Host`(비기본 포트 포함)를 그대로 전달하고 `X-Forwarded-Proto`를 실제 외부 scheme으로 설정해야 합니다. 같은 서버의 loopback 프록시라면 위 Uvicorn 명령에 `--proxy-headers --forwarded-allow-ips=127.0.0.1`을 사용합니다. 원격 프록시는 실제 프록시 IP만 신뢰하고 `*`로 열지 않습니다. 신뢰된 HTTPS 전달 헤더는 Uvicorn이 `wss`로 변환하므로 같은 origin 연결이 허용됩니다. 내부 Host로 바꾸거나 신뢰하지 않는 경로에서 HTTPS 헤더만 보내면 거절됩니다. `X-Forwarded-Host`만으로는 보완되지 않습니다.
 
 서버 운영자가 `ROPORT_MAP=/절대경로/map.yaml` 환경변수로 PNG/PGM+YAML 지도를 선택할 수 있습니다. 기본 지도는 공개 예시이며 화면에도 표시합니다. 지도 파일 업로드 API는 없고 원본 파일을 수정하지 않습니다. m/rad, ROS map 축·origin/yaw를 보존하며 벽 높이 0.35m는 표시 가정입니다. 실제 맵과 P4/P7은 팀 확정 후 적용합니다. 지도와 연결한 이미지는 접속자에게 보이므로 공개/접속 권한을 확인합니다.
 
@@ -77,6 +83,8 @@ uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --por
 | `/ui/` | 인터넷 CDN 없는 정적 웹 화면·3D 자산 |
 
 WebSocket은 같은 origin만 허용합니다. DEMO에서만 `play(bool)`, `seek(0..24초)`, `drop(robot_id,bool)` 표시 명령을 받고 실제 로봇 명령 endpoint는 없습니다. 브라우저는 증가한 revision만 적용하고 단절/2.5초 이상 미갱신을 표시하며 재접속합니다. DEMO 장비의 2초 stale과 UI 단절 시간은 표시 시험용이며 장비 안전 timeout이 아닙니다. 오류·식별자는 HTML이 아닌 텍스트로 표시합니다.
+
+`adapters/api/display.py`는 OFFLINE/DEMO 표시 전용입니다. 실제 상태 연동(FFT1-110)에서는 DB/실행부 상태 조회 경로를 별도로 두고, 이 생성기와 `play/seek/drop`을 실제 상태·명령 경로에서 호출하지 않습니다.
 
 팀원은 `index.html`의 `#pinky-detail` / `#omx-detail` 영역과 웹 모듈로 세부 화면을 연결합니다. QWidget 연결점은 제거됐습니다. 상세 제어는 담당 팀원이 개발하며 향후 공통 API를 사용합니다. 현재 화면 코드는 `spatial_assets/`, API는 `adapters/api/`에 두고 MQTT/UDP 모듈과 분리합니다. 고객·업무 어드민용 `services/roport-web`은 별도 앱으로 유지합니다.
 

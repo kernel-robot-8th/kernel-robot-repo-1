@@ -1,6 +1,11 @@
+from contextlib import ExitStack
+from unittest.mock import AsyncMock
+
 import pytest
+from fastapi import WebSocket
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from roport_control_server.adapters.api.app import create_app
 from roport_control_server.adapters.api.display import Display
@@ -65,6 +70,71 @@ def test_cross_origin_stream_rejected(client, origin):
     ):
         pass
     assert error.value.code == 1008
+
+
+@pytest.mark.parametrize("accept_fails", [False, True])
+def test_stream_limit_rejects_excess_and_releases_slots(
+    client, monkeypatch, accept_fails
+):
+    headers = {"origin": "http://testserver"}
+    if accept_fails:
+        with monkeypatch.context() as patch:
+            patch.setattr(WebSocket, "accept", AsyncMock(side_effect=OSError))
+            with (
+                pytest.raises(OSError),
+                client.websocket_connect("/api/state", headers=headers),
+            ):
+                pass
+    # Fill twice: all slots must be returned after disconnect, including errors.
+    for _ in range(2):
+        with ExitStack() as connections:
+            streams = [
+                connections.enter_context(
+                    client.websocket_connect(f"/api/state?mode={mode}", headers=headers)
+                )
+                for mode in ("offline", "demo") * 4
+            ]
+            for ws in streams:
+                ws.receive_json()
+            with (
+                pytest.raises(WebSocketDisconnect) as error,
+                client.websocket_connect("/api/state", headers=headers),
+            ):
+                pass
+            assert error.value.code == 1013
+            assert client.get("/healthz").status_code == 200
+            streams[-1].send_text("invalid JSON")
+            with pytest.raises(WebSocketDisconnect) as error:
+                while True:
+                    streams[-1].receive_json()
+            assert error.value.code == 1008
+
+
+@pytest.mark.parametrize(
+    "peer, host, forwarded_proto, origin, accepted",
+    [
+        ("192.0.2.10", "control.example", None, "http://control.example", True),
+        ("127.0.0.1", "control.example", "https", "https://control.example", True),
+        ("192.0.2.10", "control.example", "https", "https://control.example", False),
+        ("127.0.0.1", "127.0.0.1:8000", "https", "https://control.example", False),
+    ],
+)
+def test_stream_origin_behind_proxy(peer, host, forwarded_proto, origin, accepted):
+    app = ProxyHeadersMiddleware(create_app(), trusted_hosts=["127.0.0.1"])
+    headers = {"host": host, "origin": origin}
+    if forwarded_proto:
+        headers["x-forwarded-proto"] = forwarded_proto
+    with TestClient(app, client=(peer, 12345)) as client:
+        if accepted:
+            with client.websocket_connect("/api/state", headers=headers) as ws:
+                assert ws.receive_json()["demo"] is False
+        else:
+            with (
+                pytest.raises(WebSocketDisconnect) as error,
+                client.websocket_connect("/api/state", headers=headers),
+            ):
+                pass
+            assert error.value.code == 1008
 
 
 @pytest.mark.parametrize(
