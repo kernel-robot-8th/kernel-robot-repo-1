@@ -20,6 +20,16 @@ class IntegrationTests(unittest.TestCase):
             result["trace"].index("OUTBOUND:accepted"),
         )
 
+    def test_control_refuses_outbound_before_p7_clear(self):
+        # Raises AssertionError inside run_cycle if control ever accepts it.
+        result = run_cycle(negative_checks=True)
+        self.assertEqual(result["state"], "DELIVERY_READY")
+
+    def test_prior_execution_confirmation_is_rejected_and_holds(self):
+        result = run_cycle(replay_prior=True)
+        self.assertEqual(result["state"], "HOLD")
+        self.assertEqual(result["trace"][-1], "OUTBOUND:prior-confirmation-rejected")
+
     def test_unconfigured_ai_never_returns_a_candidate(self):
         import tempfile
 

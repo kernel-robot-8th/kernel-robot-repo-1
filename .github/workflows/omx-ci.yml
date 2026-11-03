@@ -3,10 +3,14 @@ on:
   push:
     paths:
       - 'services/roport-omx/**'
+      - 'services/roport-control-server/src/**'
+      - 'services/roport-ai-server/src/**'
       - '.github/workflows/omx-ci.yml'
   pull_request:
     paths:
       - 'services/roport-omx/**'
+      - 'services/roport-control-server/src/**'
+      - 'services/roport-ai-server/src/**'
       - '.github/workflows/omx-ci.yml'
   workflow_dispatch:
 permissions:
