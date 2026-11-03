@@ -58,6 +58,9 @@ uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --por
 - OFFLINE: `http://localhost:8000/ui/` — 실행부 미연결, 작업 없음, 실제 위치 미표시.
 - DEMO: `http://localhost:8000/ui/?mode=demo` — 예시 Pinky 3대/OMX 3대의 모의 동작. 재생·시각 이동·수신 중단은 이 브라우저 세션에만 적용됩니다. 재접속 시 DEMO는 새 세션으로 시작하며 실제 작업 복구 시험이 아닙니다.
 - 서버가 제공한 목록으로 화면을 만들지만 현재 목록은 6대 예시입니다. 로봇 등록/제외와 실제 장비 목록 연동은 후속입니다.
+- Pinky 탭 > Pinky Settings(FFT1-124, 시안 v0.2): 등록(이름·IPv4·역할·ROS_DOMAIN_ID 0~101·IR 기준값)과 작업(연결 확인·도메인 읽기/적용·업데이트/릴리즈 설치·빌드) 화면입니다. `contracts/pinky_settings.py`가 입력 형식을 정합니다.
+  OFFLINE에서는 `POST /api/pinky/settings/robots`·`/jobs`가 형식만 검사하고 `503 executor_not_connected`를 돌려줍니다(저장·실행 없음). DEMO는 예시 3대를 브라우저 안에서만 바꿉니다.
+  실제 설치·도메인 적용은 실행부·운영 DB 연결 뒤에 붙이며, 그 전까지는 Pinky 테스트 콘솔 `mode:=fleet`에서 시험합니다.
 - 기존 회백색 3열 구성, 3D/평면·회전·선택 장비 확대, 관절 모델과 작업·오류 표시를 제공합니다. 실기 URDF 보정과 양팔 협업 동기화는 검증하지 않았습니다. 승인·출발·취소는 비활성화합니다.
 
 ### 접속·지도·운영

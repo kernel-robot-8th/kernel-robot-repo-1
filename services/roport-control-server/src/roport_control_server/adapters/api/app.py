@@ -7,12 +7,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from ...contracts.pinky_settings import validate_job, validate_registration
 from .display import ROBOTS, Display
 from .maps import load_map
+from .pinky_settings import NOT_CONNECTED, settings_view
+
+MAX_JSON_BYTES = 4096
 
 ASSETS = Path(__file__).resolve().parents[2] / "spatial_assets"
 
@@ -63,6 +67,57 @@ def create_app(map_path=None):
     @app.get("/api/snapshot")
     def snapshot():
         return Display().snapshot()
+
+    async def json_object(request):
+        if request.headers.get("content-type", "").split(";")[0] != "application/json":
+            return None, JSONResponse({"detail": "application/json required"}, 415)
+        raw = await request.body()
+        if len(raw) > MAX_JSON_BYTES:
+            return None, JSONResponse({"detail": "body too large"}, 413)
+        try:
+            data = json.loads(raw)
+        except (ValueError, RecursionError):
+            return None, JSONResponse({"detail": "invalid JSON"}, 400)
+        if not isinstance(data, dict):
+            return None, JSONResponse({"detail": "JSON object required"}, 400)
+        return data, None
+
+    @app.get("/api/pinky/settings")
+    def pinky_settings(mode: Literal["offline", "demo"] = "offline"):
+        return settings_view(mode == "demo")
+
+    @app.post("/api/pinky/settings/validate")
+    async def pinky_settings_validate(request: Request):
+        # DEMO edits stay in the browser; this only checks the shared contract.
+        data, error = await json_object(request)
+        if error:
+            return error
+        kind = data.get("kind")
+        check = {"robot": validate_registration, "job": validate_job}.get(kind)
+        if check is None:
+            return JSONResponse({"detail": "kind must be robot or job"}, 400)
+        try:
+            return {"kind": kind, "value": check(data.get("value"))}
+        except (ValueError, TypeError) as e:
+            return JSONResponse({"detail": str(e)}, 400)
+
+    @app.post("/api/pinky/settings/robots")
+    @app.post("/api/pinky/settings/jobs")
+    async def pinky_settings_write(request: Request):
+        # Validate first so the contract is testable; storage/execution needs the executor.
+        data, error = await json_object(request)
+        if error:
+            return error
+        check = (
+            validate_job
+            if request.url.path.endswith("/jobs")
+            else validate_registration
+        )
+        try:
+            value = check(data)
+        except (ValueError, TypeError) as e:
+            return JSONResponse({"detail": str(e)}, 400)
+        return JSONResponse({"detail": NOT_CONNECTED, "value": value}, 503)
 
     @app.websocket("/api/state")
     async def state(websocket: WebSocket, mode: Literal["offline", "demo"] = "offline"):
