@@ -6,10 +6,12 @@ import re
 from dataclasses import dataclass
 
 # route = 로봇에서 노드 경로 주행(roport_line_nav) 확인, fleet = 노트북에서 Pinky 설정·테스트 관제
-VALID_MODES = ('slam', 'nav', 'ir', 'marker', 'amcl', 'route', 'fleet')
+# test = 로봇 통합 시험(경로 주행 + IR 측정 화면, 2026-11-04 결정. 마커는 부착·시험 뒤에 추가)
+VALID_MODES = ('slam', 'nav', 'ir', 'marker', 'amcl', 'route', 'test', 'fleet')
 MAP_MODES = ('nav', 'amcl')            # map:= 가 필요한 모드
-NO_INCLUDE_MODES = ('ir', 'marker', 'route', 'fleet')   # pinky_navigation 을 include 하지 않는 모드
-IR_NODE_MODES = ('ir', 'route')        # ir_node:=auto 일 때 IR 센서 노드를 함께 띄우는 모드
+ROUTE_MODES = ('route', 'test')        # roport_line_nav 경로 주행 노드를 함께 띄우는 모드
+NO_INCLUDE_MODES = ('ir', 'marker', 'route', 'test', 'fleet')  # pinky_navigation 을 include 하지 않음
+IR_NODE_MODES = ('ir', 'route', 'test')  # ir_node:=auto 일 때 IR 센서 노드를 함께 띄우는 모드
 ROBOT_NAME = re.compile(r'^pinky_[0-9a-z]{2,8}$')   # roport_pinky_line config/robots.yaml 키
 
 
@@ -81,10 +83,10 @@ def resolve_plan(mode, map_path='', port='8080', use_sim_time='false', ir_node='
             raise LaunchArgError(f'map file not found: {map_yaml}')
 
     name = str(robot).strip()
-    if m == 'route':
+    if m in ROUTE_MODES:
         if not ROBOT_NAME.match(name):
             raise LaunchArgError(
-                f"mode:=route requires robot:=<pinky_xxxx> (IR calibration name), got '{robot}'")
+                f"mode:={m} requires robot:=<pinky_xxxx> (IR calibration name), got '{robot}'")
     else:
         name = ''
     ir = str(ir_node).strip().lower()

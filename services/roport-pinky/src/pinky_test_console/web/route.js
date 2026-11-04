@@ -21,7 +21,7 @@ function updateButtons() {
 }
 
 async function command(body) {
-  const r = await RM.postJson("/api/route/command", body);
+  const r = await RM.postJson("api/route/command", body);
   RM.setMsg($("cmdMsg"), r.success ? `보냄: ${body.cmd}` : `실패: ${r.msg || r.httpStatus}`,
     r.success ? "ok" : "err");
 }
@@ -42,7 +42,7 @@ $("presets").addEventListener("change", (ev) => {
 });
 
 async function estop() {
-  const r = await RM.postJson("/api/estop", {});
+  const r = await RM.postJson("api/estop", {});
   RM.setMsg($("estopStatus"), r.success ? "정지 보냄" : "정지 실패", r.success ? "ok" : "err");
 }
 $("btnEstop").addEventListener("click", estop);
@@ -90,7 +90,7 @@ function render(snap) {
 
 async function poll() {
   try {
-    const snap = await RM.getJson("/api/route");
+    const snap = await RM.getJson("api/route");
     RM.markConnection(snap.httpStatus === 200);
     if (snap.httpStatus === 200) render(snap);
   } catch (_) {
@@ -100,7 +100,7 @@ async function poll() {
 }
 
 async function init() {
-  const g = await RM.getJson("/api/route/graph");
+  const g = await RM.getJson("api/route/graph");
   if (g.httpStatus !== 200) {
     RM.setMsg($("cmdMsg"), `노드 그래프 없음: ${g.msg || g.httpStatus}`, "err");
   } else {

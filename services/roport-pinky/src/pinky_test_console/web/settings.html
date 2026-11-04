@@ -46,6 +46,10 @@
       <div class="form-line"><label for="fRole">역할</label>
         <select id="fRole" class="text-input"><option value="logistics">물류</option><option value="smartcart">스마트카트</option></select></div>
       <div class="form-line"><label for="fDomain">ROS_DOMAIN_ID</label><input id="fDomain" class="text-input" type="number" min="0" max="101" value="14"></div>
+      <div class="form-line"><label for="fRmw">RMW</label>
+        <select id="fRmw" class="text-input" title="원격 콘솔 켤 때 RMW_IMPLEMENTATION">
+          <option value="">기본(로봇 .bashrc)</option><option value="rmw_fastrtps_cpp">rmw_fastrtps_cpp</option>
+          <option value="rmw_cyclonedds_cpp">rmw_cyclonedds_cpp</option></select></div>
       <div class="form-line"><label for="fCalib">IR 기준값</label>
         <select id="fCalib" class="text-input">
           <option value="pinky_d660">pinky_d660</option>

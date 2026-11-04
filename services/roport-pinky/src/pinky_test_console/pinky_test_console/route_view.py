@@ -5,6 +5,7 @@ ROS·Flask 없이 테스트한다. 경로 자체의 연결 검사는 로봇의 l
 
 import heapq
 import math
+import os
 import re
 
 import yaml
@@ -28,8 +29,39 @@ PRESETS = [
 ]
 
 
+# 로봇 로그 파일 이름(노트북으로 가져올 때 이 형식만 받음)
+ROUTE_LOG_RE = re.compile(r'^route_\d{8}_\d{6}_[A-Z0-9]{1,8}-[A-Z0-9]{1,8}\.csv$')
+ROS_LOG_DIR_RE = re.compile(r'^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{6}-[A-Za-z0-9_-]{1,40}$')
+
+
 class RouteCommandError(ValueError):
     pass
+
+
+def _list(path, pattern, dirs):
+    root = os.path.expanduser(path)
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return []
+    out = []
+    for n in names:
+        full = os.path.join(root, n)
+        if not pattern.match(n) or os.path.isdir(full) != dirs:
+            continue
+        st = os.stat(full)
+        out.append({'name': n, 'size': None if dirs else st.st_size, 'mtime': round(st.st_mtime)})
+    return sorted(out, key=lambda e: e['name'], reverse=True)
+
+
+def list_route_logs(path):
+    """roport_line_nav 경로 상세 기록 CSV 목록(새것부터)."""
+    return _list(path, ROUTE_LOG_RE, dirs=False)
+
+
+def list_ros_log_dirs(path, limit=10):
+    """~/.ros/log 의 ros2 launch 실행 폴더(새것부터 limit 개)."""
+    return _list(path, ROS_LOG_DIR_RE, dirs=True)[:limit]
 
 
 def parse_route_command(data):
@@ -80,8 +112,33 @@ def graph_view(path):
     presets = [p for p in PRESETS if all(r in ids for r in p['route'])]
     starts = [{'place': n['place'], 'node': n['id']} for n in nodes if n['place'] in START_PLACES]
     starts.sort(key=lambda s: s['place'])
-    return {'version': str(spec.get('graph_version', '')), 'nodes': nodes, 'presets': presets,
-            'starts': starts, 'goals': [n['id'] for n in nodes if n['bar']]}
+    out = {'version': str(spec.get('graph_version', '')), 'nodes': nodes, 'presets': presets,
+           'starts': starts, 'goals': [n['id'] for n in nodes if n['bar']]}
+    out.update(_layout_view(data))
+    return out
+
+
+def _layout_view(data):
+    """전체 지도 표시용: 벽·물체·마커·03 구역(Nav2)·실측 ↔ map 좌표 변환. 실측 cm."""
+    walls = [{'name': str(w.get('name', '')), 'from': [float(v) for v in w['from']],
+              'to': [float(v) for v in w['to']]} for w in data.get('walls') or []]
+    objects = [{'name': str(o.get('name', '')), 'min': [float(v) for v in o['min']],
+                'max': [float(v) for v in o['max']], 'height': o.get('height'),
+                'provisional': bool(o.get('provisional', False))}
+               for o in data.get('objects') or []]
+    markers = [{'name': str(m.get('name', '')), 'center': [float(v) for v in m['center']],
+                'floor': bool(m.get('floor', False))}
+               for m in (data.get('markers') or {}).get('items') or []]
+    xs = [p[0] for w in walls for p in (w['from'], w['to'])] or [0.0, 444.5]
+    ys = [p[1] for w in walls for p in (w['from'], w['to'])] or [0.0, 221.0]
+    room = [min(xs), min(ys), max(xs), max(ys)]
+    zones = []
+    by = {w['name']: w for w in walls}
+    if 'zone03_bottom' in by and 'zone03_left' in by:
+        zones.append({'name': '03 공용 내부공간 (Nav2)', 'x0': by['zone03_left']['from'][0],
+                      'y0': by['zone03_bottom']['from'][1], 'x1': room[2], 'y1': room[3]})
+    return {'walls': walls, 'objects': objects, 'markers': markers, 'room': room,
+            'zones': zones, 'frame': data.get('frame') or {}}
 
 
 def plan_to(graph, start, goal):

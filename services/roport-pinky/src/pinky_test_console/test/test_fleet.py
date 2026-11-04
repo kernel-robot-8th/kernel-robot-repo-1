@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+import threading
 
 import pytest
 
@@ -31,16 +32,22 @@ class FakeRunner:
         self.calls.append(('pipe', argv1, argv2, timeout))
         return 0
 
+    def run_to_file(self, argv, path, timeout, log):
+        self.calls.append(('to_file', argv, path, timeout))
+        return 0
+
 
 class FakeClient:
     def __init__(self, fail=False):
         self.calls = []
         self.fail = fail
 
-    def request(self, ip, path, body=None):
+    def request(self, ip, path, body=None, query=None):
         self.calls.append((ip, path, body))
         if self.fail:
             raise OSError('connection refused')
+        if path == '/api/logs':
+            return {'entries': [], 'last': 0}
         if path == '/api/route':
             return {'state': {'state': 'idle'}, 'stale': False}
         return {'success': True}
@@ -61,7 +68,7 @@ def mgr(store):
 @pytest.mark.parametrize('key, value', [
     ('name', 'Pinky 1'), ('name', 'a' * 17), ('ip', '192.168.4.300'), ('ip', 'pinky.local'),
     ('ip', '1.2.3.4; reboot'), ('role', 'omx'), ('domain', 102), ('domain', '14'),
-    ('domain', True), ('calib', 'd660'), ('calib', 'pinky_d660;x'),
+    ('domain', True), ('calib', 'd660'), ('calib', 'pinky_d660;x'), ('rmw', 'rmw_x; ls'),
 ])
 def test_validate_robot_rejects(key, value):
     with pytest.raises(FleetError):
@@ -77,7 +84,7 @@ def test_store_roundtrip_and_permissions(tmp_path, store):
     assert [r.name for r in again.list()] == ['pinky1', 'pinky2']
     assert stat.S_IMODE(os.stat(store.path).st_mode) == 0o600
     data = json.load(open(store.path))
-    assert set(data['robots'][0]) == {'name', 'ip', 'role', 'domain', 'calib'}  # 비밀값 없음
+    assert set(data['robots'][0]) == {'name', 'ip', 'role', 'domain', 'calib', 'rmw'}  # 비밀값 없음
     again.remove('pinky2')
     with pytest.raises(FleetError):
         again.remove('pinky2')
@@ -192,7 +199,7 @@ class EventClient(FakeClient):
         self.state = {'state': 'follow', 'reason': '',
                       'events': [{'t': 1.0, 'event': 'start', 'detail': 'N14 → N16'}]}
 
-    def request(self, ip, path, body=None):
+    def request(self, ip, path, body=None, query=None):
         if path == '/api/route' and not self.fail:
             self.calls.append((ip, path, body))
             return {'state': self.state, 'stale': False}
@@ -238,3 +245,128 @@ def test_log_csv_escapes_formulas():
     assert "'=HYPERLINK" in text and "'+1" in text
     only = log.csv_text('pinky2')
     assert 'pinky1' not in only and "'-2" in only
+
+
+def test_console_remote_commands():
+    c = Commands('/repo', '/k')
+    start = c.console_start('192.168.4.21', 'test', 'pinky_6422',
+                            'rmw_fastrtps_cpp')[-1]
+    # 원격 셸 명령줄에 실행 중 콘솔과 같은 글자가 있으면 pgrep 이 셸 자신을 잡는다
+    assert 'ros2 launch pinky_test_console' not in start
+    assert ("PKG=pinky_test_console nohup bash -ic "
+            "'RMW_IMPLEMENTATION=rmw_fastrtps_cpp exec") in start
+    assert 'mode:=test robot:=pinky_6422' in start
+    assert '&& PKG=' not in start                     # && 목록 백그라운드는 ssh 를 붙잡음
+    assert 'bringup' not in start and 'bringup' not in c.console_stop('192.168.4.21')[-1]
+    for bad in (('slam', 'pinky_d660', ''), ('marker', 'pinky_d660', ''),
+                ('test', 'pinky_d660;x', ''), ('test', 'pinky_d660', 'evil')):
+        with pytest.raises(FleetError):
+            c.console_start('192.168.4.21', *bad)
+
+
+def test_log_fetch_jobs(mgr):
+    job = mgr.start_job('pinky1', 'fetch_log', {'file': 'route_20261104_090000_N14-N16.csv'},
+                        wait=True)
+    assert job['state'] == 'ok'
+    argv = mgr.runner.calls[-1][1]
+    assert argv[0] == 'scp'
+    assert argv[-2] == 'pinky@192.168.4.21:roport_logs/route_20261104_090000_N14-N16.csv'
+    assert argv[-1].rstrip('/').endswith('/pinky1')
+    mgr.start_job('pinky1', 'fetch_roslog', {'dir': '2026-11-03-21-02-16-292629-raspi-3306'},
+                  wait=True)
+    kind, argv, path, _ = mgr.runner.calls[-1]
+    assert kind == 'to_file'
+    assert argv[-1] == 'tar czf - -C ~/.ros/log 2026-11-03-21-02-16-292629-raspi-3306'
+    assert path.endswith('roslog_2026-11-03-21-02-16-292629-raspi-3306.tar.gz')
+    for action, params in (('fetch_log', {'file': '../../.ssh/id_rsa'}),
+                           ('fetch_log', {'file': 'route_x.csv'}),
+                           ('fetch_roslog', {'dir': '../x'}), ('console_start', {'mode': 'slam'})):
+        with pytest.raises(FleetError):
+            mgr.start_job('pinky1', action, params)
+
+
+class RosLogClient(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self.rows = [{'seq': 1, 'level': 'INFO', 'node': 'line_nav', 'msg': 'state follow'}]
+        self.last = 1
+
+    def request(self, ip, path, body=None, query=None):
+        if path == '/api/logs':
+            self.calls.append((ip, path, query))
+            return {'entries': [r for r in self.rows if r['seq'] > query['after']],
+                    'last': self.last}
+        return super().request(ip, path, body)
+
+
+def test_pinky_ros_logs_merged(store):
+    store.upsert(GOOD)
+    client = RosLogClient()
+    m = FleetManager(store, Commands('/repo', '/k'), client=client, runner=FakeRunner())
+    r = store.get('pinky1')
+    m.poll_once(r)
+    m.poll_once(r)                                   # 같은 줄은 한 번만
+    pinky = [x for x in m.log.after(0)[0] if x['source'] == 'pinky']
+    assert [(x['event'], x['detail']) for x in pinky] == [('INFO line_nav', 'state follow')]
+    assert client.calls[-1][2] == {'after': 1}
+    client.last = 0                                  # 로봇 콘솔 다시 시작
+    client.rows = []
+    m.poll_once(r)
+    assert m._ros_seq['pinky1'] == 0
+
+
+def test_robot_proxy_paths():
+    from pinky_test_console.fleet import RobotProxy
+    p = RobotProxy()
+    for ok in ('', 'route.html', 'routemap.js', 'api/ir', 'api/route/command', 'api/logs/files'):
+        assert p.allowed(ok), ok
+    for bad in ('fleet.html', 'settings.js', 'test.html', 'api/../x', 'api/a b', 'api/',
+                '../api/ir', 'web_server.py', 'api/' + 'x' * 101):
+        assert not p.allowed(bad), bad
+    with pytest.raises(FleetError):
+        p.forward('192.168.4.21', 'fleet.html', '', 'GET')
+    with pytest.raises(FleetError):
+        p.forward('192.168.4.21', 'api/ir', '', 'DELETE')
+    with pytest.raises(ValueError):
+        p.forward('evil.example', 'api/ir', '', 'GET')
+
+
+def test_robot_proxy_forward_local():
+    import http.server
+    from pinky_test_console.fleet import RobotProxy
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            code = 404 if self.path.startswith('/api/missing') else 200
+            self.send_response(code)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Disposition', 'attachment; filename="a.csv"')
+            self.end_headers()
+            self.wfile.write(self.path.encode())
+
+        def do_POST(self):
+            n = int(self.headers['Content-Length'])
+            body = self.rfile.read(n)
+            self.send_response(200)
+            self.send_header('Content-Type', self.headers['Content-Type'])
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = http.server.HTTPServer(('127.0.0.1', 0), H)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        p = RobotProxy(srv.server_address[1])
+        st, ct, disp, data = p.forward('127.0.0.1', 'api/ir', 'after=2', 'GET')
+        assert (st, ct, data) == (200, 'application/json', b'/api/ir?after=2')
+        assert disp == 'attachment; filename="a.csv"'
+        assert p.forward('127.0.0.1', 'api/missing', '', 'GET')[0] == 404
+        st, ct, _, data = p.forward('127.0.0.1', 'api/route/command', '', 'POST',
+                                    b'{"cmd": "stop"}', 'application/json')
+        assert (st, ct, data) == (200, 'application/json', b'{"cmd": "stop"}')
+    finally:
+        srv.shutdown()
+        srv.server_close()

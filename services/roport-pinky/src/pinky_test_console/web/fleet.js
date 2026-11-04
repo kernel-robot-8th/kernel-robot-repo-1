@@ -18,6 +18,10 @@ function colorOf(name) {
   return RM.ROBOT_COLORS[(i < 0 ? 0 : i) % RM.ROBOT_COLORS.length];
 }
 
+function consoleMode(r) {
+  return r && r.status && r.status.ok && r.status.route ? (r.status.route.mode || "-") : "-";
+}
+
 function navState(r) {
   return r && r.status && r.status.ok && r.status.route ? r.status.route.state : null;
 }
@@ -155,6 +159,7 @@ function render(snap) {
     sw.dataset.color = String(robots.indexOf(r) % RM.ROBOT_COLORS.length);
     cell(tr, r.name);
     cell(tr, r.status ? (r.status.ok ? "OK" : "꺼짐") : "-");
+    cell(tr, consoleMode(r));
     cell(tr, st ? st.state : "-");
     cell(tr, st && st.leg ? `${st.leg.from}→${st.leg.to}` : "-");
     tr.addEventListener("click", () => {
@@ -191,6 +196,9 @@ function render(snap) {
   $("sOdom").textContent = st ? (st.odom_ok ? "OK" : "없음") : "-";
   $("sLast").textContent = st && st.last_command ? `${st.last_command.cmd}: ${st.last_command.ok ? "ok" : "거부"} (${st.last_command.detail})` : "-";
   $("sAge").textContent = r && r.status ? `${r.status.age_sec} s${r.status.ok ? "" : " — " + (r.status.error || "")}` : "-";
+  $("consoleMode").textContent = r ? (r.status && r.status.ok ? `mode:=${consoleMode(r)}` : "꺼짐 또는 연결 안 됨") : "-";
+  $("localDir").textContent = snap.log_file ? snap.log_file.replace(/\/[^/]*$/, "/") + (selected || "<로봇>") + "/" : "-";
+  for (const id of ["btnConsoleTest", "btnConsoleIr", "btnConsoleStop", "btnFiles"]) $(id).disabled = !r || !!r.busy;
   // 로봇 목록 거르기 선택지
   const lr = $("logRobot");
   const have = new Set([...lr.options].map((o) => o.value));
@@ -208,11 +216,13 @@ function render(snap) {
 // ---------------- 로그 ----------------
 function renderLogs() {
   const who = $("logRobot").value;
+  const src = $("logSource").value;
   $("btnLogCsv").href = "/api/fleet/logs.csv" + (who ? `?robot=${encodeURIComponent(who)}` : "");
   const tb = $("logs").querySelector("tbody");
   tb.replaceChildren();
   for (const e of logs) {
     if (who && e.robot !== who) continue;
+    if (src && e.source !== src) continue;
     const tr = document.createElement("tr");
     tr.className = "fl-log-" + e.source;
     cell(tr, e.time.slice(11, 23));
@@ -236,6 +246,66 @@ async function pollLogs() {
   }
 }
 $("logRobot").addEventListener("change", renderLogs);
+$("logSource").addEventListener("change", renderLogs);
+
+// ---------------- 로봇 콘솔(SSH) · 로그 파일 ----------------
+async function job(body, confirmText) {
+  if (!selected) return null;
+  if (confirmText && !confirm(confirmText)) return null;
+  const r = await RM.postJson("/api/fleet/job", Object.assign({ name: selected }, body));
+  RM.setMsg($("cmdMsg"), r.success ? `${selected}: ${body.action} 시작(로그에서 결과 확인)` : `실패: ${r.msg || r.httpStatus}`,
+    r.success ? "ok" : "err");
+  pollLogs();
+  return r;
+}
+$("btnConsoleTest").addEventListener("click", () => job({ action: "console_start", mode: "test" },
+  `${selected}에서 테스트 콘솔을 mode:=test(경로 주행 + IR)로 켭니다. 이미 켜져 있으면 먼저 끄세요. bringup은 따로 실행해야 합니다.`));
+$("btnConsoleIr").addEventListener("click", () => job({ action: "console_start", mode: "ir" },
+  `${selected}에서 테스트 콘솔을 mode:=ir(IR 측정)로 켭니다. 이미 켜져 있으면 먼저 끄세요.`));
+$("btnConsoleStop").addEventListener("click", () => job({ action: "console_stop" },
+  `${selected}의 테스트 콘솔을 끕니다(경로 주행 중이면 정지). bringup은 그대로 둡니다.`));
+
+function fileRow(tb, label, size, onFetch) {
+  const tr = document.createElement("tr");
+  cell(tr, label);
+  cell(tr, size === null || size === undefined ? "폴더" : `${Math.round(size / 1024)} KB`);
+  const td = cell(tr, "");
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "btn btn-outline btn-small";
+  b.textContent = "가져오기";
+  b.addEventListener("click", onFetch);
+  td.appendChild(b);
+  tb.appendChild(tr);
+}
+
+async function loadFiles() {
+  if (!selected) return;
+  const r = await RM.getJson(`/api/fleet/files?name=${encodeURIComponent(selected)}`);
+  const tb = $("files").querySelector("tbody");
+  tb.replaceChildren();
+  if (!r.success) { RM.setMsg($("cmdMsg"), `목록 실패: ${r.msg || r.httpStatus}`, "err"); return; }
+  const robot = robots.find((x) => x.name === selected);
+  const res = r.result || {};
+  for (const f of res.route_logs || []) {
+    fileRow(tb, f.name, f.size, () => {
+      $("scpCmd").value = `scp -i ~/.ssh/pinky_ed25519 pinky@${robot.ip}:roport_logs/${f.name} ${$("localDir").textContent}`;
+      job({ action: "fetch_log", file: f.name });
+    });
+  }
+  for (const d of res.ros_logs || []) {
+    fileRow(tb, `ROS 로그 ${d.name}`, null, () => {
+      $("scpCmd").value = `ssh -i ~/.ssh/pinky_ed25519 pinky@${robot.ip} 'tar czf - -C ~/.ros/log ${d.name}' > ${$("localDir").textContent}roslog_${d.name}.tar.gz`;
+      job({ action: "fetch_roslog", dir: d.name });
+    });
+  }
+  if (!tb.children.length) {
+    const tr = document.createElement("tr");
+    cell(tr, "로그 파일 없음");
+    tb.appendChild(tr);
+  }
+}
+$("btnFiles").addEventListener("click", loadFiles);
 $("btnLogClear").addEventListener("click", () => { logs = []; renderLogs(); });
 
 async function poll() {

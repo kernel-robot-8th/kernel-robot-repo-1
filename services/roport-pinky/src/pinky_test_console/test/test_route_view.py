@@ -3,6 +3,7 @@ import os
 import pytest
 
 from pinky_test_console.route_view import (PRESETS, RouteCommandError, graph_view,
+                                           list_ros_log_dirs, list_route_logs,
                                            parse_route_command, plan_to)
 
 LAYOUT = os.path.join(os.path.dirname(__file__), '..', '..', 'roport_gz_world', 'layout',
@@ -71,3 +72,25 @@ def test_plan_to_shortest(start, goal, route):
 def test_plan_to_rejects(start, goal):
     with pytest.raises(RouteCommandError):
         plan_to(graph_view(LAYOUT), start, goal)
+
+
+def test_list_logs(tmp_path):
+    for n in ('route_20261104_090000_N14-N16.csv', 'route_20261104_100000_N16-N01.csv',
+              'notes.txt', 'route_bad.csv'):
+        (tmp_path / n).write_text('x')
+    (tmp_path / '2026-11-04-09-00-00-123456-raspi-1').mkdir()
+    (tmp_path / 'latest').mkdir()
+    assert [f['name'] for f in list_route_logs(str(tmp_path))] == [
+        'route_20261104_100000_N16-N01.csv', 'route_20261104_090000_N14-N16.csv']
+    assert [d['name'] for d in list_ros_log_dirs(str(tmp_path))] == [
+        '2026-11-04-09-00-00-123456-raspi-1']
+    assert list_route_logs(str(tmp_path / 'missing')) == []
+
+
+def test_layout_for_full_map():
+    g = graph_view(LAYOUT)
+    assert g['room'] == [0.0, 0.0, 444.5, 221.0]
+    assert {w['name'] for w in g['walls']} >= {'zone03_bottom', 'partition_warehouse'}
+    assert any(o['name'] == 'box_03' for o in g['objects'])
+    assert {'G1', 'G2', 'G3', 'ARR'} <= {m['name'] for m in g['markers']}
+    assert g['zones'][0]['y0'] == 94.0 and g['frame']['yaw_deg'] == 0.10

@@ -293,3 +293,10 @@ def test_fleet_binds_loopback_by_default():
     with pytest.raises(LaunchArgError, match='IPv4'):
         resolve_plan('fleet', ip='localhost; x')
     assert resolve_plan('slam', robot='pinky_d660').robot == ''
+
+
+def test_test_mode_is_route_plus_ir():
+    plan = resolve_plan('test', robot='pinky_d660')
+    assert plan.ir_node and plan.robot == 'pinky_d660' and included_launch(plan) == (None, {})
+    with pytest.raises(LaunchArgError, match='robot'):
+        resolve_plan('test')

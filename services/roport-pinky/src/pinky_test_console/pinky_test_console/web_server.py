@@ -17,6 +17,7 @@
 # See LICENSE in this package for the full license text.
 
 import _thread
+import collections
 import ipaddress
 import json
 import logging
@@ -49,6 +50,7 @@ from nav2_msgs.msg import Costmap
 from nav_msgs.msg import OccupancyGrid, Path
 from sensor_msgs.msg import Image, LaserScan
 from slam_toolbox.srv import Reset, SaveMap
+from rcl_interfaces.msg import Log
 from std_msgs.msg import Float32, String, UInt16MultiArray
 from std_srvs.srv import Empty
 from tf2_ros import Buffer, TransformListener
@@ -64,6 +66,8 @@ BATTERY_STALE_SEC = 15.0  # battery_publisher 는 5 s 주기
 SAVE_MAP_TIMEOUT = 20.0   # s, map_saver_cli 실행 대기
 SCAN_STALE_SEC = 1.0      # 라이다 스캔이 이보다 오래되면 정합 점수를 내지 않음
 ROUTE_STALE_SEC = 1.0     # line_nav/state(약 20 Hz)가 이보다 오래되면 끊김으로 표시
+ROS_LOG_KEEP = 2000       # /rosout 최근 줄 수(테스트 관제 로그 창용)
+LOG_LEVELS = {10: 'DEBUG', 20: 'INFO', 30: 'WARN', 40: 'ERROR', 50: 'FATAL'}
 
 
 def default_layout_yaml():
@@ -121,6 +125,7 @@ class ConsoleNode(Node):
         self.declare_parameter('ssh_key', '~/.ssh/pinky_ed25519')
         self.declare_parameter('robot_port', 8080)
         self.declare_parameter('fleet_log_dir', '~/roport_fleet_logs')
+        self.declare_parameter('nav_log_dir', '~/roport_logs')
 
         self.mode = self.get_parameter('mode').value
         self.map_dir = map_store.resolve_map_dir(self.get_parameter('map_dir').value)
@@ -201,9 +206,14 @@ class ConsoleNode(Node):
         self.route_state = None     # (dict, monotonic time)
         self._route_graph = None
         self.route_cmd_pub = None
-        if self.mode == 'route':
+        if self.mode in ('route', 'test'):
             self.route_cmd_pub = self.create_publisher(String, 'line_nav/command', 10)
             self.create_subscription(String, 'line_nav/state', self._route_state_cb, 10)
+
+        # ---- ROS 로그(/rosout): 테스트 관제 로그 창에서 Pinky 쪽 로그를 보려고 최근 줄만 보관 ----
+        self.ros_logs = collections.deque(maxlen=ROS_LOG_KEEP)
+        self._ros_log_seq = 0
+        self.create_subscription(Log, '/rosout', self._rosout_cb, 100)
 
         # ---- SLAM Toolbox ----
         self.save_map_client = self.create_client(SaveMap, '/slam_toolbox/save_map')
@@ -385,6 +395,27 @@ class ConsoleNode(Node):
             with self.lock:
                 self.route_state = (data, time.monotonic())
 
+    def _rosout_cb(self, msg):
+        with self.lock:
+            self._ros_log_seq += 1
+            self.ros_logs.append({
+                'seq': self._ros_log_seq,
+                'stamp': round(msg.stamp.sec + msg.stamp.nanosec * 1e-9, 3),
+                'level': LOG_LEVELS.get(msg.level, str(msg.level)),
+                'node': msg.name, 'msg': msg.msg[:500]})
+
+    def ros_log_snapshot(self, after=0, limit=500):
+        with self.lock:
+            rows = [r for r in self.ros_logs if r['seq'] > after]
+            last = self._ros_log_seq
+        return {'entries': rows[-limit:], 'last': last}
+
+    def log_files(self):
+        """로봇에 남은 경로 상세 기록(route_*.csv)·ROS 실행 로그 폴더(~/.ros/log) 목록."""
+        nav_dir = str(self.get_parameter('nav_log_dir').value)
+        return {'route_logs': route_view.list_route_logs(nav_dir),
+                'ros_logs': route_view.list_ros_log_dirs('~/.ros/log')}
+
     def route_snapshot(self):
         with self.lock:
             st = self.route_state
@@ -392,7 +423,7 @@ class ConsoleNode(Node):
         return {
             'mode': self.mode,
             'robot': str(self.get_parameter('robot').value),
-            'available': self.mode == 'route',
+            'available': self.mode in ('route', 'test'),
             'state': None if st is None else st[0],
             'age_sec': age,
             'stale': st is None or age > ROUTE_STALE_SEC,
@@ -411,7 +442,7 @@ class ConsoleNode(Node):
     def route_command(self, cmd):
         """cmd = route_view.parse_route_command 결과. line_nav 가 받아 검사·실행한다."""
         if self.route_cmd_pub is None:
-            raise route_view.RouteCommandError('route commands need mode:=route')
+            raise route_view.RouteCommandError('route commands need mode:=route or mode:=test')
         self.route_cmd_pub.publish(String(data=json.dumps(cmd)))
         self.get_logger().info(f'[WEB] line_nav command: {cmd}')
         return True

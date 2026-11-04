@@ -111,6 +111,8 @@ class RouteExecutor:
         self.legs = []
         self.index = 0
         self.events = deque(maxlen=64)
+        self.event_seq = 0       # 지금까지 기록한 이벤트 수(events 는 최근 64개만)
+        self.route_seq0 = 0      # 현재 경로를 시작할 때의 event_seq
         self._steps = deque()
         self._zero_once = False
         self._odo = 0.0          # odom 누적 이동 거리 cm
@@ -134,6 +136,7 @@ class RouteExecutor:
         self.reason = ''
         self._loaded = False
         self._steps.clear()
+        self.route_seq0 = self.event_seq
         self._log('start', ' → '.join(self.route))
         self._begin_leg(start_offset_cm)
 
@@ -197,6 +200,8 @@ class RouteExecutor:
             [round(self._min_ok, 1), round(self._max_ok, 1)],
             'rotated_deg': round(math.degrees(abs(self._yaw_acc - self._ref_yaw)), 1),
             'events': list(self.events),
+            'event_seq': self.event_seq,
+            'route_event_seq0': self.route_seq0,
         }
         out.update(self._estimate(leg))
         return out
@@ -229,6 +234,7 @@ class RouteExecutor:
 
     # ------------------------------------------------------------ 내부
     def _log(self, kind, detail=''):
+        self.event_seq += 1
         self.events.append({'t': round(self._now, 2), 'event': kind, 'detail': detail})
 
     def _reset_primitive(self):

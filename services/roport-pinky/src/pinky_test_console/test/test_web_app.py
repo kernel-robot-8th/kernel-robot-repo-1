@@ -137,6 +137,13 @@ class FakeNode:
         self.calls.append(('route', cmd))
         return True
 
+    def ros_log_snapshot(self, after=0):
+        rows = [{'seq': 1, 'level': 'INFO', 'node': 'line_nav', 'msg': 'hi'}]
+        return {'entries': [r for r in rows if r['seq'] > after], 'last': 1}
+
+    def log_files(self):
+        return {'route_logs': [], 'ros_logs': []}
+
     # AMCL
     NODES = [{'id': 'N12', 'x_cm': 378.3, 'y_cm': 73.2, 'yaw_deg': 0.0, 'nav2_switch': True}]
     amcl_path = None
@@ -186,7 +193,7 @@ def test_index_and_assets(client):
     for path in ('/', '/app.js', '/style.css', '/index.html', '/ir.html', '/ir.js',
                  '/marker.html', '/marker.js', '/amcl.html', '/amcl.js', '/route.html',
                  '/route.js', '/routemap.js', '/fleet.html', '/fleet.js', '/settings.html',
-                 '/settings.js'):
+                 '/settings.js', '/test.html', '/test.js'):
         r = client.get(path)
         assert r.status_code == 200, path
 
@@ -205,7 +212,7 @@ def test_security_headers(client):
 
 
 @pytest.mark.parametrize('page', ['index.html', 'ir.html', 'marker.html', 'amcl.html',
-                                  'route.html', 'fleet.html', 'settings.html'])
+                                  'route.html', 'fleet.html', 'settings.html', 'test.html'])
 def test_html_has_no_external_or_inline_code(page):
     html = open(os.path.join(WEB_DIR, page)).read()
     assert 'http://' not in html.split('-->', 1)[1]
@@ -469,3 +476,69 @@ def test_fleet_logs_api(fleet_client):
     r = c.get('/api/fleet/logs.csv?robot=pinky1', headers=h)
     assert r.status_code == 200 and 'attachment' in r.headers['Content-Disposition']
     assert r.data.decode().startswith('seq,time,robot')
+
+
+def test_robot_log_api(client):
+    assert client.get('/api/logs?after=0').get_json()['entries'][0]['node'] == 'line_nav'
+    assert client.get('/api/logs?after=1').get_json()['entries'] == []
+    assert client.get('/api/logs?after=x').status_code == 400
+    assert client.get('/api/logs/files').get_json() == {'route_logs': [], 'ros_logs': []}
+
+
+def test_fleet_files_proxy(fleet_client):
+    c, mgr = fleet_client
+    h = {'Host': '127.0.0.1:8080'}
+    r = c.get('/api/fleet/files?name=pinky1', headers=h)
+    assert r.status_code == 200 and r.get_json()['success']
+    assert c.get('/api/fleet/files?name=nobody', headers=h).status_code == 400
+
+
+def test_fleet_index_and_frame_headers(fleet_client):
+    c, _ = fleet_client
+    h = {'Host': '127.0.0.1:8080'}
+    r = c.get('/', headers=h)
+    assert r.status_code == 302 and r.headers['Location'].endswith('test.html')
+    r = c.get('/test.html', headers=h)
+    assert r.headers['X-Frame-Options'] == 'SAMEORIGIN'      # 노트북 탭 iframe 허용
+    assert "frame-ancestors 'self'" in r.headers['Content-Security-Policy']
+
+
+def test_robot_proxy(fleet_client):
+    c, mgr = fleet_client
+    h = {'Host': '127.0.0.1:8080'}
+    calls = []
+
+    def forward(ip, sub, query, method, body=None, content_type=None):
+        calls.append((ip, sub, query, method, body, content_type))
+        if sub.startswith('api/'):
+            return 200, 'application/json', None, b'{"ok": true}'
+        return 200, 'text/html; charset=utf-8', None, b'<html></html>'
+
+    mgr.proxy.forward = forward
+    assert c.get('/robot/pinky1', headers=h).status_code in (301, 302, 308)
+    r = c.get('/robot/pinky1/route.html', headers=h)
+    assert r.status_code == 200 and r.headers['X-Frame-Options'] == 'SAMEORIGIN'
+    r = c.get('/robot/pinky1/api/ir?after=3', headers=h)
+    assert r.get_json() == {'ok': True} and r.headers['Cache-Control'] == 'no-store'
+    assert calls[-1][:4] == ('192.168.4.21', 'api/ir', 'after=3', 'GET')
+    r = c.post('/robot/pinky1/api/route/command', headers=h, json={'cmd': 'stop'})
+    assert r.status_code == 200 and calls[-1][3:] == ('POST', b'{"cmd": "stop"}',
+                                                      'application/json')
+    n = len(calls)
+    # 로봇 화면 파일·api/ 밖, 폼 POST, 미등록 로봇은 로봇까지 가지 않음
+    assert c.get('/robot/pinky1/fleet.html', headers=h).status_code == 404
+    assert c.get('/robot/pinky1/api/../setup.py', headers=h).status_code == 404
+    assert c.post('/robot/pinky1/api/route/command', headers=h,
+                  data='cmd=stop').status_code == 400
+    assert c.get('/robot/nobody/route.html', headers=h).status_code == 400
+    assert c.get('/robot/pinky1/route.html', headers={'Host': 'evil'}).status_code == 403
+    assert len(calls) == n
+
+    def down(*a, **k):
+        raise OSError('refused')
+    mgr.proxy.forward = down
+    assert c.get('/robot/pinky1/api/route', headers=h).status_code == 502
+
+
+def test_robot_proxy_absent_without_fleet(client):
+    assert client.get('/robot/pinky1/route.html').status_code == 404

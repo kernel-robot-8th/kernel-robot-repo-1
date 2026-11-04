@@ -7,7 +7,8 @@
 #   mode:=ir   -> no include; pinky_sensor_adc main_node (IR/ultrasonic ADC read only)
 #   mode:=marker -> no include; camera preview + ArUco recognition in the console process
 #   mode:=amcl -> pinky_navigation/launch/localization_launch.xml (map_server, amcl only)
-#   mode:=route -> no include; roport_line_nav line_nav + pinky_sensor_adc (node-route driving)
+#   mode:=route|test -> no include; roport_line_nav line_nav + pinky_sensor_adc (node-route
+#     driving; test also documents the IR page as part of the combined robot test)
 #   mode:=fleet -> no include; laptop only (Pinky settings, test control over HTTP/SSH, 127.0.0.1)
 # pinky_bringup/bringup_robot.launch.xml is NOT included: start it separately first.
 """Pinky test console.
@@ -18,6 +19,8 @@
   ros2 launch pinky_test_console console.launch.py mode:=marker markers_yaml:=~/markers.yaml
   ros2 launch pinky_test_console console.launch.py mode:=amcl map:=<airport_map.yaml> \
       layout:=<roport_airport.yaml>   (AMCL: http://<robot>:8080/amcl.html)
+  ros2 launch pinky_test_console console.launch.py mode:=test robot:=pinky_d660
+      (test = route + IR page: http://<robot>:8080/route.html, /ir.html)
   ros2 launch pinky_test_console console.launch.py mode:=route robot:=pinky_d660
       (route: http://<robot>:8080/route.html, bringup separately)
   ros2 launch pinky_test_console console.launch.py mode:=fleet
@@ -35,7 +38,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 from pinky_test_console.launch_plan import (
-    camera_env, included_launch, resolve_plan, resolve_rotate_180)
+    ROUTE_MODES, camera_env, included_launch, resolve_plan, resolve_rotate_180)
 
 
 def launch_setup(context):
@@ -80,16 +83,18 @@ def launch_setup(context):
                 'repo_dir': LaunchConfiguration('repo_dir').perform(context),
                 'ssh_key': LaunchConfiguration('ssh_key').perform(context),
                 'fleet_log_dir': LaunchConfiguration('fleet_log_dir').perform(context),
+                'nav_log_dir': LaunchConfiguration('nav_log_dir').perform(context),
             }],
         ),
     ]
-    if plan.mode == 'route':
+    if plan.mode in ROUTE_MODES:
         # 경로 주행 노드(cmd_vel 발행). bringup(모터·odom)은 사용자가 먼저 따로 실행
         actions.append(Node(
             package='roport_line_nav', executable='line_nav', output='screen',
             parameters=[{
                 'robot': plan.robot,
                 'layout_file': os.path.expanduser(LaunchConfiguration('layout').perform(context)),
+                'log_dir': LaunchConfiguration('nav_log_dir').perform(context),
             }]))
     if launch_file:
         # pinky_navigation 이 없으면 여기서 PackageNotFoundError 로 바로 알려준다
@@ -124,6 +129,8 @@ def generate_launch_description():
                               description='mode:=fleet SSH key (no passwords)'),
         DeclareLaunchArgument('fleet_log_dir', default_value='~/roport_fleet_logs',
                               description='mode:=fleet daily log CSV folder'),
+        DeclareLaunchArgument('nav_log_dir', default_value='~/roport_logs',
+                              description='mode:=route|test per-route detail CSV folder (robot)'),
         DeclareLaunchArgument('use_sim_time', default_value='false',
                               description='true for Gazebo/MuJoCo simulation'),
         DeclareLaunchArgument('map_dir', default_value='~/roport_maps',

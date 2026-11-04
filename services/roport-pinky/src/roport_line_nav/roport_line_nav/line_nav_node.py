@@ -32,6 +32,7 @@ from std_msgs.msg import String, UInt16MultiArray
 
 from roport_line_nav.executor import NavConfig, RouteExecutor
 from roport_line_nav.graph import Graph, GraphError
+from roport_line_nav.recorder import RouteRecorder
 from roport_pinky_line.calibration import load_calibration
 from roport_pinky_line.line_sensor import LineSensor
 
@@ -100,6 +101,9 @@ class LineNavNode(Node):
         self.dry_run = bool(p('dry_run', False).value)
         self.ir_timeout_sec = float(p('ir_timeout_sec', 0.3).value)
         self.odom_timeout_sec = float(p('odom_timeout_sec', 0.5).value)
+        # 경로마다 상세 기록 CSV(약 20 Hz), 최근 log_keep 개 (2026-11-04 결정)
+        self.recorder = RouteRecorder(str(p('log_dir', '~/roport_logs').value),
+                                      int(p('log_keep', 50).value))
         d = NavConfig()
         cfg = NavConfig(**{
             name: type(getattr(d, name))(p(name, getattr(d, name)).value)
@@ -171,10 +175,25 @@ class LineNavNode(Node):
         now = time.monotonic()
         self._last_ir = now
         self._reading = reading
-        cmd = self.ex.step(reading, self._pose(now), now)
+        pose = self._pose(now)
+        cmd = self.ex.step(reading, pose, now)
         if cmd is not None:
             self._publish_cmd(cmd.linear, cmd.angular)
+        self._record(now, reading, cmd, pose)
         self._publish_state()
+
+    def _record(self, now, reading, cmd, pose):
+        if self.ex.active and not self.recorder.active:
+            path = self.recorder.open(self.ex.route, now)
+            if path:
+                self.get_logger().info(f'route log: {path}')
+            elif self.recorder.error:
+                self.get_logger().warn(self.recorder.error, once=True)
+        if self.recorder.active:
+            self.recorder.write(now, self.ex.as_dict(), reading,
+                                None if cmd is None else (cmd.linear, cmd.angular), pose)
+            if not self.ex.active:
+                self.recorder.close()
 
     def _watchdog(self):
         if self._last_ir is not None and time.monotonic() - self._last_ir <= self.ir_timeout_sec:
@@ -193,6 +212,7 @@ class LineNavNode(Node):
             if self._reading is not None or not self.ex.active else None
         if cmd is not None:
             self._publish_cmd(cmd.linear, cmd.angular)
+        self._record(now, self._reading, cmd, self._pose(now))
         self._publish_state()
 
     # ---------------- 출력 ----------------
@@ -222,10 +242,15 @@ class LineNavNode(Node):
         self.state_pub.publish(String(data=json.dumps(st, ensure_ascii=False)))
 
     def publish_stop_on_exit(self):
-        if self.dry_run or not self.ex.active:
+        was_active = self.ex.active
+        self.ex.stop('shutdown')
+        if self.recorder.active:
+            self.recorder.write(time.monotonic(), self.ex.as_dict(), self._reading, (0.0, 0.0),
+                                self._odom)
+            self.recorder.close()
+        if self.dry_run or not was_active:
             return
         try:
-            self.ex.stop('shutdown')
             self._publish_cmd(0.0, 0.0)
             acked = self.cmd_pub.wait_for_all_acked(Duration(seconds=0.5))
             self.get_logger().info(f'Published zero velocity on shutdown (acked={acked}).')

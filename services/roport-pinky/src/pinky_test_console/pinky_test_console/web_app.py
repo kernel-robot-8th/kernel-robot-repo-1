@@ -14,7 +14,7 @@ node 는 web_server.ConsoleNode (테스트에서는 가짜 객체)이다.
 import math
 import os
 
-from flask import Flask, Response, abort, jsonify, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, redirect, request, send_from_directory
 
 from .amcl_check import AmclCheckError
 from .fleet import FleetError
@@ -26,7 +26,8 @@ from .route_view import RouteCommandError, parse_route_command, plan_to
 # web/ 폴더에서 이 파일들만 서빙 (원본은 스크립트 폴더 전체를 static 으로 노출했음)
 STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js',
                 'marker.html', 'marker.js', 'amcl.html', 'amcl.js', 'route.html', 'route.js',
-                'routemap.js', 'fleet.html', 'fleet.js', 'settings.html', 'settings.js'}
+                'routemap.js', 'fleet.html', 'fleet.js', 'settings.html', 'settings.js',
+                'test.html', 'test.js'}
 POSE_CM_LIMIT = 1000.0   # 실측 좌표 입력 허용 범위(cm, 시연 공간 444.5 x 221)
 
 SECURITY_HEADERS = {
@@ -37,6 +38,13 @@ SECURITY_HEADERS = {
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'no-referrer',
 }
+# mode:=fleet(노트북 통합 화면 test.html): 같은 출처 프레임(탭 안의 로봇 화면)만 허용
+FLEET_HEADERS = dict(SECURITY_HEADERS, **{
+    'Content-Security-Policy': (
+        "default-src 'self'; script-src 'self'; style-src 'self'; "
+        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'"),
+    'X-Frame-Options': 'SAMEORIGIN',
+})
 
 
 class BadRequest(Exception):
@@ -101,9 +109,11 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
         if allowed_hosts is not None and request.host not in allowed_hosts:
             abort(403)
 
+    headers = FLEET_HEADERS if fleet is not None else SECURITY_HEADERS
+
     @app.after_request
     def _headers(resp):
-        for k, v in SECURITY_HEADERS.items():
+        for k, v in headers.items():
             resp.headers.setdefault(k, v)
         if request.path.startswith('/api/'):
             resp.headers['Cache-Control'] = 'no-store'
@@ -112,6 +122,8 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
     # ---------------- 정적 파일 ----------------
     @app.route('/')
     def serve_index():
+        if fleet is not None:      # 노트북: 통합 화면
+            return redirect('test.html')
         return send_from_directory(web_dir, 'index.html')
 
     @app.route('/<path:fname>')
@@ -364,6 +376,19 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
         start, goal = request.args.get('from', ''), request.args.get('to', '')
         return jsonify({'route': plan_to(node.route_graph(), start, goal)})
 
+    @app.route('/api/logs')
+    def api_logs():
+        """/rosout 최근 줄(?after=<seq> 이후)."""
+        try:
+            after = int(request.args.get('after', '0'))
+        except ValueError:
+            raise BadRequest("'after' must be an integer") from None
+        return jsonify(node.ros_log_snapshot(after))
+
+    @app.route('/api/logs/files')
+    def api_log_files():
+        return jsonify(node.log_files())
+
     @app.route('/api/route/command', methods=['POST'])
     def api_route_command():
         cmd = parse_route_command(_json_body())
@@ -427,6 +452,43 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
             raise BadRequest("'name' required")
         f = _fleet()
         return _proxy(lambda: f.route_command(name, data))
+
+    @app.route('/robot/<name>')
+    def robot_root(name):
+        return redirect(f'/robot/{name}/')
+
+    @app.route('/robot/<name>/', defaults={'sub': ''}, methods=['GET', 'POST'])
+    @app.route('/robot/<name>/<path:sub>', methods=['GET', 'POST'])
+    def robot_proxy(name, sub):
+        """통합 화면 탭: 등록된 로봇 콘솔의 화면·API 를 같은 출처로 중계(mode:=fleet)."""
+        f = _fleet()
+        robot = f.store.get(name)
+        if not f.proxy.allowed(sub):
+            abort(404)
+        body, ctype = None, None
+        if request.method == 'POST':
+            if not request.is_json:          # 로봇 콘솔과 같은 규칙(CSRF)
+                raise BadRequest('Content-Type must be application/json')
+            body, ctype = request.get_data(), 'application/json'
+        try:
+            status, rtype, disp, data = f.proxy.forward(
+                robot.ip, sub, request.query_string.decode('ascii', 'ignore'), request.method,
+                body, ctype)
+        except OSError as e:
+            return jsonify({'success': False, 'msg': f'robot console not reachable: {e}'}), 502
+        resp = Response(data, status=status, content_type=rtype)
+        if disp:
+            resp.headers['Content-Disposition'] = disp
+        if sub.startswith('api/'):
+            resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
+    @app.route('/api/fleet/files')
+    def api_fleet_files():
+        """?name=<로봇> → 로봇 콘솔의 로그 파일 목록(경로 상세 기록·ROS 로그 폴더)."""
+        f = _fleet()
+        name = request.args.get('name', '')
+        return _proxy(lambda: f.robot_files(name))
 
     @app.route('/api/fleet/logs')
     def api_fleet_logs():

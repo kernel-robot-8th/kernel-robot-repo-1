@@ -22,12 +22,13 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections import deque
 from dataclasses import asdict, dataclass
 
-from .route_view import parse_route_command
+from .route_view import ROS_LOG_DIR_RE, ROUTE_LOG_RE, parse_route_command
 
 NAME = re.compile(r'^[a-z][a-z0-9_-]{0,15}$')
 CALIB = re.compile(r'^pinky_[0-9a-z]{2,8}$')
@@ -39,10 +40,16 @@ SRC_PREFIX = 'services/roport-pinky/src'
 REMOTE_WS = '~/pinky_test_ws'
 DOMAIN_MARK = '# roport-domain'
 RELEASE_REF = 'origin/main'
-ROBOT_PATHS = ('/api/route', '/api/status', '/api/route/command', '/api/estop')
+ROBOT_PATHS = ('/api/route', '/api/status', '/api/route/command', '/api/estop', '/api/logs',
+               '/api/logs/files')
 MAX_RESPONSE = 256 * 1024
-TIMEOUTS = {'check': 15, 'read_domain': 15, 'set_domain': 15, 'deploy': 180, 'build': 900}
+TIMEOUTS = {'check': 15, 'read_domain': 15, 'set_domain': 15, 'deploy': 180, 'build': 900,
+            'fetch_log': 60, 'fetch_roslog': 120, 'console_start': 40, 'console_stop': 25}
 ACTIONS = tuple(TIMEOUTS)
+RMW_CHOICES = ('', 'rmw_fastrtps_cpp', 'rmw_cyclonedds_cpp')
+# 원격으로 켤 수 있는 로봇 콘솔 모드(bringup 은 켜지도 끄지도 않음). 마커는 부착·시험 뒤에 추가
+CONSOLE_MODES = ('test', 'ir')
+CONSOLE_PATTERN = '[r]os2 launch pinky_test_console'   # [r] = pgrep 이 자기 셸을 잡지 않게
 LOG_FIELDS = ('seq', 'time', 'robot', 'source', 'event', 'detail')
 LOG_KEEP = 3000          # 화면·다운로드용 메모리 기록 줄 수(파일에는 모두 남김)
 
@@ -123,6 +130,7 @@ class Robot:
     role: str
     domain: int
     calib: str
+    rmw: str = ''      # 원격 콘솔 실행 때 RMW_IMPLEMENTATION (6422 = rmw_fastrtps_cpp)
 
 
 def validate_robot(data):
@@ -144,7 +152,10 @@ def validate_robot(data):
     calib = data.get('calib')
     if not isinstance(calib, str) or not CALIB.match(calib):
         raise FleetError('calib must look like pinky_d660 (IR calibration name)')
-    return Robot(name, ip, role, domain, calib)
+    rmw = data.get('rmw', '') or ''
+    if rmw not in RMW_CHOICES:
+        raise FleetError(f"rmw must be one of {', '.join(c or '(기본)' for c in RMW_CHOICES)}")
+    return Robot(name, ip, role, domain, calib, rmw)
 
 
 class FleetStore:
@@ -262,6 +273,45 @@ class Commands:
         return ['git', '-C', self.repo, 'for-each-ref', '--format=%(refname:short)',
                 'refs/remotes/origin']
 
+    def scp_from(self, ip, remote_path, dest_dir):
+        """로봇 → 노트북 파일 복사. remote_path 는 홈 기준 상대 경로(검사한 이름만)."""
+        ipaddress.IPv4Address(ip)
+        return ['scp', '-i', self.ssh_key, '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
+                '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=5',
+                f'{self.user}@{ip}:{remote_path}', dest_dir + os.sep]
+
+    def tar_roslog(self, ip, dirname):
+        if not ROS_LOG_DIR_RE.match(dirname):
+            raise FleetError('invalid ROS log folder name')
+        return self.ssh(ip, f'tar czf - -C ~/.ros/log {dirname}')
+
+    def console_stop(self, ip):
+        # SIGINT → launch 가 콘솔·line_nav 를 정상 종료(0 속도 발행). 10 s 안에 안 끝나면 TERM
+        p = CONSOLE_PATTERN
+        return self.ssh(ip, (
+            f"pkill -INT -f '{p}'; for i in $(seq 20); do pgrep -f '{p}' >/dev/null || "
+            f"exit 0; sleep 0.5; done; pkill -TERM -f '{p}'; sleep 1; "
+            f"pgrep -f '{p}' >/dev/null && echo 'console still running' && exit 1; exit 0"))
+
+    def console_start(self, ip, mode, calib, rmw=''):
+        if mode not in CONSOLE_MODES:
+            raise FleetError(f"mode must be one of {', '.join(CONSOLE_MODES)}")
+        if not CALIB.match(calib) or rmw not in RMW_CHOICES:
+            raise FleetError('invalid robot calibration or rmw')
+        p = CONSOLE_PATTERN
+        env = f'RMW_IMPLEMENTATION={rmw} ' if rmw else ''
+        # 패키지 이름은 변수로 넘긴다: 이 원격 셸 명령줄에 「ros2 launch pinky_test_console」이 그대로
+        # 있으면 pgrep 이 셸 자신을 실행 중인 콘솔로 잡는다
+        launch = f'ros2 launch "$PKG" console.launch.py mode:={mode} robot:={calib}'
+        # bash -i: 로봇 ~/.bashrc(ROS·Pinky 워크스페이스·ROS_DOMAIN_ID)를 읽고 실행. bringup 은 건드리지 않음
+        return self.ssh(ip, (
+            f"pgrep -f '{p}' >/dev/null && echo 'console already running (stop first)' && exit 1; "
+            # 「mkdir … && nohup … &」은 && 목록 전체가 서브셸로 백그라운드가 되어 ssh 출력을 붙잡는다
+            "mkdir -p ~/roport_logs; "
+            f"PKG=pinky_test_console nohup bash -ic '{env}exec {launch}' "
+            f"> ~/roport_logs/console_{mode}.log 2>&1 < /dev/null & sleep 4; "
+            f"pgrep -fa '{p}' || (tail -n 30 ~/roport_logs/console_{mode}.log; exit 1)"))
+
 
 def check_ref(ref):
     if not isinstance(ref, str) or not REF.match(ref) or '..' in ref or ref.endswith('/'):
@@ -278,6 +328,26 @@ class Runner:
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL)
         return self._wait(proc, timeout, log)
+
+    def run_to_file(self, argv, path, timeout, log):
+        """argv 의 표준 출력을 파일로(ssh tar → .tar.gz). 실패하면 파일을 지운다."""
+        with open(path, 'wb') as out:
+            proc = subprocess.Popen(argv, stdout=out, stderr=subprocess.PIPE,
+                                    stdin=subprocess.DEVNULL)
+            try:
+                _, err = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                _, err = proc.communicate()
+                log(f'timeout after {timeout} s')
+                code = 124
+            else:
+                code = proc.returncode
+        for line in (err or b'').decode('utf-8', 'replace').splitlines():
+            log(line)
+        if code != 0 and os.path.exists(path):
+            os.unlink(path)
+        return code
 
     def pipe(self, argv1, argv2, timeout, log):
         """argv1 | argv2 (git archive | ssh tar)."""
@@ -323,9 +393,12 @@ class RobotClient:
             raise FleetError(f'path not allowed: {path}')
         return f'http://{ip}:{self.port}{path}'
 
-    def request(self, ip, path, body=None):
+    def request(self, ip, path, body=None, query=None):
         data = None if body is None else json.dumps(body).encode('utf-8')
-        req = urllib.request.Request(self._url(ip, path), data=data, method='GET' if body is None
+        url = self._url(ip, path)
+        if query:
+            url += '?' + urllib.parse.urlencode(query)
+        req = urllib.request.Request(url, data=data, method='GET' if body is None
                                      else 'POST', headers={'Content-Type': 'application/json'})
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310 - http 고정
@@ -341,10 +414,52 @@ class RobotClient:
         return json.loads(raw.decode('utf-8'))
 
 
+class RobotProxy:
+    """노트북 통합 화면(test.html)에서 로봇 콘솔 페이지·API 를 같은 출처로 쓰려는 중계.
+
+    등록된 로봇의 콘솔(http://<IP>:<port>)로만, 로봇 화면 파일과 api/ 경로만 넘긴다.
+    """
+
+    PAGES = {'', 'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js', 'marker.html',
+             'marker.js', 'amcl.html', 'amcl.js', 'route.html', 'route.js', 'routemap.js'}
+    API = re.compile(r'^api/[A-Za-z0-9_./-]{1,100}$')
+    MAX_BODY = 8 * 1024 * 1024
+
+    def __init__(self, port=8080, timeout=3.0):
+        self.port = int(port)
+        self.timeout = timeout
+
+    def allowed(self, sub):
+        return sub in self.PAGES or (bool(self.API.match(sub)) and '..' not in sub)
+
+    def forward(self, ip, sub, query, method, body=None, content_type=None):
+        """→ (status, content_type, content_disposition, body). 연결 실패는 OSError."""
+        ipaddress.IPv4Address(ip)
+        if not self.allowed(sub) or method not in ('GET', 'POST'):
+            raise FleetError('path not allowed')
+        url = f'http://{ip}:{self.port}/{sub}' + (f'?{query}' if query else '')
+        headers = {'Content-Type': content_type} if content_type else {}
+        req = urllib.request.Request(url, data=body if method == 'POST' else None,
+                                     method=method, headers=headers)
+        try:
+            resp = urllib.request.urlopen(req, timeout=self.timeout)  # noqa: S310 - http 고정
+        except urllib.error.HTTPError as e:
+            resp = e
+        with resp:
+            data = resp.read(self.MAX_BODY + 1)
+            if len(data) > self.MAX_BODY:
+                raise FleetError('robot response too large')
+            return (resp.status if hasattr(resp, 'status') else resp.code,
+                    resp.headers.get('Content-Type', 'application/octet-stream'),
+                    resp.headers.get('Content-Disposition'), data)
+
+
 class FleetManager:
     def __init__(self, store, commands, client=None, runner=None, poll_sec=1.0, log=None):
         self.log = log or FleetLog()
+        self.proxy = RobotProxy(getattr(client, 'port', 8080))
         self._seen = {}          # 로봇별 이미 기록한 line_nav 이벤트 키
+        self._ros_seq = {}       # 로봇별 이미 가져온 /rosout seq
         self._last = {}          # 로봇별 (콘솔 연결, state, reason)
         self.store = store
         self.cmd = commands
@@ -384,7 +499,32 @@ class FleetManager:
         with self._lock:
             self._status[robot.name] = entry
         self._log_poll(robot.name, entry)
+        if entry['ok']:
+            self._poll_ros_logs(robot)
         return entry
+
+    def _poll_ros_logs(self, robot):
+        """로봇 콘솔 /api/logs(/rosout)의 새 줄을 기록에 넣는다(source = pinky)."""
+        after = self._ros_seq.get(robot.name, 0)
+        try:
+            data = self.client.request(robot.ip, '/api/logs', query={'after': after})
+        except (OSError, ValueError):
+            return
+        last = data.get('last', 0) if isinstance(data, dict) else 0
+        if not isinstance(last, int):
+            return
+        if last < after:                 # 로봇 콘솔이 다시 시작됨
+            self._ros_seq[robot.name] = 0
+            return
+        for e in data.get('entries') or []:
+            if isinstance(e, dict) and isinstance(e.get('seq'), int) and e['seq'] > after:
+                self.log.add(robot.name, 'pinky', f"{e.get('level', '')} {e.get('node', '')}",
+                             e.get('msg', ''))
+        self._ros_seq[robot.name] = last
+
+    def robot_files(self, name):
+        robot = self.store.get(name)
+        return self.client.request(robot.ip, '/api/logs/files')
 
     def _log_poll(self, name, entry):
         """새 line_nav 이벤트·state 변화·콘솔 연결 변화만 기록한다."""
@@ -474,7 +614,8 @@ class FleetManager:
             if robot.name in self._busy:
                 raise FleetError(f'{robot.name} already has a running job')
             job = {'id': uuid.uuid4().hex[:12], 'robot': robot.name, 'action': action,
-                   'params': {k: v for k, v in params.items() if k in ('ref', 'domain')},
+                   'params': {k: v for k, v in params.items()
+                              if k in ('ref', 'domain', 'file', 'dir', 'mode')},
                    'state': 'running', 'code': None, 'log': deque(maxlen=300),
                    'started': time.time(), 'ended': None}
             self._jobs[job['id']] = job
@@ -502,6 +643,23 @@ class FleetManager:
             return [('run', c.set_domain(robot.ip, domain))]
         if action == 'build':
             return [('run', c.build(robot.ip))]
+        if action == 'fetch_log':
+            name = params.get('file')
+            if not isinstance(name, str) or not ROUTE_LOG_RE.match(name):
+                raise FleetError('file must be a route log name (route_YYYYmmdd_HHMMSS_A-B.csv)')
+            dest = self._robot_log_dir(robot.name)
+            return [('run', c.scp_from(robot.ip, f'roport_logs/{name}', dest))]
+        if action == 'fetch_roslog':
+            name = params.get('dir')
+            if not isinstance(name, str) or not ROS_LOG_DIR_RE.match(name):
+                raise FleetError('dir must be a ~/.ros/log folder name')
+            dest = os.path.join(self._robot_log_dir(robot.name), f'roslog_{name}.tar.gz')
+            return [('to_file', c.tar_roslog(robot.ip, name), dest)]
+        if action == 'console_stop':
+            return [('run', c.console_stop(robot.ip))]
+        if action == 'console_start':
+            mode = params.get('mode', 'test')
+            return [('run', c.console_start(robot.ip, mode, robot.calib, robot.rmw))]
         ref = RELEASE_REF if params.get('release') else check_ref(params.get('ref'))
         params['ref'] = ref
         return [('run', c.fetch()), ('run', c.verify_ref(ref)),
@@ -514,9 +672,12 @@ class FleetManager:
         try:
             for step in steps:
                 log('$ ' + ' '.join(step[1]) + (' | ' + ' '.join(step[2]) if step[0] == 'pipe'
+                                                else ' > ' + step[2] if step[0] == 'to_file'
                                                 else ''))
                 if step[0] == 'pipe':
                     code = self.runner.pipe(step[1], step[2], timeout, log)
+                elif step[0] == 'to_file':
+                    code = self.runner.run_to_file(step[1], step[2], timeout, log)
                 else:
                     code = self.runner.run(step[1], timeout, log)
                 if code != 0:
@@ -530,6 +691,13 @@ class FleetManager:
         self.log.add(job['robot'], 'job', f"{job['action']} {job['state']}", f'code={code}')
         with self._lock:
             self._busy.discard(job['robot'])
+
+    def _robot_log_dir(self, name):
+        """노트북 쪽 로봇별 로그 폴더(fleet_log_dir/<로봇>/). fleet_log_dir 이 없으면 ~/roport_fleet_logs."""
+        root = self.log.log_dir or os.path.abspath(os.path.expanduser('~/roport_fleet_logs'))
+        path = os.path.join(root, name)
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        return path
 
     @staticmethod
     def _job_view(job):
