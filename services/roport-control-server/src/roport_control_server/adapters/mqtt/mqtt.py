@@ -212,11 +212,15 @@ class MqttTransport:
             message["site_id"], parts[3], parts[4], parts[5]
         ):
             raise ValueError("topic and envelope routing mismatch")
-        device = message["target"] if parts[5] == "cmd" else message["source"]
+        device = (
+            message["target"] if parts[5] in {"cmd", "permit"} else message["source"]
+        )
         if device != parts[4]:
             raise ValueError("topic and envelope device mismatch")
         properties = None
-        if destination.endswith("/cmd"):
+        if destination.endswith(("/cmd", "/permit")):
+            if destination.endswith("/permit") and message["type"] != "workcell.permit":
+                raise ValueError("permit topic requires workcell.permit")
             remaining = (
                 timestamp(message.get("expires_at")) - datetime.now(UTC)
             ).total_seconds()
