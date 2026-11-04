@@ -402,3 +402,18 @@ nav a { margin-left:auto; color:var(--muted); padding:10px; }
   .map-note { display:none; }
   .task { grid-template-columns:1fr 1fr; }
 }
+/* Pinky 탭 > Pinky Settings (pinky_settings.js) */
+.ps { max-width: 1100px; margin-top: 18px; }
+.ps-table { width: 100%; border-collapse: collapse; background: var(--white); margin: 10px 0; }
+.ps-table th, .ps-table td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; }
+.ps-table th { color: var(--muted); font-weight: 600; }
+.ps-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.ps-actions button { padding: 3px 8px; }
+.ps-form { border: 1px solid var(--line); background: var(--white); margin: 14px 0; padding: 10px 14px; max-width: 520px; }
+.ps-form legend { font-weight: 600; padding: 0 4px; }
+.ps-field { display: grid; grid-template-columns: 120px 1fr; gap: 8px; align-items: center; margin: 6px 0; color: var(--muted); }
+.ps-field input, .ps-field select { padding: 4px 6px; border: 1px solid var(--line); border-radius: 3px; background: var(--white); color: var(--ink); }
+#ps-msg[data-kind="ok"] { color: var(--accent); }
+#ps-msg[data-kind="warn"] { color: var(--warn); }
+#ps-msg[data-kind="err"] { color: #a33; }
+.ps-jobs { color: var(--muted); padding-left: 18px; }

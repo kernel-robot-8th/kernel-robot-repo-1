@@ -47,3 +47,25 @@ test('DEMO playback, stale state, disconnect and fresh reconnect', async ({ page
   await expect(page.locator('.robot').first()).toHaveAttribute('data-stale', 'false');
   expect(errors).toEqual([]);
 });
+
+test('Pinky Settings: OFFLINE is validate-only, DEMO edits stay in the page', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto('/ui/');
+  await page.getByRole('button', { name: 'Pinky', exact: true }).click();
+  await expect(page.locator('#pinky-detail')).toContainText('실행부·운영 DB 미연결');
+  await expect(page.locator('#pinky-detail')).toContainText('등록된 Pinky가 없습니다');
+  await page.locator('#ps-name').fill('pinky1');
+  await page.locator('#ps-ip').fill('192.0.2.11');
+  await page.getByRole('button', { name: '형식 확인' }).click();
+  await expect(page.locator('#ps-msg')).toContainText('저장하지 않음');
+  await page.goto('/ui/?mode=demo');
+  await page.getByRole('button', { name: 'Pinky', exact: true }).click();
+  await expect(page.locator('.ps-table tr')).toHaveCount(4);
+  await page.getByRole('button', { name: '릴리즈 설치' }).first().click();
+  await expect(page.locator('.ps-jobs')).toContainText('origin/main');
+  await page.locator('#ps-name').fill('Bad Name');
+  await page.getByRole('button', { name: '저장 (DEMO)' }).click();
+  await expect(page.locator('#ps-msg')).toContainText('입력 확인');
+  expect(errors).toEqual([]);
+});
