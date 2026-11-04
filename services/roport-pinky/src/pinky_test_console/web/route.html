@@ -46,6 +46,14 @@
         <button id="btnLoad" class="btn btn-outline" type="button" disabled>상차 완료</button>
         <button id="btnStop" class="btn btn-danger" type="button">■ 경로 정지</button>
       </div>
+      <div class="form-line"><label for="spLin">직선 속도</label>
+        <span class="row"><input id="spLin" type="range" min="1.5" max="6" step="0.5" value="3"><b id="spLinV">-</b></span></div>
+      <div class="form-line"><label for="spRot">회전 속도</label>
+        <span class="row"><input id="spRot" type="range" min="0.15" max="0.6" step="0.05" value="0.4"><b id="spRotV">-</b></span></div>
+      <div class="row">
+        <button id="btnSpeed" class="btn btn-outline btn-small" type="button" title="주행 중에도 바로 바뀜(상한 = line_nav max_linear·max_angular)">속도 적용</button>
+        <span class="tiny-note" id="spNow">현재 -</span>
+      </div>
       <div class="row">
         <label class="tiny-note" for="offset">출발 노드 → 센서 거리(cm, 비우면 자동)</label>
         <input id="offset" class="text-input ir-select" type="number" min="0" max="50" step="0.5" placeholder="-">

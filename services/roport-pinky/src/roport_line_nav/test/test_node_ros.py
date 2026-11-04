@@ -37,7 +37,7 @@ ROUTE = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']
 
 
 class Harness:
-    def __init__(self):
+    def __init__(self, log_dir):
         from roport_line_nav.line_nav_node import LineNavNode
         self.ctx = Context()
         rclpy.init(context=self.ctx, domain_id=TEST_DOMAIN_ID)
@@ -47,6 +47,7 @@ class Harness:
                 Parameter('robot', value='pinky_d660'),
                 Parameter('calibration_file', value=str(CONFIG)),
                 Parameter('layout_file', value=str(LAYOUT)),
+                Parameter('log_dir', value=str(log_dir)),     # 홈 ~/roport_logs 에 쓰지 않게
             ])
         self.probe = rclpy.create_node('probe', context=self.ctx, namespace=NS)
         self.cmds = []
@@ -93,8 +94,8 @@ class Harness:
 
 
 @pytest.fixture
-def ros():
-    h = Harness()
+def ros(tmp_path):
+    h = Harness(tmp_path / 'logs')
     yield h
     h.close()
 
@@ -156,6 +157,8 @@ def test_no_odom_stops(ros):
     '{"cmd": "start", "route": ["N16", "n14; rm -rf"]}',
     '{"cmd": "start", "route": ["N16", "N14"], "start_offset_cm": 99}',
     '{"cmd": "start", "route": ["N16", "N14"], "start_offset_cm": true}',
+    '{"cmd": "speed"}', '{"cmd": "speed", "base_speed": "fast"}',
+    '{"cmd": "speed", "base_speed": NaN}', '{"cmd": "speed", "rotate_speed": true}',
 ])
 def test_parse_command_rejects(text):
     with pytest.raises(ValueError):
@@ -166,3 +169,16 @@ def test_parse_command_ok():
     assert parse_command('{"cmd": "stop"}') == ('stop', {})
     cmd, args = parse_command('{"cmd": "start", "route": ["N16", "N14"], "start_offset_cm": 7}')
     assert cmd == 'start' and args == {'route': ['N16', 'N14'], 'start_offset_cm': 7.0}
+
+
+def test_speed_command(ros):
+    """직선·회전 속도 바꾸기(상한 안만), 상태에 보고."""
+    ros.feed(3)
+    ros.command({'cmd': 'speed', 'base_speed': 0.05, 'rotate_speed': 0.5})
+    ros.wait(lambda: ros.states and ros.states[-1]['speed']['base_speed'] == 0.05)
+    assert ros.states[-1]['speed']['rotate_speed'] == 0.5
+    ros.command({'cmd': 'speed', 'base_speed': 0.2})
+    ros.wait(lambda: ros.states and ros.states[-1]['last_command']['cmd'] == 'speed'
+             and not ros.states[-1]['last_command']['ok'])
+    assert ros.node.ex.cfg.base_speed == 0.05
+    assert ros.cmds == []                       # 속도 바꾸기만으로는 움직이지 않음

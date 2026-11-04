@@ -12,7 +12,8 @@ import yaml
 
 NODE_ID = re.compile(r'^[A-Z][A-Z0-9]{0,7}$')
 MAX_ROUTE = 64
-COMMANDS = ('start', 'stop', 'load_done')
+COMMANDS = ('start', 'stop', 'load_done', 'speed')
+SPEED_CAPS = {'base_speed': 0.15, 'rotate_speed': 1.5}   # 형식 검사용(실제 상한은 line_nav 설정)
 
 # 테스트 관제의 출발 위치(대기·충전 칸). 운영 위치 → 노드
 START_PLACES = ('P1', 'P2', 'P5', 'P6')
@@ -20,6 +21,9 @@ START_PLACES = ('P1', 'P2', 'P5', 'P6')
 # Map 페이지(Confluence 9338886) 경로 예시. 화면의 빠른 선택용
 PRESETS = [
     {'name': '물류 대기 P5 → 창고 상차 P4', 'route': ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']},
+    {'name': 'P5 → P4 상차 → P7 상차 (한 번에)',
+     'route': ['N16', 'N14', 'N02', 'N10', 'N18', 'N01', 'N18', 'N07', 'N19', 'N11']},
+    {'name': 'P5 → P7 바로 (P4 안 거침)', 'route': ['N16', 'N14', 'N15', 'N05', 'N07', 'N19', 'N11']},
     {'name': '창고 상차 P4 → 인도장 P7', 'route': ['N01', 'N18', 'N07', 'N19', 'N11']},
     {'name': '인도장 P7 → 물류 대기 P6', 'route': ['N11', 'N19', 'N07', 'N05', 'N15', 'N17']},
     {'name': '스마트카트 P1 → 인도장 P7', 'route': ['H1', 'N09', 'N19', 'N11']},
@@ -71,6 +75,19 @@ def parse_route_command(data):
     cmd = data.get('cmd')
     if cmd not in COMMANDS:
         raise RouteCommandError(f"cmd must be one of {', '.join(COMMANDS)}")
+    if cmd == 'speed':
+        out = {'cmd': 'speed'}
+        for k, cap in SPEED_CAPS.items():
+            v = data.get(k)
+            if v is None:
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) \
+                    or not 0.0 < v <= cap:
+                raise RouteCommandError(f'{k} must be a number in (0, {cap}]')
+            out[k] = float(v)
+        if len(out) == 1:
+            raise RouteCommandError('speed needs base_speed and/or rotate_speed')
+        return out
     if cmd != 'start':
         return {'cmd': cmd}
     route = data.get('route')
@@ -139,6 +156,16 @@ def _layout_view(data):
                       'y0': by['zone03_bottom']['from'][1], 'x1': room[2], 'y1': room[3]})
     return {'walls': walls, 'objects': objects, 'markers': markers, 'room': room,
             'zones': zones, 'frame': data.get('frame') or {}}
+
+
+def plan_via(graph, start, goal, via=None):
+    """start → (via 정차 노드 경유) → goal. via 가 없으면 plan_to 와 같음."""
+    if not via:
+        return plan_to(graph, start, goal)
+    if via in (start, goal):
+        raise RouteCommandError('via must differ from start and goal')
+    first = plan_to(graph, start, via)
+    return first + plan_to(graph, via, goal)[1:]
 
 
 def plan_to(graph, start, goal):

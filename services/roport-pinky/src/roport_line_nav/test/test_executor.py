@@ -294,3 +294,79 @@ def _shortest(graph, start, goal):
     while path[-1] != start:
         path.append(prev[path[-1]])
     return path[::-1]
+
+
+VIA_ROUTE = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01', 'N18', 'N07', 'N19', 'N11']
+
+
+def test_via_load_stop_in_one_route(graph):
+    """P5 → P4 상차(경유) → P7 상차를 한 번에: 중간 상차에서 기다렸다 이어 감."""
+    sim = Sim(graph)
+    sim.place('N16', 'S', 0.0)
+    ex = RouteExecutor(graph)
+    ex.start(VIA_ROUTE)
+    loads = []
+
+    def on_loading(s):
+        loads.append(ex.legs[ex.index].to)
+        return True
+    sim.run(ex, _done, on_loading=on_loading)
+    assert ex.state == ARRIVED and ex.route == VIA_ROUTE
+    assert loads[0] == 'N01' and loads[-1] == 'N11'
+    assert [e['detail'] for e in ex.events if e['event'] == 'via'] == ['N01']
+    assert _axle_to(sim, 'N11') < 8.0
+
+
+def test_via_waits_for_load_done(graph):
+    sim = Sim(graph)
+    sim.place('N16', 'S', 0.0)
+    ex = RouteExecutor(graph)
+    ex.start(VIA_ROUTE)
+    sim.run(ex, lambda e: e.state == LOADING)
+    assert ex.legs[ex.index].to == 'N01'
+    sim.run(ex, _done, max_s=sim.t + 10)          # 상차 완료 전에는 그대로
+    assert ex.state == LOADING
+    assert ex.load_done()
+    sim.run(ex, _done, max_s=sim.t + 900, on_loading=lambda s: True)
+    assert ex.state == ARRIVED
+
+
+def test_via_through_handoff_turns_back(graph):
+    """N12 를 경유하면 반 바퀴 돌아 되돌아감(N11 → N12 → H2)."""
+    sim = Sim(graph)
+    sim.place('N11', 'N', 0.0)
+    ex = RouteExecutor(graph)
+    ex.start(['N11', 'N19', 'N09', 'N08', 'N12', 'N08', 'H2'])
+    sim.run(ex, _done, on_loading=lambda s: True)
+    assert ex.state == ARRIVED
+    assert [e['event'] for e in ex.events if e['event'] in ('via', 'pre_rotate')] == \
+        ['via', 'pre_rotate']
+
+
+def test_via_rejects_bad_segments(graph):
+    ex = RouteExecutor(graph)
+    with pytest.raises(GraphError):
+        ex.start(['N16', 'N14', 'N02', 'N14', 'N16'])     # 중간 U턴(가로선 아님)
+    assert ex.state == 'idle'
+
+
+def test_set_speed(graph):
+    ex = RouteExecutor(graph)
+    assert ex.set_speed(0.05, 0.5) == (0.05, 0.5)
+    assert ex.as_dict()['speed']['base_speed'] == 0.05
+    for bad in ({'base_speed': 0.07}, {'base_speed': 0.01}, {'rotate_speed': 0.7},
+                {'rotate_speed': 0.1}, {'base_speed': float('nan')}):
+        with pytest.raises(ValueError):
+            ex.set_speed(**bad)
+    assert ex.cfg.base_speed == 0.05 and ex.cfg.rotate_speed == 0.5
+
+
+def test_faster_full_route(graph):
+    """상한(0.06 m/s, 0.6 rad/s)으로 P5 → P4 → P7 경유 경로 완주."""
+    sim = Sim(graph, odom_scale=1.07, odom_yaw_scale=0.95)
+    sim.place('N16', 'S', 0.0)
+    ex = RouteExecutor(graph)
+    ex.set_speed(0.06, 0.6)
+    ex.start(VIA_ROUTE)
+    sim.run(ex, _done, on_loading=lambda s: True)
+    assert ex.state == ARRIVED

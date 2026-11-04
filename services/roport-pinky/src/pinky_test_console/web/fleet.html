@@ -60,13 +60,24 @@
     <section class="panel-card">
       <div class="section-title"><span>경로 — <b id="selName">로봇을 선택</b></span></div>
       <div class="form-line"><label for="startSel">출발</label><select id="startSel" class="text-input"></select></div>
+      <div class="form-line"><label for="viaSel">경유 상차</label>
+        <select id="viaSel" class="text-input" title="목적지 전에 들러 상차 완료까지 기다릴 노드">
+          <option value="">없음</option><option value="N01">P4 (N01)</option><option value="N11">P7 (N11)</option></select></div>
       <div class="form-line"><span>목적지</span><b id="goalText">지도에서 정차 노드를 누름</b></div>
       <div class="form-line"><span>경로</span><span id="routeText">-</span></div>
       <div class="row mt">
-        <button id="btnStart" class="btn btn-primary" type="button" disabled>▶ 경로 시작</button>
+        <button id="btnStart" class="btn btn-primary" type="button" disabled>▶ 시작</button>
         <button id="btnLoad" class="btn btn-outline" type="button" disabled>상차 완료</button>
         <button id="btnStop" class="btn btn-danger" type="button" disabled>■ 정지</button>
         <button id="btnHome" class="btn btn-outline" type="button" disabled title="등록한 충전·대기 칸으로 최단 경로">⌂ 복귀</button>
+      </div>
+      <div class="form-line"><label for="spLin">직선 속도</label>
+        <span class="row"><input id="spLin" type="range" min="1.5" max="6" step="0.5" value="3"><b id="spLinV">-</b></span></div>
+      <div class="form-line"><label for="spRot">회전 속도</label>
+        <span class="row"><input id="spRot" type="range" min="0.15" max="0.6" step="0.05" value="0.4"><b id="spRotV">-</b></span></div>
+      <div class="row">
+        <button id="btnSpeed" class="btn btn-outline btn-small" type="button" title="주행 중에도 바로 바뀜(상한 = line_nav max_linear·max_angular)">속도 적용</button>
+        <span class="tiny-note" id="spNow">현재 -</span>
       </div>
       <div class="status-msg" id="cmdMsg" role="status"></div>
       <div class="tiny-note">출발 위치에 로봇을 첫 구간 방향(칸 바깥)으로 세운 뒤 시작. 노드에서 끝나면 「현재 위치」에서 바로 다음 경로를 고를 수 있음(N12처럼 선 끝을 보고 섰으면 먼저 반 바퀴 돎). 복귀 = 끝난 노드 → 등록한 충전·대기 칸(Pinky 설정의 「복귀 칸」). 정지·오류 뒤에는 위치를 모르므로 복귀 안 됨.</div>

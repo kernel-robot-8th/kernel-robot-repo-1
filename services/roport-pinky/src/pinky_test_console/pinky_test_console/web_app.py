@@ -21,7 +21,7 @@ from .fleet import FleetError
 from .ir_record import IrRecordError
 from .map_store import MapNameError
 from .marker_detect import MarkerError
-from .route_view import RouteCommandError, parse_route_command, plan_to
+from .route_view import RouteCommandError, parse_route_command, plan_via
 
 # web/ 폴더에서 이 파일들만 서빙 (원본은 스크립트 폴더 전체를 static 으로 노출했음)
 STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js',
@@ -372,9 +372,10 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
 
     @app.route('/api/route/plan')
     def api_route_plan():
-        """?from=<노드>&to=<정차 노드> → 최단 경로(테스트 관제의 목적지 클릭)."""
+        """?from=<노드>&to=<정차 노드>[&via=<정차 노드>] → 최단 경로(테스트 관제의 목적지 클릭)."""
         start, goal = request.args.get('from', ''), request.args.get('to', '')
-        return jsonify({'route': plan_to(node.route_graph(), start, goal)})
+        via = request.args.get('via') or None
+        return jsonify({'route': plan_via(node.route_graph(), start, goal, via)})
 
     @app.route('/api/logs')
     def api_logs():

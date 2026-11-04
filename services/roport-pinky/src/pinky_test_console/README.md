@@ -249,7 +249,7 @@ ros2 launch pinky_test_console console.launch.py mode:=test robot:=pinky_d660   
 브라우저에서 `http://<로봇IP>:8080/route.html`을 엽니다(콘솔 상단 **경로 주행** 버튼).
 
 1. 로봇을 첫 노드 위에 첫 구간 방향으로 세웁니다(대기·충전 칸·상차 노드에서 끝난 경로는 그 자리에서 바로 다음 경로).
-2. 지도에서 노드를 차례로 누르거나 「경로 예시」를 고르고 **경로 시작**.
+2. 지도에서 노드를 차례로 누르거나 「경로 예시」를 고르고 **경로 시작**. 예시에 「P5 → P4 상차 → P7 상차 (한 번에)」(P4 경유)·「P5 → P7 바로」가 있음. 「속도 적용」으로 직선·회전 속도를 바꿀 수 있음(최대 6 cm/s·0.6 rad/s).
 3. N01·N11에서 반시계 90° 돌고 `loading`이 되면 상차 후 **상차 완료**를 누릅니다.
 4. 상단 **■ 정지**(Space/Esc)는 경로 주행 정지 명령 + 속도 0을 보냅니다.
 
@@ -288,7 +288,9 @@ SSH는 키 파일만 쓰고(비밀번호 입력 없음) 명령은 인자 목록�
 테스트 관제(`fleet.html`) 사용 순서:
 1. 오른쪽 표에서 로봇을 고릅니다.
 2. 「출발」에서 P1·P2·P5·P6(또는 마지막으로 도착한 「현재 위치」)를 고르고, 지도에서 주황 테두리 노드(정차 노드 N01·N11·N12·P1·P2·P5·P6)를 누릅니다. 경로는 선 중심 거리 최단 경로로 정합니다.
-3. 로봇을 출발 노드에 첫 구간 방향(칸 바깥)으로 세운 뒤 **경로 시작**.
+3. 로봇을 출발 노드에 첫 구간 방향(칸 바깥)으로 세운 뒤 **시작**.
+- 「경유 상차」에서 P4(N01)·P7(N11)을 고르면 목적지 전에 그 노드에 들러 상차 완료까지 기다렸다 이어 감(예: 출발 P5, 경유 P4, 목적지 P7).
+- 「직선 속도」·「회전 속도」 슬라이더 → **속도 적용**: 선택한 로봇의 line_nav 속도를 바로 바꿈(주행 중 가능). 범위는 로봇 launch의 `max_linear`·`max_angular`(기본 6 cm/s·0.6 rad/s)까지. 경로 주행 화면(`route.html`)에도 같은 조절이 있음.
 - 지도의 로봇 위치는 `line_nav/state`의 구간·이동 거리로 추정한 값입니다(실제 위치 측정 아님).
 - **복귀**: 로봇이 노드에서 끝났으면(`arrived`·`handoff`) 그 노드에서 Pinky 설정의 「복귀 칸」(P1·P2·P5·P6)까지 최단 경로로 시작합니다. N12 handoff 뒤처럼 선 끝을 보고 섰으면 line_nav가 먼저 반 바퀴 돕니다.
   - 주행 중·상차 대기 중이면 거부합니다(끝나거나 정지한 뒤 다시). 정지·오류 뒤에는 위치를 모르므로 거부합니다(로봇을 노드에 두고 「출발」을 골라 시작).
@@ -411,13 +413,13 @@ colcon test-result --verbose
 | POST | `/api/ir/record` `{label, duration}` / `/api/ir/cancel` | IR 기록 시작(1–60 s) / 취소 |
 | GET | `/api/ir/records`, `/api/ir/records/<파일>` | 기록 목록·통계·참고 임계값 / CSV 다운로드 |
 | GET | `/api/route`, `/api/route/graph` | `line_nav/state`(없으면 `stale`) / 노드 그래프·경로 예시 |
-| POST | `/api/route/command` `{cmd: start\|stop\|load_done, route?, start_offset_cm?}` | `line_nav/command`로 보냄 (`mode:=route`) |
+| POST | `/api/route/command` `{cmd: start\|stop\|load_done\|speed, route?, start_offset_cm?, base_speed?, rotate_speed?}` | `line_nav/command`로 보냄 (`mode:=route`·`test`) |
 | GET | `/api/fleet`, `/api/fleet/jobs`, `/api/fleet/branches` | (`mode:=fleet`) 등록 목록·로봇 상태·작업 기록 / 작업 / `origin/*` 브랜치 |
 | POST | `/api/fleet/robots` `{name, ip, role, domain, calib, rmw?, home?}`, `/api/fleet/robots/delete` `{name}` | 등록·수정 / 삭제 |
 | POST | `/api/fleet/job` `{name, action: check\|read_domain\|set_domain\|deploy\|build, ref?, release?, domain?}` | SSH·git 작업(로봇마다 한 번에 하나) |
 | POST | `/api/fleet/route` `{name, cmd, route?}`, `/api/fleet/stop_all` | 로봇 콘솔로 경로 명령 / 전체 정지 |
 | POST | `/api/fleet/return` `{name?}` | 복귀(이름 없으면 전체). 로봇별 `{ok, msg, route}` |
-| GET | `/api/route/plan?from=<노드>&to=<정차 노드>` | 최단 경로(노드 id 목록) |
+| GET | `/api/route/plan?from=<노드>&to=<정차 노드>&via=<정차 노드>?` | 최단 경로(노드 id 목록). `via`가 있으면 그 노드를 경유(상차 대기) |
 | GET | `/api/fleet/logs?after=<seq>`, `/api/fleet/logs.csv?robot=<이름>` | 로그(seq 이후) / CSV 다운로드 |
 
 | GET | `/api/logs?after=<seq>`, `/api/logs/files` | (로봇) `/rosout` 최근 2000줄 / 경로 상세 기록·ROS 로그 폴더 목록 |

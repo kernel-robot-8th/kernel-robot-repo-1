@@ -67,7 +67,8 @@ async function plan() {
   if (!p) return;
   p.route = [];
   if (p.start && p.goal) {
-    const r = await RM.getJson(`/api/route/plan?from=${encodeURIComponent(p.start)}&to=${encodeURIComponent(p.goal)}`);
+    const via = p.via ? `&via=${encodeURIComponent(p.via)}` : "";
+    const r = await RM.getJson(`/api/route/plan?from=${encodeURIComponent(p.start)}&to=${encodeURIComponent(p.goal)}${via}`);
     if (r.httpStatus === 200) p.route = r.route;
     else RM.setMsg($("cmdMsg"), `경로 없음: ${r.msg || r.httpStatus}`, "err");
   }
@@ -77,6 +78,7 @@ async function plan() {
 function showPick() {
   const p = selPick();
   $("goalText").textContent = p && p.goal ? p.goal : "지도에서 정차 노드를 누름";
+  $("viaSel").value = p && p.via ? p.via : "";
   $("routeText").textContent = p && p.route.length ? p.route.join(" → ") : "-";
   map.setStartGoal(p ? p.start : null, p ? p.goal : null);
   map.setRoute(p ? p.route : []);
@@ -91,6 +93,34 @@ function setGoal(id) {
 }
 
 $("startSel").addEventListener("change", (ev) => { selPick().start = ev.target.value; plan(); });
+$("viaSel").addEventListener("change", (ev) => { selPick().via = ev.target.value; plan(); });
+
+// 속도: 슬라이더를 움직이면 표시만 바꾸고 「속도 적용」 때 보냄. 그 전에는 로봇 값을 따라감.
+let speedDirty = false;
+function showSpeedLabels() {
+  $("spLinV").textContent = `${Number($("spLin").value).toFixed(1)} cm/s`;
+  $("spRotV").textContent = `${Number($("spRot").value).toFixed(2)} rad/s`;
+}
+function syncSpeed(sp) {
+  if (!sp) { $("spNow").textContent = "현재 -"; return; }
+  $("spLin").min = String(sp.min_speed * 100);
+  $("spLin").max = String(sp.max_linear * 100);
+  $("spRot").min = String(sp.rotate_min_speed);
+  $("spRot").max = String(sp.max_angular);
+  $("spNow").textContent = `현재 ${(sp.base_speed * 100).toFixed(1)} cm/s · ${sp.rotate_speed.toFixed(2)} rad/s`;
+  if (!speedDirty) {
+    $("spLin").value = String(sp.base_speed * 100);
+    $("spRot").value = String(sp.rotate_speed);
+  }
+  showSpeedLabels();
+}
+for (const id of ["spLin", "spRot"]) {
+  $(id).addEventListener("input", () => { speedDirty = true; showSpeedLabels(); });
+}
+function speedBody() {
+  return { cmd: "speed", base_speed: Number($("spLin").value) / 100, rotate_speed: Number($("spRot").value) };
+}
+$("btnSpeed").addEventListener("click", () => { speedDirty = false; command(speedBody()); });
 
 function updateButtons() {
   const r = robots.find((x) => x.name === selected);
@@ -100,6 +130,7 @@ function updateButtons() {
   $("btnStart").disabled = !r || !p || p.route.length < 2 || !!busy || !(r.status && r.status.ok);
   $("btnLoad").disabled = !r || !st || st.state !== "loading";
   $("btnStop").disabled = !r;
+  $("btnSpeed").disabled = !r || !st;
   $("btnHome").disabled = !r || !r.home || !st || !["arrived", "handoff"].includes(st.state);
 }
 
@@ -186,6 +217,7 @@ function render(snap) {
     cell(tr, st && st.leg ? `${st.leg.from}→${st.leg.to}` : "-");
     tr.addEventListener("click", () => {
       selected = r.name;
+      speedDirty = false;
       $("selName").textContent = r.name;
       fillStarts();
       plan();
@@ -211,6 +243,7 @@ function render(snap) {
   const r = robots.find((x) => x.name === selected);
   const st = navState(r);
   $("sState").textContent = st ? st.state : "-";
+  syncSpeed(st && st.speed);
   $("sReason").textContent = st && st.reason ? st.reason : "-";
   $("sLeg").textContent = st && st.leg ? `${st.leg.from} → ${st.leg.to} (${st.leg.action})` : "-";
   $("sTravel").textContent = st ? `${st.traveled_cm}` + (st.window_cm ? ` / ${st.window_cm[0]}~${st.window_cm[1]}` : "") : "-";

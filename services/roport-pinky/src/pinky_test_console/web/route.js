@@ -26,6 +26,34 @@ async function command(body) {
     r.success ? "ok" : "err");
 }
 
+
+// 속도: 슬라이더를 움직이면 표시만 바꾸고 「속도 적용」 때 보냄. 그 전에는 로봇 값을 따라감.
+let speedDirty = false;
+function showSpeedLabels() {
+  $("spLinV").textContent = `${Number($("spLin").value).toFixed(1)} cm/s`;
+  $("spRotV").textContent = `${Number($("spRot").value).toFixed(2)} rad/s`;
+}
+function syncSpeed(sp) {
+  if (!sp) { $("spNow").textContent = "현재 -"; return; }
+  $("spLin").min = String(sp.min_speed * 100);
+  $("spLin").max = String(sp.max_linear * 100);
+  $("spRot").min = String(sp.rotate_min_speed);
+  $("spRot").max = String(sp.max_angular);
+  $("spNow").textContent = `현재 ${(sp.base_speed * 100).toFixed(1)} cm/s · ${sp.rotate_speed.toFixed(2)} rad/s`;
+  if (!speedDirty) {
+    $("spLin").value = String(sp.base_speed * 100);
+    $("spRot").value = String(sp.rotate_speed);
+  }
+  showSpeedLabels();
+}
+for (const id of ["spLin", "spRot"]) {
+  $(id).addEventListener("input", () => { speedDirty = true; showSpeedLabels(); });
+}
+function speedBody() {
+  return { cmd: "speed", base_speed: Number($("spLin").value) / 100, rotate_speed: Number($("spRot").value) };
+}
+$("btnSpeed").addEventListener("click", () => { speedDirty = false; command(speedBody()); });
+
 $("btnStart").addEventListener("click", () => {
   const body = { cmd: "start", route: routeIds };
   const off = $("offset").value.trim();
@@ -58,6 +86,7 @@ function fmt(v) { return v === null || v === undefined ? "-" : String(v); }
 
 function render(snap) {
   const s = snap.state;
+  syncSpeed(s && s.speed);
   lastState = s;
   $("robotChip").textContent = "robot " + (snap.robot || "-");
   $("stateChip").textContent = "state " + (s ? s.state : "-");

@@ -17,12 +17,15 @@
   (N12 handoff 뒤 되돌아가기 등) 먼저 반시계로 돌아 진입선을 찾고, 센서 위치(출발 노드 → 센서 거리)도
   끝난 동작으로 정한다. 정지·오류 뒤에는 기억을 지운다(사람이 옮겼을 수 있음).
   기억이 없고 출발 노드가 가로선 노드이면 센서가 가로선 위에 있다고 보고(0 cm) 거리 창을 쓴다.
+경유 정차: 경로 중간의 가로선 노드(예: P5 → P4 상차 → P7)에서는 그 노드의 도착 동작(상차 대기 등)을 한 뒤
+  같은 규칙(이어서 출발)으로 다음 구간을 이어 간다. 경로는 가로선 노드마다 구간 묶음으로 나눠 검사한다.
+속도: set_speed 로 직선·회전 속도를 바꾼다(주행 중에도 다음 샘플부터). 상한은 설정의 max_linear·max_angular.
 정지 명령·오류(라인 놓침 지속, 노드 놓침, 회전 중 선 못 찾음, 후진 초과, odom·IR 없음)는 모두 0 속도.
 """
 
 import math
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from roport_line_nav.graph import (HANDOFF, LEFT, LOAD, PARK, RIGHT, STOP, STRAIGHT, GraphError,
                                    BACK, STRAIGHT as GO_STRAIGHT, plan_route, turn_of)
@@ -130,6 +133,7 @@ class RouteExecutor:
         self._loaded = False     # 상차 완료를 받았는지(두 번째 회전 표시용)
         self._leg_s0 = 0.0       # 구간 시작 때 출발 노드 → 센서 거리(표시용 위치 추정)
         self._progress = 0.0     # 현재 구간 진행률 0~1 (정지·오류 뒤에도 마지막 값 유지)
+        self._seg_ends = set()   # 경유 정차 구간 묶음의 끝 Leg 번호
         self._end = None         # 직전 경로가 끝난 곳 {'node', 'facing', 's0'} (이어서 출발용)
         self._pre = None         # 출발 전 제자리 회전의 시작 방향(도, 표시용)
         self._reset_primitive()
@@ -139,9 +143,10 @@ class RouteExecutor:
         """경로 시작. 잘못된 경로는 GraphError(현재 상태 유지). 주행 중이면 거부."""
         if self.state not in TERMINAL:
             raise GraphError(f'busy ({self.state}); stop first')
-        legs = plan_route(self.graph, route)
+        legs, seg_ends = self._plan_segments([str(r) for r in route])
         self.route = [str(r) for r in route]
         self.legs = legs
+        self._seg_ends = seg_ends
         self.index = 0
         self.reason = ''
         self._loaded = False
@@ -149,26 +154,55 @@ class RouteExecutor:
         self._pre = None
         self.route_seq0 = self.event_seq
         self._log('start', ' → '.join(self.route))
-        facing, pre, s0 = self._start_plan(legs[0])
+        end = self._end
         self._end = None
-        if start_offset_cm is not None:
-            s0 = start_offset_cm
+        self._depart(legs[0], end, start_offset_cm)
+
+    def set_speed(self, base_speed=None, rotate_speed=None):
+        """직선(m/s)·회전(rad/s) 속도. 범위 밖이면 ValueError(그대로 유지). → 적용된 (직선, 회전)."""
+        c = self.cfg
+        base = c.base_speed if base_speed is None else float(base_speed)
+        rot = c.rotate_speed if rotate_speed is None else float(rotate_speed)
+        if not (math.isfinite(base) and c.min_speed <= base <= c.max_linear):
+            raise ValueError(f'base_speed must be in {c.min_speed}..{c.max_linear} m/s')
+        if not (math.isfinite(rot) and c.rotate_min_speed <= rot <= c.max_angular):
+            raise ValueError(
+                f'rotate_speed must be in {c.rotate_min_speed}..{c.max_angular} rad/s')
+        self.cfg = replace(c, base_speed=base, rotate_speed=rot)
+        self._log('speed', f'{base:.3f} m/s, {rot:.2f} rad/s')
+        return base, rot
+
+    def _plan_segments(self, route):
+        """중간 가로선 노드에서 나눠 구간 묶음마다 plan_route. → (전체 Leg 목록, 묶음 끝 Leg 번호)."""
+        cuts = [i for i in range(1, len(route) - 1) if self.graph.nodes.get(route[i]) is not None
+                and self.graph.nodes[route[i]].bar]
+        legs, ends, a = [], set(), 0
+        for b in cuts + [len(route) - 1]:
+            legs += plan_route(self.graph, route[a:b + 1])
+            ends.add(len(legs) - 1)
+            a = b
+        return legs, ends
+
+    def _depart(self, leg, end, s0_override=None):
+        """이 노드에서 leg 로 출발: 필요하면 출발 전 회전, 첫 구간 거리 창."""
+        facing, pre, s0 = self._start_plan(leg, end)
+        if s0_override is not None:
+            s0 = s0_override
         if pre is None:
             self._begin_leg(s0)
             return
         direction, lo, hi = pre
-        self._log('pre_rotate', f'{facing} → {legs[0].heading}')
+        self._log('pre_rotate', f'{facing} → {leg.heading}')
         self._pre = self._HEADING_DEG[facing]
         self._steps.extend([(ROTATE, direction, lo, hi, True), ('begin', s0)])
         self._next_step()
 
-    def _start_plan(self, leg):
+    def _start_plan(self, leg, end):
         """→ (기억한 방향, 출발 전 회전 (방향, 최소°, 최대°) 또는 None, 출발 노드 → 센서 거리 cm).
 
         센서 거리를 모르면 None(첫 구간 최소 거리 제한 없음).
         """
         c = self.cfg
-        end = self._end
         if end is None or end['node'] != leg.frm:
             return None, None, (0.0 if self.graph.nodes[leg.frm].bar else None)
         facing = end['facing']
@@ -243,6 +277,10 @@ class RouteExecutor:
             'events': list(self.events),
             'event_seq': self.event_seq,
             'route_event_seq0': self.route_seq0,
+            'speed': {'base_speed': self.cfg.base_speed, 'rotate_speed': self.cfg.rotate_speed,
+                      'min_speed': self.cfg.min_speed, 'max_linear': self.cfg.max_linear,
+                      'rotate_min_speed': self.cfg.rotate_min_speed,
+                      'max_angular': self.cfg.max_angular},
         }
         out.update(self._estimate(leg))
         return out
@@ -312,13 +350,13 @@ class RouteExecutor:
         self._steps.clear()
         self._zero_once = True
         self._pre = None
-        self._end = self._end_of_route() if state in (ARRIVED, HANDOFF_STATE) else None
+        self._end = (self._end_of_leg(self.legs[self.index])
+                     if state in (ARRIVED, HANDOFF_STATE) else None)
         self._log(state, reason)
 
-    def _end_of_route(self):
-        """끝난 노드·로봇이 보는 방향·출발 노드 → 센서 거리(다음 경로를 이어서 출발할 때)."""
+    def _end_of_leg(self, leg):
+        """leg 도착 동작 뒤 노드·로봇이 보는 방향·출발 노드 → 센서 거리(이어서 출발할 때)."""
         c = self.cfg
-        leg = self.legs[-1]
         back = {'E': 'W', 'W': 'E', 'N': 'S', 'S': 'N'}[leg.heading]
         if leg.action == LOAD:    # 가로선 앞에서 멈춘 뒤 축 기준 약 180°: 센서가 노드 바깥쪽으로
             return {'node': leg.to, 'facing': back, 's0': 2 * c.ir_ahead_cm + c.half_line_cm}
@@ -391,6 +429,7 @@ class RouteExecutor:
         steps = self._steps
         steps.clear()
         last = self.index == len(self.legs) - 1
+        done = ('finish',) if last else ('via',)      # 경유 정차면 다음 구간으로
         if leg.action == STRAIGHT:
             steps.append((PASS, c.pass_cm))
             steps.append(('next', c.pass_cm - c.half_line_cm))
@@ -404,18 +443,18 @@ class RouteExecutor:
             steps.append((ROTATE, 1.0, 90.0, 90.0, False))
             steps.append((LOADING,))
             steps.append((ROTATE, 1.0, c.turn_min_deg, c.turn_max_deg, True))
-            steps.append(('finish', ARRIVED))
+            steps.append(done + (ARRIVED,))
         elif leg.action == PARK:
             steps.append((ROTATE, 1.0, c.back_min_deg, c.back_max_deg, True))
             steps.append((REVERSE, c.reverse_max_cm))
-            steps.append(('finish', ARRIVED))
+            steps.append(done + (ARRIVED,))
         elif leg.action == HANDOFF:
-            steps.append(('finish', HANDOFF_STATE))
+            steps.append(done + (HANDOFF_STATE,))
         elif leg.action == STOP:
-            steps.append(('finish', ARRIVED))
+            steps.append(done + (ARRIVED,))
         else:  # pragma: no cover - plan_route 가 막음
             raise GraphError(f'unknown action {leg.action}')
-        if not last and leg.action not in (STRAIGHT, LEFT, RIGHT):
+        if self.index not in self._seg_ends and leg.action not in (STRAIGHT, LEFT, RIGHT):
             raise GraphError('arrival action before the last leg')  # pragma: no cover
         self._next_step()
 
@@ -431,6 +470,13 @@ class RouteExecutor:
             return
         if kind == 'finish':
             self._finish(st[1], 'route done')
+            return
+        if kind == 'via':        # 경유 정차 동작이 끝남 → 이어서 출발
+            leg = self.legs[self.index]
+            self._log('via', leg.to)
+            self.index += 1
+            self._loaded = False
+            self._depart(self.legs[self.index], self._end_of_leg(leg))
             return
         if kind == 'begin':      # 출발 전 회전이 끝남 → 첫 구간
             self._pre = None

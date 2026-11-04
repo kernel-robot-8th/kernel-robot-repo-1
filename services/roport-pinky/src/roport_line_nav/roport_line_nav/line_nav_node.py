@@ -66,6 +66,18 @@ def parse_command(text):
     cmd = data['cmd']
     if cmd in ('stop', 'load_done'):
         return cmd, {}
+    if cmd == 'speed':          # 범위는 실행부가 설정 상한으로 검사
+        args = {}
+        for k in ('base_speed', 'rotate_speed'):
+            v = data.get(k)
+            if v is None:
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                raise ValueError(f'{k} must be a number')
+            args[k] = float(v)
+        if not args:
+            raise ValueError('speed needs base_speed and/or rotate_speed')
+        return cmd, args
     if cmd != 'start':
         raise ValueError(f'unknown cmd {cmd!r}')
     route = data.get('route')
@@ -154,6 +166,9 @@ class LineNavNode(Node):
             elif cmd == 'load_done':
                 ok = self.ex.load_done()
                 detail = 'resumed' if ok else f'not loading ({self.ex.state})'
+            elif cmd == 'speed':
+                base, rot = self.ex.set_speed(**args)
+                ok, detail = True, f'{base:.3f} m/s, {rot:.2f} rad/s'
             else:
                 if self._reading is None:
                     raise ValueError('no IR yet')

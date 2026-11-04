@@ -94,3 +94,44 @@ def test_layout_for_full_map():
     assert any(o['name'] == 'box_03' for o in g['objects'])
     assert {'G1', 'G2', 'G3', 'ARR'} <= {m['name'] for m in g['markers']}
     assert g['zones'][0]['y0'] == 94.0 and g['frame']['yaw_deg'] == 0.10
+
+
+def test_parse_speed():
+    assert parse_route_command({'cmd': 'speed', 'base_speed': 0.05}) == \
+        {'cmd': 'speed', 'base_speed': 0.05}
+    assert parse_route_command({'cmd': 'speed', 'base_speed': 0.04, 'rotate_speed': 0.5,
+                                'x': 1}) == {'cmd': 'speed', 'base_speed': 0.04,
+                                             'rotate_speed': 0.5}
+    for bad in ({'cmd': 'speed'}, {'cmd': 'speed', 'base_speed': 0.2},
+                {'cmd': 'speed', 'base_speed': 0}, {'cmd': 'speed', 'rotate_speed': 2},
+                {'cmd': 'speed', 'base_speed': True}, {'cmd': 'speed', 'base_speed': 'x'},
+                {'cmd': 'speed', 'base_speed': float('inf')}):
+        with pytest.raises(RouteCommandError):
+            parse_route_command(bad)
+
+
+def test_plan_via():
+    from pinky_test_console.route_view import plan_via
+    g = graph_view(LAYOUT)
+    assert plan_via(g, 'N16', 'N11', 'N01') == \
+        ['N16', 'N14', 'N02', 'N10', 'N18', 'N01', 'N18', 'N07', 'N19', 'N11']
+    assert plan_via(g, 'N16', 'N11') == plan_to(g, 'N16', 'N11')
+    for start, goal, via in (('N16', 'N11', 'N16'), ('N16', 'N11', 'N11'),
+                             ('N16', 'N11', 'N19')):          # 경유는 정차 노드만
+        with pytest.raises(RouteCommandError):
+            plan_via(g, start, goal, via)
+
+
+def test_presets_are_valid_routes():
+    """경로 예시가 line_nav 경로 규칙(경유 정차 포함)을 지킴."""
+    import sys
+    src = os.path.join(os.path.dirname(__file__), '..', '..')
+    sys.path[:0] = [os.path.join(src, 'roport_line_nav'), os.path.join(src, 'roport_pinky_line')]
+    from roport_line_nav.executor import RouteExecutor
+    from roport_line_nav.graph import Graph
+    ex = RouteExecutor(Graph.load(LAYOUT))
+    names = [p['name'] for p in PRESETS]
+    assert 'P5 → P4 상차 → P7 상차 (한 번에)' in names and 'P5 → P7 바로 (P4 안 거침)' in names
+    for p in PRESETS:
+        legs, _ = ex._plan_segments(p['route'])
+        assert len(legs) == len(p['route']) - 1, p['name']

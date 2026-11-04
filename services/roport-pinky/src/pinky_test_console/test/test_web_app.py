@@ -464,6 +464,9 @@ def test_route_plan_api(client, node):
     assert r.status_code == 200 and r.get_json()['route'][0] == 'N16'
     assert client.get('/api/route/plan?from=N16&to=N14').status_code == 400
     assert client.get('/api/route/plan?from=N16').status_code == 400
+    r = client.get('/api/route/plan?from=N16&to=N11&via=N01')
+    assert r.status_code == 200 and r.get_json()['route'][5] == 'N01'
+    assert client.get('/api/route/plan?from=N16&to=N11&via=N19').status_code == 400
 
 
 def test_fleet_logs_api(fleet_client):
