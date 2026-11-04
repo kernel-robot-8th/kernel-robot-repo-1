@@ -4,9 +4,9 @@ RO:PORT · GATE CREW — 통합관제 및 로봇 통신
 
 ## 기술 스택
 
-Python 3.12 / FastAPI / uv / Three.js / Paho MQTT / pytest / Playwright / Ruff. 정확한 버전은 manifest와 lockfile을 따릅니다.
+Python 3.12 / FastAPI / uv / Three.js / Paho MQTT / PostgreSQL / psycopg / pytest / Playwright / Ruff. 정확한 버전은 manifest와 lockfile을 따릅니다.
 2026-11-03 팀 합의: **브라우저 웹 UI ↔ FastAPI ↔ 운영 DB ↔ 관제 실행부(별도 프로세스 1개)**. API와 실행부의 목표 연결은 운영 DB이며, 원격 서비스 WSS는 실행부가 담당합니다. AI 노트북에 서버를 배치하고 다른 PC에서 접속합니다. AI 추론은 API와 별도 프로세스로 운영합니다.
-현재 구현은 **웹 UI·REST 조회·WebSocket 모의/OFFLINE 상태 스트림**과 독립 MQTT/UDP 모듈입니다. 운영 DB·관제 실행부·WSS·실제 제어·카메라 웹 중계는 미구현입니다. 브라우저는 DB/MQTT/UDP에 직접 연결하지 않습니다.
+현재 구현은 **웹 UI·REST 조회·WebSocket 모의/OFFLINE 상태 스트림**과 독립 MQTT/UDP 모듈입니다. 공유 등록 계약·PostgreSQL 저장소를 추가했으며 API/UI에는 아직 연결하지 않았습니다. 관제 실행부·WSS·실제 제어·카메라 웹 중계는 미구현입니다. 브라우저는 DB/MQTT/UDP에 직접 연결하지 않습니다.
 
 ## 구조 · FFT1-122
 
@@ -14,10 +14,11 @@ Python 3.12 / FastAPI / uv / Three.js / Paho MQTT / pytest / Playwright / Ruff. 
 src/roport_control_server/
   domain/      __init__.py만: Workflow·Allocation·State/Recovery 규칙 자리 (골격, 미구현)
   executor/    __init__.py만: 관제 실행부 프로세스 자리 (골격, 미구현, FFT1-106)
-  contracts/   snapshot.py: TaskRow·Snapshot 표시 계약과 검증 (표준 라이브러리만)
+  contracts/   snapshot.py·robots.py: 표시·등록 계약과 검증 (표준 라이브러리만)
   adapters/
     mqtt/      messages.py·mqtt.py: MQTT 5 명령·이벤트 (폴더 단위 이식)
     udp/       udp_frame_protocol.py·udp_frame_sender.py·udp_frame_receiver.py: UDP 영상 wire v1
+    db/        registry.py·migrate.py·001_registry.sql: 공유 등록·이력·명시적 초기화
     api/       app.py: HTTP/WebSocket, display.py: 모의 표시, maps.py: 읽기 전용 지도
   spatial_assets/  index.html·scene.js·style.css 및 고정 모델/Three.js 자산
 scripts/       mqtt_demo.py·udp_video_demo.py: 모의 예제 (wheel 미포함, MockExecutor 포함)
@@ -31,18 +32,47 @@ tests/         test_layers.py: 아래 import 규칙 검사
 | `contracts/` | 표준 라이브러리 |
 | `adapters/mqtt/` | 표준 라이브러리, paho, 자기 폴더 |
 | `adapters/udp/` | 표준 라이브러리, 자기 폴더 |
-| `adapters/api/` | 표준 라이브러리, fastapi, Pillow, PyYAML, `contracts`, 자기 폴더 |
+| `adapters/api/` | 표준 라이브러리, fastapi, Pillow, PyYAML, `contracts`, `adapters/db`, 자기 폴더 |
+| `adapters/db/` | 표준 라이브러리, psycopg, `contracts`, 자기 폴더 |
 | `domain/` (골격) | 표준 라이브러리 |
 | `executor/` (골격) | 표준 라이브러리, `domain`, `contracts`, `adapters`(api 제외) |
 
-패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`·`executor/`는 책임만 적은 골격이고 코드는 아직 없습니다. `adapters/db/`·`adapters/wss/`는 DB 종류와 WSS 메시지 계약이 확정된 뒤 만듭니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
+패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`·`executor/`는 책임만 적은 골격이고 코드는 아직 없습니다. `adapters/db/`는 등록 저장소이며 웹 API/실행부 연결은 후속입니다. `adapters/wss/`는 WSS 메시지 계약 확정 후 만듭니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
 
 ## 현재 범위
 
 MQTT 5 작업 명령·이벤트 모듈과 모의 Pinky·OMX 왕복 예제, FastAPI에서 제공하는 3D 웹 관제 화면을 제공합니다.
-UDP 영상 송수신 모듈(FFT1-105)도 포함합니다. 관제 실행부·운영 DB 연결은 후속 PR입니다. DB 자체와 업무 CRUD는 만들지 않습니다.
+UDP 영상 송수신 모듈(FFT1-105)도 포함합니다. 공유 등록·설정 요청·이력 저장소를 제공합니다. API/UI 연결·관제 실행부·작업 실행 DB는 후속입니다.
 CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 배포 환경 미정으로 CD와 자동 배포는 설정하지 않았습니다.
+
+## 공유 등록 저장소
+
+`contracts/robots.py`는 요청 검증과 DTO, `adapters/db/registry.py`는 PostgreSQL 트랜잭션을 담당합니다. `RegistryStore.snapshot()`, `change(robot_id, action, data, development=...)`, `history(robot_id, limit=...)`가 후속 API의 연결 지점입니다. DB 드라이버는 저장소 안에만 둡니다.
+
+- Pinky 고정 3자리와 OMX 조회용 3자리를 생성합니다. OMX1·2는 같은 Host에 서로 다른 arm ID로 표시하며 OMX 등록 변경은 제공하지 않습니다.
+- 등록·요청 설정 변경·운영 제외·해제를 저장합니다. 활성 기체 ID/IP/ROS 도메인 중복, 이전 binding·낡은 revision을 거절하며 같은 request ID의 동일 요청은 기존 결과를 반환합니다. 변경·revision·이력·재시도 결과는 한 트랜잭션입니다.
+- 요청 설정(`desired_config`)만 저장합니다. 기체 파일·runtime·위치·적재 상태는 unknown, 준비 상태는 false로 유지합니다. 등록이 실제 적용/주행 준비를 뜻하지 않습니다.
+- 쓰기는 개발 DB, 호출자의 명시적 `development=True`, `sim-` 기체에만 허용합니다. 모의 해제는 먼저 운영 제외해야 하며 실제 정지·적재 확인을 대신하지 않습니다. 운영 쓰기·실제 등록 검증·인증은 후속입니다.
+- 연결/스키마 실패는 `RegistryError`로 반환하고 빈 목록이나 메모리 저장소로 대체하지 않습니다. 충돌은 409, 개발/실기 제한은 403, 저장소 불가는 503이며 DB 접속값은 오류에 포함하지 않습니다. 재연결한 store도 같은 상태·이력을 읽습니다.
+
+서버 시작 시 DB 연결·초기화는 하지 않습니다. PostgreSQL 16의 **비어 있는 전용 개발 DB**를 별도로 준비하고 다음을 한 번 실행합니다. `ROPORT_DATABASE_URL`은 표준 PostgreSQL DSN 환경변수이며 아래 예제는 loopback의 개인 개발 DB용입니다. 실제 인증정보는 저장소에 넣지 않습니다.
+
+```bash
+export ROPORT_DATABASE_URL='host=127.0.0.1 dbname=roport_registry_dev'
+uv run python -m roport_control_server.adapters.db.migrate --development
+```
+
+초기화는 트랜잭션·advisory lock으로 직렬화하며 반복 실행은 기존 등록을 보존합니다. 기존 DB의 개발/운영 모드 변경은 거절합니다. 스키마 1 초기화만 제공하며 업그레이드·자동 rollback·데이터 삭제 명령은 없습니다. 운영 적용과 백업/복구 절차는 별도 검증해야 합니다.
+
+```bash
+export ROPORT_TEST_DATABASE_URL='host=127.0.0.1 dbname=roport_registry_test'
+REQUIRE_REGISTRY_TESTS=1 REQUIRE_MQTT_TESTS=1 uv run pytest
+```
+
+테스트 DSN에는 운영 DB를 지정하지 않습니다. 테스트마다 UUID 스키마를 만들고 자신이 만든 스키마만 삭제하며, 접속 계정에는 그 권한이 필요합니다. CI는 PostgreSQL 16과 필수 플래그로 DB 테스트 누락을 실패 처리합니다. `ROPORT_TEST_DATABASE_URL` 없이 일반 pytest를 실행하면 DB 통합 검증은 skip됩니다.
+
+다음 순서는 이 저장소를 사용하는 REST/상태 스트림, 통합 화면·Pinky 탭 공통 연결, MQTT 읽기 연동입니다. 정비 SSH 작업·명령 inbox/outbox·영속 이벤트 ACK·작업 실행 복구는 이번 범위에 포함하지 않습니다.
 
 ## 3D 웹 통합관제 · FFT1-109
 
@@ -57,7 +87,7 @@ uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --por
 
 - OFFLINE: `http://localhost:8000/ui/` — 실행부 미연결, 작업 없음, 실제 위치 미표시.
 - DEMO: `http://localhost:8000/ui/?mode=demo` — 예시 Pinky 3대/OMX 3대의 모의 동작. 재생·시각 이동·수신 중단은 이 브라우저 세션에만 적용됩니다. 재접속 시 DEMO는 새 세션으로 시작하며 실제 작업 복구 시험이 아닙니다.
-- 서버가 제공한 목록으로 화면을 만들지만 현재 목록은 6대 예시입니다. 로봇 등록/제외와 실제 장비 목록 연동은 후속입니다.
+- 서버가 제공한 목록으로 화면을 만들지만 현재 목록은 6대 예시입니다. 공유 등록 저장소를 이 화면에 연결하는 작업과 실제 장비 목록 연동은 후속입니다.
 - 기존 회백색 3열 구성, 3D/평면·회전·선택 장비 확대, 관절 모델과 작업·오류 표시를 제공합니다. 실기 URDF 보정과 양팔 협업 동기화는 검증하지 않았습니다. 승인·출발·취소는 비활성화합니다.
 
 ### 접속·지도·운영
