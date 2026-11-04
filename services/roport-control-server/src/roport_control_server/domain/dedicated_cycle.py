@@ -180,8 +180,15 @@ class DedicatedCycle:
         self.arm_safety = None
         self.state = operation + "_ACTIVE"
 
-    def _check_safe_snapshot(self, event, now):
-        """Host SAFE_RETURNED snapshot of this execution and Host boot."""
+    def _check_safe_snapshot(self, event, now, *, require_fresh=True):
+        """Host SAFE_RETURNED snapshot of this execution and Host boot.
+
+        require_fresh=False accepts a late completion fact (timestamps must still
+        parse); departure stays blocked until a fresh snapshot is supplied.
+        """
+        stamp_check = (
+            self._fresh if require_fresh else lambda value, _now: _stamp(value)
+        )
         command = self.command
         if not isinstance(event, dict) or not isinstance(event.get("payload"), dict):
             raise ValueError("invalid_result_event")  # noqa: TRY004
@@ -194,7 +201,7 @@ class DedicatedCycle:
             raise ValueError("result_binding_mismatch")
         if event.get("boot_id") != self.host_boot_id:
             raise ValueError("host_restarted_reconcile")
-        self._fresh(event.get("observed_at"), now)
+        stamp_check(event.get("observed_at"), now)
         if (
             event.get("type") != "shelf.execute.completed"
             or p.get("state") != "SAFE_RETURNED"
@@ -219,7 +226,7 @@ class DedicatedCycle:
         for observation in observations.values():
             if not isinstance(observation, dict) or observation.get("safe") is not True:
                 raise ValueError("both_arm_safety_required")
-            self._fresh(observation.get("captured_at"), now)
+            stamp_check(observation.get("captured_at"), now)
         expected_location = (
             "slot" if command["payload"]["operation"] == "INBOUND" else "pinky"
         )
@@ -231,7 +238,9 @@ class DedicatedCycle:
         if self.state not in {"INBOUND_ACTIVE", "OUTBOUND_ACTIVE"}:
             raise ValueError("no_active_assignment")
         # Command expiry is not checked: a physical result must never be dropped.
-        self.arm_safety = self._check_safe_snapshot(event, now)
+        # A late (stale) completion is still recorded; approve_departure needs a
+        # fresh arm_safety from refresh_arm_safety() first.
+        self.arm_safety = self._check_safe_snapshot(event, now, require_fresh=False)
         self.result = deepcopy(event)
         self.state = self.command["payload"]["operation"] + "_READY_TO_DEPART"
 
