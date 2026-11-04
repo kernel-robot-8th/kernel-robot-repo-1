@@ -96,11 +96,10 @@ def test_full_cycle_requires_return_departure_then_p7_exit():
     [
         ("execution_id", "other"),
         ("boot_id", "restarted"),
-        ("observed_at", stamp(-3)),
         ("source", "omx1"),
     ],
 )
-def test_wrong_or_stale_results_do_not_release_pinky(field, value):
+def test_wrong_results_do_not_release_pinky(field, value):
     c, cmd = cycle(), command()
     begin(c, cmd)
     result = complete(cmd)
@@ -134,8 +133,9 @@ def test_stale_arm_observation_is_not_freshened_by_result_timestamp():
     begin(c, cmd)
     result = complete(cmd)
     result["payload"]["arms"]["omx2"]["captured_at"] = stamp(-3)
-    with pytest.raises(ValueError, match="stale_or_future"):
-        c.completed(result, now=NOW)
+    c.completed(result, now=NOW)  # The completion fact is recorded...
+    with pytest.raises(ValueError, match="stale_or_future"):  # ...departure is not.
+        c.approve_departure(evidence(cmd), now=NOW)
 
 
 def test_pinky_exit_must_match_current_docking_and_be_fresh():
@@ -217,6 +217,33 @@ def test_stale_arm_safety_is_refreshed_without_rewriting_completion():
     c.refresh_arm_safety(at(done, 3), now=NOW + 3)
     assert c.result == done  # Completion fact is kept, only safety evidence moves.
     assert c.approve_departure(late, now=NOW + 3)
+
+
+def test_late_completion_is_recorded_but_blocks_departure_until_refresh():
+    c, cmd = cycle(), command()
+    begin(c, cmd)
+    done = complete(cmd)
+    c.completed(done, now=NOW + 3)  # older than max_evidence_age: still a real fact
+    assert c.result == done
+    assert c.state.endswith("_READY_TO_DEPART")
+    late = {**evidence(cmd), "source_observed_at": stamp(3)}
+    with pytest.raises(ValueError, match="stale_or_future"):
+        c.approve_departure(late, now=NOW + 3)
+    c.refresh_arm_safety(at(done, 3), now=NOW + 3)
+    assert c.approve_departure(late, now=NOW + 3)
+
+
+def test_late_completion_still_checks_binding_and_safety():
+    c, cmd = cycle(), command()
+    begin(c, cmd)
+    other = {**complete(cmd), "execution_id": "other"}
+    with pytest.raises(ValueError, match="result_binding_mismatch"):
+        c.completed(other, now=NOW + 3)
+    unsafe = complete(cmd)
+    unsafe["payload"]["inactive_arm_safe"] = False
+    with pytest.raises(ValueError, match="both_arm_safety_required"):
+        c.completed(unsafe, now=NOW + 3)
+    assert c.result is None
 
 
 @pytest.mark.parametrize(
