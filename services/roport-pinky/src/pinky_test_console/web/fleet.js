@@ -100,6 +100,7 @@ function updateButtons() {
   $("btnStart").disabled = !r || !p || p.route.length < 2 || !!busy || !(r.status && r.status.ok);
   $("btnLoad").disabled = !r || !st || st.state !== "loading";
   $("btnStop").disabled = !r;
+  $("btnHome").disabled = !r || !r.home || !st || !["arrived", "handoff"].includes(st.state);
 }
 
 async function command(body) {
@@ -120,6 +121,26 @@ $("btnStart").addEventListener("click", () => {
 });
 $("btnLoad").addEventListener("click", () => command({ cmd: "load_done" }));
 $("btnStop").addEventListener("click", () => command({ cmd: "stop" }));
+
+function homeMsg(result) {
+  return Object.entries(result || {}).map(([n, x]) => `${n}: ${x.msg}`).join(" / ");
+}
+
+async function returnHome(name) {
+  const body = name ? { name } : {};
+  const r = await RM.postJson("/api/fleet/return", body);
+  const res = r.result || {};
+  const ok = r.success && Object.values(res).every((x) => x.ok);
+  const text = r.success ? homeMsg(res) : `복귀 실패: ${r.msg || r.httpStatus}`;
+  RM.setMsg(name ? $("cmdMsg") : $("estopStatus"), text, ok ? "ok" : "err");
+  pollLogs();
+}
+$("btnHome").addEventListener("click", () => returnHome(selected));
+$("btnHomeAll").addEventListener("click", () => {
+  if (confirm("노드에서 끝난 모든 로봇을 각자 복귀 칸으로 보냅니다. 로봇끼리 충돌 회피는 없으니 경로가 겹치지 않는지 확인하세요. 진행할까요?")) {
+    returnHome(null);
+  }
+});
 
 async function stopAll() {
   const r = await RM.postJson("/api/fleet/stop_all", {});
@@ -158,6 +179,7 @@ function render(snap) {
     sw.classList.add("fl-swatch");
     sw.dataset.color = String(robots.indexOf(r) % RM.ROBOT_COLORS.length);
     cell(tr, r.name);
+    cell(tr, r.home || "-");
     cell(tr, r.status ? (r.status.ok ? "OK" : "꺼짐") : "-");
     cell(tr, consoleMode(r));
     cell(tr, st ? st.state : "-");

@@ -506,6 +506,15 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
         return Response(_fleet().log.csv_text(robot), mimetype='text/csv',
                         headers={'Content-Disposition': f'attachment; filename={name}'})
 
+    @app.route('/api/fleet/return', methods=['POST'])
+    def api_fleet_return():
+        """{name?} → 등록한 충전·대기 칸으로 복귀(이름 없으면 전체)."""
+        data = _json_body()
+        name = data.get('name')
+        if name is not None and not isinstance(name, str):
+            raise BadRequest("'name' must be a string")
+        return jsonify({'success': True, 'result': _fleet().return_home(node.route_graph(), name)})
+
     @app.route('/api/fleet/stop_all', methods=['POST'])
     def api_fleet_stop_all():
         _json_body()

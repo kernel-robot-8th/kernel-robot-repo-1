@@ -38,12 +38,13 @@ function edit(r) {
   $("fDomain").value = r.domain;
   $("fCalib").value = r.calib;
   $("fRmw").value = r.rmw || "";
+  $("fHome").value = r.home || "";
 }
 
 $("btnSave").addEventListener("click", async () => {
   const body = {
     name: $("fName").value.trim(), ip: $("fIp").value.trim(), role: $("fRole").value,
-    domain: Number($("fDomain").value), calib: $("fCalib").value, rmw: $("fRmw").value,
+    domain: Number($("fDomain").value), calib: $("fCalib").value, rmw: $("fRmw").value, home: $("fHome").value,
   };
   const r = await RM.postJson("/api/fleet/robots", body);
   RM.setMsg($("formMsg"), r.success ? `저장: ${body.name}` : `실패: ${r.msg || r.httpStatus}`, r.success ? "ok" : "err");
@@ -97,6 +98,7 @@ function render(snap) {
     cell(tr, r.ip);
     cell(tr, String(r.domain));
     cell(tr, r.rmw ? `${r.calib} · ${r.rmw}` : r.calib);
+    cell(tr, r.home || "-");
     cell(tr, r.status ? (r.status.ok ? "OK" : "꺼짐") : "-");
     const td = cell(tr, "");
     for (const [a, label] of ACTIONS) button(td, label, () => job(r.name, a), r.busy);

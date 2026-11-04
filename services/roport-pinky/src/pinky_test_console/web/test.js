@@ -71,6 +71,16 @@ async function stopAll() {
   $("modeHint").textContent = res.ok ? "전체 정지 보냄" : "전체 정지 실패";
 }
 $("btnEstop").addEventListener("click", stopAll);
+$("btnHomeAll").addEventListener("click", async () => {
+  if (!confirm("노드에서 끝난 모든 로봇을 각자 복귀 칸으로 보냅니다. 로봇끼리 충돌 회피는 없으니 경로가 겹치지 않는지 확인하세요. 진행할까요?")) return;
+  const res = await fetch("/api/fleet/return", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  });
+  const data = await res.json().catch(() => ({}));
+  $("modeHint").textContent = res.ok
+    ? Object.entries(data.result || {}).map(([n, x]) => `${n}: ${x.msg}`).join(" / ")
+    : `전체 복귀 실패: ${data.msg || res.status}`;
+});
 document.addEventListener("keydown", (ev) => {
   if ((ev.code === "Space" || ev.code === "Escape") && !["INPUT", "SELECT"].includes(ev.target.tagName)) {
     ev.preventDefault();

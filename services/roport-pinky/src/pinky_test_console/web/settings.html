@@ -21,7 +21,7 @@
     <section class="panel-card">
       <div class="section-title"><span>등록된 Pinky</span><span class="tiny-note" id="fleetFile">-</span></div>
       <div class="ir-table-wrap"><table class="ir-table" id="robots"><thead><tr>
-        <th>이름</th><th>역할</th><th>IP</th><th>도메인</th><th>IR 기준값</th><th>콘솔</th><th>작업</th>
+        <th>이름</th><th>역할</th><th>IP</th><th>도메인</th><th>IR 기준값</th><th>복귀 칸</th><th>콘솔</th><th>작업</th>
       </tr></thead><tbody></tbody></table></div>
       <div class="row mt">
         <label class="tiny-note" for="ref">업데이트 설치 브랜치</label>
@@ -46,6 +46,11 @@
       <div class="form-line"><label for="fRole">역할</label>
         <select id="fRole" class="text-input"><option value="logistics">물류</option><option value="smartcart">스마트카트</option></select></div>
       <div class="form-line"><label for="fDomain">ROS_DOMAIN_ID</label><input id="fDomain" class="text-input" type="number" min="0" max="101" value="14"></div>
+      <div class="form-line"><label for="fHome">복귀 칸</label>
+        <select id="fHome" class="text-input" title="테스트 관제 「복귀」로 돌아갈 충전·대기 칸">
+          <option value="">없음</option><option value="P1">P1 (H1, 스마트카트)</option>
+          <option value="P2">P2 (H2, 스마트카트)</option><option value="P5">P5 (N16, 물류)</option>
+          <option value="P6">P6 (N17, 물류)</option></select></div>
       <div class="form-line"><label for="fRmw">RMW</label>
         <select id="fRmw" class="text-input" title="원격 콘솔 켤 때 RMW_IMPLEMENTATION">
           <option value="">기본(로봇 .bashrc)</option><option value="rmw_fastrtps_cpp">rmw_fastrtps_cpp</option>

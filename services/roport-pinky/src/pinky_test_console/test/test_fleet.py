@@ -84,7 +84,8 @@ def test_store_roundtrip_and_permissions(tmp_path, store):
     assert [r.name for r in again.list()] == ['pinky1', 'pinky2']
     assert stat.S_IMODE(os.stat(store.path).st_mode) == 0o600
     data = json.load(open(store.path))
-    assert set(data['robots'][0]) == {'name', 'ip', 'role', 'domain', 'calib', 'rmw'}  # 비밀값 없음
+    assert set(data['robots'][0]) == {'name', 'ip', 'role', 'domain', 'calib', 'rmw',
+                                     'home'}  # 비밀값 없음
     again.remove('pinky2')
     with pytest.raises(FleetError):
         again.remove('pinky2')
@@ -370,3 +371,62 @@ def test_robot_proxy_forward_local():
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def _graph():
+    from pinky_test_console.route_view import graph_view
+    return graph_view(os.path.join(os.path.dirname(__file__), '..', '..', 'roport_gz_world',
+                                   'layout', 'roport_airport.yaml'))
+
+
+def _set_state(mgr, name, state, route):
+    mgr._status[name] = {'t': 0, 'ok': True, 'route': {'state': {'state': state, 'route': route}}}
+
+
+def test_validate_home():
+    assert validate_robot(dict(GOOD, home='P5')).home == 'P5'
+    assert validate_robot(GOOD).home == ''
+    for bad in ('N16', 'P4', 'P7', 'x;y'):
+        with pytest.raises(FleetError):
+            validate_robot(dict(GOOD, home=bad))
+
+
+def test_return_home_from_handoff(mgr):
+    """N12 handoff 뒤 복귀: 등록한 칸(P5 = N16)까지 최단 경로로 시작 명령."""
+    mgr.store.upsert(dict(GOOD, home='P5'))
+    _set_state(mgr, 'pinky1', 'handoff', ['N11', 'N19', 'N09', 'N08', 'N12'])
+    res = mgr.return_home(_graph(), 'pinky1')['pinky1']
+    assert res['ok'] and res['route'][0] == 'N12' and res['route'][-1] == 'N16'
+    ip, path, body = mgr.client.calls[-1]
+    assert path == '/api/route/command' and body == {'cmd': 'start', 'route': res['route']}
+
+
+def test_return_home_refusals(mgr):
+    g = _graph()
+    n = len(mgr.client.calls)
+    assert '미등록' in mgr.return_home(g, 'pinky1')['pinky1']['msg']        # home 없음
+    mgr.store.upsert(dict(GOOD, home='P1'))
+    assert '연결' in mgr.return_home(g, 'pinky1')['pinky1']['msg']          # 상태 없음
+    for state, word in (('follow', '주행 중'), ('loading', '주행 중'), ('stopped', '위치 모름'),
+                        ('error', '위치 모름')):
+        _set_state(mgr, 'pinky1', state, ['N16', 'N14'])
+        res = mgr.return_home(g, 'pinky1')['pinky1']
+        assert not res['ok'] and word in res['msg'], state
+    _set_state(mgr, 'pinky1', 'arrived', ['N09', 'H1'])
+    res = mgr.return_home(g, 'pinky1')['pinky1']
+    assert res['ok'] and res['route'] == [] and '이미' in res['msg']
+    assert len(mgr.client.calls) == n                                       # 명령 안 보냄
+    with pytest.raises(FleetError):
+        mgr.return_home(g, 'nobody')
+
+
+def test_return_home_all(mgr):
+    mgr.store.upsert(dict(GOOD, home='P5'))
+    mgr.store.upsert(dict(GOOD, name='pinky3', ip='192.168.4.23', role='smartcart',
+                          home='P1'))
+    _set_state(mgr, 'pinky1', 'arrived', ['N18', 'N01'])
+    _set_state(mgr, 'pinky3', 'error', ['H1', 'N09'])
+    out = mgr.return_home(_graph())
+    assert out['pinky1']['ok'] and out['pinky1']['route'][-1] == 'N16'
+    assert not out['pinky3']['ok']
+    assert [e['event'] for e in mgr.log.after(0)[0]].count('return') == 2

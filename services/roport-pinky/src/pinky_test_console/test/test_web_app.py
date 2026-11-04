@@ -542,3 +542,17 @@ def test_robot_proxy(fleet_client):
 
 def test_robot_proxy_absent_without_fleet(client):
     assert client.get('/robot/pinky1/route.html').status_code == 404
+
+
+def test_fleet_return_api(fleet_client, node):
+    from pinky_test_console.route_view import graph_view
+    c, mgr = fleet_client
+    h = {'Host': '127.0.0.1:8080'}
+    layout = os.path.join(os.path.dirname(__file__), '..', '..', 'roport_gz_world', 'layout',
+                          'roport_airport.yaml')
+    node.route_graph = lambda: graph_view(layout)
+    r = c.post('/api/fleet/return', headers=h, json={})
+    assert r.status_code == 200 and not r.get_json()['result']['pinky1']['ok']
+    assert c.post('/api/fleet/return', headers=h, json={'name': 3}).status_code == 400
+    assert c.post('/api/fleet/return', headers=h, json={'name': 'nobody'}).status_code == 400
+    assert c.post('/api/fleet/return', headers=h, data='x').status_code == 400

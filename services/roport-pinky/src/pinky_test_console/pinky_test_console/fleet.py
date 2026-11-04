@@ -28,7 +28,8 @@ import uuid
 from collections import deque
 from dataclasses import asdict, dataclass
 
-from .route_view import ROS_LOG_DIR_RE, ROUTE_LOG_RE, parse_route_command
+from .route_view import (ROS_LOG_DIR_RE, ROUTE_LOG_RE, START_PLACES, RouteCommandError,
+                         parse_route_command, plan_to)
 
 NAME = re.compile(r'^[a-z][a-z0-9_-]{0,15}$')
 CALIB = re.compile(r'^pinky_[0-9a-z]{2,8}$')
@@ -131,6 +132,7 @@ class Robot:
     domain: int
     calib: str
     rmw: str = ''      # 원격 콘솔 실행 때 RMW_IMPLEMENTATION (6422 = rmw_fastrtps_cpp)
+    home: str = ''     # 복귀할 충전·대기 칸 P1·P2·P5·P6 (없으면 복귀 안 함)
 
 
 def validate_robot(data):
@@ -155,7 +157,10 @@ def validate_robot(data):
     rmw = data.get('rmw', '') or ''
     if rmw not in RMW_CHOICES:
         raise FleetError(f"rmw must be one of {', '.join(c or '(기본)' for c in RMW_CHOICES)}")
-    return Robot(name, ip, role, domain, calib, rmw)
+    home = data.get('home', '') or ''
+    if home not in ('',) + START_PLACES:
+        raise FleetError(f"home must be one of {', '.join(START_PLACES)} or empty")
+    return Robot(name, ip, role, domain, calib, rmw, home)
 
 
 class FleetStore:
@@ -581,6 +586,55 @@ class FleetManager:
         self.log.add(name, 'fleet', 'command_result',
                      'ok' if res.get('success') else res.get('msg', res))
         return res
+
+    def return_home(self, graph, name=None):
+        """복귀: 노드에서 끝난 로봇을 등록한 충전·대기 칸(home)으로 보낸다. name 없으면 전체.
+
+        로봇 위치는 마지막으로 끝난 경로의 도착 노드(arrived·handoff)만 믿는다. 주행 중·정지·오류
+        뒤에는 위치를 모르므로 보내지 않는다. 로봇끼리 충돌 회피는 없다.
+        → {이름: {'ok': bool, 'msg': str, 'route': [...]}}
+        """
+        robots = [self.store.get(name)] if name is not None else self.store.list()
+        homes = {s['place']: s['node'] for s in graph.get('starts', [])}
+        with self._lock:
+            status = dict(self._status)
+        out = {}
+        for r in robots:
+            out[r.name] = res = self._return_one(r, graph, homes, status.get(r.name))
+            self.log.add(r.name, 'fleet', 'return',
+                         ('→'.join(res['route']) if res['ok'] else '') + ' ' + res['msg'])
+        return out
+
+    def _return_one(self, robot, graph, homes, entry):
+        def no(msg):
+            return {'ok': False, 'msg': msg, 'route': []}
+        if not robot.home:
+            return no('복귀 칸(home) 미등록 — Pinky 설정에서 지정')
+        goal = homes.get(robot.home)
+        if goal is None:
+            return no(f'{robot.home} not in the node graph')
+        st = ((entry or {}).get('route') or {}).get('state') if (entry or {}).get('ok') else None
+        if not isinstance(st, dict):
+            return no('콘솔 연결 안 됨')
+        state, route = st.get('state'), st.get('route') or []
+        if state not in ('arrived', 'handoff') or not route:
+            if state in ('stopped', 'error', 'idle'):
+                return no(f'위치 모름({state}) — 노드에 두고 출발을 골라 시작')
+            return no(f'주행 중({state}) — 끝나거나 정지한 뒤 다시')
+        cur = str(route[-1])
+        if cur == goal:
+            return {'ok': True, 'msg': f'이미 {robot.home}({goal})', 'route': []}
+        try:
+            path = plan_to(graph, cur, goal)
+        except RouteCommandError as e:
+            return no(str(e))
+        try:
+            res = self.route_command(robot.name, {'cmd': 'start', 'route': path})
+        except (OSError, ValueError) as e:
+            return no(f'명령 실패: {e}')
+        if not res.get('success'):
+            return no(str(res.get('msg', res)))
+        return {'ok': True, 'msg': f'{robot.home}({goal})로 복귀', 'route': path}
 
     def stop_all(self):
         out = {}
