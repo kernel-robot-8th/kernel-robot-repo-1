@@ -11,8 +11,12 @@
 노드에서: 직진은 방향을 유지하며 pass_cm 통과, 회전은 turn_advance_cm(IR ↔ 바퀴 축 + 테이프 반폭)
   더 간 뒤 제자리 회전 → 가운데 채널이 새 선 위에 오고 좌우가 고르면(|오차| <= align_error) 다음 구간.
 도착: load = 반시계 90° → 상차 완료(load_done)까지 대기 → 반시계 회전해 진입선을 찾음,
-  park = 반시계 회전으로 진입선 확인(150° 이상) → 후진해 세 채널이 가로선을 보면 정지,
+  park = 반시계 회전으로 진입선 확인(back_min_deg 이상) → 후진해 세 채널이 가로선을 보면 정지,
   handoff = 정지(Nav2 전환 가능), stop = 정지.
+이어서 출발: 직전 경로가 끝난 노드에서 다시 출발하면 끝난 방향을 기억해 둔다. 첫 구간이 반대쪽이면
+  (N12 handoff 뒤 되돌아가기 등) 먼저 반시계로 돌아 진입선을 찾고, 센서 위치(출발 노드 → 센서 거리)도
+  끝난 동작으로 정한다. 정지·오류 뒤에는 기억을 지운다(사람이 옮겼을 수 있음).
+  기억이 없고 출발 노드가 가로선 노드이면 센서가 가로선 위에 있다고 보고(0 cm) 거리 창을 쓴다.
 정지 명령·오류(라인 놓침 지속, 노드 놓침, 회전 중 선 못 찾음, 후진 초과, odom·IR 없음)는 모두 0 속도.
 """
 
@@ -21,7 +25,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from roport_line_nav.graph import (HANDOFF, LEFT, LOAD, PARK, RIGHT, STOP, STRAIGHT, GraphError,
-                                   plan_route)
+                                   BACK, STRAIGHT as GO_STRAIGHT, plan_route, turn_of)
 from roport_pinky_line.follower import HARD_MAX_ANGULAR, HARD_MAX_LINEAR
 
 IDLE = 'idle'
@@ -60,6 +64,8 @@ class NavConfig:
     rotate_min_speed: float = 0.15
     turn_min_deg: float = 60.0     # 90° 회전에서 새 선을 찾기 시작하는 각도
     turn_max_deg: float = 120.0    # 이 각도까지 못 찾으면 정지
+    back_min_deg: float = 172.0    # 180° 회전(대기 칸·되돌아 출발)에서 선을 찾기 시작하는 각도
+    back_max_deg: float = 210.0
     align_error: float = 0.25      # 회전 중 가운데 채널이 선 위이고 |오차|가 이 값 이하이면 정렬로 봄
     lost_timeout: float = 1.0      # s, 라인 놓침이 이보다 길면 정지(오류)
     node_confirm: int = 2          # 연속 샘플
@@ -81,6 +87,8 @@ class NavConfig:
             raise ValueError('need 0 < gate_min < 1 < gate_max')
         if not 0.0 < self.turn_min_deg < 90.0 < self.turn_max_deg <= 180.0:
             raise ValueError('need 0 < turn_min_deg < 90 < turn_max_deg <= 180')
+        if not 150.0 <= self.back_min_deg < 180.0 < self.back_max_deg <= 240.0:
+            raise ValueError('need 150 <= back_min_deg < 180 < back_max_deg <= 240')
         if not 0.0 < self.align_error < 1.0:
             raise ValueError('need 0 < align_error < 1')
         if self.node_confirm < 1 or self.reverse_max_cm <= 0 or self.lost_timeout <= 0:
@@ -122,6 +130,8 @@ class RouteExecutor:
         self._loaded = False     # 상차 완료를 받았는지(두 번째 회전 표시용)
         self._leg_s0 = 0.0       # 구간 시작 때 출발 노드 → 센서 거리(표시용 위치 추정)
         self._progress = 0.0     # 현재 구간 진행률 0~1 (정지·오류 뒤에도 마지막 값 유지)
+        self._end = None         # 직전 경로가 끝난 곳 {'node', 'facing', 's0'} (이어서 출발용)
+        self._pre = None         # 출발 전 제자리 회전의 시작 방향(도, 표시용)
         self._reset_primitive()
 
     # ------------------------------------------------------------ 명령
@@ -136,12 +146,43 @@ class RouteExecutor:
         self.reason = ''
         self._loaded = False
         self._steps.clear()
+        self._pre = None
         self.route_seq0 = self.event_seq
         self._log('start', ' → '.join(self.route))
-        self._begin_leg(start_offset_cm)
+        facing, pre, s0 = self._start_plan(legs[0])
+        self._end = None
+        if start_offset_cm is not None:
+            s0 = start_offset_cm
+        if pre is None:
+            self._begin_leg(s0)
+            return
+        direction, lo, hi = pre
+        self._log('pre_rotate', f'{facing} → {legs[0].heading}')
+        self._pre = self._HEADING_DEG[facing]
+        self._steps.extend([(ROTATE, direction, lo, hi, True), ('begin', s0)])
+        self._next_step()
+
+    def _start_plan(self, leg):
+        """→ (기억한 방향, 출발 전 회전 (방향, 최소°, 최대°) 또는 None, 출발 노드 → 센서 거리 cm).
+
+        센서 거리를 모르면 None(첫 구간 최소 거리 제한 없음).
+        """
+        c = self.cfg
+        end = self._end
+        if end is None or end['node'] != leg.frm:
+            return None, None, (0.0 if self.graph.nodes[leg.frm].bar else None)
+        facing = end['facing']
+        turn = turn_of(facing, leg.heading)
+        if turn == GO_STRAIGHT:
+            return facing, None, end['s0']
+        if turn == BACK:       # 바퀴 축 기준 반 바퀴: 센서가 축 반대편으로
+            return (facing, (1.0, c.back_min_deg, c.back_max_deg),
+                    2 * c.ir_ahead_cm + c.half_line_cm)
+        return facing, (1.0 if turn == LEFT else -1.0, c.turn_min_deg, c.turn_max_deg), None
 
     def stop(self, reason='stop command'):
         if self.state in TERMINAL and self.state != IDLE:
+            self._end = None     # 끝난 뒤의 정지 = 로봇을 옮길 수 있으니 끝난 방향을 잊음
             return
         self._finish(STOPPED, reason)
 
@@ -212,6 +253,14 @@ class RouteExecutor:
         """화면 표시용 바퀴 축 위치 추정(실측 cm). 그래프 + 이동 거리로 계산, 제어에는 쓰지 않는다."""
         if leg is None:
             return {'leg_progress': None, 'pose_est': None}
+        if self._pre is not None and self.state == ROTATE:   # 출발 전 제자리 회전
+            n = self.graph.nodes[leg.frm]
+            turned = math.degrees(abs(self._yaw_acc - self._ref_yaw))
+            heading = self._pre + self._prim['dir'] * turned
+            heading = (heading + 180.0) % 360.0 - 180.0
+            self._progress = 0.0
+            return {'leg_progress': 0.0, 'pose_est': {'x_cm': n.x, 'y_cm': n.y,
+                                                      'heading_deg': round(heading, 1)}}
         if self.state == FOLLOW:
             axle = self._leg_s0 + (self._odo - self._ref_odo) - self.cfg.ir_ahead_cm
             self._progress = min(1.0, max(0.0, axle / leg.length)) if leg.length > 0 else 1.0
@@ -262,7 +311,20 @@ class RouteExecutor:
         self.reason = reason
         self._steps.clear()
         self._zero_once = True
+        self._pre = None
+        self._end = self._end_of_route() if state in (ARRIVED, HANDOFF_STATE) else None
         self._log(state, reason)
+
+    def _end_of_route(self):
+        """끝난 노드·로봇이 보는 방향·출발 노드 → 센서 거리(다음 경로를 이어서 출발할 때)."""
+        c = self.cfg
+        leg = self.legs[-1]
+        back = {'E': 'W', 'W': 'E', 'N': 'S', 'S': 'N'}[leg.heading]
+        if leg.action == LOAD:    # 가로선 앞에서 멈춘 뒤 축 기준 약 180°: 센서가 노드 바깥쪽으로
+            return {'node': leg.to, 'facing': back, 's0': 2 * c.ir_ahead_cm + c.half_line_cm}
+        if leg.action == PARK:    # 후진해 가로선 가장자리에서 멈춤
+            return {'node': leg.to, 'facing': back, 's0': c.half_line_cm}
+        return {'node': leg.to, 'facing': leg.heading, 's0': None}
 
     def _begin_leg(self, s0_cm):
         """구간 시작. s0_cm = 출발 노드에서 센서까지 거리(모르면 None → 최소 거리 제한 없음)."""
@@ -344,7 +406,7 @@ class RouteExecutor:
             steps.append((ROTATE, 1.0, c.turn_min_deg, c.turn_max_deg, True))
             steps.append(('finish', ARRIVED))
         elif leg.action == PARK:
-            steps.append((ROTATE, 1.0, 150.0, 210.0, True))
+            steps.append((ROTATE, 1.0, c.back_min_deg, c.back_max_deg, True))
             steps.append((REVERSE, c.reverse_max_cm))
             steps.append(('finish', ARRIVED))
         elif leg.action == HANDOFF:
@@ -369,6 +431,10 @@ class RouteExecutor:
             return
         if kind == 'finish':
             self._finish(st[1], 'route done')
+            return
+        if kind == 'begin':      # 출발 전 회전이 끝남 → 첫 구간
+            self._pre = None
+            self._begin_leg(st[1])
             return
         self.state = kind
         self._reset_primitive()

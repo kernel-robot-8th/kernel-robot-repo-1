@@ -152,6 +152,8 @@ def test_config_limits():
         NavConfig(gate_min=1.2)
     with pytest.raises(ValueError):
         NavConfig(turn_max_deg=80)
+    with pytest.raises(ValueError):
+        NavConfig(back_min_deg=185)
 
 
 def _shifted(graph, shifts):
@@ -194,3 +196,101 @@ def test_pose_estimate_follows_route(graph):
     assert d['pose_est']['heading_deg'] == pytest.approx(-90.0)   # 칸에서 바깥(남)을 봄
     assert d['pose_est']['x_cm'] == pytest.approx(n16.x, abs=0.1)
     assert d['pose_est']['y_cm'] == pytest.approx(n16.y, abs=0.1)
+
+
+def _chain(graph, place, routes, **sim_kw):
+    """한 로봇이 도착한 자리에서 다음 경로를 이어서 출발(테스트 관제 「현재 위치」)."""
+    sim = Sim(graph, **sim_kw)
+    sim.place(*place)
+    ex = RouteExecutor(graph)
+    states = []
+    for r in routes:
+        ex.start(r)
+        sim.run(ex, _done, max_s=sim.t + 600, on_loading=lambda s: True)
+        states.append((ex.state, ex.reason))
+    return sim, ex, states
+
+
+def test_back_from_handoff_turns_first(graph):
+    """N12 handoff(선 끝을 보고 멈춤) 뒤 되돌아가는 경로: 먼저 반 바퀴 돌아 진입선을 찾는다."""
+    _, ex, states = _chain(graph, ('N11', 'N', 0.0), [
+        ['N11', 'N19', 'N09', 'N08', 'N12'],
+        ['N12', 'N08', 'N09', 'N19', 'N07', 'N05', 'N15', 'N17']])
+    assert states == [(HANDOFF_STATE, 'route done'), (ARRIVED, 'route done')]
+    pre = [e for e in ex.events if e['event'] == 'pre_rotate']
+    assert pre and pre[-1]['detail'] == 'E → W'
+
+
+def test_continue_from_park_after_offset_arrival(graph):
+    """옆으로 치우쳐 대기 칸에 들어온 뒤 다시 출발(2026-11-04 가짜 로봇 오류 재현 경로)."""
+    _, ex, states = _chain(graph, ('H1', 'N', 0.0), [
+        ['H1', 'N09', 'N19', 'N07', 'N18', 'N01'],
+        ['N01', 'N18', 'N07', 'N19', 'N09', 'N08', 'H2'],
+        ['H2', 'N08', 'N09', 'N19', 'N07', 'N05', 'N15', 'N17']])
+    assert [s for s, _ in states] == [ARRIVED, ARRIVED, ARRIVED]
+    found = [float(e['detail'].rstrip('°')) for e in ex.events if e['event'] == 'line_found']
+    assert min(f for f in found if f > 150) >= 172      # 180° 회전은 172° 전에 멈추지 않음
+
+
+def test_stop_forgets_end_pose(graph):
+    """정지하면 끝난 방향을 잊는다(사람이 옮겼을 수 있음) → 출발 전 회전 없음."""
+    sim = Sim(graph)
+    sim.place('N11', 'N', 0.0)
+    ex = RouteExecutor(graph)
+    ex.start(['N11', 'N19', 'N09', 'N08', 'N12'])
+    sim.run(ex, _done, on_loading=lambda s: True)
+    assert ex.state == HANDOFF_STATE
+    ex.start(['N12', 'N08', 'H2'])
+    assert ex.state == 'rotate'                # 기억: 선 끝(E)을 봄 → 먼저 반 바퀴
+    ex.stop()                                  # 주행 중 정지 → 기억 없음
+    ex.start(['N12', 'N08', 'H2'])
+    assert ex.state == 'follow'
+    assert ex.as_dict()['window_cm'][0] > 0    # 가로선 노드 출발 = 센서 0 cm 로 보고 거리 창
+
+    sim = Sim(graph)
+    sim.place('N11', 'N', 0.0)
+    ex = RouteExecutor(graph)
+    ex.start(['N11', 'N19', 'N09', 'N08', 'N12'])
+    sim.run(ex, _done, on_loading=lambda s: True)
+    ex.stop()                                  # 끝난 뒤 정지: 상태는 그대로, 기억만 지움
+    assert ex.state == HANDOFF_STATE
+    ex.start(['N12', 'N08', 'H2'])
+    assert ex.state == 'follow'
+
+
+def test_chained_random_routes(graph):
+    """정차 노드 사이 무작위 20경로를 이어서(엔코더 오차 포함) 모두 완주."""
+    import random
+    goals = sorted(n for n in graph.nodes if graph.nodes[n].bar)
+    rnd = random.Random(3)
+    sim = Sim(graph, odom_scale=1.07, odom_yaw_scale=0.95)
+    sim.place('N16', 'S', 0.0)
+    ex = RouteExecutor(graph)
+    cur = 'N16'
+    for _ in range(20):
+        goal = rnd.choice([g for g in goals if g != cur])
+        route = _shortest(graph, cur, goal)
+        ex.start(route)
+        sim.run(ex, _done, max_s=sim.t + 600, on_loading=lambda s: True)
+        assert ex.state in (ARRIVED, HANDOFF_STATE), (route, ex.reason)
+        cur = goal
+
+
+def _shortest(graph, start, goal):
+    import heapq
+    dist, prev, q = {start: 0.0}, {}, [(0.0, start)]
+    while q:
+        d, n = heapq.heappop(q)
+        if n == goal:
+            break
+        if d > dist[n] or (n != start and graph.nodes[n].bar):
+            continue        # 가로선 노드는 지나갈 수 없음
+        for m in graph.nodes[n].links:
+            nd = d + graph.length(n, m)
+            if nd < dist.get(m, math.inf):
+                dist[m], prev[m] = nd, n
+                heapq.heappush(q, (nd, m))
+    path = [goal]
+    while path[-1] != start:
+        path.append(prev[path[-1]])
+    return path[::-1]
