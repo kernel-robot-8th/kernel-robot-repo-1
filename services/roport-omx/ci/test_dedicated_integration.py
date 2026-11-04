@@ -25,6 +25,12 @@ class IntegrationTests(unittest.TestCase):
         result = run_cycle(negative_checks=True)
         self.assertEqual(result["state"], "DELIVERY_READY")
 
+    def test_late_completion_is_recorded_and_refreshed_by_host_event(self):
+        result = run_cycle(late_completion=True)
+        self.assertEqual(result["state"], "DELIVERY_READY")
+        self.assertIn("INBOUND:late-completion-refreshed", result["trace"])
+        self.assertIn("OUTBOUND:late-completion-refreshed", result["trace"])
+
     def test_prior_execution_confirmation_is_rejected_and_holds(self):
         result = run_cycle(replay_prior=True)
         self.assertEqual(result["state"], "HOLD")

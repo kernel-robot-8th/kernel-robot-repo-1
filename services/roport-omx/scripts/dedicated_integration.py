@@ -132,8 +132,11 @@ def exchange(router, request, clock):
         return decode_datagram(raw)
 
 
-def run_cycle(*, negative_checks=False, replay_prior=False):
+def run_cycle(*, negative_checks=False, replay_prior=False, late_completion=False):
     """negative_checks: assert control rejects out-of-order OUTBOUND begins.
+
+    late_completion: deliver the Host's completed event after max_evidence_age; control
+    must record it, block departure, then accept Host.arm_safety_event() as refresh.
 
     replay_prior: replay INBOUND's last confirmation into OUTBOUND's first WAIT and
     stop there; the Host must reject it and HOLD (state is returned, not DELIVERY_READY).
@@ -251,8 +254,26 @@ def run_cycle(*, negative_checks=False, replay_prior=False):
                     prior_confirmation = confirmation
                     trace.append(operation + ":" + host.state)
                 event = host.result_event()
+                if late_completion:
+                    clock.advance(3)  # > cycle max_evidence_age=2
                 cycle.completed(decode(encode(event)), now=clock.wall())
                 assert host.status()["departure_allowed"] is False
+                if late_completion:
+                    try:
+                        cycle.approve_departure(
+                            {**evidence, "source_observed_at": clock.stamp()},
+                            now=clock.wall(),
+                        )
+                    except ValueError as exc:
+                        assert "stale_or_future" in str(exc), exc
+                    else:
+                        raise AssertionError("stale arm safety allowed departure")
+                    seq += 1
+                    mock_observe(host, clock, seq)
+                    cycle.refresh_arm_safety(
+                        decode(encode(host.arm_safety_event())), now=clock.wall()
+                    )
+                    trace.append(operation + ":late-completion-refreshed")
                 if negative_checks and operation == "INBOUND":
                     _assert_outbound_refused(cycle, profile, clock, "after-completed")
                 cycle.approve_departure(
