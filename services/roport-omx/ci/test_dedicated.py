@@ -615,6 +615,79 @@ class DedicatedTests(unittest.TestCase):
         self.host.update_permit(permit)
         self.assertEqual(self.host.accept_command(command)["state"], "GRASPING")
 
+    def finish_inbound(self):
+        self.start()
+        seq = 1
+        for index, phase in enumerate(PHASES):
+            self.reset()
+            self.host.phase_boundary()
+            self.reset()
+            self.clock.advance()
+            seq += 1
+            mock_observe(self.host, self.clock, seq)
+            evidence = {
+                "execution_id": self.command["execution_id"],
+                "phase": phase,
+                "phase_revision": self.host.phase_revision,
+                "verdict_kind": VERDICTS[index],
+                "confirmer": "mock-supervisor",
+                "positive": True,
+                "observation_seq": seq,
+                "captured_at": self.clock.stamp(),
+            }
+            if index < 3:
+                evidence["next_policy_id"] = self.host.profile["policies"]["INBOUND"][
+                    PHASES[index + 1]
+                ]["policy_id"]
+            self.host.confirm(evidence)
+        return seq
+
+    def test_large_chunk_shares_metadata_and_bad_chunk_leaves_no_partial_queue(self):
+        self.start()
+        self.reset()
+        count = 1800
+        self.host.validate_candidate(
+            self.candidate([[0, 0, 0, 0, 0, 50] for _ in range(count)])
+        )
+        self.assertEqual(len(self.host.queue), count)
+        # One shared metadata object, not one reply copy per action.
+        self.assertEqual(len({id(entry[1]) for entry in self.host.queue}), 1)
+        self.assertEqual(self.host.next_action(), (0, 0, 0, 0, 0, 50))
+
+    def test_bad_action_midway_leaves_no_partial_queue(self):
+        self.start()
+        self.reset()
+        actions = [[0, 0, 0, 0, 0, 50]] * 3 + [[999, 0, 0, 0, 0, 50]]
+        self.assert_held(lambda: self.host.validate_candidate(self.candidate(actions)))
+
+    def test_arm_safety_event_is_current_while_result_event_stays_durable(self):
+        from datetime import datetime
+
+        seq = self.finish_inbound()
+        self.assertEqual(self.host.state, "SAFE_RETURNED")
+        done = self.host.result_event()
+        self.clock.advance(3)
+        mock_observe(self.host, self.clock, seq + 1)
+        fresh = self.host.arm_safety_event()
+        self.assertEqual(self.host.result_event(), done)  # History is not rewritten.
+        self.assertEqual(fresh["type"], "shelf.execute.completed")
+        self.assertEqual(fresh["payload"]["state"], "SAFE_RETURNED")
+        self.assertTrue(fresh["payload"]["active_arm_safe"])
+        self.assertTrue(fresh["payload"]["inactive_arm_safe"])
+        for arm, observation in fresh["payload"]["arms"].items():
+            self.assertGreater(
+                datetime.fromisoformat(observation["captured_at"]),
+                datetime.fromisoformat(done["payload"]["arms"][arm]["captured_at"]),
+            )
+        for field in ("execution_id", "command_id"):
+            self.assertEqual(fresh[field], done[field])
+
+    def test_arm_safety_event_requires_safe_returned(self):
+        self.start()
+        with self.assertRaises(Rejected):
+            self.host.arm_safety_event()
+        self.assertEqual(self.host.state, "GRASPING")
+
     def test_queue_expiry_before_each_target(self):
         self.start()
         self.reset()

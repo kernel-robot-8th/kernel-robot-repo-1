@@ -851,10 +851,14 @@ class DedicatedHost:
                     raise Rejected("candidate exceeds physical/step limits")
                 validated.append(action)
                 previous = action
-            self.queue.extend(
-                (action, deepcopy(reply), self.pending["deadline"])
-                for action in validated
-            )
+            # Share one small metadata dict; copying the whole reply per action
+            # made queue construction O(N^2) in memory/time for large chunks.
+            meta = {
+                "expires_at": reply["expires_at"],
+                "phase_revision": reply["phase_revision"],
+            }
+            deadline = self.pending["deadline"]
+            self.queue.extend([(action, meta, deadline) for action in validated])
             self.last_action_seq = reply["action_seq"]
             self.pending = None
             return tuple(validated)
@@ -1072,6 +1076,16 @@ class DedicatedHost:
             ).fetchone()
             if row and row[0]:
                 return json.loads(row[0])
+        return self._event_snapshot()
+
+    def arm_safety_event(self):
+        """Current both-arm snapshot after SAFE_RETURNED, from live observations.
+
+        result_event() stays the durable completion history; this is what control
+        needs for refresh_arm_safety() once the stored snapshot has gone stale.
+        """
+        if not self.command or self.state != "SAFE_RETURNED":
+            raise Rejected("arm safety event requires SAFE_RETURNED")
         return self._event_snapshot()
 
     def status(self):
