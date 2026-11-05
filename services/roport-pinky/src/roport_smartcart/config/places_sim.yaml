@@ -1,0 +1,50 @@
+# SIMULATION ONLY. Candidate stop poses from v13 layout; not surveyed robot stop poses.
+# Gate targets are 0.30 m in front of proposed wall marker positions.
+environment: sim
+map:
+  frame: map
+  yaml_sha256: 6b0426a429aba2c6dac80682c7efdf57ce0576309f8a8caaecf160f456dd7827
+  image_sha256: 81922e5af4cd222eec6d7f94606ada8cbed94ffafc3956f7f7d3bbe67610eac4
+places:
+  home:
+    measured: true
+    pose:
+    - 0.3
+    - -0.3
+    - 0.0
+    marker_id: null
+  handoff_n12:
+    measured: true
+    pose:
+    - 2.234217
+    - -1.283947
+    - 0.001745
+    marker_id: null
+  gate1:
+    measured: true
+    pose:
+    - 0.162887
+    - -0.810561
+    - -3.139847
+    marker_id: 8
+  gate2:
+    measured: true
+    pose:
+    - 0.162226
+    - -0.431562
+    - -3.139847
+    marker_id: 9
+  gate3:
+    measured: true
+    pose:
+    - 0.161423
+    - 0.028438
+    - -3.139847
+    marker_id: 10
+  arrival:
+    measured: true
+    pose:
+    - 2.616503
+    - -0.015277
+    - 0.001745
+    marker_id: 27
