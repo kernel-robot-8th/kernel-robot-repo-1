@@ -4,7 +4,7 @@
 create_driver(profile, role) 로 만들고 observe·validate_action·dispatch·safe_stop·drain_results 를 부른다.
 MQTT·스키마·이력·재전송은 키트 모듈이 맡고, 여기서는 line_nav 상태를 관측값으로 바꾸고 명령을 넘긴다.
 
-지원: route.requested(start_maneuver = none, 경유 정차 없음), status. mode_switch·navigate 는 거부.
+지원: route(start_maneuver=none), N12 mode_switch, Nav2 navigate, status.
 출발 노드: 처음에는 ROPORT_PINKY_START_NODE(예: N16, 운영자가 놓은 칸). 그 뒤로는 line_nav 가
   마지막으로 확인한 노드. 정지·오류 뒤에는 모름(null) → 다음 route 는 관제 쪽에서 거부된다.
 방향: 칸 노드(이웃 1개)는 칸 바깥 방향, 주행 뒤에는 line_nav 화면용 추정(pose_est). map = layout + frame.yaw.
@@ -102,9 +102,6 @@ class TrialLogic:
                 raise ValueError('invalid_route') from None
             if p['graph_version'] != self.graph.version:
                 raise ValueError('graph_version_mismatch')
-            first = HEADING[legs[0].heading] + self.frame_yaw
-            if abs(_wrap(first - p['start_heading_rad'])) > 0.35:
-                raise ValueError('start_heading_not_first_leg')
             st = self.st
             if st is None or self.now() - self.st_t > STATE_MAX_AGE:
                 raise ValueError('line_nav_unavailable')
@@ -113,8 +110,14 @@ class TrialLogic:
             if st['state'] == 'loading':
                 if st['route'][-1] != p['start_node']:
                     raise ValueError('loading_elsewhere')
+                # start_heading is the observed loading pose, before load_done turns.
+                if abs(_wrap(self._observe()['heading_rad'] - p['start_heading_rad'])) > 0.35:
+                    raise ValueError('loading_heading_mismatch')
             elif st['state'] in MOVING:
                 raise ValueError('line_nav_busy')
+            elif abs(_wrap(HEADING[legs[0].heading] + self.frame_yaw
+                           - p['start_heading_rad'])) > 0.35:
+                raise ValueError('start_heading_not_first_leg')
 
     def dispatch(self, command):
         with self.lock:
@@ -253,9 +256,8 @@ class TrialLogic:
 class TrialDriver:
     """rclpy 연결부. 별도 스레드에서 spin, 키트의 MQTT 스레드는 hook 만 부른다."""
 
-    def __init__(self, profile, role, *, layout_file=None, start_node=None):
+    def __init__(self, profile, role, *, layout_file=None, start_node=None, map_path=None):
         import rclpy
-        from geometry_msgs.msg import Twist
         from nav_msgs.msg import Odometry
         from rclpy.executors import SingleThreadedExecutor
         from std_msgs.msg import String
@@ -265,18 +267,31 @@ class TrialDriver:
             layout_file = os.path.join(get_package_share_directory('roport_gz_world'),
                                        'layout', 'roport_airport.yaml')
         graph = Graph.load(layout_file)
-        self._String, self._Twist = String, Twist
+        self._String = String
         rclpy.init()
         self.node = rclpy.create_node('pinky_trial_driver')
         self.cmd_pub = self.node.create_publisher(String, 'line_nav/command', 10)
-        self.vel_pub = self.node.create_publisher(Twist, 'cmd_vel', 10)
+        from uuid import uuid4
+
+        from .trial_nav2 import Nav2Bridge
+        if not map_path:
+            raise ValueError('ROPORT_PINKY_MAP must identify the Nav2 map YAML')
+        self.lock = threading.RLock()
+        self.mode, self.nav_command = 'line', None
+        self.guard, self.guard_at = None, None
+        self.halted, self.runner_seen = None, None
+        self.session, self.lease_seq = str(uuid4()), 0
+        self.lease_pub = self.node.create_publisher(String, 'trial/lease', 1)
+        self.nav = Nav2Bridge(self.node, profile, map_path, self.lock)
+        self.node.create_subscription(String, 'trial/guard_state', self._on_guard, 10)
         self.logic = TrialLogic(graph, profile, send=self._send, zero=self._zero,
                                 start_node=start_node)
         self.node.create_subscription(String, 'line_nav/state', self._on_state, 10)
         self.node.create_subscription(Odometry, 'odom', self._on_odom, 10)
         self._ex = SingleThreadedExecutor()
         self._ex.add_node(self.node)
-        threading.Thread(target=self._ex.spin, daemon=True).start()
+        self.thread = threading.Thread(target=self._ex.spin, daemon=True)
+        self.thread.start()
         self.node.get_logger().info(
             f'trial driver for {role}: start node {start_node}, graph {graph.version}')
 
@@ -296,27 +311,165 @@ class TrialDriver:
         self.node.get_logger().info(f'line_nav command {body}')
 
     def _zero(self):
-        self.vel_pub.publish(self._Twist())
+        self._lease('none')
+
+    def _on_guard(self, msg):
+        try:
+            state = json.loads(msg.data)
+            if not (-0.1 <= time.time() - state['sent_at'] <= 0.3
+                    and isinstance(state['boot'], str)
+                    and state['owner'] in ('line', 'nav2', 'none')
+                    and type(state['blocked']) is bool):
+                return
+        except (ValueError, KeyError, TypeError):
+            return
+        with self.lock:
+            if self.guard and self.guard['boot'] != state['boot']:
+                self.halted = 'drive_guard_restarted'
+            self.guard, self.guard_at = state, time.monotonic()
+
+    def _guard_fault(self):
+        if self.halted:
+            return self.halted
+        if self.guard is None or time.monotonic() - self.guard_at > 0.3:
+            return 'drive_guard_unavailable'
+        if self.guard['blocked']:
+            return 'drive_lease_expired'
+        publishers = self.node.get_publishers_info_by_topic('cmd_vel')
+        if len(publishers) != 1 or publishers[0].node_name != 'trial_guard':
+            return 'drive_output_conflict'
+        return None
+
+    def _lease(self, owner):
+        if self.guard is not None:
+            self.lease_seq += 1
+            self.lease_pub.publish(self._String(data=json.dumps({
+                'boot': self.guard['boot'], 'session': self.session, 'seq': self.lease_seq,
+                'sent_at': time.time(), 'owner': owner,
+            })))
+
+    def heartbeat(self):
+        with self.lock:
+            if self._guard_fault():
+                return
+            self.runner_seen = time.monotonic()
+            owner = 'line' if self.logic.active else 'none'
+            if self.nav_command and self.nav_command['type'] == 'navigate.requested' and not self.nav.result:
+                owner = 'nav2'
+            self._lease(owner)
 
     def observe(self):
-        return self.logic.observe()
+        with self.lock:
+            state = self.logic.observe()
+            nav = self.nav.snapshot()
+            state.update(mode=self.mode, nav2_ready=nav['nav2_ready'],
+                         localization_ready=nav['localization_ready'])
+            if self.mode == 'nav2':
+                state['drive_owner'] = 'nav2'
+                if nav['pose']:
+                    state['heading_rad'] = nav['pose']['yaw']
+                if not nav['nav2_ready'] or not nav['localization_ready']:
+                    state['fault'] = 'nav2_not_ready'
+            state['fault'] = self._guard_fault() or state['fault']
+            if self.runner_seen is None or time.monotonic() - self.runner_seen > 1:
+                state['fault'] = state['fault'] or 'runner_heartbeat_missing'
+            return state
 
     def validate_action(self, command):
-        return self.logic.validate_action(command)
+        with self.lock:
+            state = self.observe()
+            if state['fault']:
+                raise ValueError(state['fault'])
+            if self.nav_command or self.logic.active or not state['stopped'] or state['line_enabled']:
+                raise ValueError('drive_busy')
+            if command['type'] == 'route.requested':
+                if self.mode != 'line':
+                    raise ValueError('not_in_line_mode')
+                return self.logic.validate_action(command)
+            p = command['payload']
+            if any(p[k] != state[k] for k in ('map_id', 'map_version')):
+                raise ValueError('map_mismatch')
+            if not state['nav2_ready'] or not state['localization_ready']:
+                raise ValueError('nav2_not_ready')
+            if command['type'] == 'mode_switch.requested':
+                if self.mode != 'line' or state['node_id'] != 'N12' or self.logic.st['state'] != 'handoff':
+                    raise ValueError('not_at_switch_node')
+            elif command['type'] != 'navigate.requested' or self.mode != 'nav2' or p['frame_id'] != 'map':
+                raise ValueError('unsupported_operation')
 
     def dispatch(self, command):
-        return self.logic.dispatch(command)
+        with self.lock:
+            if command['type'] == 'route.requested':
+                self._lease('line')
+                return self.logic.dispatch(command)
+            self.nav_command = command
+            if command['type'] == 'mode_switch.requested':
+                self._lease('none')
+                self.mode = 'nav2'
+            else:
+                self.logic.node = None
+                self.nav.start(command['payload'])
+                self._lease('nav2')
 
     def safe_stop(self, reason):
-        self.node.get_logger().warn(f'safe_stop: {reason}')
-        return self.logic.safe_stop(reason)
+        with self.lock:
+            self.halted = reason
+            self.nav_command = None
+            self.nav.cancel()
+            self.logic.safe_stop(reason)
 
     def drain_results(self):
-        return self.logic.drain_results()
+        with self.lock:
+            active = self.nav_command or self.logic.active
+            state = self.observe()
+            if active and state['fault']:
+                self.safe_stop(state['fault'])
+                return [(active, 'failed', {'error_code': state['fault']})]
+            results = self.logic.drain_results()
+            cmd = self.nav_command
+            if cmd is None:
+                return results
+            if cmd['type'] == 'mode_switch.requested':
+                if self.guard['owner'] == 'none' and state['stopped']:
+                    self.nav_command = None
+                    results.append((cmd, 'completed', {}))
+                return results
+            if self.nav.result:
+                code, ended = self.nav.result
+                snap = self.nav.snapshot()
+                p, pose = cmd['payload'], snap['pose']
+                if code == 'SUCCEEDED' and not state['stopped'] and time.monotonic() - ended < 3:
+                    return results
+                if code == 'SUCCEEDED' and (not pose or not state['stopped']
+                            or math.hypot(pose['x'] - p['pose']['x'], pose['y'] - p['pose']['y']) > p['position_tolerance_m']
+                            or abs(_wrap(pose['yaw'] - p['pose']['yaw'])) > p['yaw_tolerance_rad']):
+                    if time.monotonic() - ended < 3:
+                        return results  # allow the final odom/TF sample to arrive
+                    code = 'nav2_goal_not_reached'
+                self.nav_command = None
+                self._lease('none')
+                if code != 'SUCCEEDED':
+                    self.safe_stop(code)
+                    results.append((cmd, 'failed', {'error_code': code}))
+                else:
+                    results.append((cmd, 'completed', {
+                        'goal_id': p['goal_id'], 'goal_version': p['goal_version'],
+                        'frame_id': 'map', 'pose': pose, 'nav2_result': 'SUCCEEDED',
+                    }))
+            return results
+
+    def close(self):
+        import rclpy
+        self._ex.shutdown(timeout_sec=2)
+        self.thread.join(timeout=2)
+        self.node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 def create_driver(profile, role):
     """pinky_mqtt.trial_runner --driver roport_pinky.trial_driver:create_driver"""
     return TrialDriver(profile, role,
                        layout_file=os.environ.get('ROPORT_PINKY_LAYOUT') or None,
-                       start_node=os.environ.get('ROPORT_PINKY_START_NODE') or None)
+                       start_node=os.environ.get('ROPORT_PINKY_START_NODE') or None,
+                       map_path=os.environ.get('ROPORT_PINKY_MAP') or None)
