@@ -308,4 +308,11 @@ async function poll() {
   }
   setTimeout(poll, POLL_MS);
 }
+fetch("api/info").then((r) => r.json()).then((info) => {
+  if (info.teleop_enabled === false) {
+    $("btnEstop").disabled = true;
+    $("btnEstop").textContent = "웹 정지 사용 불가";
+    setMsg($("estopStatus"), "수동 구동 꺼짐 · 현장 정지 수단을 사용하세요", "err");
+  }
+}).catch(() => {});
 poll();

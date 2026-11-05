@@ -95,6 +95,10 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
     app = Flask(__name__, static_folder=None)
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024
 
+    @app.errorhandler(PermissionError)
+    def _drive_disabled(exc):
+        return jsonify({'success': False, 'msg': str(exc)}), 403
+
     @app.errorhandler(BadRequest)
     def _bad_request(e):
         return jsonify({'success': False, 'msg': str(e)}), 400

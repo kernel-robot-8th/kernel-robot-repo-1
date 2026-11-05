@@ -27,6 +27,8 @@ async function poll() {
     if (!response.ok) throw new Error("상태 수신 실패");
     latest = await response.json();
     el("connection").textContent = "실시간 연결 · 0.5초 갱신";
+    el("stop").disabled = latest.teleop_enabled === false;
+    el("stop").textContent = latest.teleop_enabled === false ? "웹 정지 사용 불가 · 현장 정지 수단 사용" : "■ 정지 요청";
     el("map").textContent = latest.map_loaded ? "지도 수신됨" : "지도 수신 대기";
     for (const topic of ["scan", "odom", "tf"]) {
       const status = latest.sensors[topic];

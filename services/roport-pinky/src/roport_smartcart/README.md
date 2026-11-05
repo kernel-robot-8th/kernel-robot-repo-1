@@ -46,10 +46,13 @@ QR·고객 추종은 현재 구현 범위에 넣지 않는다.
 | `config/places_sim.yaml` | v13 배치 기반 **시뮬레이션 전용 후보 좌표** |
 | `config/reference/2026-09-14/` | 강사 설정 원본 덤프. 자동 로딩하지 않음 |
 
-전체 임무 자동 실행·MQTT 연결·라인/Nav2 전환은 아직 통합하지 않았다.
+관제 시험의 MQTT·라인/Nav2 전환·실측 완료 응답은 최신 main의
+[`roport_pinky.trial_driver`](../roport_pinky/README.md)를 공통 실행부로 사용한다.
+`trial_contract.py`는 순수 계약 검사이며 별도 MQTT 실행부로 연결하지 않는다.
+스마트카트의 상차 후 H1/H2 복귀·적재 대기·고객 호출 전체 임무는 아직 통합하지 않았다.
 `navigate`는 명시 목표를 보내는 도구이며 상차·하차·관제 임무 실행기가 아니다.
 2026-11-05 Gazebo에서 gate1→home 1회 왕복·연속 정지를 확인했다. 복귀 위치 오차는 약 5.34 cm로 설정 허용치 6 cm 이내였다.
-실로봇 주행은 아직 검증하지 않았다.
+관제와 연결한 실로봇 주행은 아직 검증하지 않았다.
 
 ## 빌드·테스트
 
@@ -132,7 +135,7 @@ ros2 run roport_smartcart navigate --mode real --domain-id "$ROPORT_DOMAIN" \
 - 준비 대기와 주행 중 `request_nomotion_update`로 AMCL 재관측만 요청한다(최대 1 Hz, 이전 요청 진행 중이면 중복 금지). 초기 위치를 재설정하거나 모터 명령을 보내지 않는다.
 - 기본 준비 대기는 20초(`--startup-wait`), 목표 timeout은 120초다. timeout/Ctrl+C에는 Nav2 취소를 요청하고 terminal result까지 기다린다. 결과가 없으면 소유권을 해제했다고 간주하지 않는다.
 - Nav2 결과는 실제 정차 증거가 아니다. 다음 목표 전에 최신 odom의 연속 정지를 확인한다. CLI는 raw `cmd_vel`을 발행하지 않는다.
-- 공용 라인은 `roport_line_nav`의 `line_nav/command`와 `line_nav/state`를 연결한다. `start/stop/load_done/speed`, `loading/arrived/handoff/error/stopped`를 사용하고 **N12 handoff**에서 Nav2로 전환한다. 아직 이 어댑터는 없다.
+- 공용 라인은 `roport_line_nav`의 `line_nav/command`와 `line_nav/state`를 연결한다. `start/stop/load_done/speed`, `loading/arrived/handoff/error/stopped`를 사용하고 **N12 handoff**에서 Nav2로 전환한다. 관제 시험 어댑터는 `roport_pinky.trial_driver`에 구현돼 있으며 현장 연동 검증은 별도다.
 - 라인·Nav2·수동 출력은 최종 구동에서 단일 소유권으로 중재해야 한다. behavior/smoother도 포함한다. 순수 `VelocityGate`와 라인 `cmd_vel_guard`는 최종 드라이버 watchdog을 대신하지 않는다.
 - `unload_confirmed`는 하차와 복귀 허가를 모두 검증한 어댑터만 전달한다. 관제 payload·식별자·영속 중복 방지는 기존 공통 실행부 계약을 따른다.
 
@@ -151,10 +154,19 @@ ros2 run roport_smartcart navigate --mode real --domain-id "$ROPORT_DOMAIN" \
   `(원본 command, 'completed', details)`를 만든다. 요청 pose를 결과로 복사하지 않는다.
 - `navigation_failed`: `(원본 command, 'failed', {'error_code': ...})`를 만든다. 상태 보강·정지·실제 발행은 runner와 ROS driver 책임이다.
 
-이 모듈은 순수 계약 함수다. MQTT 발행과 ROS driver hook 연결은 아직 하지 않았으며,
-계약에 없는 `navigate.progress`나 미구현 N12 전환 완료를 생성하지 않는다.
+이 모듈은 순수 계약 함수다. 실제 MQTT 발행과 ROS driver hook은 공통 `roport_pinky.trial_driver`와
+저장소의 새 관제 키트가 담당하며, 이 모듈을 두 번째 실행부로 붙이지 않는다.
+새 키트의 heartbeat/close hook이 필요하므로 기존 Confluence ZIP을 그대로 재사용하지 않는다.
+관제 시험은 N11→N12→공용공간 골까지이며 H1/H2 적재 대기 복귀·G1/G2/G3 배송 전체 임무와 구분한다.
+계약에 없는 `navigate.progress`를 추가하지 않고, 순수 검사 결과를 실제 N12 전환 완료로 보고하지 않는다.
 검증은 합성 데이터 단위 시험과 배포 키트의 실제 `validate_trial`/`check_result` 대조로 수행했다.
 원본 배포 키트·인증 파일은 저장소에 복사하지 않는다.
+
+관제 trial과 GUI를 함께 쓸 때는 GUI에 `teleop_enabled:=false`를 지정해 직접 구동 발행자를 없앤다.
+이때 웹 정지·수동 조종·별도 목표/경로 명령은 사용할 수 없으므로 현장 정지 수단을 유지한다.
+trial launch에는 실기 외곽·속도·`set_initial_pose: false`를 반영한 `params_file`을 명시하고,
+기존 smartcart Nav2/라인 launch와 중복 실행하지 않는다. 시험용 기본 footprint를 실측값으로 간주하지 않는다.
+지도 식별자는 trial의 YAML+이미지 합성 SHA256 앞16자와 로컬 목적지 파일의 파일별 SHA256을 구분한다.
 
 후속 순서는 FFT1-92 실물 센서/정지 확인 → FFT1-83 단일 목표 → FFT1-81 N12 구동권 전환 →
 FFT1-84 관제 호출·도착/실패·복귀 연결 → FFT1-85 통합 시험이다. 사람 감속·정지·우회는 FFT1-120에서 진행한다.
