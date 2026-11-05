@@ -15,6 +15,7 @@ QR·고객 추종은 현재 구현 범위에 넣지 않는다.
 | `profiles.py`, `config/nav2_overrides.yaml` | 공통 Nav2 설정 병합, sim/real clock·footprint·속도 분리 |
 | `launch/navigation.launch.py` | sim: Gazebo+Nav2, real: 명시 설정으로 Nav2 실행. 목표를 보내지 않음 |
 | `velocity_gate.py` | ROS 없는 속도 소유권·epoch/sequence·지연·상한 검증 |
+| `trial_contract.py` | 기존 trial-v1 키트에 연결할 Nav2 목표·실측 완료·실패 hook 검증 |
 | `config/places.yaml` | 실기 목적지. `environment: real`, **모두 미측정이므로 실행 거부** |
 | `config/places_sim.yaml` | v13 배치 기반 **시뮬레이션 전용 후보 좌표** |
 | `config/reference/2026-09-14/` | 강사 설정 원본 덤프. 자동 로딩하지 않음 |
@@ -110,3 +111,24 @@ ros2 run roport_smartcart navigate --mode real --domain-id "$ROPORT_DOMAIN" \
 - `unload_confirmed`는 하차와 복귀 허가를 모두 검증한 어댑터만 전달한다. 관제 payload·식별자·영속 중복 방지는 기존 공통 실행부 계약을 따른다.
 
 실기 목적지·센서 사각·장애물 대응·라인 전환·관제 통합·프로세스 종료 시 구동 정지는 후속 검증 항목이다.
+
+## 관제 메시지 연결 · FFT1-90
+
+[통신 명세 v5](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/17530882)는 현재 시험에
+[Pinky 주행 시험 가이드 v2](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/19988482)의 `roport-pinky-driving-trial-v1` 키트를 지정한다.
+저장소의 일반 `schema_version: 1.0` 예시나 goal_id만 있는 운영 검토안과 혼합하지 않는다.
+배포 키트의 MQTT runner가 envelope·binding/boot·중복·accepted를 처리하고 ROS driver hook을 호출한다.
+
+- `navigation_destination`: 키트의 `validate_trial`을 주입하고 mode·map/goal 버전·좌표·명령 신선도·만료를 검증한다.
+  `expires_at`이 남아 있어도 시험 계약상 `sent_at`이 3초보다 오래되면 거부한다. real은 현장 검증된 profile이 필요하다.
+- `navigation_completed`: Nav2 성공·정지·라인 해제·독점 Nav2 소유권·지도 일치와 최신 측정 pose의 허용오차를 확인한 뒤
+  `(원본 command, 'completed', details)`를 만든다. 요청 pose를 결과로 복사하지 않는다.
+- `navigation_failed`: `(원본 command, 'failed', {'error_code': ...})`를 만든다. 상태 보강·정지·실제 발행은 runner와 ROS driver 책임이다.
+
+이 모듈은 순수 계약 함수다. MQTT 발행과 ROS driver hook 연결은 아직 하지 않았으며,
+계약에 없는 `navigate.progress`나 미구현 N12 전환 완료를 생성하지 않는다.
+검증은 합성 데이터 단위 시험과 배포 키트의 실제 `validate_trial`/`check_result` 대조로 수행했다.
+원본 배포 키트·인증 파일은 저장소에 복사하지 않는다.
+
+후속 순서는 FFT1-92 실물 센서/정지 확인 → FFT1-83 단일 목표 → FFT1-81 N12 구동권 전환 →
+FFT1-84 관제 호출·도착/실패·복귀 연결 → FFT1-85 통합 시험이다. 사람 감속·정지·우회는 FFT1-120에서 진행한다.
