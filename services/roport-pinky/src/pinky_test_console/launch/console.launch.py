@@ -88,14 +88,17 @@ def launch_setup(context):
         ),
     ]
     if plan.mode in ROUTE_MODES:
-        # 경로 주행 노드(cmd_vel 발행). bringup(모터·odom)은 사용자가 먼저 따로 실행
+        # 경로 주행 노드. bringup(모터·odom)은 사용자가 먼저 따로 실행.
+        # line_nav → line_nav/cmd_vel → cmd_vel_guard → cmd_vel (line_nav 가 0.3 s 끊기면 0)
         actions.append(Node(
             package='roport_line_nav', executable='line_nav', output='screen',
             parameters=[{
                 'robot': plan.robot,
                 'layout_file': os.path.expanduser(LaunchConfiguration('layout').perform(context)),
                 'log_dir': LaunchConfiguration('nav_log_dir').perform(context),
-            }]))
+            }], remappings=[('cmd_vel', 'line_nav/cmd_vel')]))
+        actions.append(Node(package='roport_line_nav', executable='cmd_vel_guard',
+                            output='screen'))
     if launch_file:
         # pinky_navigation 이 없으면 여기서 PackageNotFoundError 로 바로 알려준다
         launch_path = os.path.join(

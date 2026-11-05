@@ -4,10 +4,11 @@
 #     "{data: '{\"cmd\": \"start\", \"route\": [\"N14\", \"N16\"]}'}"
 #   ir_node:=false  pinky_sensor_adc main_node 를 이미 따로 실행 중일 때
 #   layout_file:=<roport_airport.yaml>  roport_gz_world 를 설치하지 않았을 때
+#   cmd_guard:=true(기본)  line_nav → line_nav/cmd_vel → cmd_vel_guard → cmd_vel (0.3 s 끊기면 0)
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -32,6 +33,8 @@ def generate_launch_description():
                               description='never publish cmd_vel (route/IR check only)'),
         DeclareLaunchArgument('layout_file', default_value='',
                               description='layout yaml (default: roport_gz_world share)'),
+        DeclareLaunchArgument('cmd_guard', default_value='true',
+                              description='relay via cmd_vel_guard (zero after 0.3 s)'),
     ]
     args += [DeclareLaunchArgument(k, default_value=v, description=d)
              for k, (v, d) in FLOAT_ARGS.items()]
@@ -46,5 +49,10 @@ def generate_launch_description():
         Node(package='pinky_sensor_adc', executable='main_node', output='screen',
              condition=IfCondition(LaunchConfiguration('ir_node'))),
         Node(package='roport_line_nav', executable='line_nav', output='screen',
-             parameters=[params]),
+             parameters=[params], remappings=[('cmd_vel', 'line_nav/cmd_vel')],
+             condition=IfCondition(LaunchConfiguration('cmd_guard'))),
+        Node(package='roport_line_nav', executable='cmd_vel_guard', output='screen',
+             condition=IfCondition(LaunchConfiguration('cmd_guard'))),
+        Node(package='roport_line_nav', executable='line_nav', output='screen',
+             parameters=[params], condition=UnlessCondition(LaunchConfiguration('cmd_guard'))),
     ])

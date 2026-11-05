@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'line_nav = roport_line_nav.line_nav_node:main',
+            'cmd_vel_guard = roport_line_nav.cmd_vel_guard:main',
         ],
     },
 )

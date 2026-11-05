@@ -49,7 +49,12 @@ Gazebo에는 IR 센서가 없다. 시뮬레이터 결과는 실로봇 주행 검
 
 ## 실행 (실로봇, 사용자 수행)
 
-`line_follower`와 같이 띄우지 않는다(둘 다 `cmd_vel` 발행). pinky_6422는 명령 앞에 `RMW_IMPLEMENTATION=rmw_fastrtps_cpp`를 붙인다.
+`line_follower`와 같이 띄우지 않는다(둘 다 `cmd_vel` 발행).
+
+속도 명령 경로: launch로 띄우면 `line_nav → line_nav/cmd_vel → cmd_vel_guard → cmd_vel → pinky_bringup`이다.
+- `pinky_bringup`은 cmd_vel 타임아웃이 없어 마지막 속도를 계속 유지한다. `cmd_vel_guard`(별도 프로세스)는 받은 명령을 넘기고, 움직이는 중에 0.3 s 넘게 명령이 끊기면(line_nav가 죽거나 멈춤) 0을 3번 보낸다. 코드 상한(0.15 m/s·1.5 rad/s)으로 한 번 더 자른다.
+- guard 자체가 죽는 경우는 막지 못한다. 근본 해결은 구동 드라이버의 타임아웃이다.
+- `cmd_guard:=false`면 예전처럼 line_nav가 `cmd_vel`에 바로 낸다. 테스트 콘솔 조종(teleop)·전체 정지는 지금도 `cmd_vel`에 바로 낸다. pinky_6422는 명령 앞에 `RMW_IMPLEMENTATION=rmw_fastrtps_cpp`를 붙인다.
 
 ```bash
 # 빌드: roport_gz_world(노드 그래프), roport_pinky_line(IR 판정), roport_line_nav
