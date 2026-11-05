@@ -9,6 +9,33 @@ const ctx = canvas.getContext("2d");
 
 let mapGrid = null;    // { version, width, height, resolution, origin, image }
 let last = null;
+let mapZoom = 1;
+
+function setMapZoom(value) {
+  mapZoom = Math.max(1, Math.min(3, value));
+  const expanded = document.body.classList.contains("am-map-expanded");
+  const height = expanded ? Math.max(100, window.innerHeight - 190) : window.innerHeight * .75;
+  const width = Math.min(canvas.parentElement.clientWidth, height * canvas.width / canvas.height);
+  canvas.style.width = `${width * mapZoom}px`;
+  $("mapZoomLabel").textContent = `${Math.round(mapZoom * 100)}%`;
+  $("mapZoomOut").disabled = mapZoom === 1;
+  $("mapZoomIn").disabled = mapZoom === 3;
+}
+$("mapZoomIn").addEventListener("click", () => setMapZoom(mapZoom + .25));
+$("mapZoomOut").addEventListener("click", () => setMapZoom(mapZoom - .25));
+$("mapFit").addEventListener("click", () => {
+  setMapZoom(1);
+  const viewport = canvas.parentElement;
+  viewport.scrollTop = viewport.scrollLeft = 0;
+});
+$("mapExpand").addEventListener("click", () => {
+  const expanded = document.body.classList.toggle("am-map-expanded");
+  $("mapExpand").setAttribute("aria-pressed", String(expanded));
+  $("mapExpand").textContent = expanded ? "설정 함께 보기" : "지도만 크게";
+  setMapZoom(mapZoom);
+});
+window.addEventListener("resize", () => setMapZoom(mapZoom));
+setMapZoom(1);
 
 function markConnection(ok) {
   $("connDot").className = "chip-dot " + (ok ? "live" : "dead");
