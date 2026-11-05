@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from roport_control_server.app import app
+from roport_control_server.adapters.api.app import app
 
 client = TestClient(app)
 

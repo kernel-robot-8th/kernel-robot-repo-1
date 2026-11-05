@@ -12,6 +12,7 @@
 #   - zero velocity published on shutdown or spin exception
 #   - IR raw value view and timed CSV recording (ir_sensor/range)
 #   - ArUco marker recognition check (camera preview, ID checklist)
+#   - AMCL map match check (scan vs map score, node initial poses, CSV record)
 # See LICENSE in this package for the full license text.
 
 import _thread
@@ -43,12 +44,13 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.msg import Costmap
 from nav_msgs.msg import OccupancyGrid, Path
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, LaserScan
 from slam_toolbox.srv import Reset, SaveMap
 from std_msgs.msg import Float32, String, UInt16MultiArray
+from std_srvs.srv import Empty
 from tf2_ros import Buffer, TransformListener
 
-from . import ir_record, map_store, marker_detect
+from . import amcl_check, ir_record, map_store, marker_detect
 from .sysstats import read_system_stats
 from .teleop import DEADMAN_TIMEOUT, MAX_ANGULAR, MAX_LINEAR, TeleopGuard
 from .web_app import create_app, default_web_dir
@@ -57,6 +59,7 @@ TELEOP_PERIOD = 0.1     # s, /cmd_vel 발행 주기 10 Hz
 WATCHDOG_PERIOD = 0.02  # s, deadman 검사 주기 (만료 후 최대 20 ms 안에 0 발행)
 BATTERY_STALE_SEC = 15.0  # battery_publisher 는 5 s 주기
 SAVE_MAP_TIMEOUT = 20.0   # s, map_saver_cli 실행 대기
+SCAN_STALE_SEC = 1.0      # 라이다 스캔이 이보다 오래되면 정합 점수를 내지 않음
 
 
 ############################################################
@@ -96,6 +99,8 @@ class ConsoleNode(Node):
         self.declare_parameter('markers_yaml', '')
         self.declare_parameter('camera_hfov_deg', 0.0)
         self.declare_parameter('marker_record_dir', marker_detect.DEFAULT_RECORD_DIR)
+        self.declare_parameter('layout_yaml', '')
+        self.declare_parameter('amcl_dir', amcl_check.DEFAULT_AMCL_DIR)
 
         self.mode = self.get_parameter('mode').value
         self.map_dir = map_store.resolve_map_dir(self.get_parameter('map_dir').value)
@@ -160,6 +165,17 @@ class ConsoleNode(Node):
             CancelGoal, 'navigate_to_pose/_action/cancel_goal')
         self.initial_pose_pub = self.create_publisher(
             PoseWithCovarianceStamped, 'initialpose', 10)
+
+        # ---- AMCL 정합 확인 (mode:=amcl 에서만) ----
+        self.amcl_frame = None      # 배치 yaml 의 실측 ↔ map 변환
+        self.amcl_nodes = []
+        self.amcl_error = None
+        self.amcl_pose = None       # {x, y, yaw, std, stamp(monotonic)}
+        self.scan_points = None     # (points, monotonic time)
+        self._field = (None, None)  # (map version, DistanceField)
+        self.amcl_recorder = amcl_check.AmclRecorder(self.get_parameter('amcl_dir').value)
+        if self.mode == 'amcl':
+            self._start_amcl()
 
         # ---- SLAM Toolbox ----
         self.save_map_client = self.create_client(SaveMap, '/slam_toolbox/save_map')
@@ -322,6 +338,7 @@ class ConsoleNode(Node):
             'mode': self.mode,
             'map_dir': self.map_dir,
             'ir_dir': self.ir.ir_dir,
+            'amcl_dir': self.amcl_recorder.amcl_dir,
             'max_linear': MAX_LINEAR,
             'max_angular': MAX_ANGULAR,
             'deadman_sec': DEADMAN_TIMEOUT,
@@ -370,8 +387,8 @@ class ConsoleNode(Node):
         return True
 
     # ---------------- AMCL 초기 위치 설정 ----------------
-    def set_initial_pose(self, x, y, yaw):
-        """RViz의 '2D Pose Estimate'와 동일하게 /initialpose 퍼블리시."""
+    def set_initial_pose(self, x, y, yaw, var_xy=0.25, var_yaw=0.06853891909122467):
+        """RViz의 '2D Pose Estimate'와 동일하게 /initialpose 퍼블리시 (공분산 기본값도 RViz)."""
         msg = PoseWithCovarianceStamped()
         msg.header.frame_id = 'map'
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -379,10 +396,10 @@ class ConsoleNode(Node):
         msg.pose.pose.position.y = y
         msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
         msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
-        # RViz 기본값과 동일한 공분산 (x, y, yaw)
-        msg.pose.covariance[0] = 0.25
-        msg.pose.covariance[7] = 0.25
-        msg.pose.covariance[35] = 0.06853891909122467
+        # 공분산 (x, y, yaw)
+        msg.pose.covariance[0] = var_xy
+        msg.pose.covariance[7] = var_xy
+        msg.pose.covariance[35] = var_yaw
         self.initial_pose_pub.publish(msg)
         self.get_logger().info(f'[WEB] set initial pose: x={x:.2f}, y={y:.2f}, yaw={yaw:.2f}')
         return True
@@ -467,6 +484,136 @@ class ConsoleNode(Node):
 
     def ir_record_path(self, name):
         return self.ir.record_path(name)
+
+    # ---------------- AMCL 정합 확인 ----------------
+    def _start_amcl(self):
+        path = str(self.get_parameter('layout_yaml').value).strip()
+        if path:
+            try:
+                self.amcl_frame, self.amcl_nodes = amcl_check.load_layout(path)
+            except (OSError, amcl_check.AmclCheckError) as e:
+                self.amcl_error = f'layout: {e}'
+                self.get_logger().error(f'[AMCL] {self.amcl_error}')
+        sensor_qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, depth=1,
+                                reliability=QoSReliabilityPolicy.BEST_EFFORT)
+        self.create_subscription(LaserScan, 'scan', self._scan_cb, sensor_qos)
+        self.create_subscription(PoseWithCovarianceStamped, 'amcl_pose', self._amcl_pose_cb, 10)
+        self.nomotion_client = self.create_client(Empty, 'request_nomotion_update')
+        self.get_logger().info(f'[AMCL] layout={path or "-"} nodes={len(self.amcl_nodes)} '
+                               f'record={self.amcl_recorder.amcl_dir}')
+
+    def _scan_cb(self, msg):
+        """스캔을 받은 시점의 map → 라이다 TF로 점을 map 좌표로 바꿔 둔다."""
+        try:
+            t = self.tf_buffer.lookup_transform('map', msg.header.frame_id, Time()).transform
+        except Exception:  # noqa: BLE001 - AMCL 이 아직 map TF 를 안 냈을 수 있음
+            return
+        pose = (t.translation.x, t.translation.y, quat_to_yaw(t.rotation))
+        points = amcl_check.scan_to_points(
+            msg.ranges, msg.angle_min, msg.angle_increment, msg.range_min, msg.range_max, pose)
+        with self.lock:
+            self.scan_points = (points, time.monotonic())
+
+    def _amcl_pose_cb(self, msg):
+        p = msg.pose.pose
+        with self.lock:
+            self.amcl_pose = {'x': p.position.x, 'y': p.position.y,
+                              'yaw': quat_to_yaw(p.orientation),
+                              'std': amcl_check.pose_std(msg.pose.covariance),
+                              'stamp': time.monotonic()}
+
+    def _distance_field(self, map_msg, version):
+        cached_version, field = self._field
+        if cached_version != version:
+            info = map_msg.info
+            field = amcl_check.DistanceField(info.width, info.height, info.resolution,
+                                             info.origin.position.x, info.origin.position.y,
+                                             map_msg.data)
+            self._field = (version, field)
+        return field
+
+    def _amcl_score(self):
+        with self.lock:
+            map_msg, version = self.layers['map']['msg'], self.layers['map']['version']
+            scan = self.scan_points
+        if map_msg is None or scan is None or time.monotonic() - scan[1] > SCAN_STALE_SEC:
+            return None, scan
+        return amcl_check.match_score(scan[0], self._distance_field(map_msg, version)), scan
+
+    def amcl_snapshot(self, map_version):
+        score, scan = self._amcl_score()
+        with self.lock:
+            map_msg, version = self.layers['map']['msg'], self.layers['map']['version']
+            amcl = dict(self.amcl_pose) if self.amcl_pose else None
+        now = time.monotonic()
+        out = {
+            'map': None if map_msg is None else self._grid_json(
+                map_msg, version, include_data=map_version != version),
+            'scan': None if scan is None else {
+                'points': [[round(x, 3), round(y, 3)] for x, y in scan[0]],
+                'classes': score['classes'] if score else [],
+                'age_sec': round(now - scan[1], 2)},
+            'score': None if score is None else {k: v for k, v in score.items()
+                                                 if k != 'classes'},
+            'thresholds_cm': [round(t * 100) for t in amcl_check.THRESHOLDS],
+            'amcl': None,
+            'frame': None,
+            'nodes': [],
+            'error': self.amcl_error,
+            'records': self.amcl_recorder.rows(10),
+        }
+        if amcl is not None:
+            out['amcl'] = {'x': amcl['x'], 'y': amcl['y'], 'yaw': amcl['yaw'],
+                           'std': list(amcl['std']), 'age_sec': round(now - amcl['stamp'], 1)}
+            if self.amcl_frame is not None:
+                x, y, yaw = self.amcl_frame.to_measured(amcl['x'], amcl['y'], amcl['yaw'])
+                out['amcl'].update({'x_cm': round(x, 1), 'y_cm': round(y, 1),
+                                    'yaw_deg': round(yaw, 1)})
+        if self.amcl_frame is not None:
+            f = self.amcl_frame
+            out['frame'] = {'x_m': f.x_m, 'y_m': f.y_m, 'yaw_deg': f.yaw_deg}
+            for n in self.amcl_nodes:
+                mx, my, _ = f.to_map(n['x_cm'], n['y_cm'])
+                out['nodes'].append(dict(n, map_x=round(mx, 4), map_y=round(my, 4)))
+        return out
+
+    def amcl_initial_pose_cm(self, x_cm, y_cm, yaw_deg):
+        """실측 좌표(cm, 배치 yaml frame) 로 초기 위치. AmclCheckError: 배치 yaml 없음."""
+        if self.amcl_frame is None:
+            raise amcl_check.AmclCheckError('layout_yaml not loaded (layout:=<path>)')
+        x, y, yaw = self.amcl_frame.to_map(x_cm, y_cm, yaw_deg)
+        # 로봇을 노드·잰 위치에 정확히 놓는 시험이라 RViz 기본(σ 0.5 m)보다 좁게 준다.
+        # 넓으면 제자리 갱신으로 수렴이 느리다(Gazebo N12: 갱신 15번 뒤에도 12 cm).
+        return self.set_initial_pose(x, y, yaw, var_xy=amcl_check.INIT_STD_XY ** 2,
+                                     var_yaw=math.radians(amcl_check.INIT_STD_YAW_DEG) ** 2)
+
+    def amcl_node(self, node_id):
+        for n in self.amcl_nodes:
+            if n['id'] == node_id:
+                return n
+        raise amcl_check.AmclCheckError(f'unknown node {node_id!r}')
+
+    def amcl_nomotion_update(self):
+        """로봇을 움직이지 않고 AMCL 측정 갱신 한 번 (nav2_amcl request_nomotion_update)."""
+        if not self.nomotion_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn('request_nomotion_update not available (mode:=amcl ?)')
+            return False
+        self.nomotion_client.call_async(Empty.Request())
+        return True
+
+    def amcl_record(self, label, truth):
+        score, _scan = self._amcl_score()
+        if score is None:
+            raise amcl_check.AmclCheckError(f'no scan within {SCAN_STALE_SEC:g} s')
+        with self.lock:
+            amcl = dict(self.amcl_pose) if self.amcl_pose else None
+        frame = self.amcl_frame or amcl_check.Frame()
+        row = self.amcl_recorder.record(frame, amcl, score, label, truth)
+        self.get_logger().info(f'[AMCL] record {label or "-"}: {row}')
+        return row
+
+    def amcl_records_path(self):
+        return self.amcl_recorder.path
 
     # ---------------- 마커 인식 확인 ----------------
     def _start_marker(self):

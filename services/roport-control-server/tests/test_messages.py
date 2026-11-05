@@ -3,15 +3,15 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from mqtt_demo import MockExecutor, make_command
 
-from roport_control_server.communication.messages import (
+from roport_control_server.adapters.mqtt.messages import (
     MAX_MESSAGE_BYTES,
     CommandHistory,
     decode,
     encode,
     topic,
 )
-from roport_control_server.examples.mqtt_demo import MockExecutor, make_command
 
 
 @pytest.mark.parametrize(
@@ -115,7 +115,7 @@ def test_missing_expiry_on_unknown_command_is_rejected_not_typeerror():
 
 
 def test_expired_duplicate_returns_original_result(monkeypatch):
-    from roport_control_server.communication import messages
+    from roport_control_server.adapters.mqtt import messages
 
     executor = MockExecutor("pinky1")
     command = make_command("pinky1")

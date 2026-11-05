@@ -6,6 +6,7 @@
 #   mode:=nav  -> pinky_navigation/launch/bringup_launch.xml (map_server, amcl, Nav2)
 #   mode:=ir   -> no include; pinky_sensor_adc main_node (IR/ultrasonic ADC read only)
 #   mode:=marker -> no include; camera preview + ArUco recognition in the console process
+#   mode:=amcl -> pinky_navigation/launch/localization_launch.xml (map_server, amcl only)
 # pinky_bringup/bringup_robot.launch.xml is NOT included: start it separately first.
 """Pinky test console.
 
@@ -13,6 +14,8 @@
   ros2 launch pinky_test_console console.launch.py mode:=nav map:=$HOME/roport_maps/room.yaml
   ros2 launch pinky_test_console console.launch.py mode:=ir   (IR: http://<robot>:8080/ir.html)
   ros2 launch pinky_test_console console.launch.py mode:=marker markers_yaml:=~/markers.yaml
+  ros2 launch pinky_test_console console.launch.py mode:=amcl map:=<airport_map.yaml> \
+      layout:=<roport_airport.yaml>   (AMCL: http://<robot>:8080/amcl.html)
   (Gazebo) ... use_sim_time:=true
 """
 
@@ -61,6 +64,8 @@ def launch_setup(context):
                     camera, LaunchConfiguration('rotate_180').perform(context)),
                 'markers_yaml': LaunchConfiguration('markers_yaml').perform(context),
                 'camera_hfov_deg': float(LaunchConfiguration('camera_hfov_deg').perform(context)),
+                'layout_yaml': os.path.expanduser(LaunchConfiguration('layout').perform(context)),
+                'amcl_dir': LaunchConfiguration('amcl_dir').perform(context),
                 'use_sim_time': plan.use_sim_time,
             }],
         ),
@@ -81,9 +86,10 @@ def launch_setup(context):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument('mode', default_value='slam', description='slam | nav | ir | marker'),
+        DeclareLaunchArgument('mode', default_value='slam',
+                              description='slam | nav | ir | marker | amcl'),
         DeclareLaunchArgument('map', default_value='',
-                              description='map .yaml path (required for mode:=nav)'),
+                              description='map .yaml path (required for mode:=nav|amcl)'),
         DeclareLaunchArgument('port', default_value='8080', description='web port'),
         DeclareLaunchArgument('ip', default_value='0.0.0.0', description='bind address'),
         DeclareLaunchArgument('use_sim_time', default_value='false',
@@ -105,5 +111,10 @@ def generate_launch_description():
                               description='ArUco ID table (docs/aruco/markers.yaml) for names'),
         DeclareLaunchArgument('camera_hfov_deg', default_value='0',
                               description='camera horizontal FOV for rough distance (0 = off)'),
+        DeclareLaunchArgument('layout', default_value='',
+                              description='mode:=amcl layout yaml (roport_gz_world/layout/'
+                                          'roport_airport.yaml) for node poses and cm coords'),
+        DeclareLaunchArgument('amcl_dir', default_value='~/roport_amcl',
+                              description='folder for AMCL check records (CSV)'),
         OpaqueFunction(function=launch_setup),
     ])

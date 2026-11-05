@@ -34,7 +34,16 @@ source install/setup.bash
 python3 -c "import roport_pinky; import rclpy"
 ```
 
+팀 패키지 중 실행 노드는 IR 라인 추종 노드 v0([src/roport_pinky_line/](src/roport_pinky_line/), `cmd_vel` 발행, 실로봇 1~3단계 시험 2026-11-03)뿐입니다. 스마트카트 작업 위치는 [src/roport_smartcart/](src/roport_smartcart/)입니다. 아래 원본 Pinky Pro에는 실장비 실행 코드가 포함돼 있습니다.
+
 `roport_smartcart`의 작업 계획과 오프라인 검증 구성은 [src/roport_smartcart/](src/roport_smartcart/README.md)에 있습니다. 자동 주행 실행 노드는 아직 없습니다. 아래 원본 Pinky Pro에는 실장비 실행 코드가 포함돼 있습니다.
+
+## 시연 공간 Gazebo world
+
+[src/roport_gz_world/](src/roport_gz_world/README.md)는 시연 공간 실측 배치(v13)를 Gazebo world로 만든 패키지입니다.
+world 좌표를 실제 SLAM 지도 좌표계에 맞춰 두어 시뮬레이션 Nav2에서 실제 지도를 그대로 씁니다.
+`colcon build --packages-up-to roport_gz_world` 후 `ros2 launch roport_gz_world roport_gz_world.launch.xml`로 실행합니다.
+가정값(`provisional`)은 패키지 README에 정리돼 있습니다.
 
 ## Pinky Pro 원본
 
@@ -71,9 +80,11 @@ python3 scripts/check_hardware.py --namespace / --output /tmp/pinky-check.json
 
 | 파일 | 내용 |
 |---|---|
-| `airport_map.pgm`, `airport_map.yaml` | 실로봇(Pinky Pro)으로 slam_toolbox를 돌려 만든 지도. 92×53칸, 0.05 m/칸, origin (−1.654, −2.094) m, `map_server` 형식 |
+| `airport_map.pgm`, `airport_map.yaml` | Nav2용 지도. 실측 배치 v13(2026-11-02)을 그린 지도이며 SLAM 지도가 아닙니다. 벽과 라이다(12.5 cm)보다 높은 물체만 점유로 그립니다. 92×53칸, 0.05 m/칸, origin (−1.654, −2.094) m, `map_server` 형식 |
 | `airport_map.png` | `airport_map.pgm`과 같은 픽셀(0 점유, 205 미지, 254 빈 곳)의 PNG. 브라우저 등 pgm을 못 읽는 곳에서 사용. 행 0이 지도의 위쪽(+y 끝)입니다 |
-| `map_measured_v12.png` | 실측 도면(단위 cm, 원점 = 콘센트 벽·통로 쪽 모서리). v12에서 인도장 P7(위치 추정) 추가 |
+| `airport_map_slam_20261027.*` | 2026-10-27 실로봇(Pinky Pro)으로 slam_toolbox를 돌려 만든 지도. 실측 벽 위치 검증용(03 구역 T자 구조물은 지금 없음) |
+| `map_measured_v13.png` | 실측 도면과 라인 노드 그래프(노드 좌표·연결 표 포함). 단위 cm, 원점 = 콘센트 벽·통로 쪽 모서리 |
 
-- 지도 좌표(m)는 `map` 프레임입니다. 실측 도면 좌표(cm)와의 변환은 Gazebo world 배치 데이터(`roport_gz_world/layout/roport_airport.yaml`의 `frame`, PR #10)에 있습니다.
-- 지도를 다시 만들면 같은 이름으로 교체하고 PR에 만든 날짜·로봇·방법을 적습니다. 사진(사람이 찍힘)은 올리지 않습니다.
+- 원본은 [roport_gz_world/layout/roport_airport.yaml](src/roport_gz_world/layout/roport_airport.yaml)입니다. 벽·물체·노드를 여기서 고치고 지도·도면·Gazebo world를 다시 생성합니다([roport_gz_world README](src/roport_gz_world/README.md)).
+- 지도 좌표(m)는 `map` 프레임입니다. 실측 좌표(cm)와의 변환은 같은 파일의 `frame`에 있습니다.
+- 사진(사람이 찍힘)은 올리지 않습니다.

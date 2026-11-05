@@ -444,3 +444,8 @@ canvas {
 /* ---------- 마커 테스트 화면 (marker.html) ---------- */
 .mk-frame { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #000; border-radius: 12px; }
 .ir-table tr.mk-seen td { color: var(--ok); }
+
+/* AMCL 테스트 (amcl.html) */
+.am-canvas { display: block; width: 100%; height: auto; background: #111827; border-radius: 12px; }
+.am-nodes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.am-nodes .am-switch { border-color: #2563eb; color: #93c5fd; }

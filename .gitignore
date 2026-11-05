@@ -221,3 +221,36 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Public repository: local credentials and field data
+.env.*
+!.env.example
+.envrc.*
+.aws/
+.ssh/
+secrets/
+credentials.json
+mosquitto.passwd
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.sql.gz
+*.pcap
+*.pcapng
+*.bag
+*.mcap
+recordings/
+captures/
+raw-data/
+*.pt
+*.pth
+*.safetensors
+*.onnx
+gitleaks-report.*

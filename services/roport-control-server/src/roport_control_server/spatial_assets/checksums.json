@@ -1,0 +1,23 @@
+{
+  "maps/demo.png": "8b9b13f955a050cd125c3ba8572050e18540d4fbefa47fb36081519f4137ed60",
+  "maps/demo.yaml": "d1c369e4e3860849b6365bdf73d8219e711470e09ef6b4952aae484a25d33e1a",
+  "models/omx/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "models/omx/joints.json": "ad64c751eeda6192bb65bad855cfe8df05c7505e2a302f7ccaad6344c5eb0393",
+  "models/omx/robot.glb": "d90fd157693434cc521152513e5973d7b163ca5aee34dc01c8e8f7f4a4b13898",
+  "models/omx/robot.urdf": "3fbdc42ebbc85a9eb0d85363c1880f67f3ec63ba45a3d08edb965ccec1e26dd4",
+  "models/pinky/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "models/pinky/joints.json": "e578e2838f01b9c76eb13b14f5feb7a851a6c6119e2aba0e4ef22337f75af8ec",
+  "models/pinky/robot.glb": "91408f9758ddc1cde591714330db1142556d486dfb0b1b42fd040068224b46a3",
+  "models/pinky/robot.urdf": "4beb96fcc653bca7e0d9ee715a762503db68e7215b21df3f653b55b2b3b7a3f8",
+  "models/sources.json": "e433ecf5d0c6c08865a5360d08cb3aa62a8cd19bc270aa8bb27659b515a5a3c5",
+  "omx-f.webp": "185cd2072027a50398b8ccefcc096ef4142f5f52085313a7131b8fab04ec8730",
+  "pinky-pro.webp": "6a9245274b5713270d0e9eca0a3136017062f90a55aa5cbcae2d792fc193e5fa",
+  "thumbnails.json": "7c61f4454eecd4973a0133e4b9b20916b8af961c43a2f3d359dd9c0541efb1e3",
+  "vendor/three/LICENSE": "8b378ebe60e2fe500158cb0ac71cb5e8b7d92953c2abcc63a0eb90499653b5bc",
+  "vendor/three/esm/three.core.js": "613e370f76638fdef83926642bf256dc9615684922de1ce1f63a8583e5d78578",
+  "vendor/three/esm/three.module.js": "104f56145899722094556490d787aae0617cc2fc3382f31df02d724ea1aee341",
+  "vendor/three/examples/jsm/controls/OrbitControls.js": "e7fca2fe9e7670a828af9b28084669a5909445b7f36f1f26cee9bf8f2961c32c",
+  "vendor/three/examples/jsm/loaders/GLTFLoader.js": "532ac726e120039acbcd6cf54328c57acbf7b438176afaa6951257126d11bff1",
+  "vendor/three/examples/jsm/utils/BufferGeometryUtils.js": "7bda2a8ba836b2bcf67cb938d4b9e1bb5d1b1bc616817103ed858c0b58296ce7",
+  "vendor/three/examples/jsm/utils/SkeletonUtils.js": "b1632a703206c3d830de9fcbe515696770d04b71a15ee6b50afa6d2c3298c86f"
+}

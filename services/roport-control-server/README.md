@@ -4,39 +4,106 @@ RO:PORT · GATE CREW — 통합관제 및 로봇 통신
 
 ## 기술 스택
 
-Python 3.12 / uv / Paho MQTT 2.1.0 / pytest / Ruff.
-관제 담당자가 정한 방향은 PyQt UI ↔ 관제 실행부 직접 연결이며, 실행부만 DB에 접근합니다.
-원격 서비스 WSS는 유지합니다. 팀 공동 설계와의 정합화는 별도이며 실행부 전환 작업은 현재 보류합니다.
-기존 FastAPI `/healthz` 뼈대는 이번 PR에서 유지합니다.
+Python 3.12 / FastAPI / uv / Three.js / Paho MQTT / pytest / Playwright / Ruff. 정확한 버전은 manifest와 lockfile을 따릅니다.
+2026-11-03 팀 합의: **브라우저 웹 UI ↔ FastAPI ↔ 운영 DB ↔ 관제 실행부(별도 프로세스 1개)**. API와 실행부의 목표 연결은 운영 DB이며, 원격 서비스 WSS는 실행부가 담당합니다. AI 노트북에 서버를 배치하고 다른 PC에서 접속합니다. AI 추론은 API와 별도 프로세스로 운영합니다.
+현재 구현은 **웹 UI·REST 조회·WebSocket 모의/OFFLINE 상태 스트림**과 독립 MQTT/UDP 모듈입니다. 운영 DB·관제 실행부·WSS·실제 제어·카메라 웹 중계는 미구현입니다. 브라우저는 DB/MQTT/UDP에 직접 연결하지 않습니다.
+
+## 구조 · FFT1-122
+
+```
+src/roport_control_server/
+  domain/      __init__.py만: Workflow·Allocation·State/Recovery 규칙 자리 (골격, 미구현)
+  executor/    __init__.py만: 관제 실행부 프로세스 자리 (골격, 미구현, FFT1-106)
+  contracts/   snapshot.py: TaskRow·Snapshot 표시 계약과 검증 (표준 라이브러리만)
+  adapters/
+    mqtt/      messages.py·mqtt.py: MQTT 5 명령·이벤트 (폴더 단위 이식)
+    udp/       udp_frame_protocol.py·udp_frame_sender.py·udp_frame_receiver.py: UDP 영상 wire v1
+    api/       app.py: HTTP/WebSocket, display.py: 모의 표시, maps.py: 읽기 전용 지도
+  spatial_assets/  index.html·scene.js·style.css 및 고정 모델/Three.js 자산
+scripts/       mqtt_demo.py·udp_video_demo.py: 모의 예제 (wheel 미포함, MockExecutor 포함)
+tests/         test_layers.py: 아래 import 규칙 검사
+```
+
+`spatial_assets/index.html`·`scene.js`·`style.css`가 브라우저 표시 계층이며 `adapters/api/app.py`가 정적 파일과 REST/WebSocket을 제공합니다. 기존 `adapters/ui`·Qt 표시 계층은 제거됐습니다.
+
+| 위치 | 허용 import |
+| --- | --- |
+| `contracts/` | 표준 라이브러리 |
+| `adapters/mqtt/` | 표준 라이브러리, paho, 자기 폴더 |
+| `adapters/udp/` | 표준 라이브러리, 자기 폴더 |
+| `adapters/api/` | 표준 라이브러리, fastapi, Pillow, PyYAML, `contracts`, 자기 폴더 |
+| `domain/` (골격) | 표준 라이브러리 |
+| `executor/` (골격) | 표준 라이브러리, `domain`, `contracts`, `adapters`(api 제외) |
+
+패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`·`executor/`는 책임만 적은 골격이고 코드는 아직 없습니다. `adapters/db/`·`adapters/wss/`는 DB 종류와 WSS 메시지 계약이 확정된 뒤 만듭니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
 
 ## 현재 범위
 
-MQTT 5 작업 명령·이벤트 모듈과 모의 Pinky·OMX 왕복 예제, 독립 실행 가능한 기본 PyQt 관제 화면을 제공합니다.
-실행부/IPC·DB 연결·UDP 영상은 후속 PR입니다. DB 자체와 업무 CRUD는 만들지 않습니다.
+MQTT 5 작업 명령·이벤트 모듈과 모의 Pinky·OMX 왕복 예제, FastAPI에서 제공하는 3D 웹 관제 화면을 제공합니다.
+UDP 영상 송수신 모듈(FFT1-105)도 포함합니다. 관제 실행부·운영 DB 연결은 후속 PR입니다. DB 자체와 업무 CRUD는 만들지 않습니다.
 CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 배포 환경 미정으로 CD와 자동 배포는 설정하지 않았습니다.
 
-## 기본 PyQt 통합관제 UI · FFT1-107
-`src/roport_control_server/ui.py`는 실행부와 독립된 표시용 화면입니다. 기본 실행은 **OFFLINE**, `--demo`는 명시적인 모의 데이터입니다. 작업 현황·오류·상태 갱신 시각과 Pinky/OMX 탭을 제공합니다. 작업 승인·출발·취소 버튼은 실행부 연동 전까지 비활성화합니다. UI가 MQTT/UDP/DB에 직접 접근하지 않습니다.
+## 3D 웹 통합관제 · FFT1-109
+
+PR #24 계층 구조 위에서 기존 3D HTML/CSS/Three.js를 재사용하고 Qt/QWebChannel을 HTTP/WebSocket으로 교체했습니다. Qt·데스크톱·Node.js 런타임 없이 설치 wheel만으로 서버를 실행할 수 있습니다. Node.js는 소스 자산 준비와 브라우저 테스트에만 필요합니다.
 
 ```bash
-uv sync --locked --extra ui
-uv run --extra ui python -m roport_control_server.ui          # 상태 없음
-uv run --extra ui python -m roport_control_server.ui --demo   # 모의 데이터
+npm ci --ignore-scripts
+npm run prepare:assets
+uv sync --locked
+uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --port 8000 --ws-max-size 4096 --ws-max-queue 4
 ```
 
-PyQt6 6.12.0을 선택 의존성 `ui`로 고정했습니다([공식 설치 안내](https://www.riverbankcomputing.com/software/pyqt/download)). 팀원의 상세 위젯도 같은 PyQt6 환경을 사용해야 합니다. Linux 실제 창 실행에는 데스크톱과 Qt platform 라이브러리가 필요하며 headless 시험은 `QT_QPA_PLATFORM=offscreen`을 사용하며 Ubuntu의 `libegl1`이 필요합니다(CI에서 설치). 기존 FastAPI health 뼈대는 유지하며 실행부 전환은 사용자 요청으로 보류합니다.
+- OFFLINE: `http://localhost:8000/ui/` — 실행부 미연결, 작업 없음, 실제 위치 미표시.
+- DEMO: `http://localhost:8000/ui/?mode=demo` — 예시 Pinky 3대/OMX 3대의 모의 동작. 재생·시각 이동·수신 중단은 이 브라우저 세션에만 적용됩니다. 재접속 시 DEMO는 새 세션으로 시작하며 실제 작업 복구 시험이 아닙니다.
+- 서버가 제공한 목록으로 화면을 만들지만 현재 목록은 6대 예시입니다. 로봇 등록/제외와 실제 장비 목록 연동은 후속입니다.
+- Pinky 탭 > Pinky Settings(FFT1-124, 시안 v0.2): 등록(이름·IPv4·역할·ROS_DOMAIN_ID 0~101·IR 기준값)과 작업(연결 확인·도메인 읽기/적용·업데이트/릴리즈 설치·빌드) 화면입니다. `contracts/pinky_settings.py`가 입력 형식을 정합니다.
+  OFFLINE에서는 `POST /api/pinky/settings/robots`·`/jobs`가 형식만 검사하고 `503 executor_not_connected`를 돌려줍니다(저장·실행 없음). DEMO는 예시 3대를 브라우저 안에서만 바꿉니다.
+  실제 설치·도메인 적용은 실행부·운영 DB 연결 뒤에 붙이며, 그 전까지는 Pinky 테스트 콘솔 `mode:=fleet`에서 시험합니다.
+- 기존 회백색 3열 구성, 3D/평면·회전·선택 장비 확대, 관절 모델과 작업·오류 표시를 제공합니다. 실기 URDF 보정과 양팔 협업 동기화는 검증하지 않았습니다. 승인·출발·취소는 비활성화합니다.
 
-### 팀원 탭·후속 상태 입력 연결점
+### 접속·지도·운영
 
-- `ControlWindow.set_detail_widget('Pinky' 또는 'OMX', widget)`: 부모가 없는 PyQt6 QWidget을 해당 탭에 넣습니다. 다른 탭과 선택 상태는 유지합니다. 상세 로봇 제어 코드는 각 팀원이 담당합니다.
-- `set_source(session_id)`: 표시할 상태의 세션을 명시적으로 설정하고 이전 화면을 비웁니다. `None`은 미연결 표시입니다. 통신 연결을 생성하지 않습니다.
-- `apply_snapshot(Snapshot(...))`: 전체 표시 상태를 교체합니다. 같은 세션의 증가한 revision만 받으며 중복·과거·다른 세션은 무시합니다. `TaskRow`의 진행률·문자열·목록 크기를 검증하며 최대 작업 100개/오류 20개를 표시합니다. 오류는 plain text로 표시합니다.
-- 새 snapshot 없이 5초가 지나면 갱신 지연을 표시합니다. 이 값은 UI 시험 기준이며 로봇 timeout·준비 판정이 아닙니다. 모든 화면 메서드는 GUI 스레드에서 호출하며, 향후 통신 스레드는 Qt queued signal로 전달해야 합니다.
+현장 LAN의 다른 PC에서도 보려면 위 명령의 `--host`를 `0.0.0.0`으로 바꾸고 브라우저에서 `http://<서버-LAN-IP>:8000/ui/`를 엽니다. 방화벽은 허용된 현장 망으로 제한합니다. 이번 버전은 인증 없는 모의/읽기 전용 뼈대이며 인터넷 공개·운영 데이터 연결 전 인증/권한·HTTPS/WSS 또는 VPN이 필요합니다. FastAPI와 화면을 같은 origin으로 제공해 별도 CORS 허용이 필요 없습니다.
 
-실행부·IPC·WSS·DB 연결, 실제 UI 재접속 복구, MQTT/UDP 동시 부하 및 실기 통합은 후속 범위입니다. 이번 PR은 화면 뼈대와 위젯/데이터 입력 지점만 제공합니다.
+상태 WebSocket은 **worker당 OFFLINE/DEMO 합계 8개**로 제한합니다. 초과 접속은 handshake 전에 거절되므로 실제 HTTP 응답은 403이며 브라우저는 기존 재접속 정책을 따릅니다. 연결 종료·오류 시 송수신 작업을 정리하고 자리를 반환합니다. 현재는 worker 1개로 운영하며, 8개는 AI 병행 부하를 보장하는 측정값이 아닌 임시 상한입니다. HTTP 요청·IP별 제한은 포함하지 않습니다.
 
-검증: `uv sync --locked --extra ui`, `uv run ruff check .`, `uv run ruff format --check .`, `env -u PYTHONPATH QT_QPA_PLATFORM=offscreen REQUIRE_UI_TESTS=1 uv run --extra ui pytest`, `uv build`. CI는 ui extra 설치와 UI 테스트 실행을 필수로 하며, 기본 의존성만 설치한 환경에서는 UI 테스트를 skip합니다. [Jira FFT1-107](https://fp-team1.atlassian.net/browse/FFT1-107).
+TLS 역방향 프록시는 WebSocket upgrade, 브라우저의 `Origin`, 외부 `Host`(비기본 포트 포함)를 그대로 전달하고 `X-Forwarded-Proto`를 실제 외부 scheme으로 설정해야 합니다. 같은 서버의 loopback 프록시라면 위 Uvicorn 명령에 `--proxy-headers --forwarded-allow-ips=127.0.0.1`을 사용합니다. 원격 프록시는 실제 프록시 IP만 신뢰하고 `*`로 열지 않습니다. 신뢰된 HTTPS 전달 헤더는 Uvicorn이 `wss`로 변환하므로 같은 origin 연결이 허용됩니다. 내부 Host로 바꾸거나 신뢰하지 않는 경로에서 HTTPS 헤더만 보내면 거절됩니다. `X-Forwarded-Host`만으로는 보완되지 않습니다.
+
+서버 운영자가 `ROPORT_MAP=/절대경로/map.yaml` 환경변수로 PNG/PGM+YAML 지도를 선택할 수 있습니다. 기본 지도는 공개 예시이며 화면에도 표시합니다. 지도 파일 업로드 API는 없고 원본 파일을 수정하지 않습니다. m/rad, ROS map 축·origin/yaw를 보존하며 벽 높이 0.35m는 표시 가정입니다. 실제 맵과 P4/P7은 팀 확정 후 적용합니다. 지도와 연결한 이미지는 접속자에게 보이므로 공개/접속 권한을 확인합니다.
+
+클램쉘 운영은 OS의 덮개 닫힘 절전 해제, 전원·냉각·유선 LAN, 서비스 자동 시작/재시작을 별도로 설정·검증합니다. 이 PR은 OS 설정을 변경하지 않습니다. AI 추론 병행 성능·현장 Wi-Fi·여러 운영자의 조작 권한·장시간 운영은 후속 검증입니다.
+
+### API와 팀원 세부 탭
+
+| 경로 | 동작 |
+| --- | --- |
+| `GET /healthz` | 프로세스 생존 확인; 장비 준비 판정 아님 |
+| `GET /api/bootstrap?mode=offline 또는 demo` | 지도·예시 장비 목록·표시 모드 |
+| `GET /api/snapshot` | OFFLINE 전체 상태; DB 연동 자리 |
+| `WS /api/state?mode=offline 또는 demo` | 전체 snapshot을 최대 10Hz 전송; session_id/revision 포함 |
+| `/ui/` | 인터넷 CDN 없는 정적 웹 화면·3D 자산 |
+
+WebSocket은 같은 origin만 허용합니다. DEMO에서만 `play(bool)`, `seek(0..24초)`, `drop(robot_id,bool)` 표시 명령을 받고 실제 로봇 명령 endpoint는 없습니다. 브라우저는 증가한 revision만 적용하고 단절/2.5초 이상 미갱신을 표시하며 재접속합니다. DEMO 장비의 2초 stale과 UI 단절 시간은 표시 시험용이며 장비 안전 timeout이 아닙니다. 오류·식별자는 HTML이 아닌 텍스트로 표시합니다.
+
+`adapters/api/display.py`는 OFFLINE/DEMO 표시 전용입니다. 실제 상태 연동(FFT1-110)에서는 DB/실행부 상태 조회 경로를 별도로 두고, 이 생성기와 `play/seek/drop`을 실제 상태·명령 경로에서 호출하지 않습니다.
+
+팀원은 `index.html`의 `#pinky-detail` / `#omx-detail` 영역과 웹 모듈로 세부 화면을 연결합니다. QWidget 연결점은 제거됐습니다. 상세 제어는 담당 팀원이 개발하며 향후 공통 API를 사용합니다. 현재 화면 코드는 `spatial_assets/`, API는 `adapters/api/`에 두고 MQTT/UDP 모듈과 분리합니다. 고객·업무 어드민용 `services/roport-web`은 별도 앱으로 유지합니다.
+
+### 검증
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+env -u PYTHONPATH REQUIRE_MQTT_TESTS=1 uv run pytest
+npx playwright install chromium
+npm run test:web
+uv build
+uv run python tools/check_asset_package.py dist/*.whl
+```
+
+CI는 Mosquitto loopback, API·계층·지도·계약, Chromium OFFLINE/DEMO·단절/재접속 및 wheel 자산을 검사합니다. 설치형 PyQt 실행 명령과 `--extra ui`는 더 이상 사용하지 않습니다. [Jira FFT1-109](https://fp-team1.atlassian.net/browse/FFT1-109).
 
 ## 관련 문서
 
@@ -50,7 +117,7 @@ PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기�
 실로봇 적용 전 장비·설정·캘리브레이션, 안전 정지·복구 절차를 확인합니다.
 
 ## UDP 영상 모듈 · FFT1-105
-`communication/udp_video.py`는 OMX 카메라 호스트 → AI 수신기로 인코딩된 JPEG/PNG 프레임을 직접 보냅니다. `FrameInfo`, `fragment_frame`, `FrameSender`, `FrameReceiver`는 표준 라이브러리만 사용하므로 이 파일 또는 communication 폴더를 팀원 패키지에 복사할 수 있습니다. 카메라 캡처·인코딩·AI 추론·관제 실행부·UI 영상 표시는 구현하지 않습니다. MQTT 작업 명령/중요 결과와 별도 경로입니다.
+`adapters/udp/`는 OMX 카메라 호스트 → AI 수신기로 인코딩된 JPEG/PNG 프레임을 직접 보냅니다. `udp_frame_protocol.py`(상수·`FrameInfo`·헤더 pack/parse), `udp_frame_sender.py`(`fragment_frame`, `FrameSender`), `udp_frame_receiver.py`(`FrameReceiver`)는 표준 라이브러리만 사용합니다. sender·receiver는 protocol만 상대 import하며 서로를 import하지 않습니다. 카메라 캡처·인코딩·AI 추론·관제 실행부·UI 영상 표시는 구현하지 않습니다. MQTT 작업 명령/중요 결과와 별도 경로입니다.
 
 - 입력: frame bytes, source/camera/stream, session UUID, 증가하는 frame_id, captured_ns, observation_group, codec. 같은 물품 관측의 두 카메라는 observation_group을 공유할 수 있습니다. frame_id는 세션 내 스트림별 단조 증가이며 재사용하지 않습니다.
 - 시험 프로토콜 v1: network byte order, 120 B 고정 헤더 + 최대 1080 B 조각. datagram 1200 B·프레임 1 MiB·독립 JPEG/PNG만 지원합니다. RTP/H.264 호환 프로토콜은 아닙니다. 실제 영상 포맷 검사는 디코더가 담당합니다.
@@ -62,8 +129,8 @@ PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기�
 
 ### 원본과 이식본 관리
 
-- 원본은 이 저장소의 `services/roport-control-server/src/roport_control_server/communication/udp_video.py`이며 통합관제 담당자가 관리합니다. 영상 경로는 OMX → AI 직접 전송으로 유지합니다.
-- OMX·AI 담당자는 같은 원본 리비전의 파일을 수정 없이 복사하고, 각 패키지 README에 원본 경로·전체 Git commit SHA·파일 SHA-256을 기록합니다. 캡처·추론 등 장비별 코드는 별도 호출부에 둡니다.
+- 원본은 이 저장소의 `services/roport-control-server/src/roport_control_server/adapters/udp/`이며 통합관제 담당자가 관리합니다. 영상 경로는 OMX → AI 직접 전송으로 유지합니다.
+- OMX 송신부는 `udp_frame_protocol.py`+`udp_frame_sender.py`, AI 수신부는 `udp_frame_protocol.py`+`udp_frame_receiver.py`를 같은 원본 리비전에서 수정 없이 한 폴더(패키지)에 복사합니다. 각 패키지 README에 원본 경로·전체 Git commit SHA·**파일별** SHA-256을 기록합니다. 캡처·추론 등 장비별 코드는 별도 호출부에 둡니다.
 - 공통 변경은 원본 PR에서 검증한 뒤 OMX 송신부와 AI 수신부의 이식 PR을 연결합니다. 양쪽 파일 해시가 원본과 일치하고 송수신 검증을 통과한 뒤 함께 적용합니다. 사본에 독자적인 프로토콜 변경을 넣지 않습니다.
 - 호환되지 않는 헤더/필드 의미 변경은 wire 버전을 올리고 송수신 양쪽을 갱신합니다. 현재 수신기는 `RPV1`만 허용하며 버전 불일치를 폐기합니다.
 
@@ -73,9 +140,9 @@ PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기�
 
 ```bash
 # 터미널 1
-uv run python -m roport_control_server.examples.udp_video_demo receive --session 673593ea-50ba-4c6d-ab47-8b8d209ee038
+uv run python scripts/udp_video_demo.py receive --session 673593ea-50ba-4c6d-ab47-8b8d209ee038
 # 터미널 2
-uv run python -m roport_control_server.examples.udp_video_demo send --session 673593ea-50ba-4c6d-ab47-8b8d209ee038 --file /absolute/path/frame.jpg --frames 10 --fps 10 --bitrate 8000000
+uv run python scripts/udp_video_demo.py send --session 673593ea-50ba-4c6d-ab47-8b8d209ee038 --file /absolute/path/frame.jpg --frames 10 --fps 10 --bitrate 8000000
 ```
 
 예제는 loopback의 5301(수신)·5302(송신) 포트만 사용합니다. `--port`, `--source-port`, `--camera`, PNG용 `--codec png`를 지원합니다. 실제 적용 시 호출자가 socket과 허용 스트림/세션을 구성하고 장비별 카메라 ID를 합의해야 합니다.
@@ -83,6 +150,16 @@ uv run python -m roport_control_server.examples.udp_video_demo send --session 67
 검증: `uv sync --locked`, `uv run ruff check .`, `uv run ruff format --check .`, `env -u PYTHONPATH uv run pytest`, `uv build`. 단위·loopback·별도 프로세스 예제 시험이며 실제 카메라/AI·현장 처리량 측정은 포함하지 않습니다. [Jira FFT1-105](https://fp-team1.atlassian.net/browse/FFT1-105).
 
 ## 개발 방법
+
+3D 표시 자산은 PR #22에서 분리한 패키징을 그대로 사용하며 웹 UI와 함께 배포합니다.
+Three.js 원본은 Git에 커밋하지 않고 서비스 전용 npm 잠금 파일로 고정합니다. 소스 체크아웃에서 테스트·배포 패키지를 만들기 전 Node.js 24로 한 번 준비합니다.
+
+```bash
+npm ci --ignore-scripts
+npm run prepare:assets
+```
+
+`prepare:assets`는 필요한 JS와 LICENSE만 로컬 `spatial_assets/vendor`에 복사하고 고정 해시를 검증합니다. 설치에는 npm 접근 또는 사전 캐시가 필요하며, 준비 후 빌드는 네트워크를 사용하지 않습니다. wheel/sdist에는 JS·모델·라이선스가 포함되어 설치한 앱의 실행 시 Node.js·npm·CDN이 필요 없습니다. 자원이 누락되거나 해시가 다르면 배포 빌드가 실패합니다. 모델 출처와 재생성 방법은 `spatial_assets/UPSTREAM.md`에 있습니다.
 
 ```bash
 python3 -m pip install uv==0.13.5
@@ -92,17 +169,17 @@ uv run pytest
 uv build
 ```
 
-API 실행: `uv run uvicorn roport_control_server.app:app --host 127.0.0.1 --port 8000`
+API 실행: `uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --port 8000`
 
 `/healthz`는 프로세스 상태만 확인합니다. 로봇·DB·모델 준비 상태를 뜻하지 않습니다.
 
 ## MQTT 모듈과 팀원 이식
 
-- `src/roport_control_server/communication/messages.py`: 공통 envelope, 토픽, 명령 검증 및 메모리 중복 기록.
-- `src/roport_control_server/communication/mqtt.py`: Paho MQTT 5 연결, 재구독, 제한된 큐, 수동 transport ACK, TLS 설정.
-- `src/roport_control_server/examples/mqtt_demo.py`: 관제 송신 및 가짜 Pinky·OMX 수신 예제. 실제 로봇 실행 코드가 아닙니다.
+- `src/roport_control_server/adapters/mqtt/messages.py`: 공통 envelope, 토픽, 명령 검증 및 메모리 중복 기록.
+- `src/roport_control_server/adapters/mqtt/mqtt.py`: Paho MQTT 5 연결, 재구독, 제한된 큐, 수동 transport ACK, TLS 설정.
+- `scripts/mqtt_demo.py`: 관제 송신 및 가짜 Pinky·OMX 수신 예제(`MockExecutor`·`make_command`, 시험도 같은 정의를 사용). 실제 로봇 실행 코드가 아니며 wheel에 포함되지 않습니다.
 
-팀원은 **communication 폴더 전체**를 자신의 Python 패키지에 복사하고 `paho-mqtt==2.1.0`만 추가할 수 있습니다. 내부 상대 import만 사용하며 Qt/ROS/DB/FastAPI를 불러오지 않습니다. 송수신 사용 흐름은 예제의 `run_control`/`run_device`를 참고하고 `MockExecutor`는 실제 실행부로 교체합니다.
+팀원은 **adapters/mqtt 폴더 전체**를 자신의 Python 패키지에 복사하고 `paho-mqtt==2.1.0`만 추가할 수 있습니다. 내부 상대 import만 사용하며 Qt/ROS/DB/FastAPI를 불러오지 않습니다. 송수신 사용 흐름은 예제의 `run_control`/`run_device`를 참고하고 `MockExecutor`는 실제 실행부로 교체합니다.
 
 `MqttConfig(host, client_id, port=1883)`는 로컬 Mosquitto용입니다. EMQX Cloud에서는 같은 코드를 쓰고 `host`, `port=8883`, `tls=True`, `username`, `password`를 설정합니다. 자격증명은 환경변수/배포 secret에서 읽으세요. 사설 CA가 필요하면 `ca_file`을 지정합니다. 인증서·호스트명 검증을 끄는 옵션은 없으며, 암호 인증은 TLS를 요구합니다. **Cloud 실제 접속·ACL·WAN 장애는 아직 검증하지 않았습니다.**
 
@@ -118,10 +195,10 @@ printf 'listener 18883 127.0.0.1\nallow_anonymous true\npersistence false\n' > /
 mosquitto -c /tmp/roport-test-mosquitto.conf
 
 # 2. 모의 수신기 (이 패키지 디렉토리에서)
-uv run python -m roport_control_server.examples.mqtt_demo pinky1 --port 18883
+uv run python scripts/mqtt_demo.py pinky1 --port 18883
 
 # 3. 관제 송신기
-uv run python -m roport_control_server.examples.mqtt_demo control --device pinky1 --port 18883
+uv run python scripts/mqtt_demo.py control --device pinky1 --port 18883
 ```
 
 OMX3 시험은 두 명령의 `pinky1`을 `omx3`로, OMX1·2 공동 작업대는 `shelf-01`로 바꿉니다. `accepted`와 `completed` 모의 이벤트를 확인하고 각 터미널에서 Ctrl+C로 종료합니다. 모든 예제는 `127.0.0.1`, site=`test`, 모의 허가만 사용합니다. Pinky의 `test-v1` 경로와 OMX `load` payload는 **시험용 부분 계약**이며 최종 현장 명령 계약이 아닙니다.

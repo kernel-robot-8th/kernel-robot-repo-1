@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'"
+    />
+    <title>RO:PORT 현장 관제</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="importmap">
+      { "imports": { "three": "./vendor/three/esm/three.module.js" } }
+    </script>
+  </head>
+  <body>
+    <nav aria-label="관제 메뉴">
+      <b class="brand">RO:PORT</b>
+      <button data-tab="overview" aria-pressed="true">통합관제</button>
+      <button data-tab="pinky" aria-pressed="false">Pinky</button>
+      <button data-tab="omx" aria-pressed="false">OMX</button>
+      <a id="mode-link" href="?mode=demo">DEMO 보기</a>
+    </nav>
+    <section id="overview">
+    <header>
+      <h1>현장 관제</h1>
+      <div>
+        <span id="mode">OFFLINE</span><span>예시 장비 <b id="robot-count">—</b></span
+        ><span id="source">표시 입력 미연결</span>
+      </div>
+    </header>
+    <div class="layout">
+      <aside class="fleet">
+        <div class="section-head">
+          <h2>장비</h2>
+          <small id="fleet-count">—</small>
+        </div>
+        <div id="robots"></div>
+        <p class="note">Pinky · 주행 / 방향<br />OMX · 관절 / 그리퍼</p>
+      </aside>
+      <main>
+        <div class="section-head">
+          <h2>현장 지도</h2>
+          <div class="segment">
+            <button data-view="3d" aria-pressed="true">3D</button
+            ><button data-view="top" aria-pressed="false">평면</button>
+          </div>
+        </div>
+        <div id="map" class="viewport" aria-label="회전 가능한 현장 지도">
+          <div id="labels"></div>
+          <div class="map-meta">
+            <b id="map-name">지도 준비 중</b
+            ><span>map · m / rad · 벽 높이는 표시용</span>
+          </div>
+          <div class="map-tools">
+            <button id="left" aria-label="시점 왼쪽 회전">↶</button
+            ><button id="home" aria-label="전체 보기">⌂</button
+            ><button id="right" aria-label="시점 오른쪽 회전">↷</button>
+          </div>
+          <span class="map-note"
+            >드래그 회전 · 휠 확대 · 오른쪽 드래그 이동</span
+          >
+        </div>
+        <div id="demo-controls" hidden>
+          <button id="play" aria-pressed="true">일시 정지</button
+          ><label
+            >모의 시각
+            <input
+              id="time"
+              type="range"
+              min="0"
+              max="24"
+              step="0.1"
+              value="0" /></label
+          ><output id="clock">0.0 s</output
+          ><button id="drop">선택 장비 수신 중단</button>
+        </div>
+        <section class="flow">
+          <div class="section-head">
+            <h2>작업 현황</h2>
+            <small id="task-source">실행부 미연결</small>
+          </div>
+          <div class="actions" aria-label="실행부 연결 후 사용 가능">
+            <button disabled title="실행부 미구현">작업 승인</button>
+            <button disabled title="실행부 미구현">출발 승인</button>
+            <button disabled title="실행부 미구현">작업 취소</button>
+          </div>
+          <div id="tasks" aria-live="polite">
+            <p class="note">수신된 작업이 없습니다.</p>
+          </div>
+        </section>
+        <div id="errors" role="status">
+          수신된 오류 정보 없음 · 장비 정상 판정과 별개
+        </div>
+      </main>
+      <aside class="info">
+        <div class="section-head">
+          <h2>장비 정보</h2>
+          <small>3D 모델</small>
+        </div>
+        <div
+          id="model"
+          class="viewport"
+          aria-label="선택 장비의 회전 가능한 모델"
+        >
+          <small>드래그하여 모델 회전</small>
+        </div>
+        <h2 id="name">Pinky 01</h2>
+        <p id="state">상태 미수신</p>
+        <button id="focus" disabled>지도에서 확대</button>
+        <dl id="telemetry"></dl>
+        <p id="freshness">수신 이력 없음</p>
+        <div class="section-head">
+          <h2>카메라</h2>
+        </div>
+        <p id="video-empty" class="note">선택 장비 영상 미연결</p>
+      </aside>
+    </div>
+    </section>
+    <section id="pinky" class="detail-page" hidden><h1>Pinky 세부 관제</h1><p>주행 세부 관제 화면 준비 중 · 아래는 Pinky Settings</p><div id="pinky-detail"></div></section>
+    <section id="omx" class="detail-page" hidden><h1>OMX 세부 관제</h1><p>세부 관제 화면 준비 중</p><div id="omx-detail"></div></section>
+    <footer>
+      <span id="message" role="status">3D 장면 준비 중</span
+      ><span id="fps">—</span><span>읽기 전용 · 실제 제어 없음</span>
+    </footer>
+    <script type="module" src="scene.js"></script>
+    <script type="module" src="pinky_settings.js"></script>
+  </body>
+</html>
