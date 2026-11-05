@@ -449,3 +449,35 @@ canvas {
 .am-canvas { display: block; width: 100%; height: auto; background: #111827; border-radius: 12px; }
 .am-nodes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .am-nodes .am-switch { border-color: #2563eb; color: #93c5fd; }
+
+/* 경로 주행·테스트 관제·Pinky 설정 (route.html, fleet.html, settings.html) */
+.fleet-page #left { justify-content: flex-start; }
+.form-line { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center;
+  margin-bottom: 8px; font-size: 12px; color: var(--text-muted); }
+.fleet-page details summary { cursor: pointer; font-size: 13px; margin: 4px 0; }
+.fleet-page pre.cmd-box { white-space: pre-wrap; max-height: 220px; overflow: auto; font-size: 11px; }
+.fl-row { cursor: pointer; }
+.fl-legend { display: flex; gap: 10px; font-size: 12px; }
+.ir-table td.fl-swatch[data-color="0"], .fl-key[data-color="0"] { color: #d9480f; }
+.ir-table td.fl-swatch[data-color="1"], .fl-key[data-color="1"] { color: #2e4fd8; }
+.ir-table td.fl-swatch[data-color="2"], .fl-key[data-color="2"] { color: #9c36b5; }
+.ir-table td.fl-swatch[data-color="3"], .fl-key[data-color="3"] { color: #0b7285; }
+.fl-log { max-height: 280px; overflow: auto; }
+.fl-log td { font-size: 11px; white-space: nowrap; }
+.fl-log td:last-child { white-space: normal; }
+.fl-log-fleet td, .fl-log-job td { color: #2e4fd8; }
+.fl-log-state td { font-weight: 600; }
+.fl-log-console td { color: #b4441c; }
+.fl-files { max-height: 200px; overflow: auto; }
+
+/* 통합 테스트 화면 (test.html) */
+.tt-page { overflow: hidden; }
+.tt-tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tt-tab[aria-pressed="true"] { background: var(--accent, #547e87); color: #fff; border-color: transparent; }
+.tt-sep { opacity: 0.5; }
+.tt-frames { position: relative; height: calc(100vh - 110px); }
+.tt-frame { width: 100%; height: 100%; border: 0; display: block; }
+.tt-frame[hidden] { display: none; }
+/* 통합 화면 안에서 연 테스트 관제·설정: 위쪽 헤더(전체 정지 중복)를 숨김 */
+body.tt-embedded > #topbar { display: none; }
+.tt-note { padding: 4px 16px; }

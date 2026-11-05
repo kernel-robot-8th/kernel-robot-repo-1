@@ -1,11 +1,18 @@
 """console.launch.py 인자 검사 (ROS 의존성 없음, 단위 테스트 대상)."""
 
+import ipaddress
 import os
+import re
 from dataclasses import dataclass
 
-VALID_MODES = ('slam', 'nav', 'ir', 'marker', 'amcl')
+# route = 로봇에서 노드 경로 주행(roport_line_nav) 확인, fleet = 노트북에서 Pinky 설정·테스트 관제
+# test = 로봇 통합 시험(경로 주행 + IR 측정 화면, 2026-11-04 결정. 마커는 부착·시험 뒤에 추가)
+VALID_MODES = ('slam', 'nav', 'ir', 'marker', 'amcl', 'route', 'test', 'fleet')
 MAP_MODES = ('nav', 'amcl')            # map:= 가 필요한 모드
-NO_INCLUDE_MODES = ('ir', 'marker')   # pinky_navigation 을 include 하지 않는 모드
+ROUTE_MODES = ('route', 'test')        # roport_line_nav 경로 주행 노드를 함께 띄우는 모드
+NO_INCLUDE_MODES = ('ir', 'marker', 'route', 'test', 'fleet')  # pinky_navigation 을 include 하지 않음
+IR_NODE_MODES = ('ir', 'route', 'test')  # ir_node:=auto 일 때 IR 센서 노드를 함께 띄우는 모드
+ROBOT_NAME = re.compile(r'^pinky_[0-9a-z]{2,8}$')   # roport_pinky_line config/robots.yaml 키
 
 
 class LaunchArgError(ValueError):
@@ -19,6 +26,8 @@ class LaunchPlan:
     port: int
     use_sim_time: bool
     ir_node: bool = False  # pinky_sensor_adc main_node 를 함께 실행
+    ip: str = '0.0.0.0'    # 웹 서버 bind 주소. fleet 기본은 127.0.0.1(SSH 권한이 있으므로)
+    robot: str = ''        # mode:=route 의 기체 이름(IR 기준값)
 
 
 def parse_bool(text, name='use_sim_time'):
@@ -40,10 +49,22 @@ def parse_port(text):
     return port
 
 
-def resolve_plan(mode, map_path='', port='8080', use_sim_time='false', ir_node='auto'):
+def resolve_ip(mode, ip):
+    """빈 값이면 fleet 은 127.0.0.1(이 PC 에서만), 나머지는 0.0.0.0. IPv4 만 받는다."""
+    raw = str(ip).strip()
+    if not raw:
+        return '127.0.0.1' if mode == 'fleet' else '0.0.0.0'
+    try:
+        return str(ipaddress.IPv4Address(raw))
+    except ValueError:
+        raise LaunchArgError(f"ip must be an IPv4 address, got '{ip}'") from None
+
+
+def resolve_plan(mode, map_path='', port='8080', use_sim_time='false', ir_node='auto', ip='',
+                 robot=''):
     """launch 인자를 검사해 LaunchPlan을 만든다. 잘못되면 LaunchArgError.
 
-    ir_node: auto 이면 mode:=ir 일 때만 IR 센서 노드를 함께 띄운다.
+    ir_node: auto 이면 mode:=ir|route 일 때만 IR 센서 노드를 함께 띄운다.
     """
     m = str(mode).strip().lower()
     if m not in VALID_MODES:
@@ -61,18 +82,27 @@ def resolve_plan(mode, map_path='', port='8080', use_sim_time='false', ir_node='
         if not os.path.isfile(map_yaml):
             raise LaunchArgError(f'map file not found: {map_yaml}')
 
+    name = str(robot).strip()
+    if m in ROUTE_MODES:
+        if not ROBOT_NAME.match(name):
+            raise LaunchArgError(
+                f"mode:={m} requires robot:=<pinky_xxxx> (IR calibration name), got '{robot}'")
+    else:
+        name = ''
     ir = str(ir_node).strip().lower()
     return LaunchPlan(
         mode=m,
         map_yaml=map_yaml,
         port=parse_port(port),
         use_sim_time=parse_bool(use_sim_time),
-        ir_node=(m == 'ir') if ir == 'auto' else parse_bool(ir, 'ir_node'),
+        ir_node=(m in IR_NODE_MODES) if ir == 'auto' else parse_bool(ir, 'ir_node'),
+        ip=resolve_ip(m, ip),
+        robot=name,
     )
 
 
 def included_launch(plan):
-    """pinky_navigation 에서 include 할 launch 파일 이름과 인자. mode:=ir|marker 는 (None, {}).
+    """pinky_navigation 에서 include 할 launch 파일 이름과 인자. mode:=ir|marker|route|fleet 는 (None, {}).
 
     bringup_robot.launch.xml(모터·라이다)은 포함하지 않는다: 사용자가 먼저 따로 실행.
     """

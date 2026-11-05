@@ -14,16 +14,20 @@ node 는 web_server.ConsoleNode (테스트에서는 가짜 객체)이다.
 import math
 import os
 
-from flask import Flask, Response, abort, jsonify, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, redirect, request, send_from_directory
 
 from .amcl_check import AmclCheckError
+from .fleet import FleetError
 from .ir_record import IrRecordError
 from .map_store import MapNameError
 from .marker_detect import MarkerError
+from .route_view import RouteCommandError, parse_route_command, plan_via
 
 # web/ 폴더에서 이 파일들만 서빙 (원본은 스크립트 폴더 전체를 static 으로 노출했음)
 STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js',
-                'marker.html', 'marker.js', 'amcl.html', 'amcl.js'}
+                'marker.html', 'marker.js', 'amcl.html', 'amcl.js', 'route.html', 'route.js',
+                'routemap.js', 'fleet.html', 'fleet.js', 'settings.html', 'settings.js',
+                'test.html', 'test.js'}
 POSE_CM_LIMIT = 1000.0   # 실측 좌표 입력 허용 범위(cm, 시연 공간 444.5 x 221)
 
 SECURITY_HEADERS = {
@@ -34,6 +38,13 @@ SECURITY_HEADERS = {
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'no-referrer',
 }
+# mode:=fleet(노트북 통합 화면 test.html): 같은 출처 프레임(탭 안의 로봇 화면)만 허용
+FLEET_HEADERS = dict(SECURITY_HEADERS, **{
+    'Content-Security-Policy': (
+        "default-src 'self'; script-src 'self'; style-src 'self'; "
+        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'"),
+    'X-Frame-Options': 'SAMEORIGIN',
+})
 
 
 class BadRequest(Exception):
@@ -75,7 +86,12 @@ def _pose_cm(data, need_yaw=True):
     return x, y, yaw
 
 
-def create_app(node, web_dir):
+def create_app(node, web_dir, fleet=None, allowed_hosts=None):
+    """fleet: fleet.FleetManager(mode:=fleet 일 때만). allowed_hosts: Host 헤더 허용 목록.
+
+    fleet 모드는 SSH 로 로봇에 설치·설정하므로 127.0.0.1 에만 열고, DNS rebinding 으로 다른 사이트가
+    localhost 에 요청하지 못하게 Host 헤더를 검사한다(allowed_hosts).
+    """
     app = Flask(__name__, static_folder=None)
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024
 
@@ -83,9 +99,21 @@ def create_app(node, web_dir):
     def _bad_request(e):
         return jsonify({'success': False, 'msg': str(e)}), 400
 
+    @app.errorhandler(RouteCommandError)
+    @app.errorhandler(FleetError)
+    def _bad_value(e):
+        return jsonify({'success': False, 'msg': str(e)}), 400
+
+    @app.before_request
+    def _check_host():
+        if allowed_hosts is not None and request.host not in allowed_hosts:
+            abort(403)
+
+    headers = FLEET_HEADERS if fleet is not None else SECURITY_HEADERS
+
     @app.after_request
     def _headers(resp):
-        for k, v in SECURITY_HEADERS.items():
+        for k, v in headers.items():
             resp.headers.setdefault(k, v)
         if request.path.startswith('/api/'):
             resp.headers['Cache-Control'] = 'no-store'
@@ -94,6 +122,8 @@ def create_app(node, web_dir):
     # ---------------- 정적 파일 ----------------
     @app.route('/')
     def serve_index():
+        if fleet is not None:      # 노트북: 통합 화면
+            return redirect('test.html')
         return send_from_directory(web_dir, 'index.html')
 
     @app.route('/<path:fname>')
@@ -330,6 +360,166 @@ def create_app(node, web_dir):
             abort(404)
         return send_from_directory(os.path.dirname(path), os.path.basename(path),
                                    as_attachment=True, mimetype='text/csv')
+
+    # ---------------- 노드 경로 주행 (mode:=route) ----------------
+    @app.route('/api/route')
+    def api_route():
+        return jsonify(node.route_snapshot())
+
+    @app.route('/api/route/graph')
+    def api_route_graph():
+        return jsonify(node.route_graph())
+
+    @app.route('/api/route/plan')
+    def api_route_plan():
+        """?from=<노드>&to=<정차 노드>[&via=<정차 노드>] → 최단 경로(테스트 관제의 목적지 클릭)."""
+        start, goal = request.args.get('from', ''), request.args.get('to', '')
+        via = request.args.get('via') or None
+        return jsonify({'route': plan_via(node.route_graph(), start, goal, via)})
+
+    @app.route('/api/logs')
+    def api_logs():
+        """/rosout 최근 줄(?after=<seq> 이후)."""
+        try:
+            after = int(request.args.get('after', '0'))
+        except ValueError:
+            raise BadRequest("'after' must be an integer") from None
+        return jsonify(node.ros_log_snapshot(after))
+
+    @app.route('/api/logs/files')
+    def api_log_files():
+        return jsonify(node.log_files())
+
+    @app.route('/api/route/command', methods=['POST'])
+    def api_route_command():
+        cmd = parse_route_command(_json_body())
+        return jsonify({'success': node.route_command(cmd), 'sent': cmd})
+
+    # ---------------- Pinky 설정·테스트 관제 (mode:=fleet, 노트북) ----------------
+    def _fleet():
+        if fleet is None:
+            abort(404)
+        return fleet
+
+    def _proxy(fn):
+        try:
+            return jsonify({'success': True, 'result': fn()})
+        except OSError as e:     # 로봇 콘솔이 꺼져 있거나 네트워크가 다름
+            return jsonify({'success': False, 'msg': f'robot not reachable: {e}'}), 502
+
+    @app.route('/api/fleet')
+    def api_fleet():
+        return jsonify(_fleet().snapshot())
+
+    @app.route('/api/fleet/robots', methods=['POST'])
+    def api_fleet_upsert():
+        robot = _fleet().store.upsert(_json_body())
+        return jsonify({'success': True, 'robot': robot.__dict__})
+
+    @app.route('/api/fleet/robots/delete', methods=['POST'])
+    def api_fleet_delete():
+        name = _json_body().get('name')
+        if not isinstance(name, str):
+            raise BadRequest("'name' required")
+        _fleet().store.remove(name)
+        return jsonify({'success': True})
+
+    @app.route('/api/fleet/branches')
+    def api_fleet_branches():
+        return jsonify({'branches': _fleet().branches()})
+
+    @app.route('/api/fleet/job', methods=['POST'])
+    def api_fleet_job():
+        data = _json_body()
+        params = {}
+        if 'ref' in data:
+            params['ref'] = data['ref']
+        if data.get('release') is True:
+            params['release'] = True
+        if 'domain' in data:
+            params['domain'] = data['domain']
+        job = _fleet().start_job(data.get('name'), data.get('action'), params)
+        return jsonify({'success': True, 'job': job})
+
+    @app.route('/api/fleet/jobs')
+    def api_fleet_jobs():
+        return jsonify({'jobs': _fleet().jobs()})
+
+    @app.route('/api/fleet/route', methods=['POST'])
+    def api_fleet_route():
+        data = _json_body()
+        name = data.pop('name', None)
+        if not isinstance(name, str):
+            raise BadRequest("'name' required")
+        f = _fleet()
+        return _proxy(lambda: f.route_command(name, data))
+
+    @app.route('/robot/<name>')
+    def robot_root(name):
+        return redirect(f'/robot/{name}/')
+
+    @app.route('/robot/<name>/', defaults={'sub': ''}, methods=['GET', 'POST'])
+    @app.route('/robot/<name>/<path:sub>', methods=['GET', 'POST'])
+    def robot_proxy(name, sub):
+        """통합 화면 탭: 등록된 로봇 콘솔의 화면·API 를 같은 출처로 중계(mode:=fleet)."""
+        f = _fleet()
+        robot = f.store.get(name)
+        if not f.proxy.allowed(sub):
+            abort(404)
+        body, ctype = None, None
+        if request.method == 'POST':
+            if not request.is_json:          # 로봇 콘솔과 같은 규칙(CSRF)
+                raise BadRequest('Content-Type must be application/json')
+            body, ctype = request.get_data(), 'application/json'
+        try:
+            status, rtype, disp, data = f.proxy.forward(
+                robot.ip, sub, request.query_string.decode('ascii', 'ignore'), request.method,
+                body, ctype)
+        except OSError as e:
+            return jsonify({'success': False, 'msg': f'robot console not reachable: {e}'}), 502
+        resp = Response(data, status=status, content_type=rtype)
+        if disp:
+            resp.headers['Content-Disposition'] = disp
+        if sub.startswith('api/'):
+            resp.headers['Cache-Control'] = 'no-store'
+        return resp
+
+    @app.route('/api/fleet/files')
+    def api_fleet_files():
+        """?name=<로봇> → 로봇 콘솔의 로그 파일 목록(경로 상세 기록·ROS 로그 폴더)."""
+        f = _fleet()
+        name = request.args.get('name', '')
+        return _proxy(lambda: f.robot_files(name))
+
+    @app.route('/api/fleet/logs')
+    def api_fleet_logs():
+        try:
+            after = int(request.args.get('after', '0'))
+        except ValueError:
+            raise BadRequest("'after' must be an integer") from None
+        rows, last = _fleet().log.after(after)
+        return jsonify({'entries': rows, 'last': last})
+
+    @app.route('/api/fleet/logs.csv')
+    def api_fleet_logs_csv():
+        robot = request.args.get('robot') or None
+        name = 'fleet_log' + (f'_{robot}' if robot and robot.isalnum() else '') + '.csv'
+        return Response(_fleet().log.csv_text(robot), mimetype='text/csv',
+                        headers={'Content-Disposition': f'attachment; filename={name}'})
+
+    @app.route('/api/fleet/return', methods=['POST'])
+    def api_fleet_return():
+        """{name?} → 등록한 충전·대기 칸으로 복귀(이름 없으면 전체)."""
+        data = _json_body()
+        name = data.get('name')
+        if name is not None and not isinstance(name, str):
+            raise BadRequest("'name' must be a string")
+        return jsonify({'success': True, 'result': _fleet().return_home(node.route_graph(), name)})
+
+    @app.route('/api/fleet/stop_all', methods=['POST'])
+    def api_fleet_stop_all():
+        _json_body()
+        return jsonify({'success': True, 'result': _fleet().stop_all()})
 
     return app
 

@@ -77,7 +77,7 @@ async function emergencyStop() {
   releaseAll(false);
   setMsg($("estopStatus"), "정지 요청 중...");
   try {
-    const d = await postJson("/api/estop", {}, 3000);
+    const d = await postJson("api/estop", {}, 3000);
     if (d.success) {
       setMsg($("estopStatus"), "정지 완료" + (d.nav_cancelled ? " · Nav2 취소" : ""), "ok");
     } else {
@@ -127,7 +127,7 @@ async function sendTeleop() {
   teleopInFlight = true;
   try {
     // deadman(0.3 s)보다 짧은 타임아웃: 늦은 응답을 기다리지 않는다
-    const d = await postJson("/api/teleop", currentCmd(), 250);
+    const d = await postJson("api/teleop", currentCmd(), 250);
     if (d.nav_cancelled) setMsg($("teleopStatus"), "조종 입력 → Nav2 목표를 먼저 취소했습니다.", "ok");
   } catch (_) {
     setMsg($("teleopStatus"), "teleop 요청 실패 (서버가 0.3 s 후 자동 정지)", "err");
@@ -158,7 +158,7 @@ function releaseAll(sendStop) {
   renderPad();
   if (teleopTimer) { clearInterval(teleopTimer); teleopTimer = null; }
   if (sendStop && wasHeld) {
-    postJson("/api/teleop/stop", {}, 1000).catch(() => {});
+    postJson("api/teleop/stop", {}, 1000).catch(() => {});
   }
 }
 
@@ -241,7 +241,7 @@ function updateNavStatus(navigating) {
 $("btnNavStop").addEventListener("click", async () => {
   setMsg($("navStopStatus"), "취소 요청 중...");
   try {
-    const d = await postJson("/api/nav/stop", {});
+    const d = await postJson("api/nav/stop", {});
     if (d.success) setMsg($("navStopStatus"), "취소 요청을 보냈습니다.", "ok");
     else setMsg($("navStopStatus"), "취소 실패 (Nav2 실행 중인가요?)", "err");
   } catch (e) {
@@ -256,7 +256,7 @@ $("btnSlamReset").addEventListener("click", async () => {
   if (!confirm("현재 SLAM 지도를 지우고 새로 시작할까요?")) return;
   setMsg($("slamStatus"), "Resetting SLAM map...");
   try {
-    const d = await postJson("/api/slam/reset", {});
+    const d = await postJson("api/slam/reset", {});
     if (d.success) setMsg($("slamStatus"), "SLAM reset requested. 천천히 주행하며 새 지도를 만드세요.", "ok");
     else setMsg($("slamStatus"), "/slam_toolbox/reset 호출 실패 (mode:=slam 인가요?)", "err");
   } catch (e) {
@@ -275,7 +275,7 @@ async function saveMap(overwrite) {
   setMsg($("slamStatus"), `Saving '${name}'... (몇 초 걸립니다)`);
   $("btnSlamSave").disabled = true;
   try {
-    const d = await postJson("/api/slam/save_map", { name, overwrite }, 30000);
+    const d = await postJson("api/slam/save_map", { name, overwrite }, 30000);
     if (d.httpStatus === 409 && !overwrite) {
       if (confirm(`'${name}' 지도가 이미 있습니다. 덮어쓸까요?`)) {
         await saveMap(true);
@@ -313,7 +313,7 @@ function showNavCmd(m) {
 
 async function refreshMaps(selectName) {
   try {
-    const res = await fetch("/api/maps");
+    const res = await fetch("api/maps");
     const d = await res.json();
     $("mapDirText").textContent = d.map_dir;
     const ul = $("mapList");
@@ -405,7 +405,7 @@ $("btnBaseline").addEventListener("click", () => {
 
 async function fetchStatus() {
   try {
-    const res = await fetch("/api/status");
+    const res = await fetch("api/status");
     if (res.ok) renderStatus(await res.json());
   } catch (_) { /* 연결 표시는 fetchState 가 담당 */ }
 }
@@ -418,7 +418,7 @@ function stateUrl() {
   if (showGlobalCostmap) layers.push("global");
   if (showLocalCostmap) layers.push("local");
   const v = (k) => (grids[k] ? grids[k].version : -1);
-  return `/api/state?layers=${layers.join(",")}&map_v=${v("map")}&global_v=${v("global")}&local_v=${v("local")}`;
+  return `api/state?layers=${layers.join(",")}&map_v=${v("map")}&global_v=${v("global")}&local_v=${v("local")}`;
 }
 
 // grid → offscreen canvas (1 셀 = 1 픽셀, y 뒤집기)
@@ -625,7 +625,7 @@ canvas.addEventListener("pointerup", async (evt) => {
   const payload = { x: start.x, y: start.y, yaw };
   const isInit = clickMode === "initialpose";
   try {
-    const d = await postJson(isInit ? "/api/initialpose" : "/api/goal", payload);
+    const d = await postJson(isInit ? "api/initialpose" : "api/goal", payload);
     if (!d.success && !isInit) {
       setMsg($("navStopStatus"), "목표 전송 실패: Nav2(navigate_to_pose)가 실행 중인가요? (mode:=nav)", "err");
     } else {
@@ -656,7 +656,7 @@ $("toggleLocal").addEventListener("change", (e) => {
 // ------------------------------------------------------------
 async function init() {
   try {
-    const res = await fetch("/api/info");
+    const res = await fetch("api/info");
     info = await res.json();
   } catch (_) { /* 기본값 사용 */ }
   $("modeChip").textContent = "mode: " + info.mode;

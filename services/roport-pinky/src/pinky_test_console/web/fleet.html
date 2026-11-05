@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<!-- pinky_test_console 테스트 관제 화면 (mode:=fleet, 노트북). MQTT 없이 각 로봇 콘솔(mode:=test|route)을 HTTP 로 부름.
+     지도: 로봇 추정 위치·지나온 구간(로봇 색), 목적지 클릭 → 최단 경로. 로그: 로봇 이벤트·명령·작업. 인라인 코드·CDN 없음. -->
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pinky 테스트 관제</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="ir-page fleet-page">
+
+<header id="topbar">
+  <div class="brand">RO:PORT <span>Pinky 테스트 관제</span></div>
+  <span class="chip" title="이 노트북 서버 연결"><span id="connDot" class="chip-dot"></span><span id="connText">연결 중</span></span>
+  <a class="btn btn-outline btn-small ir-link" href="settings.html">Pinky 설정 →</a>
+  <span id="estopStatus" class="status-msg" role="status"></span>
+  <button id="btnHomeAll" class="btn btn-outline btn-small" type="button" title="노드에서 끝난 모든 로봇을 각자 충전·대기 칸으로">⌂ 전체 복귀</button>
+  <button id="btnEstop" type="button" title="등록된 모든 로봇에 경로 정지 + 속도 0 (단축키: Space / Esc)">■ 전체 정지</button>
+</header>
+
+<div id="main">
+  <div id="left">
+    <section class="panel-card">
+      <div class="section-title"><span>지도 — 주황 테두리 노드(정차 노드)를 누르면 선택한 로봇의 목적지</span><span id="legend" class="fl-legend"></span></div>
+      <canvas id="routeCanvas" class="am-canvas" width="1000" height="520"></canvas>
+      <div class="tiny-note">로봇 위치는 line_nav 상태(구간·이동 거리)로 추정한 값. 지나온 구간은 로봇 색으로 남고, 그 로봇이 새 경로를 시작하면 지워짐.</div>
+    </section>
+
+    <section class="panel-card">
+      <div class="section-title">
+        <span>로그</span>
+        <span class="row">
+          <select id="logRobot" class="text-input ir-select" title="로봇 거르기"><option value="">로봇 전체</option></select>
+          <select id="logSource" class="text-input ir-select" title="구분 거르기">
+            <option value="">구분 전체</option><option value="pinky">pinky (ROS 로그)</option>
+            <option value="robot">robot (경로 이벤트)</option><option value="state">state</option>
+            <option value="fleet">fleet (보낸 명령)</option><option value="job">job</option>
+            <option value="console">console (연결)</option></select>
+          <label class="tiny-note"><input id="logFollow" type="checkbox" checked> 최신 따라가기</label>
+          <a id="btnLogCsv" class="btn btn-outline btn-small" href="/api/fleet/logs.csv" download>CSV 저장</a>
+          <button id="btnLogClear" class="btn btn-outline btn-small" type="button" title="화면만 지움(파일·서버 기록은 그대로)">화면 지우기</button>
+        </span>
+      </div>
+      <div class="ir-table-wrap fl-log" id="logWrap"><table class="ir-table" id="logs"><thead><tr>
+        <th>시각</th><th>로봇</th><th>구분</th><th>이벤트</th><th>내용</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="tiny-note">자동 저장: <code id="logFile">-</code></div>
+    </section>
+  </div>
+
+  <div id="right">
+    <section class="panel-card">
+      <div class="section-title"><span>로봇 (각 로봇 <code>mode:=test</code> 콘솔 필요)</span></div>
+      <div class="ir-table-wrap"><table class="ir-table" id="robots"><thead><tr>
+        <th></th><th>이름</th><th>복귀</th><th>콘솔</th><th>모드</th><th>state</th><th>구간</th>
+      </tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section class="panel-card">
+      <div class="section-title"><span>경로 — <b id="selName">로봇을 선택</b></span></div>
+      <div class="form-line"><label for="startSel">출발</label><select id="startSel" class="text-input"></select></div>
+      <div class="form-line"><label for="viaSel">경유 상차</label>
+        <select id="viaSel" class="text-input" title="목적지 전에 들러 상차 완료까지 기다릴 노드">
+          <option value="">없음</option><option value="N01">P4 (N01)</option><option value="N11">P7 (N11)</option></select></div>
+      <div class="form-line"><span>목적지</span><b id="goalText">지도에서 정차 노드를 누름</b></div>
+      <div class="form-line"><span>경로</span><span id="routeText">-</span></div>
+      <div class="row mt">
+        <button id="btnStart" class="btn btn-primary" type="button" disabled>▶ 시작</button>
+        <button id="btnLoad" class="btn btn-outline" type="button" disabled>상차 완료</button>
+        <button id="btnStop" class="btn btn-danger" type="button" disabled>■ 정지</button>
+        <button id="btnHome" class="btn btn-outline" type="button" disabled title="등록한 충전·대기 칸으로 최단 경로">⌂ 복귀</button>
+      </div>
+      <div class="form-line"><label for="spLin">직선 속도</label>
+        <span class="row"><input id="spLin" type="range" min="1.5" max="6" step="0.5" value="3"><b id="spLinV">-</b></span></div>
+      <div class="form-line"><label for="spRot">회전 속도</label>
+        <span class="row"><input id="spRot" type="range" min="0.15" max="0.6" step="0.05" value="0.4"><b id="spRotV">-</b></span></div>
+      <div class="row">
+        <button id="btnSpeed" class="btn btn-outline btn-small" type="button" title="주행 중에도 바로 바뀜(상한 = line_nav max_linear·max_angular)">속도 적용</button>
+        <span class="tiny-note" id="spNow">현재 -</span>
+      </div>
+      <div class="status-msg" id="cmdMsg" role="status"></div>
+      <div class="tiny-note">출발 위치에 로봇을 첫 구간 방향(칸 바깥)으로 세운 뒤 시작. 노드에서 끝나면 「현재 위치」에서 바로 다음 경로를 고를 수 있음(N12처럼 선 끝을 보고 섰으면 먼저 반 바퀴 돎). 복귀 = 끝난 노드 → 등록한 충전·대기 칸(Pinky 설정의 「복귀 칸」). 정지·오류 뒤에는 위치를 모르므로 복귀 안 됨.</div>
+    </section>
+
+    <section class="panel-card">
+      <div class="section-title"><span>로봇 콘솔 — <b id="consoleMode">-</b></span></div>
+      <div class="row">
+        <button id="btnConsoleTest" class="btn btn-outline btn-small" type="button" title="경로 주행 + IR 측정 (mode:=test)">경로+IR 켜기</button>
+        <button id="btnConsoleIr" class="btn btn-outline btn-small" type="button" title="IR 측정만 (mode:=ir)">IR만 켜기</button>
+        <button id="btnConsoleStop" class="btn btn-outline btn-small" type="button">콘솔 끄기</button>
+      </div>
+      <div class="tiny-note">SSH로 로봇의 테스트 콘솔만 켜고 끔. bringup(모터·odom)은 켜지도 끄지도 않으므로 로봇 터미널에서 따로 실행.</div>
+    </section>
+
+    <section class="panel-card">
+      <div class="section-title"><span>로그 파일 (로봇 → 노트북)</span>
+        <button id="btnFiles" class="btn btn-outline btn-small" type="button">목록 불러오기</button></div>
+      <div class="ir-table-wrap fl-files"><table class="ir-table" id="files"><thead><tr>
+        <th>파일</th><th>크기</th><th></th></tr></thead><tbody></tbody></table></div>
+      <input type="text" readonly class="text-input cmd-box" id="scpCmd" placeholder="가져오기를 누르면 같은 일을 하는 명령이 여기에 표시됨">
+      <div class="tiny-note">경로 상세 기록(route_*.csv, 20 Hz)은 로봇 <code>~/roport_logs/</code>, ROS 실행 로그는 <code>~/.ros/log/</code>. 받은 파일은 노트북 <code id="localDir">-</code>.</div>
+    </section>
+
+    <section class="panel-card">
+      <div class="section-title"><span>선택한 로봇 상태</span></div>
+      <div class="info-line"><span>state</span><span class="value" id="sState">-</span></div>
+      <div class="info-line"><span>reason</span><span class="value" id="sReason">-</span></div>
+      <div class="info-line"><span>구간</span><span class="value" id="sLeg">-</span></div>
+      <div class="info-line"><span>이동 / 감지 창 (cm)</span><span class="value" id="sTravel">-</span></div>
+      <div class="info-line"><span>IR on_line</span><span class="value" id="sOn">-</span></div>
+      <div class="info-line"><span>odom</span><span class="value" id="sOdom">-</span></div>
+      <div class="info-line"><span>마지막 명령</span><span class="value" id="sLast">-</span></div>
+      <div class="info-line"><span>상태 나이</span><span class="value" id="sAge">-</span></div>
+    </section>
+  </div>
+</div>
+
+<script src="routemap.js"></script>
+<script src="fleet.js"></script>
+</body>
+</html>

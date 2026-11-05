@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<!-- pinky_test_console Pinky 설정 화면 (mode:=fleet, 노트북 127.0.0.1 전용). 관제 서버 Pinky Settings 시안 v0.2 를
+     먼저 시험하는 화면. SSH 키 로그인만(비밀번호 입력 없음). 인라인 코드·CDN 없음. -->
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pinky 설정</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="ir-page fleet-page">
+
+<header id="topbar">
+  <div class="brand">RO:PORT <span>Pinky 설정</span></div>
+  <span class="chip" title="이 노트북 서버 연결"><span id="connDot" class="chip-dot"></span><span id="connText">연결 중</span></span>
+  <a class="btn btn-outline btn-small ir-link" href="fleet.html">← 테스트 관제</a>
+</header>
+
+<div id="main">
+  <div id="left">
+    <section class="panel-card">
+      <div class="section-title"><span>등록된 Pinky</span><span class="tiny-note" id="fleetFile">-</span></div>
+      <div class="ir-table-wrap"><table class="ir-table" id="robots"><thead><tr>
+        <th>이름</th><th>역할</th><th>IP</th><th>도메인</th><th>IR 기준값</th><th>복귀 칸</th><th>콘솔</th><th>작업</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="row mt">
+        <label class="tiny-note" for="ref">업데이트 설치 브랜치</label>
+        <select id="ref" class="text-input"><option value="">브랜치 불러오는 중…</option></select>
+        <button id="btnBranches" class="btn btn-outline btn-small" type="button">새로고침</button>
+      </div>
+      <div class="tiny-note">설치 = 노트북 저장소(<code>git fetch</code> 후)에서 <span id="pkgs">-</span>를 <code>git archive</code>로 로봇 <code>~/pinky_test_ws/src</code>에 보냄. 릴리즈 = <code id="releaseRef">origin/main</code>. 설치 뒤 「빌드」.</div>
+      <div class="tiny-note">도메인 적용 = 로봇 <code>~/.bashrc</code> 끝에 <code>export ROS_DOMAIN_ID=N  # roport-domain</code> 한 줄을 넣음(이 표시가 붙은 이전 줄은 지움). 다른 줄(DDS 설정 등)은 건드리지 않음. 새 터미널부터 적용. 되돌리기: 그 줄을 지움.</div>
+    </section>
+
+    <section class="panel-card">
+      <div class="section-title"><span>작업 기록</span></div>
+      <div id="jobs"></div>
+    </section>
+  </div>
+
+  <div id="right">
+    <section class="panel-card">
+      <div class="section-title"><span>등록 / 수정 (같은 이름이면 수정)</span></div>
+      <div class="form-line"><label for="fName">이름</label><input id="fName" class="text-input" maxlength="16" placeholder="pinky1"></div>
+      <div class="form-line"><label for="fIp">IP</label><input id="fIp" class="text-input" maxlength="15" placeholder="192.168.0.21"></div>
+      <div class="form-line"><label for="fRole">역할</label>
+        <select id="fRole" class="text-input"><option value="logistics">물류</option><option value="smartcart">스마트카트</option></select></div>
+      <div class="form-line"><label for="fDomain">ROS_DOMAIN_ID</label><input id="fDomain" class="text-input" type="number" min="0" max="101" value="14"></div>
+      <div class="form-line"><label for="fHome">복귀 칸</label>
+        <select id="fHome" class="text-input" title="테스트 관제 「복귀」로 돌아갈 충전·대기 칸">
+          <option value="">없음</option><option value="P1">P1 (H1, 스마트카트)</option>
+          <option value="P2">P2 (H2, 스마트카트)</option><option value="P5">P5 (N16, 물류)</option>
+          <option value="P6">P6 (N17, 물류)</option></select></div>
+      <div class="form-line"><label for="fRmw">RMW</label>
+        <select id="fRmw" class="text-input" title="원격 콘솔 켤 때 RMW_IMPLEMENTATION">
+          <option value="">기본(로봇 .bashrc)</option><option value="rmw_fastrtps_cpp">rmw_fastrtps_cpp</option>
+          <option value="rmw_cyclonedds_cpp">rmw_cyclonedds_cpp</option></select></div>
+      <div class="form-line"><label for="fCalib">IR 기준값</label>
+        <select id="fCalib" class="text-input">
+          <option value="pinky_d660">pinky_d660</option>
+          <option value="pinky_6422">pinky_6422</option>
+          <option value="pinky_764e">pinky_764e</option>
+        </select></div>
+      <div class="row mt">
+        <button id="btnSave" class="btn btn-primary" type="button">저장</button>
+      </div>
+      <div class="status-msg" id="formMsg" role="status"></div>
+      <div class="tiny-note">기체별 도메인(2026-11-03 결정): d660 14 · 6422 15 · 764e 16. 로봇 접속은 <code>~/.ssh/pinky_ed25519</code> 키만 씀.</div>
+    </section>
+  </div>
+</div>
+
+<script src="routemap.js"></script>
+<script src="settings.js"></script>
+</body>
+</html>
