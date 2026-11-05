@@ -33,7 +33,7 @@ Nav2 smoother ──trial/nav2_cmd_vel──> trial_guard ──cmd_vel──> m
 ## 로봇 배포·실행 (현장 운영자 수행)
 
 1. 이 변경의 `roport_pinky` 패키지와 관제의 **heartbeat/close hook을 포함한 새 MQTT 키트**를 같이 배포한다. 기존 Confluence 첨부 ZIP은 자동 갱신되지 않는다. 구형 runner는 `runner_heartbeat_missing`으로 이동을 거부한다.
-2. ROS Jazzy 환경에서 `rosdep install --from-paths src/roport_pinky --ignore-src -r -y`로 선언된 의존성을 준비하고 `colcon build --packages-select roport_pinky` 후 workspace를 source한다. 기존 line_nav, Pinky bringup, IR 보정, LiDAR/odom/TF 준비가 전제다.
+2. ROS Jazzy 환경에서 `rosdep install --from-paths src/roport_pinky src/roport_line_nav src/roport_pinky_line src/pinky_pro/pinky_navigation --ignore-src -r -y`로 선언된 의존성을 준비하고 `colcon build --packages-up-to roport_pinky` 후 workspace를 source한다. 기존 line_nav, Pinky bringup, IR 보정, LiDAR/odom/TF 준비가 전제다.
 3. 관제와 동일한 `trial.json`·지도 파일을 복사한다. 1대/2대의 site·binding을 섞지 않는다. 현장에서 배치 방향·N11 회전·N12 위치 추정·공용공간 골·비상 정지를 확인하기 전에는 `field_verified=false`를 유지한다.
 4. 안전 조건 확인 후 기존 bringup과 센서를 준비하고 아래 trial 전용 launch를 실행한다. 기존 line_nav/Nav2 launch 대신 사용한다. AMCL 초기 위치를 실제 배치와 맞추고 지도·위치 추정 준비를 확인한다.
 
