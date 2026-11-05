@@ -659,7 +659,8 @@ async function init() {
     const res = await fetch("api/info");
     info = await res.json();
   } catch (_) { /* 기본값 사용 */ }
-  $("modeChip").textContent = "mode: " + info.mode;
+  $("modeChip").textContent = (info.use_sim_time ? "Gazebo 시뮬레이션 · " : "") + "mode: " + info.mode;
+  if (info.use_sim_time) document.title = "스마트카트 Gazebo 주행";
   $("teleopHint").textContent =
     `누르고 있는 동안 / WASD·방향키 (최대 ${info.max_linear} m/s, ${info.max_angular} rad/s). ` +
     `손을 떼면 정지, 입력이 ${info.deadman_sec} s 끊기면 서버가 자동 정지.`;

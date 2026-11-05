@@ -395,6 +395,7 @@ class ConsoleNode(Node):
     def get_info(self):
         return {
             'mode': self.mode,
+            'use_sim_time': self.get_parameter('use_sim_time').value,
             'teleop_enabled': self.teleop_enabled,
             'map_dir': self.map_dir,
             'ir_dir': self.ir.ir_dir,

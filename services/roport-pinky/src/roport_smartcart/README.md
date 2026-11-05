@@ -70,6 +70,39 @@ python3 -m pytest -q src/roport_smartcart/test
 
 ## 시뮬레이션
 
+### 이 PC에서 바로 시작
+
+실물 Pinky 연결 없이 저장소의 `services/roport-pinky`에서 실행한다.
+
+```bash
+./scripts/smartcart_sim.sh
+```
+
+Gazebo 공항·Pinky·Nav2·웹 지도 화면을 함께 시작한다. 브라우저에서 **http://127.0.0.1:8081**을 연다.
+화면에 `Gazebo 시뮬레이션` 표시가 붙으며, 기존 실물 웹 화면(8080)과 구분한다.
+초기 위치는 자동 설정되며 목표는 자동으로 보내지 않는다. Gazebo는 일시정지를 해제한 상태로 둔다.
+웹 지도의 `목표` 모드에서 클릭·드래그하면 목적지·방향을 지정할 수 있고 웹 정지 버튼으로 목표를 취소할 수 있다.
+
+두 번째 터미널에서 같은 폴더로 이동한 뒤 게이트 왕복을 실행한다.
+
+```bash
+./scripts/smartcart_sim.sh gate1  # G1 → 시작 위치 복귀
+./scripts/smartcart_sim.sh gate2  # G2 → 시작 위치 복귀
+./scripts/smartcart_sim.sh gate3  # G3 → 시작 위치 복귀
+```
+
+한 번에 명령 하나만 실행한다. 시작 위치만 가려면 `home`, 창 없이 실행하려면 시작 명령에 `headless`를 사용한다.
+목표 실행 터미널의 Ctrl+C는 현재 목표를 취소한다. 주행이 멈춘 뒤 시작 터미널에서 Ctrl+C로 전체 시뮬레이터를 종료한다.
+수정 후에는 ROS 환경에서 `colcon build --packages-up-to roport_smartcart`로 다시 빌드하고 시작한다.
+스크립트는 domain198·LOCALHOST를 고정하고 이전 터미널의 원격 discovery 설정을 지운다.
+게이트 후보는 시뮬레이션용이고, 라인 상차·마커 정밀 접근·관제 임무 전체를 재현한 것은 아니다.
+
+이 PC에는 웹 콘솔용 Python 환경을 준비해뒀다. 다른 PC에서 필요하면 ROS 환경을 source한 뒤
+`python3 -m venv --system-site-packages /원하는/경로`와 해당 환경의 `python -m pip install Flask`로 준비하고
+`SMARTCART_PYTHON=/원하는/경로/bin/python ./scripts/smartcart_sim.sh`로 지정한다.
+기본 실행은 RViz를 함께 띄우지 않는다. 이 PC에서 발생한 RViz 지도 shader 오류가 웹 지도에는 영향을 주지 않기 때문이다.
+RViz가 필요하면 같은 Python으로 `ros2 launch roport_smartcart simulation.launch.py rviz:=true`를 별도 시작 환경에서 사용한다.
+
 공통 launch는 기본 `mode:=sim`, ROS domain **198**, discovery **LOCALHOST**다. Gazebo partition도 분리한다.
 실기 bringup은 실행하지 않으며, 벽에서 회전할 공간이 있는 시작 위치 `(0.3,-0.3, yaw=0)`를 Gazebo·AMCL·sim home에 동일하게 설정한다.
 launch만 켜면 배송 목표를 보내지 않는다.
