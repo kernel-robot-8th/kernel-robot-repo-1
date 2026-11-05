@@ -212,7 +212,7 @@ class MqttTransport:
             message["site_id"], parts[3], parts[4], parts[5]
         ):
             raise ValueError("topic and envelope routing mismatch")
-        device = message["target"] if parts[5] == "cmd" else message["source"]
+        device = message["source"] if parts[5] == "event" else message["target"]
         if device != parts[4]:
             raise ValueError("topic and envelope device mismatch")
         properties = None
@@ -224,8 +224,11 @@ class MqttTransport:
                 raise ValueError("expired_command")
             properties = Properties(PacketTypes.PUBLISH)
             properties.MessageExpiryInterval = min(math.ceil(remaining), 2**32 - 1)
+        elif destination.endswith("/ack"):
+            if message["type"] != "event.ack":
+                raise ValueError("ack channel requires event.ack")
         elif not destination.endswith("/event"):
-            raise ValueError("only task cmd/event publishing is implemented")
+            raise ValueError("only task cmd/event/ack publishing is implemented")
         info = self._client.publish(
             destination, raw, qos=1, retain=False, properties=properties
         )
