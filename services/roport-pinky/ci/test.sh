@@ -5,7 +5,7 @@ source /opt/ros/jazzy/setup.bash
 set -u
 python3 -m unittest discover -s ci -p 'test_*.py' -v
 # ARM-only drivers and the Gazebo stack require separate hardware/simulation jobs.
-colcon build --packages-select roport_pinky roport_pinky_line roport_line_nav roport_smartcart pinky_interfaces pinky_description \
+colcon build --packages-select roport_pinky roport_pinky_line roport_line_nav roport_smartcart pinky_interfaces pinky_description pinky_navigation \
   --event-handlers console_direct+ --cmake-args -DBUILD_TESTING=OFF
 set +u
 source install/setup.bash
@@ -34,6 +34,6 @@ PY
 python3 -m pytest src/roport_pinky_line/test -q -p no:cacheprovider
 # Node-route navigation: route planning, 2D IR/odom simulator routes, node tests (isolated domain).
 python3 -m pytest src/roport_line_nav/test -q -p no:cacheprovider
-# 관제 trial-v1 드라이버 판정부(RouteExecutor + 2D 시뮬레이터, ROS·MQTT 없음).
+# 관제 trial-v1 판정부·ROS Nav2 모의 피어·독립 watchdog (실장비·MQTT 없음).
 python3 -m pytest src/roport_pinky/test -q -p no:cacheprovider
 python3 -m pytest -q src/roport_smartcart/test

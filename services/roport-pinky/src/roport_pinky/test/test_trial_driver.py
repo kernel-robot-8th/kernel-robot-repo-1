@@ -107,6 +107,7 @@ def test_p5_to_p7_progress_then_complete_while_loading():
     assert rig.sent == ['speed', 'start']
     assert rig.ex.cfg.base_speed == 0.03                    # min(현재 0.03, 한계 0.1)
     assert rig.run(until=finished)
+    assert 120 < rig.sim.t < 300  # 0.03 m/s: the former 120 s trial deadline was too short
     phases = [(p, d.get('seq')) for _, p, d in rig.results]
     assert phases == [('progress', i) for i in range(1, 7)] + [('completed', 7)]
     assert rig.ex.state == 'loading'                        # N11: 반시계 90° 뒤 상차 대기
@@ -123,7 +124,9 @@ def test_next_route_from_loading_sends_load_done_first():
     rig.run(until=finished)
     rig.results.clear()
     rig.sent.clear()
-    nxt = route_cmd(['N11', 'N19', 'N09', 'N08', 'N12'], heading=math.pi / 2)
+    nxt = route_cmd(['N11', 'N19', 'N09', 'N08', 'N12'], heading=math.radians(0.10))
+    with pytest.raises(ValueError, match='loading_heading_mismatch'):
+        rig.logic.validate_action(route_cmd(nxt['payload']['route'], heading=math.pi / 2))
     rig.logic.validate_action(nxt)
     rig.logic.dispatch(nxt)
     assert rig.sent == ['load_done']

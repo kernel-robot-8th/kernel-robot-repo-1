@@ -22,8 +22,8 @@ _HEADERS = (
 def topic(site: str, kind: str, device: str, channel: str) -> str:
     if not all(isinstance(v, str) and _ID.fullmatch(v) for v in (site, device)):
         raise ValueError("invalid topic identifier")
-    if kind not in {"robot", "workcell"} or channel not in {"cmd", "event"}:
-        raise ValueError("only task cmd/event channels are implemented")
+    if kind not in {"robot", "workcell"} or channel not in {"cmd", "event", "ack"}:
+        raise ValueError("only task cmd/event/ack channels are implemented")
     if kind == "robot" and device not in {"pinky1", "pinky2", "pinky3", "omx3"}:
         raise ValueError("OMX1/2 commands must use the joint workcell")
     if kind == "workcell" and device != "shelf-01":
