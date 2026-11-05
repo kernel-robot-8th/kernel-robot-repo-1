@@ -24,9 +24,12 @@ class NavClient:
     """
 
     def __init__(self, node, *, action_name, client_factory=ActionClient,
-                 timeout_seconds=None, monotonic=time.monotonic):
+                 timeout_seconds=None, monotonic=time.monotonic, environment=None):
         if not isinstance(action_name, str) or not action_name.strip():
             raise ValueError('explicit action_name required')
+        if environment is not None and environment not in ('sim', 'real'):
+            raise ValueError('environment must be sim or real')
+        self.environment = environment
         if timeout_seconds is not None and (
                 not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
             raise ValueError('timeout_seconds must be positive and finite')
@@ -41,7 +44,8 @@ class NavClient:
 
     def start(self, places_file, map_yaml, place_id):
         # Validate before ownership changes or a request reaches Nav2.
-        destination = load_destination(places_file, map_yaml, place_id)
+        destination = load_destination(places_file, map_yaml, place_id,
+                                       environment=self.environment)
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = 'map'
         goal.pose.header.stamp = self._node.get_clock().now().to_msg()

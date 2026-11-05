@@ -56,3 +56,27 @@ def test_duplicate_place_is_rejected(configured):
     places.write_text(places.read_text() + '\nplaces: {}\n')
     with pytest.raises(ValueError, match='duplicate YAML key'):
         load_destination(places, map_yaml, 'gate1')
+
+
+@pytest.mark.parametrize('environment', ['sim', 'real'])
+def test_same_map_and_pose_cannot_cross_execution_environment(configured, environment):
+    places, map_yaml, data = configured
+    data['environment'] = environment
+    places.write_text(yaml.safe_dump(data))
+    assert load_destination(places, map_yaml, 'gate1', environment=environment) == (
+        Destination(1, 2, .5, 8))
+    other = 'real' if environment == 'sim' else 'sim'
+    with pytest.raises(ValueError, match='environment'):
+        load_destination(places, map_yaml, 'gate1', environment=other)
+
+
+@pytest.mark.parametrize('environment', ['sim', 'real'])
+@pytest.mark.parametrize('declared', [None, '', 'gazebo', 'REAL'])
+def test_unlabelled_or_invalid_places_do_not_authorize_explicit_mode(
+        configured, environment, declared):
+    places, map_yaml, data = configured
+    if declared is not None:
+        data['environment'] = declared
+    places.write_text(yaml.safe_dump(data))
+    with pytest.raises(ValueError, match='environment'):
+        load_destination(places, map_yaml, 'gate1', environment=environment)

@@ -23,5 +23,5 @@ setup(
     description='RO:PORT smart cart (Pinky3) mission package',
     license='LicenseRef-Proprietary',
     extras_require={'test': ['pytest']},
-    entry_points={'console_scripts': []},
+    entry_points={'console_scripts': ['navigate = roport_smartcart.navigate:main']},
 )

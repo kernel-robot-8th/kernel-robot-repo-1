@@ -1,8 +1,8 @@
-# Coordinates are intentionally unset. Measure the robot stop pose, not the marker pose.
+# REAL ROBOT: all stop poses require on-site measurement before measured: true.
 map:
   frame: map
-  yaml_sha256: ce5ab3438b9e37dd23b3c775e8ce1df526e772fdc4c9e3d4365de99667428f3d
-  image_sha256: 254e0b846d889e00e3425dfc58a0bbbdd5334acaf12c7d70f2453c4d17244607
+  yaml_sha256: 6b0426a429aba2c6dac80682c7efdf57ce0576309f8a8caaecf160f456dd7827
+  image_sha256: 81922e5af4cd222eec6d7f94606ada8cbed94ffafc3956f7f7d3bbe67610eac4
 places:
   wait_p1:
     measured: false
@@ -12,10 +12,6 @@ places:
     measured: false
     pose: null
     marker_id: 2
-  wait_p3:
-    measured: false
-    pose: null
-    marker_id: 3
   load_p7:
     measured: false
     pose: null
@@ -36,3 +32,8 @@ places:
     measured: false
     pose: null
     marker_id: 27
+  handoff_n12:
+    measured: false
+    pose: null
+    marker_id: null
+environment: real

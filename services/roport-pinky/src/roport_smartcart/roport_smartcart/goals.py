@@ -62,12 +62,15 @@ def map_hashes(map_yaml):
     }
 
 
-def load_destination(places_file, map_yaml, place_id):
+def load_destination(places_file, map_yaml, place_id, *, environment=None):
     """Reject unmeasured/stale targets before a Nav2 goal can be submitted.
 
     This checks configuration provenance, not live localization or clearance.
     """
     data = _read_yaml(places_file)
+    if environment is not None:
+        if environment not in ('sim', 'real') or data.get('environment') != environment:
+            raise ValueError('destination environment must match sim/real execution mode')
     metadata = data.get('map')
     if not isinstance(metadata, dict) or metadata.get('frame') != 'map':
         raise ValueError('destination frame must be map')

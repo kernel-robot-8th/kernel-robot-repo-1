@@ -1,62 +1,112 @@
 # roport_smartcart
 
-스마트카트(Pinky3, 문서상 pinky_764e · PP_26091 · RAM 8 GB), 담당 강지원.
-[구현 계획·강사 설정 복구 기록](IMPLEMENTATION_PLAN.md), [FFT1-83](https://fp-team1.atlassian.net/browse/FFT1-83).
+스마트카트 담당 강지원. [구현 계획·강사 설정 복구 기록](IMPLEMENTATION_PLAN.md), [FFT1-83](https://fp-team1.atlassian.net/browse/FFT1-83).
+업무 범위는 **라인 상차 → 적재 후 대기 복귀 → 관제 호출 → Nav2 배송 → 하차 확인 → 복귀**다.
+QR·고객 추종은 현재 구현 범위에 넣지 않는다.
 
-## 현재 범위
+## 현재 구현
 
-2026-11-02 사용자 요청 기준: **라인 상차 → 적재 후 대기 복귀 → 관제 호출 → Nav2 배송 → 하차 확인 → 복귀**.
-TS-3의 기존 QR·고객 추종 시나리오와 차이가 있으며 관제 연결 전에 계약을 맞춰야 한다.
-
-이 패키지는 첫 구현의 검증 가능한 구성요소를 제공한다. 자동 주행 노드·실기 launch·MQTT 임무 실행기는 없다.
-
-| 파일 | 구현 |
+| 파일 | 역할 |
 |---|---|
-| `mission.py` | 순수 임무 상태 전이, 명시 적재·하차 확인, 늦은 결과 차단, 실패/취소 시 적재 유지 |
-| `goals.py` | map 프레임 실측 목표 검증, 지도 YAML·이미지 해시 변경 시 거부 |
-| `navigation.py` | 목표 제출·수락·취소·결과 생명주기, 취소/timeout 중 소유권 유지 |
-| `nav_client.py` | ROS NavigateToPose 연결, 전송 시 좌표/지도 검증, 명시 action 이름 |
-| `velocity_gate.py` | ROS 없는 속도 소유권·명령 epoch/sequence·heartbeat/센서 지연·상한 검증 |
-| `config/places.yaml` | 대기점·P7·게이트·입국장 이름과 마커 ID, **좌표는 모두 미측정** |
-| `config/reference/2026-09-14/` | 세션에서 찾은 강사 설정 원본 덤프. 실행용 설정이 아님 |
+| `mission.py` | 명시 적재·하차 확인, 임무 전이, 실패/취소 시 적재 유지, 늦은 결과 차단 |
+| `goals.py` | 환경(sim/real)·측정 여부·map 프레임·지도 YAML/이미지 해시 검증 |
+| `navigation.py`, `nav_client.py` | NavigateToPose 제출·수락·취소·결과, timeout 중 소유권 유지 |
+| `navigate.py` | 사용자가 실행하는 단일 목적지/선택 복귀 CLI, 센서·위치·정지 준비 검사 |
+| `profiles.py`, `config/nav2_overrides.yaml` | 공통 Nav2 설정 병합, sim/real clock·footprint·속도 분리 |
+| `launch/navigation.launch.py` | sim: Gazebo+Nav2, real: 명시 설정으로 Nav2 실행. 목표를 보내지 않음 |
+| `velocity_gate.py` | ROS 없는 속도 소유권·epoch/sequence·지연·상한 검증 |
+| `config/places.yaml` | 실기 목적지. `environment: real`, **모두 미측정이므로 실행 거부** |
+| `config/places_sim.yaml` | v13 배치 기반 **시뮬레이션 전용 후보 좌표** |
+| `config/reference/2026-09-14/` | 강사 설정 원본 덤프. 자동 로딩하지 않음 |
 
-이 구성요소를 통합한 주행·장애물 회피·정밀 정렬·라인 경로 실행은 아직 완료하지 않았다.
-Nav2 성공/취소 결과도 물리적 정차 확인이 아니며, `VelocityGate`는 드라이버 watchdog을 대신하지 않는다.
-임무 모델에는 영속 기록·관제 명령 중복 방지·재시작 후 자동 복구가 없다. 재시작 경로는 `Mission.after_restart`로 복구 대기에 두어야 한다.
+전체 임무 자동 실행·MQTT 연결·라인/Nav2 전환은 아직 통합하지 않았다.
+`navigate`는 명시 목표를 보내는 도구이며 상차·하차·관제 임무 실행기가 아니다.
+2026-11-05 Gazebo에서 gate1→home 1회 왕복·연속 정지를 확인했다. 복귀 위치 오차는 약 5.34 cm로 설정 허용치 6 cm 이내였다.
+실로봇 주행은 아직 검증하지 않았다.
 
 ## 빌드·테스트
 
-Ubuntu 24.04 / ROS 2 Jazzy. `services/roport-pinky`에서:
+Ubuntu 24.04 / ROS 2 Jazzy, `services/roport-pinky`에서 실행한다.
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select roport_smartcart
+colcon build --packages-up-to roport_smartcart
 source install/setup.bash
 python3 -m pytest -q src/roport_smartcart/test
 ```
 
-전체 Pinky CI 범위는 `bash ci/test.sh`다. 필요 패키지는 `.github/workflows/pinky-ci.yml`과 `package.xml`을 따른다.
-테스트는 모터를 구동하지 않는다. 모의 ActionServer 통합 시험은 ROS domain 198과 고유 namespace를 사용한다.
-생성자만 호출해도 주행을 시작하는 코드는 없다. 모든 좌표는 실제 정차 자세를 측정하기 전 사용할 수 없다.
+전체 CI 범위는 `bash ci/test.sh`, 의존성은 `package.xml`과 `.github/workflows/pinky-ci.yml`을 따른다.
+단위·모의 ROS 시험은 실주행 검증이 아니다. 모의 ActionServer 시험은 domain 198과 고유 namespace를 쓴다.
 
-## 연결 시 준수할 사항
+## 시뮬레이션
 
-- 공용 라인 코드를 복사하지 않는다. `roport_pinky_line`(PR #19)의 기체별 IR 설정을 재사용한다.
-- 라인 v0의 `node`는 가로 테이프 검출이다. 목적지 ID 판별·회전·왕복 경로는 FFT1-117의 별도 의존이다.
-- `Mission.complete`는 어댑터가 도착·실제 정지·출발 허가를 검증한 뒤 호출한다. `unload_confirmed`는 하차 및 복귀 허가가 모두 있어야 한다.
-- `NavClient.start(places_file, map_yaml, place_id)`는 전송 때마다 `load_destination`으로 측정 여부와 지도 해시를 확인한다. 좌표의 자유 공간 여부·AMCL 수렴은 별도 검증한다.
-- 라인·Nav2·수동의 속도 토픽을 분리하고 최종 구동 출력은 한 소스만 소유한다. Nav2 behavior/smoother도 중재 경로에 포함한다.
-- `VelocityGate` 시간은 같은 monotonic 기준이다. 센서 callback은 오래된 ROS stamp를 먼저 검증하고 갱신한다. 수신 시각만으로 측정 데이터 최신성을 보장하지 않는다.
-- 관제 payload는 기존 MQTT envelope를 사용한다. 라이브러리의 메서드 이름을 합의된 관제 명령 이름으로 간주하지 않는다.
+공통 launch는 기본 `mode:=sim`, ROS domain **198**, discovery **LOCALHOST**다. Gazebo partition도 분리한다.
+실기 bringup은 실행하지 않으며, 벽에서 회전할 공간이 있는 시작 위치 `(0.3,-0.3, yaw=0)`를 Gazebo·AMCL·sim home에 동일하게 설정한다.
+launch만 켜면 배송 목표를 보내지 않는다.
 
-## 실기 전 남은 항목
+```bash
+# 터미널 1: GUI 없는 Gazebo+Nav2. 창이 필요하면 gui:=true
+ros2 launch roport_smartcart navigation.launch.py mode:=sim gui:=false
+```
 
-최종 드라이버 명령 timeout, ROS 속도 중재 노드, 실제 정지/AMCL 준비 확인, 적재 외곽·제동거리·센서 사각 실측,
-지도/목적지 좌표 확정, 라인 경로·모드 전환, 관제 호출/상하차/복귀 계약과 영속 실행 기록이 필요하다.
-빌드·오프라인·모의 ROS 시험 성공은 실로봇 검증 완료가 아니다.
+별도 터미널에서 같은 워크스페이스를 source한 뒤 설정만 검사한다. `--check-only`는 ROS를 초기화하거나 목표를 보내지 않는다.
 
-## 로컬 검증 기록 · 2026-11-02
+```bash
+SMARTCART_SHARE=$(ros2 pkg prefix --share roport_smartcart)
+AIRPORT_SHARE=$(ros2 pkg prefix --share roport_gz_world)
+ros2 run roport_smartcart navigate --mode sim \
+  --places "$SMARTCART_SHARE/config/places_sim.yaml" \
+  --map "$AIRPORT_SHARE/maps/airport_map.yaml" --target gate1 --check-only
+```
 
-Ubuntu 24.04 / ROS 2 Jazzy / Python 3.12에서 `bash ci/test.sh` 통과:
-기존 센서 검사 6개, 4개 패키지 빌드·import·URDF 전개, 스마트카트 테스트 79개(모의 ROS ActionServer 포함).
-Node.js 24의 `npm run test:commit` 3개도 통과했다. 실제 센서·주행·제동거리와 원격 GitHub Actions는 미검증이다.
+목표 송신은 사용자가 다음 명령을 별도로 실행할 때 시작한다. `--return-to home`은 첫 목적지 성공과 연속 정지 확인 뒤 두 번째 목표를 보낸다.
+`home`은 시뮬레이션 시작점이며 실기 충전 칸을 뜻하지 않는다.
+
+```bash
+ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST ros2 run roport_smartcart navigate \
+  --mode sim --domain-id 198 \
+  --places "$SMARTCART_SHARE/config/places_sim.yaml" \
+  --map "$AIRPORT_SHARE/maps/airport_map.yaml" \
+  --target gate1 --return-to home --timeout 120
+```
+
+`places_sim.yaml`의 `measured: true`는 시뮬레이션 fixture를 허용하는 값이다. 후보 좌표를 실측했다는 뜻이 아니며,
+Gate 후보는 제안된 벽 마커 위치 앞 0.30 m다. `environment: sim`을 바꾸거나 이 좌표를 실기에 복사하지 않는다.
+
+## 실기
+
+기체·적재물 외곽과 센서 가림·제동거리·주행 상한을 측정하고 현장 정지 수단을 확인한 뒤 사용한다.
+launch는 모터 bringup을 실행하지 않는다. 센서/odom 구동은 현장 절차를 따르며, 실기 초기 위치는 운영자가 설정한다.
+실기 모드는 초기 위치를 자동으로 `(0,0,0)`에 맞추지 않는다.
+
+실기 launch에는 **지도·도메인·측정 footprint·두 속도 상한**을 모두 명시해야 한다.
+아래 변수는 현장에서 확인한 값으로 먼저 설정한다. footprint는 로봇 기준 미터 단위 볼록 다각형 JSON,
+속도는 m/s·rad/s다. sim 기본값은 실기 설정으로 승인된 값이 아니다.
+
+```bash
+ros2 launch roport_smartcart navigation.launch.py mode:=real gui:=false \
+  map:="$ROPORT_MAP" ros_domain_id:="$ROPORT_DOMAIN" \
+  footprint:="$ROPORT_FOOTPRINT" max_linear:="$ROPORT_MAX_LINEAR" \
+  max_angular:="$ROPORT_MAX_ANGULAR"
+```
+
+실제 로봇 중심의 정차 자세를 측정해 `places.yaml`의 해당 pose/측정 표시와 지도 해시를 확정한 뒤에만 실행한다.
+현재 제공된 실기 좌표는 미측정이므로 검사와 실행이 실패하는 것이 정상이다.
+
+```bash
+ros2 run roport_smartcart navigate --mode real --domain-id "$ROPORT_DOMAIN" \
+  --places "$ROPORT_PLACES" --map "$ROPORT_MAP" --target gate1 --check-only
+# 설정·현장 준비 확인 후 동일 명령에서 --check-only를 제거하면 실제 목표를 보낸다.
+```
+
+## 준비·취소·연결 조건
+
+- CLI는 매 목표 직전 환경/지도 해시/좌표를 다시 검사한다. scan·odom·AMCL·map→base_footprint TF와 연속 정지가 필요하며 sim clock도 실제로 증가해야 한다.
+- 준비 대기와 주행 중 `request_nomotion_update`로 AMCL 재관측만 요청한다(최대 1 Hz, 이전 요청 진행 중이면 중복 금지). 초기 위치를 재설정하거나 모터 명령을 보내지 않는다.
+- 기본 준비 대기는 20초(`--startup-wait`), 목표 timeout은 120초다. timeout/Ctrl+C에는 Nav2 취소를 요청하고 terminal result까지 기다린다. 결과가 없으면 소유권을 해제했다고 간주하지 않는다.
+- Nav2 결과는 실제 정차 증거가 아니다. 다음 목표 전에 최신 odom의 연속 정지를 확인한다. CLI는 raw `cmd_vel`을 발행하지 않는다.
+- 공용 라인은 `roport_line_nav`의 `line_nav/command`와 `line_nav/state`를 연결한다. `start/stop/load_done/speed`, `loading/arrived/handoff/error/stopped`를 사용하고 **N12 handoff**에서 Nav2로 전환한다. 아직 이 어댑터는 없다.
+- 라인·Nav2·수동 출력은 최종 구동에서 단일 소유권으로 중재해야 한다. behavior/smoother도 포함한다. 순수 `VelocityGate`와 라인 `cmd_vel_guard`는 최종 드라이버 watchdog을 대신하지 않는다.
+- `unload_confirmed`는 하차와 복귀 허가를 모두 검증한 어댑터만 전달한다. 관제 payload·식별자·영속 중복 방지는 기존 공통 실행부 계약을 따른다.
+
+실기 목적지·센서 사각·장애물 대응·라인 전환·관제 통합·프로세스 종료 시 구동 정지는 후속 검증 항목이다.
