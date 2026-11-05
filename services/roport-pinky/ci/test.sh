@@ -4,8 +4,10 @@ cd "$(dirname "$0")/.."
 source /opt/ros/jazzy/setup.bash
 set -u
 python3 -m unittest discover -s ci -p 'test_*.py' -v
-# ARM-only drivers and the Gazebo stack require separate hardware/simulation jobs.
-colcon build --packages-select roport_pinky roport_pinky_line roport_line_nav roport_smartcart pinky_interfaces pinky_description pinky_navigation \
+# Build Python console/world resources too; smartcart launch depends on them.
+# Exclude Gazebo discovery so this no-simulator job does not require its C++ stack.
+colcon build --packages-ignore pinky_gz_sim \
+  --packages-select roport_pinky roport_pinky_line roport_line_nav roport_smartcart pinky_interfaces pinky_description pinky_navigation pinky_test_console roport_gz_world \
   --event-handlers console_direct+ --cmake-args -DBUILD_TESTING=OFF
 set +u
 source install/setup.bash
