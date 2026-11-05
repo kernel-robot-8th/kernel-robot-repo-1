@@ -6,17 +6,17 @@ RO:PORT · GATE CREW — 통합관제 및 로봇 통신
 
 Python 3.12 / FastAPI / uv / Three.js / Paho MQTT / pytest / Playwright / Ruff. 정확한 버전은 manifest와 lockfile을 따릅니다.
 2026-11-03 팀 합의: **브라우저 웹 UI ↔ FastAPI ↔ 운영 DB ↔ 관제 실행부(별도 프로세스 1개)**. API와 실행부의 목표 연결은 운영 DB이며, 원격 서비스 WSS는 실행부가 담당합니다. AI 노트북에 서버를 배치하고 다른 PC에서 접속합니다. AI 추론은 API와 별도 프로세스로 운영합니다.
-현재 구현은 **웹 UI·REST 조회·WebSocket 모의/OFFLINE 상태 스트림**과 독립 MQTT/UDP 모듈입니다. 운영 DB·관제 실행부·WSS·실제 제어·카메라 웹 중계는 미구현입니다. 브라우저는 DB/MQTT/UDP에 직접 연결하지 않습니다.
+현재 구현은 **웹 UI·REST 조회·WebSocket 모의/OFFLINE 상태 스트림**과 독립 MQTT/UDP 모듈입니다. 운영 DB·웹에 연결된 관제 실행부·WSS·카메라 웹 중계는 미구현입니다. 별도 CLI로 Pinky MQTT 주행 시험을 제공합니다. 브라우저는 DB/MQTT/UDP에 직접 연결하지 않습니다.
 
 ## 구조 · FFT1-122
 
 ```
 src/roport_control_server/
   domain/      __init__.py만: Workflow·Allocation·State/Recovery 규칙 자리 (골격, 미구현)
-  executor/    __init__.py만: 관제 실행부 프로세스 자리 (골격, 미구현, FFT1-106)
+  executor/    pinky_trial.py: 격리된 Pinky 시험 CLI (운영 실행부는 후속, FFT1-106)
   contracts/   snapshot.py: TaskRow·Snapshot 표시 계약과 검증 (표준 라이브러리만)
   adapters/
-    mqtt/      messages.py·mqtt.py: MQTT 5 명령·이벤트 (폴더 단위 이식)
+    mqtt/      MQTT 5 명령·이벤트·trial-v1 스키마/수신기/저장 ACK (이식 키트 제공)
     udp/       udp_frame_protocol.py·udp_frame_sender.py·udp_frame_receiver.py: UDP 영상 wire v1
     api/       app.py: HTTP/WebSocket, display.py: 모의 표시, maps.py: 읽기 전용 지도
   spatial_assets/  index.html·scene.js·style.css 및 고정 모델/Three.js 자산
@@ -33,16 +33,24 @@ tests/         test_layers.py: 아래 import 규칙 검사
 | `adapters/udp/` | 표준 라이브러리, 자기 폴더 |
 | `adapters/api/` | 표준 라이브러리, fastapi, Pillow, PyYAML, `contracts`, 자기 폴더 |
 | `domain/` (골격) | 표준 라이브러리 |
-| `executor/` (골격) | 표준 라이브러리, `domain`, `contracts`, `adapters`(api 제외) |
+| `executor/` | 표준 라이브러리, `domain`, `contracts`, `adapters`(api 제외) |
 
-패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`·`executor/`는 책임만 적은 골격이고 코드는 아직 없습니다. `adapters/db/`·`adapters/wss/`는 DB 종류와 WSS 메시지 계약이 확정된 뒤 만듭니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
+패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`은 골격이며 `executor/pinky_trial.py`는 웹/DB와 분리된 시험 실행부입니다. `adapters/db/`·`adapters/wss/`는 DB 종류와 WSS 메시지 계약이 확정된 뒤 만듭니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
 
 ## 현재 범위
 
 MQTT 5 작업 명령·이벤트 모듈과 모의 Pinky·OMX 왕복 예제, FastAPI에서 제공하는 3D 웹 관제 화면을 제공합니다.
-UDP 영상 송수신 모듈(FFT1-105)도 포함합니다. 관제 실행부·운영 DB 연결은 후속 PR입니다. DB 자체와 업무 CRUD는 만들지 않습니다.
+UDP 영상 송수신 모듈(FFT1-105)도 포함합니다. 웹에 연결된 운영 실행부·운영 DB 연결은 후속 PR입니다. DB 자체와 업무 CRUD는 만들지 않습니다.
 CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 배포 환경 미정으로 CD와 자동 배포는 설정하지 않았습니다.
+
+## Pinky MQTT 주행 시험 · FFT1-56
+
+1대/2대 시나리오를 독립 CLI로 실행합니다. `route → 더미 상하차 → N12 mode_switch → navigate`를 완료 응답으로 진행하며, 파일 이력·중복 방지·저장 ACK·오류 시 HOLD를 포함합니다. 웹 UI나 운영 DB를 연결하는 변경은 아닙니다.
+
+**팀원 재현 순서와 메시지/이식 방법은 [주행 시험 가이드](docs/pinky-trial.md)를 따르세요.** `tools/prepare_pinky_trial.py`로 네 설정을 한 번 생성하고 같은 `trial.json`을 양쪽에 배포합니다. `tools/build_pinky_mqtt_kit.py`는 Paho만 필요한 이식 ZIP·JSON Schema·19개 메시지 예제를 생성합니다.
+
+실제 ROS 드라이버와 독립 정지 감시는 [Pinky PR #35](https://github.com/kernel-robot-8th/kernel-robot-repo-1/pull/35)가 담당합니다. 가상 시험은 이 관제 브랜치만으로 재현할 수 있습니다. 실물은 해당 핑키 코드와 새 이식 키트를 함께 사용하고 현장 방향·골·정지 검증을 완료해야 합니다. 생성한 hardware 설정은 기본 `field_verified=false`라서 구동을 허용하지 않습니다.
 
 ## 3D 웹 통합관제 · FFT1-109
 
@@ -183,7 +191,7 @@ API 실행: `uv run uvicorn roport_control_server.adapters.api.app:app --host 12
 
 `MqttConfig(host, client_id, port=1883)`는 로컬 Mosquitto용입니다. EMQX Cloud에서는 같은 코드를 쓰고 `host`, `port=8883`, `tls=True`, `username`, `password`를 설정합니다. 자격증명은 환경변수/배포 secret에서 읽으세요. 사설 CA가 필요하면 `ca_file`을 지정합니다. 인증서·호스트명 검증을 끄는 옵션은 없으며, 암호 인증은 TLS를 요구합니다. **Cloud 실제 접속·ACL·WAN 장애는 아직 검증하지 않았습니다.**
 
-현재 cmd/event만 구현합니다. telemetry·presence/LWT·durable application `/ack`는 후속 실행부 연동 범위입니다. 기체·작업대별 명시적인 토픽을 구독하며 OMX1·2는 `workcell/shelf-01` 하나를 사용합니다. 개별 `robot/omx1`, `robot/omx2` 명령은 허용하지 않습니다.
+cmd/event와 trial-v1의 저장 확인 `/ack`를 구현합니다. telemetry·presence/LWT는 후속 범위입니다. 기체·작업대별 명시적인 토픽을 구독하며 OMX1·2는 `workcell/shelf-01` 하나를 사용합니다. 개별 `robot/omx1`, `robot/omx2` 명령은 허용하지 않습니다.
 
 ### 로컬 왕복 실행 (터미널 3개)
 
