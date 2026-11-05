@@ -1,7 +1,9 @@
 """Nav2 action adapter: actual map/localization/pose evidence, never a timer success."""
 import hashlib
+import json
 import math
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -42,9 +44,11 @@ class Nav2Bridge:
         from geometry_msgs.msg import PoseWithCovarianceStamped
         from lifecycle_msgs.srv import GetState
         from nav2_msgs.action import NavigateToPose
-        from nav_msgs.msg import OccupancyGrid
+        from nav_msgs.msg import OccupancyGrid, Odometry
         from rclpy.action import ActionClient
-        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+        from sensor_msgs.msg import LaserScan
+        from std_msgs.msg import String
         from tf2_ros import Buffer, TransformListener
         self.node, self.lock = node, lock
         self.reference = map_reference(map_path, profile)
@@ -53,6 +57,10 @@ class Nav2Bridge:
         self.listener = TransformListener(self.tf, node, spin_thread=False)
         self.map_ok = False
         self.amcl = None
+        self.scan = self.odom = None
+        self.localization = None
+        self._String = String
+        self.status_pub = node.create_publisher(String, 'trial/localization_state', 1)
         self.states, self.pending_states = {}, {}
         self.state_clients = {name: node.create_client(GetState, name + '/get_state')
                               for name in ('amcl', 'bt_navigator')}
@@ -62,8 +70,13 @@ class Nav2Bridge:
             OccupancyGrid, 'map', self._map,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                        reliability=ReliabilityPolicy.RELIABLE)),
-            node.create_subscription(PoseWithCovarianceStamped, 'amcl_pose', self._amcl, 10)]
+            node.create_subscription(PoseWithCovarianceStamped, 'amcl_pose', self._amcl,
+                QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                           reliability=ReliabilityPolicy.RELIABLE)),
+            node.create_subscription(LaserScan, 'scan', self._scan, qos_profile_sensor_data),
+            node.create_subscription(Odometry, 'odom', self._odom, qos_profile_sensor_data)]
         self.timer = node.create_timer(0.5, self._states)
+        self.pose_timer = node.create_timer(0.1, self._publish_localization)
 
     def _map(self, msg):
         cfg, width, height, cells = self.reference
@@ -80,6 +93,14 @@ class Nav2Bridge:
     def _amcl(self, msg):
         with self.lock:
             self.amcl = msg
+
+    def _scan(self, msg):
+        with self.lock:
+            self.scan = msg
+
+    def _odom(self, msg):
+        with self.lock:
+            self.odom = msg
 
     def _states(self):
         from lifecycle_msgs.srv import GetState
@@ -102,24 +123,43 @@ class Nav2Bridge:
             if not future.cancelled() and future.exception() is None:
                 self.states[name] = (future.result().current_state.id, time.monotonic())
 
-    def snapshot(self):
+    def _localization_state(self):
         from rclpy.time import Time
         from tf2_ros import TransformException
+        now = self.node.get_clock().now().nanoseconds * 1e-9
+        def stamp(message):
+            s = message.header.stamp
+            return s.sec + s.nanosec * 1e-9
+        def fresh(message, age, future=0.1):
+            return message is not None and -future <= now - stamp(message) <= age
+
         ready = self.action.server_is_ready() and self.map_ok and all(
             name in self.states and self.states[name][0] == 3
             and time.monotonic() - self.states[name][1] < 2
             for name in self.state_clients)
         pose = None
-        stamp = None
+        sources = {name: stamp(msg) if msg is not None else None
+                   for name, msg in (('amcl_pose', self.amcl), ('scan', self.scan), ('odom', self.odom))}
+        sources.update(map_to_base=None, map_to_odom=None, odom_to_base=None)
+        stopped = odom_ok = False
+        if fresh(self.odom, 0.5):
+            v = self.odom.twist.twist
+            odom_ok = all(math.isfinite(x) for x in (v.linear.x, v.linear.y, v.angular.z))
+            stopped = odom_ok and all(abs(x) <= limit for x, limit in
+                          ((v.linear.x, .005), (v.linear.y, .005), (v.angular.z, .02)))
         try:
             tf = self.tf.lookup_transform('map', 'base_footprint', Time())
-            stamp = tf.header.stamp.sec + tf.header.stamp.nanosec * 1e-9
-            now = self.node.get_clock().now().nanoseconds * 1e-9
+            correction = self.tf.lookup_transform('map', 'odom', Time())
+            odom_tf = self.tf.lookup_transform('odom', 'base_footprint', Time())
+            sources.update(map_to_base=stamp(tf), map_to_odom=stamp(correction),
+                           odom_to_base=stamp(odom_tf))
             amcl = self.amcl
-            age = now - (amcl.header.stamp.sec + amcl.header.stamp.nanosec * 1e-9) if amcl else 99
             covariance = amcl.pose.covariance if amcl else []
-            if (amcl and amcl.header.frame_id == 'map' and -0.1 <= age <= 2
-                    and -0.1 <= now - stamp <= 0.5
+            # AMCL pose is conditional; its map->odom TF is refreshed on every scan.
+            # Default AMCL postdates that TF by transform_tolerance=1 s.
+            if (ready and amcl and amcl.header.frame_id == 'map' and stamp(amcl) <= now + .1
+                    and fresh(self.scan, 1.0) and odom_ok
+                    and fresh(tf, .5) and fresh(odom_tf, .5) and fresh(correction, .5, 1.1)
                     and all(math.isfinite(v) and 0 <= v <= limit
                             for v, limit in zip((covariance[0], covariance[7], covariance[35]),
                                                 (0.04, 0.04, 0.1)))):
@@ -130,7 +170,21 @@ class Nav2Bridge:
         except TransformException:
             pass
         return {'nav2_ready': bool(ready), 'localization_ready': pose is not None,
-                'pose': pose, 'stamp': stamp}
+                'pose': pose, 'stopped': stopped, 'frame_id': 'map',
+                'observed_at': datetime.now(UTC).isoformat(), 'source_stamps': sources}
+
+    def _publish_localization(self):
+        with self.lock:
+            state = self._localization_state()
+            self.localization = (state, time.monotonic())
+            self.status_pub.publish(self._String(data=json.dumps(state, allow_nan=False)))
+
+    def snapshot(self):
+        with self.lock:
+            if self.localization and time.monotonic() - self.localization[1] <= .3:
+                return self.localization[0].copy()
+            return {'nav2_ready': False, 'localization_ready': False,
+                    'pose': None, 'stopped': False}
 
     def start(self, payload):
         from nav2_msgs.action import NavigateToPose

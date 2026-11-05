@@ -62,6 +62,25 @@ cd /path/to/kit
 
 드라이버 factory 생성/상태 조회만으로 주행하지 않는다. `start_maneuver=none`과 중간 정차 없는 경로를 지원한다. 주행 실패·lease 만료 뒤 자동 재개하지 않는다. 현장 정지·위치 확인 후 trial stack과 runner를 다시 시작하고 새 관제 시험으로 복구한다. 기존 journal을 삭제해 복구를 우회하지 않는다.
 
+## 정차·저속 주행의 위치 상태
+
+`trial/localization_state` (`std_msgs/String` JSON)를 드라이버가 **10 Hz**로 발행하며 정차 중에도 유지합니다. 실행부도 같은 상태를 사용합니다.
+
+| 필드 | 의미 |
+|---|---|
+| `observed_at`, `frame_id` | 상태를 판정한 UTC 시각, 좌표계 `map` |
+| `pose` | 최신 TF의 `{x, y, yaw}` (m/rad). 유효성 실패 시 `null` |
+| `localization_ready` | scan·odom·TF 최신성, AMCL 공분산, 지도 일치와 AMCL/BT 활성 상태 확인 |
+| `nav2_ready` | 지도 일치·AMCL/BT 활성·action server 준비 |
+| `stopped` | 최신 odom의 평면 속도 각 성분 ≤ 0.005 m/s, 각속도 ≤ 0.02 rad/s |
+| `source_stamps` | 원본 `amcl_pose`, `scan`, `odom`, `map_to_base`, `map_to_odom`, `odom_to_base` ROS 시각. 미수신은 `null` |
+
+`amcl_pose`는 정차/저속에서 조건부 발행되므로 2초 주기 수신을 요구하지 않습니다. 마지막 AMCL 표본은 공분산 확인에만 쓰고, 현재 위치는 TF에서 구합니다. scan 1초, odom·odom/base TF 0.5초 및 lifecycle 응답 2초 이내 조건을 함께 검사합니다. AMCL의 map/odom TF는 scan마다 갱신되며 기본 `transform_tolerance=1.0`의 미래 시각을 허용합니다. 오래된 AMCL 표본의 시각은 원본 그대로 남깁니다. 판정 타이머가 0.3초 넘게 멈춰도 준비 상태를 해제합니다.
+
+이 ROS 상태는 MQTT trial-v1 스키마를 바꾸지 않습니다. MQTT 응답의 `localization_ready`·`stopped`와 Nav2 완료 판정에 반영합니다. 위치 유효성과 실제 정지는 서로 별도 조건입니다.
+
+trial launch는 `PoseProgressChecker`를 사용해 **15초 안에 0.05m 이동 또는 0.15rad 회전**을 진척으로 판정합니다. 0.03m/s 저속·제자리 회전을 허용하면서 완전히 막힌 상태는 실패시킵니다. controller와 velocity smoother의 직진 속도도 0.03m/s로 맞춥니다. 원본 Pinky Nav2 설정 파일은 수정하지 않습니다.
+
 ## 검증 범위
 
-`bash ci/test.sh`: ROS 빌드, 라인 시뮬레이터, 별도 ROS domain의 가상 map/TF/AMCL/ActionServer, owner 프로세스 강제 종료 시험. 실제 모터·LiDAR·Nav2 경로 계획의 현장 검증은 별도다. 테스트는 loopback으로 격리하며 bringup을 실행하지 않는다.
+`bash ci/test.sh`: ROS 빌드, 라인 시뮬레이터, 별도 ROS domain의 가상 map/TF/AMCL/ActionServer, owner 프로세스 강제 종료 시험. 실제 controller/progress plugin의 회전·10초 이상 저속 주행·막힘 판정도 합성 odom/TF로 검사합니다. 실제 모터·LiDAR·Nav2 경로 계획의 현장 검증은 별도다. 테스트는 loopback으로 격리하며 bringup을 실행하지 않는다.

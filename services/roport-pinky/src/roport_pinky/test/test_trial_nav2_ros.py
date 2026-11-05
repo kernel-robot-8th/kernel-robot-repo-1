@@ -1,4 +1,5 @@
 import math
+import time
 
 import pytest
 from ros_trial_fixture import RosTrial
@@ -60,8 +61,47 @@ def test_wrong_map_and_stale_localization_block_navigation(trial):
     trial.grid.data[0] = 100 if trial.grid.data[0] != 100 else 0
     trial.pub_map.publish(trial.grid)
     trial.wait(lambda: not trial.driver.nav.map_ok)
+    trial.wait(lambda: not trial.driver.nav.snapshot()['nav2_ready'])
     with pytest.raises(ValueError, match='nav2_not_ready'):
         trial.driver.validate_action(navigate())
     trial.driver.nav.map_ok = True
-    trial.driver.nav.amcl = None
-    assert not trial.driver.nav.snapshot()['localization_ready']
+    trial.publish_amcl = False
+    with trial.driver.lock:
+        trial.driver.nav.amcl = None
+    trial.wait(lambda: not trial.driver.nav.snapshot()['localization_ready'])
+
+
+@pytest.mark.parametrize('moving, duration', [(False, 6.0), (True, 12.0)])
+def test_periodic_localization_survives_stationary_and_3cm_s_sparse_amcl(trial, moving, duration):
+    trial.driver.mode = 'nav2'
+    trial.slow_motion = moving
+    first = trial.amcl_count
+    end = time.monotonic() + duration
+    while time.monotonic() < end:
+        trial.driver.heartbeat()
+        state = trial.driver.observe()
+        assert state['fault'] is None, state
+        assert state['localization_ready']
+        time.sleep(.05)
+    assert trial.amcl_count - first <= (3 if moving else 0)
+    reports = trial.localization_messages[-20:]
+    assert len(reports) == 20 and all(m['localization_ready'] for m in reports)
+    assert all(m['stopped'] is (not moving) for m in reports)
+    assert len({m['observed_at'] for m in reports}) == 20
+    assert len({m['source_stamps']['amcl_pose'] for m in reports}) <= 2
+    if moving:
+        assert reports[-1]['pose']['x'] > .30
+
+
+@pytest.mark.parametrize('source', ['scan', 'odom', 'map_tf', 'odom_tf', 'amcl_active', 'status_timer'])
+def test_fresh_heartbeat_never_hides_lost_localization_evidence(trial, source):
+    trial.driver.mode = 'nav2'
+    if source == 'amcl_active':
+        trial.amcl_active = False
+    elif source == 'status_timer':
+        trial.driver.nav.pose_timer.cancel()
+    else:
+        setattr(trial, 'publish_' + source, False)
+    trial.wait(lambda: not trial.driver.nav.snapshot()['localization_ready'], timeout=3)
+    with pytest.raises(ValueError, match='nav2_not_ready'):
+        trial.driver.validate_action(navigate())

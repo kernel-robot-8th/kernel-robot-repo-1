@@ -6,6 +6,19 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
+CONTROLLER_OVERRIDES = {
+    'general_goal_checker.xy_goal_tolerance': 0.08,
+    'general_goal_checker.yaw_goal_tolerance': 0.10,
+    'FollowPath.desired_linear_vel': 0.03,
+    'FollowPath.min_approach_linear_velocity': 0.01,
+    'FollowPath.rotate_to_heading_angular_vel': 0.4,
+    'progress_checker_plugins': ['progress_checker'],
+    'progress_checker.plugin': 'nav2_controller::PoseProgressChecker',
+    'progress_checker.required_movement_radius': 0.05,
+    'progress_checker.required_movement_angle': 0.15,
+    'progress_checker.movement_time_allowance': 15.0,
+}
+
 
 def generate_launch_description():
     args = [DeclareLaunchArgument('robot'), DeclareLaunchArgument('map'),
@@ -33,8 +46,7 @@ def generate_launch_description():
         if name == 'map_server':
             overrides['yaml_filename'] = LaunchConfiguration('map')
         if name == 'controller_server':
-            overrides.update({'general_goal_checker.xy_goal_tolerance': 0.08,
-                              'general_goal_checker.yaw_goal_tolerance': 0.10})
+            overrides.update(CONTROLLER_OVERRIDES)
         if name in ('controller_server', 'behavior_server', 'velocity_smoother'):
             overrides['enable_stamped_cmd_vel'] = False
             remaps.append(('cmd_vel', 'trial/nav2_raw_cmd_vel'))

@@ -366,6 +366,7 @@ class TrialDriver:
                          localization_ready=nav['localization_ready'])
             if self.mode == 'nav2':
                 state['drive_owner'] = 'nav2'
+                state['stopped'] = state['stopped'] and nav['stopped']
                 if nav['pose']:
                     state['heading_rad'] = nav['pose']['yaw']
                 if not nav['nav2_ready'] or not nav['localization_ready']:
