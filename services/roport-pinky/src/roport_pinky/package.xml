@@ -7,5 +7,12 @@
   <license>LicenseRef-Proprietary</license>
   <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>roport_line_nav</exec_depend>
+  <!-- 노드 그래프 roport_gz_world 는 Gazebo 실행 의존이 있어 적지 않는다(roport_line_nav 와 같음) -->
+  <test_depend>python3-pytest</test_depend>
   <export><build_type>ament_python</build_type></export>
 </package>

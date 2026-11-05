@@ -6,7 +6,7 @@ setup(
     packages=["roport_pinky"],
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/roport_pinky"]),
-        ("share/roport_pinky", ["package.xml"]),
+        ("share/roport_pinky", ["package.xml", "README.md"]),
     ],
     install_requires=["setuptools"],
     maintainer="GATE CREW",

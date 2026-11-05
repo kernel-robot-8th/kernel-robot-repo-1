@@ -199,7 +199,7 @@ async function setNodePose(n) {
   $("truthYaw").value = n.yaw_deg;
   $("label").value = n.id;
   try {
-    await postJson("/api/amcl/initialpose", { node: n.id });
+    await postJson("api/amcl/initialpose", { node: n.id });
     setMsg($("poseMsg"), `${n.id} 초기 위치 보냄 → 「제자리 갱신」을 몇 번 누르세요`, "ok");
   } catch (e) {
     setMsg($("poseMsg"), "초기 위치 실패: " + e.message, "err");
@@ -221,7 +221,7 @@ $("btnInit").addEventListener("click", async () => {
   const t = truthFromInputs(true);
   if (!t) { setMsg($("poseMsg"), "x, y (cm)를 넣으세요", "err"); return; }
   try {
-    await postJson("/api/amcl/initialpose", t);
+    await postJson("api/amcl/initialpose", t);
     setMsg($("poseMsg"), "초기 위치 보냄", "ok");
   } catch (e) {
     setMsg($("poseMsg"), "초기 위치 실패: " + e.message, "err");
@@ -230,7 +230,7 @@ $("btnInit").addEventListener("click", async () => {
 
 $("btnNomotion").addEventListener("click", async () => {
   try {
-    await postJson("/api/amcl/nomotion");
+    await postJson("api/amcl/nomotion");
     setMsg($("poseMsg"), "제자리 갱신 요청", "ok");
   } catch (e) {
     setMsg($("poseMsg"), "제자리 갱신 실패(amcl 실행 중?): " + e.message, "err");
@@ -242,7 +242,7 @@ $("btnRecord").addEventListener("click", async () => {
   const t = truthFromInputs(false);
   if (t) body.truth = t;
   try {
-    const d = await postJson("/api/amcl/record", body);
+    const d = await postJson("api/amcl/record", body);
     const r = d.row;
     setMsg($("recMsg"), r.err_xy_cm !== undefined
       ? `기록: 오차 ${r.err_xy_cm} cm, 10 cm 안 ${pct(r.within_10cm)}`
@@ -254,7 +254,7 @@ $("btnRecord").addEventListener("click", async () => {
 
 async function estop() {
   try {
-    await postJson("/api/estop");
+    await postJson("api/estop");
     setMsg($("estopStatus"), "정지 보냄", "ok");
   } catch (e) {
     setMsg($("estopStatus"), "정지 실패: " + e.message, "err");
@@ -271,7 +271,7 @@ document.addEventListener("keydown", (e) => {
 async function poll() {
   try {
     const v = mapGrid ? mapGrid.version : -1;
-    const res = await fetch(`/api/amcl?map_v=${v}`);
+    const res = await fetch(`api/amcl?map_v=${v}`);
     if (!res.ok) throw new Error(res.status);
     last = await res.json();
     markConnection(true);

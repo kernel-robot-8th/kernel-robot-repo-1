@@ -27,9 +27,13 @@
   <exec_depend>python3-flask</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_srvs</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>nav2_amcl</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
+  <!-- mode:=route 의 경로 주행 노드. mode:=route|fleet 의 노드 그래프는 roport_gz_world 배치 yaml(layout:=로 바꿀 수
+       있음, Gazebo 실행 의존이 있어 의존으로 적지 않음). mode:=fleet 은 노트북의 git·ssh 명령을 쓴다 -->
+  <exec_depend>roport_line_nav</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 
