@@ -103,7 +103,7 @@ def test_ssh_commands_have_no_user_text():
             c.set_domain('192.168.4.21', bad)
     with pytest.raises(ValueError):
         c.ssh('1.2.3.4 -oProxyCommand=x', 'true')
-    assert c.archive('origin/main')[-4:] == [f'services/roport-pinky/src/{p}'
+    assert c.archive('origin/main')[-len(fleet.PACKAGES):] == [f'services/roport-pinky/src/{p}'
                                              for p in fleet.PACKAGES]
     assert 'colcon build --packages-select ' + ' '.join(fleet.PACKAGES) in c.build('10.0.0.1')[-1]
 

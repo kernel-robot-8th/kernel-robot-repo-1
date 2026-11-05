@@ -267,8 +267,8 @@ ros2 launch pinky_test_console console.launch.py mode:=fleet      # http://127.0
 | 작업 | 실행하는 것 |
 |---|---|
 | 연결 확인 | `ssh -i <ssh_key> -o BatchMode=yes pinky@<IP> 'echo ok; hostname'` |
-| 업데이트 설치 / 릴리즈 설치 | `git fetch` → `git rev-parse --verify <ref>` → `git archive <ref> <패키지 4개> \| ssh pinky@<IP> 'tar xf - --strip-components=3 -C ~/pinky_test_ws/src'`. 릴리즈 = `origin/main` |
-| 빌드 | 로봇에서 `colcon build --packages-select pinky_test_console roport_pinky_line roport_line_nav roport_gz_world` |
+| 업데이트 설치 / 릴리즈 설치 | `git fetch` → `git rev-parse --verify <ref>` → `git archive <ref> <패키지 5개> \| ssh pinky@<IP> 'tar xf - --strip-components=3 -C ~/pinky_test_ws/src'`. 릴리즈 = `origin/main` |
+| 빌드 | 로봇에서 `colcon build --packages-select pinky_test_console roport_pinky_line roport_line_nav roport_gz_world roport_pinky` |
 | 도메인 읽기 | `grep -n ROS_DOMAIN_ID ~/.bashrc` |
 | 도메인 적용 | 로봇 `~/.bashrc`의 `# roport-domain` 표시 줄을 지우고 `export ROS_DOMAIN_ID=<N>  # roport-domain` 한 줄을 끝에 추가 |
 | 콘솔 켜기(테스트 관제) | `ssh pinky@<IP>`로 `bash -ic 'exec ros2 launch pinky_test_console console.launch.py mode:=test\|ir robot:=<IR 기준값>'`를 `nohup`으로 실행(출력 `~/roport_logs/console_<mode>.log`). 등록의 RMW를 고르면 앞에 `RMW_IMPLEMENTATION=` 붙임. 이미 켜져 있으면 거부 |

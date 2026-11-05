@@ -36,7 +36,8 @@ CALIB = re.compile(r'^pinky_[0-9a-z]{2,8}$')
 REF = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$')
 ROLES = ('logistics', 'smartcart')
 DOMAIN_MAX = 101                      # ROS 2 기본 도메인 범위 0~101
-PACKAGES = ('pinky_test_console', 'roport_pinky_line', 'roport_line_nav', 'roport_gz_world')
+PACKAGES = ('pinky_test_console', 'roport_pinky_line', 'roport_line_nav', 'roport_gz_world',
+            'roport_pinky')
 SRC_PREFIX = 'services/roport-pinky/src'
 REMOTE_WS = '~/pinky_test_ws'
 DOMAIN_MARK = '# roport-domain'

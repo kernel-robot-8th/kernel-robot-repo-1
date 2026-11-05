@@ -34,3 +34,5 @@ PY
 python3 -m pytest src/roport_pinky_line/test -q -p no:cacheprovider
 # Node-route navigation: route planning, 2D IR/odom simulator routes, node tests (isolated domain).
 python3 -m pytest src/roport_line_nav/test -q -p no:cacheprovider
+# 관제 trial-v1 드라이버 판정부(RouteExecutor + 2D 시뮬레이터, ROS·MQTT 없음).
+python3 -m pytest src/roport_pinky/test -q -p no:cacheprovider
