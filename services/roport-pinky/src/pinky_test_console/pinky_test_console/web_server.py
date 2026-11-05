@@ -47,7 +47,7 @@ from action_msgs.srv import CancelGoal
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.msg import Costmap
-from nav_msgs.msg import OccupancyGrid, Path
+from nav_msgs.msg import OccupancyGrid, Path, Odometry
 from sensor_msgs.msg import Image, LaserScan
 from slam_toolbox.srv import Reset, SaveMap
 from rcl_interfaces.msg import Log
@@ -56,6 +56,7 @@ from std_srvs.srv import Empty
 from tf2_ros import Buffer, TransformListener
 
 from . import amcl_check, fleet, ir_record, map_store, marker_detect, route_view
+from .smartcart import SmartcartMonitor
 from .sysstats import read_system_stats
 from .teleop import DEADMAN_TIMEOUT, MAX_ANGULAR, MAX_LINEAR, TeleopGuard
 from .web_app import create_app, default_web_dir
@@ -144,6 +145,9 @@ class ConsoleNode(Node):
             'global': {'msg': None, 'version': 0},
             'local': {'msg': None, 'version': 0},
         }
+        self.smartcart_monitor = SmartcartMonitor()
+        self.create_subscription(Odometry, 'odom', self._smartcart_odom,
+                                 QoSProfile(depth=10, reliability=QoSReliabilityPolicy.BEST_EFFORT))
         self.path_msg = None
         self.tf_pose = None  # (x, y, yaw)
         self.battery = {'percent': None, 'voltage': None}  # (value, monotonic time)
@@ -267,6 +271,7 @@ class ConsoleNode(Node):
         t = trans.transform
         with self.lock:
             self.tf_pose = (t.translation.x, t.translation.y, quat_to_yaw(t.rotation))
+            self.smartcart_monitor.observe('tf', trans)
 
     # ---------------- Teleop ----------------
     def publish_twist(self, linear, angular):
@@ -619,6 +624,8 @@ class ConsoleNode(Node):
 
     def _scan_cb(self, msg):
         """스캔을 받은 시점의 map → 라이다 TF로 점을 map 좌표로 바꿔 둔다."""
+        with self.lock:
+            self.smartcart_monitor.observe('scan', msg)
         try:
             t = self.tf_buffer.lookup_transform('map', msg.header.frame_id, Time()).transform
         except Exception:  # noqa: BLE001 - AMCL 이 아직 map TF 를 안 냈을 수 있음
@@ -629,9 +636,41 @@ class ConsoleNode(Node):
         with self.lock:
             self.scan_points = (points, time.monotonic())
 
+    def _smartcart_odom(self, msg):
+        t = msg.twist.twist
+        values = (t.linear.x, t.linear.y, t.linear.z, t.angular.x, t.angular.y, t.angular.z)
+        stopped = all(math.isfinite(v) and abs(v) <= .01 for v in values)
+        with self.lock:
+            self.smartcart_monitor.observe('odom', msg, stopped=stopped)
+
+    def smartcart_snapshot(self):
+        now = self.get_clock().now().nanoseconds / 1e9
+        with self.lock:
+            status = self.smartcart_monitor.snapshot(now)
+            amcl = dict(self.amcl_pose) if self.amcl_pose else None
+            pose = self.tf_pose
+            has_map = self.layers['map']['msg'] is not None
+        if amcl:
+            amcl['age_sec'] = round(time.monotonic() - amcl.pop('stamp'), 2)
+        return {'sensors': status, 'amcl': amcl, 'pose': pose, 'map_loaded': has_map,
+                'navigating': self.is_navigating(), 'nodes': self.amcl_nodes,
+                'mode': self.mode, 'delivery_enabled': False,
+                'delivery_reason': '실기 정차 좌표 미측정 · 배송 실행부 미연결'}
+
+    def smartcart_initial_pose(self, node_id, yaw_deg, confirmed):
+        with self.lock:
+            if self.layers['map']['msg'] is None:
+                raise amcl_check.AmclCheckError('지도를 먼저 수신해야 초기 위치를 적용할 수 있습니다')
+            self.smartcart_monitor.require_initial_pose(
+                self.get_clock().now().nanoseconds / 1e9, node_id, yaw_deg,
+                confirmed, self._is_navigating)
+        node = self.amcl_node(node_id)
+        return self.amcl_initial_pose_cm(node['x_cm'], node['y_cm'], yaw_deg)
+
     def _amcl_pose_cb(self, msg):
         p = msg.pose.pose
         with self.lock:
+            self.smartcart_monitor.observe('amcl', msg)
             self.amcl_pose = {'x': p.position.x, 'y': p.position.y,
                               'yaw': quat_to_yaw(p.orientation),
                               'std': amcl_check.pose_std(msg.pose.covariance),

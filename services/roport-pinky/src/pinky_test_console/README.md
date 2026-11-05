@@ -442,3 +442,11 @@ POST는 `Content-Type: application/json`만 받습니다. 다른 웹사이트가
 - 콘솔 프로세스 RSS는 x86 노트북 측정값으로 약 100 MB입니다(Python + rclpy + Flask). Pi에서는 직접 확인하세요.
 - local costmap은 odom 프레임이지만 원본과 같이 map 좌표로 그립니다. SLAM 드리프트가 크면 조금 어긋나 보일 수 있습니다.
 - `mode:=slam`은 요구사항대로 slam_toolbox만 띄웁니다(원본 `web_slam`은 Nav2도 함께 띄움). 그래서 이 모드에서는 Nav2 목표를 쓸 수 없습니다.
+
+## 스마트카트 상태 화면
+
+`smartcart.html`은 기존 `mode:=amcl` 콘솔에서 scan/odom/TF·지도·AMCL 위치와 정지 관측을 보여준다.
+이미 map_server/AMCL이 실행 중이면 `web_server`만 같은 ROS domain에서 실행한다(중복 bringup/launch 금지).
+H1/H2 초기 위치는 사용자가 실제 방향을 직접 입력하고 배치 확인을 눌렀을 때만 전달한다.
+서버에서도 최신 scan/odom과 연속 정지·Nav2 비주행 조건을 검사하며 초기 위치 이외의 주행 목표는 보내지 않는다.
+실기 게이트 좌표 미측정·배송 실행부 미연결로 배송 버튼은 비활성화되어 있다. 실시간 지도는 기존 AMCL 화면을 연다.
