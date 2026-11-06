@@ -108,7 +108,7 @@ def test_idle_never_publishes(ros):
     ros.feed(6)
     assert ros.cmds == []
     ros.wait(lambda: ros.states and ros.states[-1]['state'] == 'idle')
-    assert ros.states[-1]['graph_version'].startswith('line-v13')
+    assert ros.states[-1]['graph_version'].startswith('line-v14')
 
 
 def test_start_moves_then_stop_publishes_zero(ros):

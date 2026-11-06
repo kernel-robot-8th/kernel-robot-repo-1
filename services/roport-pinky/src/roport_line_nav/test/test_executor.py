@@ -64,7 +64,7 @@ def test_load_waits_until_done(graph):
     sim = Sim(graph)
     sim.place('N01', 'N', 7.0)
     ex = RouteExecutor(graph)
-    ex.start(['N01', 'N18', 'N07', 'N19', 'N11'])
+    ex.start(['N01', 'N18', 'N07', 'N23', 'N19', 'N11'])
     assert sim.run(ex, lambda e: e.state == LOADING)
     heading = _heading_deg(sim)
     for _ in range(100):                     # 5초 동안 상차 완료가 없으면 그대로
@@ -77,9 +77,29 @@ def test_load_waits_until_done(graph):
     assert abs(_heading_deg(sim) - 90.0) < 15     # N11 에서 N19 쪽(북)을 봄
 
 
+@pytest.mark.parametrize('route, stop', [
+    (['N16', 'N14', 'N02', 'N10', 'N18', 'N07', 'N23', 'N21'], 'N21'),
+    (['N11', 'N19', 'N24', 'N22'], 'N22'),
+])
+def test_delivery_side_stops_load_like_n11(graph, route, stop):
+    """02 인도장 새 정차 노드(N21·N22, arrival: load): N11처럼 반시계 90° 뒤 상차 대기."""
+    seen = []
+
+    def loading(sim):
+        seen.append(_heading_deg(sim))
+        return True
+
+    heading, offset = ('S', 0.0) if route[0] == 'N16' else ('N', 7.0)
+    sim, ex = run_route(graph, route, heading, offset, loading=loading)
+    assert ex.state == ARRIVED, ex.as_dict()
+    assert seen and abs(seen[0] - 0.0) < 8, seen       # 남쪽으로 들어와 반시계 90° = 동쪽
+    assert abs(_heading_deg(sim) - 90.0) < 15          # 상차 뒤 간선(북) 쪽을 봄
+    assert _axle_to(sim, stop) < 6.0
+
+
 def test_load_to_p6_park(graph):
     """인도장(P7) → 물류 대기(P6): 180° 회전 후 후진해 가로선에서 정지."""
-    sim, ex = run_route(graph, ['N11', 'N19', 'N07', 'N05', 'N15', 'N17'], 'N', 7.0)
+    sim, ex = run_route(graph, ['N11', 'N19', 'N23', 'N07', 'N05', 'N15', 'N17'], 'N', 7.0)
     assert ex.state == ARRIVED, ex.as_dict()
     assert abs(_heading_deg(sim) - (-90.0)) < 15    # 칸에서 바깥(남)을 봄
     assert sim.sensor.update(sim.raw()).node        # IR 3개가 가로선 위
@@ -90,13 +110,13 @@ def test_load_to_p6_park(graph):
 
 def test_smartcart_p1_to_delivery(graph):
     """스마트카트 대기(P1) → 인도장(P7). 스마트카트도 같은 패키지를 쓴다."""
-    sim, ex = run_route(graph, ['H1', 'N09', 'N19', 'N11'], 'N', 0.0)
+    sim, ex = run_route(graph, ['H1', 'N09', 'N24', 'N19', 'N11'], 'N', 0.0)
     assert ex.state == ARRIVED, ex.as_dict()
     assert _axle_to(sim, 'N11') < 6.0
 
 
 def test_delivery_to_nav2_handoff(graph):
-    sim, ex = run_route(graph, ['N11', 'N19', 'N09', 'N08', 'N12'], 'N', 7.0)
+    sim, ex = run_route(graph, ['N11', 'N19', 'N24', 'N09', 'N08', 'N12'], 'N', 7.0)
     assert ex.state == HANDOFF_STATE, ex.as_dict()
     assert _axle_to(sim, 'N12') < 6.0
     assert sim.cmd == (0.0, 0.0)
@@ -214,8 +234,8 @@ def _chain(graph, place, routes, **sim_kw):
 def test_back_from_handoff_turns_first(graph):
     """N12 handoff(선 끝을 보고 멈춤) 뒤 되돌아가는 경로: 먼저 반 바퀴 돌아 진입선을 찾는다."""
     _, ex, states = _chain(graph, ('N11', 'N', 0.0), [
-        ['N11', 'N19', 'N09', 'N08', 'N12'],
-        ['N12', 'N08', 'N09', 'N19', 'N07', 'N05', 'N15', 'N17']])
+        ['N11', 'N19', 'N24', 'N09', 'N08', 'N12'],
+        ['N12', 'N08', 'N09', 'N24', 'N19', 'N23', 'N07', 'N05', 'N15', 'N17']])
     assert states == [(HANDOFF_STATE, 'route done'), (ARRIVED, 'route done')]
     pre = [e for e in ex.events if e['event'] == 'pre_rotate']
     assert pre and pre[-1]['detail'] == 'E → W'
@@ -224,9 +244,9 @@ def test_back_from_handoff_turns_first(graph):
 def test_continue_from_park_after_offset_arrival(graph):
     """옆으로 치우쳐 대기 칸에 들어온 뒤 다시 출발(2026-11-04 가짜 로봇 오류 재현 경로)."""
     _, ex, states = _chain(graph, ('H1', 'N', 0.0), [
-        ['H1', 'N09', 'N19', 'N07', 'N18', 'N01'],
-        ['N01', 'N18', 'N07', 'N19', 'N09', 'N08', 'H2'],
-        ['H2', 'N08', 'N09', 'N19', 'N07', 'N05', 'N15', 'N17']])
+        ['H1', 'N09', 'N24', 'N19', 'N23', 'N07', 'N18', 'N01'],
+        ['N01', 'N18', 'N07', 'N23', 'N19', 'N24', 'N09', 'N08', 'H2'],
+        ['H2', 'N08', 'N09', 'N24', 'N19', 'N23', 'N07', 'N05', 'N15', 'N17']])
     assert [s for s, _ in states] == [ARRIVED, ARRIVED, ARRIVED]
     found = [float(e['detail'].rstrip('°')) for e in ex.events if e['event'] == 'line_found']
     assert min(f for f in found if f > 150) >= 172      # 180° 회전은 172° 전에 멈추지 않음
@@ -237,7 +257,7 @@ def test_stop_forgets_end_pose(graph):
     sim = Sim(graph)
     sim.place('N11', 'N', 0.0)
     ex = RouteExecutor(graph)
-    ex.start(['N11', 'N19', 'N09', 'N08', 'N12'])
+    ex.start(['N11', 'N19', 'N24', 'N09', 'N08', 'N12'])
     sim.run(ex, _done, on_loading=lambda s: True)
     assert ex.state == HANDOFF_STATE
     ex.start(['N12', 'N08', 'H2'])
@@ -250,7 +270,7 @@ def test_stop_forgets_end_pose(graph):
     sim = Sim(graph)
     sim.place('N11', 'N', 0.0)
     ex = RouteExecutor(graph)
-    ex.start(['N11', 'N19', 'N09', 'N08', 'N12'])
+    ex.start(['N11', 'N19', 'N24', 'N09', 'N08', 'N12'])
     sim.run(ex, _done, on_loading=lambda s: True)
     ex.stop()                                  # 끝난 뒤 정지: 상태는 그대로, 기억만 지움
     assert ex.state == HANDOFF_STATE
@@ -296,7 +316,7 @@ def _shortest(graph, start, goal):
     return path[::-1]
 
 
-VIA_ROUTE = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01', 'N18', 'N07', 'N19', 'N11']
+VIA_ROUTE = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01', 'N18', 'N07', 'N23', 'N19', 'N11']
 
 
 def test_via_load_stop_in_one_route(graph):
@@ -336,7 +356,7 @@ def test_via_through_handoff_turns_back(graph):
     sim = Sim(graph)
     sim.place('N11', 'N', 0.0)
     ex = RouteExecutor(graph)
-    ex.start(['N11', 'N19', 'N09', 'N08', 'N12', 'N08', 'H2'])
+    ex.start(['N11', 'N19', 'N24', 'N09', 'N08', 'N12', 'N08', 'H2'])
     sim.run(ex, _done, on_loading=lambda s: True)
     assert ex.state == ARRIVED
     assert [e['event'] for e in ex.events if e['event'] in ('via', 'pre_rotate')] == \
