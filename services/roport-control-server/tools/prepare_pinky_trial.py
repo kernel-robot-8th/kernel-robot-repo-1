@@ -16,13 +16,13 @@ from roport_control_server.adapters.mqtt.trial_wire import PROFILE
 
 PATHS = {
     "to_loading": ["N16", "N14", "N02", "N10", "N18", "N01"],
-    "to_delivery": ["N01", "N18", "N07", "N19", "N11"],
-    "return_warehouse": ["N11", "N19", "N07", "N05", "N15", "N14", "N16"],
-    "cart_to_delivery": ["H1", "N09", "N19", "N11"],
-    "cart_to_switch": ["N11", "N19", "N09", "N08", "N12"],
+    "to_delivery": ["N01", "N18", "N07", "N23", "N19", "N11"],
+    "return_warehouse": ["N11", "N19", "N23", "N07", "N05", "N15", "N14", "N16"],
+    "cart_to_delivery": ["H1", "N09", "N24", "N19", "N11"],
+    "cart_to_switch": ["N11", "N19", "N24", "N09", "N08", "N12"],
 }
 SINGLE_PATHS = {
-    "to_delivery": ["N16", "N14", "N02", "N10", "N18", "N07", "N19", "N11"],
+    "to_delivery": ["N16", "N14", "N02", "N10", "N18", "N07", "N23", "N19", "N11"],
     "cart_to_switch": PATHS["cart_to_switch"],
 }
 
@@ -49,7 +49,7 @@ def trial_inputs(map_path, layout_path):
         return value
 
     try:
-        if layout["units"] != "cm" or layout["version"] != "v13":
+        if layout["units"] != "cm" or layout["version"] != "v14":
             raise ValueError(
                 "review trial routes and goal for this layout version/units"
             )
@@ -145,7 +145,7 @@ def prepare(map_path, layout_path, *, simulation=False, single_robot=False):
         routes["cart_to_switch"].update(
             start_heading_rad=yaw, start_maneuver="none", speed_limit_mps=0.03
         )
-    # Both trials use this v13 candidate; field verification remains mandatory.
+    # Both trials use this v14 candidate; field verification remains mandatory.
     x, y = 4.10, 1.90
     goal_pose = {
         "x": round(frame["x_m"] + math.cos(yaw) * x - math.sin(yaw) * y, 6),
