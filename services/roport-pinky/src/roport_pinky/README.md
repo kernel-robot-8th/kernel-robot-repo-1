@@ -40,9 +40,12 @@ Nav2 smoother ──trial/nav2_cmd_vel──> trial_guard ──cmd_vel──> m
 ```bash
 ros2 launch roport_pinky trial.launch.py robot:=REPLACE_WITH_ROBOT_NAME \
   map:=/absolute/path/airport_map.yaml \
-  layout_file:=/absolute/path/roport_airport.yaml
+  layout_file:=/absolute/path/roport_airport.yaml \
+  max_angular:=0.15
 # IR 노드도 이 launch에서 실행할 경우에만 ir_node:=true
 ```
+
+`max_angular`는 라인 제자리 회전·Nav2 controller·behavior·velocity smoother에 동일하게 적용한다. 범위는 기존 라인 회전 하한에 맞춘 0.15~1.5 rad/s이며 기본값 0.4는 현장 승인값이 아니다. 위 0.15는 이번 스마트카트 시험의 확인값이고 다른 기체는 자체 검증값을 명시한다. 라인 병진 상한도 Nav2와 같은 0.03 m/s로 제한한다.
 
 5. 새 키트를 실행한다. `broker.env`의 host는 **관제 브로커 PC** 주소이며 Pinky IP를 명령마다 넣지 않는다. 키트 venv에는 ROS 패키지를 사용할 수 있도록 `--system-site-packages`와 paho-mqtt 2.1.0이 필요하다.
 
