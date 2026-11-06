@@ -80,3 +80,27 @@ def test_unlabelled_or_invalid_places_do_not_authorize_explicit_mode(
     places.write_text(yaml.safe_dump(data))
     with pytest.raises(ValueError, match='environment'):
         load_destination(places, map_yaml, 'gate1', environment=environment)
+
+
+def test_repository_sim_destinations_keep_padded_footprints_in_free_cells():
+    import math
+    from pathlib import Path
+    from roport_smartcart.live_map import reference_from_file
+
+    package = Path(__file__).parents[1]
+    cfg, width, height, cells = reference_from_file(package.parents[1] / 'maps/airport_map.yaml')
+    places = yaml.safe_load((package / 'config/places_sim.yaml').read_text())['places']
+    # Generated sim profile: 8 cm half-width/length plus 1 cm footprint padding.
+    # Conservatively check every map cell in the rotated body's bounding box.
+    for name, entry in places.items():
+        x, y, yaw = entry['pose']
+        corners = [(x + dx * math.cos(yaw) - dy * math.sin(yaw),
+                    y + dx * math.sin(yaw) + dy * math.cos(yaw))
+                   for dx in (-.09, .09) for dy in (-.09, .09)]
+        columns = [math.floor((p[0] - cfg['origin'][0]) / cfg['resolution']) for p in corners]
+        rows = [math.floor((p[1] - cfg['origin'][1]) / cfg['resolution']) for p in corners]
+        assert 0 <= min(columns) <= max(columns) < width, name
+        assert 0 <= min(rows) <= max(rows) < height, name
+        assert all(cells[row * width + column] == 0
+                   for row in range(min(rows), max(rows) + 1)
+                   for column in range(min(columns), max(columns) + 1)), name

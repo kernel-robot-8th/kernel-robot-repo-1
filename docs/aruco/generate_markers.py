@@ -169,19 +169,32 @@ def main():
     if len(ids) != len(set(ids)):
         raise SystemExit('markers.yaml: 중복 ID가 있다')
 
+    for old in img_dir.glob('id*.png'):     # 표에서 빠진 ID 의 이미지를 남기지 않는다
+        old.unlink()
     groups = {}
     for m in CONFIG['markers']:
         cells = marker_cells(dictionary, m['id'])
         png = img_dir / f"id{m['id']:02d}_{m['name']}.png"
         write_png(png, cells)
-        label = (m['name'], f"ID {m['id']}", f"{m['size_mm']} mm  {dict_name}")
-        groups.setdefault(m['group'], []).extend(
-            [(cells, m['size_mm'], m['quiet_mm'], label)] * m.get('copies', 1))
+        # alt_sizes_mm: 같은 ID 를 다른 크기로도 인쇄(현장에서 크기를 고를 수 있게). 여백 = 한 칸 이상
+        sizes = [(m['size_mm'], m['quiet_mm'])] + [
+            (s, max(m['quiet_mm'], round(s / CELLS))) for s in m.get('alt_sizes_mm', [])]
+        for size, quiet in sizes:
+            label = (m['name'], f"ID {m['id']}", f"{size} mm  {dict_name}")
+            groups.setdefault(m['group'], []).extend(
+                [(cells, size, quiet, label)] * m.get('copies', 1))
 
+    for old in print_dir.glob('aruco_v*.pdf'):   # 이전 버전 인쇄 파일은 지운다(이력은 git)
+        old.unlink()
     pdf = Pdf()
     for group, items in groups.items():
         layout(pdf, f'RO:PORT ArUco v{version} - {group}', items)
     pdf.save(print_dir / f'aruco_v{version}_markers.pdf')
+    # 선반 마커만 따로(OMX 담당이 선반 마커만 뽑을 때)
+    if 'shelf' in groups:
+        pdf = Pdf()
+        layout(pdf, f'RO:PORT ArUco v{version} - shelf (OMX)', groups['shelf'])
+        pdf.save(print_dir / f'aruco_v{version}_shelf.pdf')
 
     test = CONFIG['range_test']
     test_cells = marker_cells(dictionary, test['id'])

@@ -34,7 +34,7 @@ def test_real_driver_line_loading_departure_and_nav2_action(trial):
     assert trial.run(route_cmd(TO_P7, heading=-1.5690, speed=.03))[-1][1] == 'completed'
     assert trial.rig.ex.state == 'loading'
     assert abs(d.observe()['heading_rad'] - math.radians(.1)) < .1
-    assert trial.run(route_cmd(['N11', 'N19', 'N09', 'N08', 'N12'],
+    assert trial.run(route_cmd(['N11', 'N19', 'N24', 'N09', 'N08', 'N12'],
                               heading=math.radians(.1), speed=.03))[-1][1] == 'completed'
     assert trial.run(switch())[-1][1] == 'completed'
     result = trial.run(navigate())[-1]

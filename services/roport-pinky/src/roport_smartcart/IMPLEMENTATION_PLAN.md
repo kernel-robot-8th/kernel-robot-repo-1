@@ -58,7 +58,7 @@ QR·고객 마커 추종·쇼핑·HMI는 이번 구현에 포함하지 않는다
 - 지도는 현재 `maps/airport_map.yaml`과 PGM을 기준 자료로 삼는다. 최신 공간과 일치하는지 실측한 뒤 최종 채택한다.
 - `config/places.yaml`은 지도 YAML·이미지 SHA256과 `map` 프레임 정차 자세 `(x,y,yaw)`를 묶는다.
 - 실기 `places.yaml`은 `environment: real`, 모든 좌표 미측정이다. `measured: true`와 유한한 pose가 없으면 거부한다.
-- `places_sim.yaml`은 `environment: sim`의 후보 좌표다. v13 배치에서 만든 시뮬레이션 fixture이며 실측 정차 자세가 아니다. sim/real 환경 일치와 지도 해시를 목표마다 검증한다.
+- `places_sim.yaml`은 `environment: sim`의 후보 좌표다. v13에서 만든 시뮬레이션 fixture를 v14 지도에도 대조했으며 실측 정차 자세가 아니다. sim/real 환경 일치와 지도 해시를 목표마다 검증한다.
 - 목표는 마커 중심이 아니라 로봇 중심의 정차 위치다. marker ID만으로 지도 좌표가 생기지 않는다.
 - Gate 1–3의 마커는 8–10, 대기 P1·P2는 1·2, P7은 7, 입국장은 27이다. [배정표](../../../../docs/aruco/README.md)를 따른다.
 - Nav2는 센서 관측을 costmap에 반영해 우회/정지하도록 구성하고 검증한다. 보행자 이동 예측을 구현했다고 표현하지 않는다.

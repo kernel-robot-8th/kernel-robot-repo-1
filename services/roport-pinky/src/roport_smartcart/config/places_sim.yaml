@@ -1,10 +1,10 @@
-# SIMULATION ONLY. Candidate stop poses from v13 layout; not surveyed robot stop poses.
+# SIMULATION ONLY. Candidate stop poses retained for v14 map (unchanged free-space targets); not surveyed robot stop poses.
 # Gate targets are 0.30 m in front of proposed wall marker positions.
 environment: sim
 map:
   frame: map
-  yaml_sha256: 6b0426a429aba2c6dac80682c7efdf57ce0576309f8a8caaecf160f456dd7827
-  image_sha256: 81922e5af4cd222eec6d7f94606ada8cbed94ffafc3956f7f7d3bbe67610eac4
+  yaml_sha256: 25f94c8512d99adc41e6f3b59b4136cace3909d82e7b41875045e77d0531ffda
+  image_sha256: 0f57d726d0ec781cfbfb78a6bcc7272ccdb643a6cbb60afd54802958c3ef8e0c
 places:
   home:
     measured: true
