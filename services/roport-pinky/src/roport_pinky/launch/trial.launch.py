@@ -23,6 +23,13 @@ CONTROLLER_OVERRIDES = {
 
 
 def _nodes(context):
+    line_speed = float(LaunchConfiguration('line_speed').perform(context))
+    if not math.isfinite(line_speed) or not .02 <= line_speed <= .15:
+        raise ValueError('line_speed must be finite and in [0.02, 0.15] m/s')
+    max_linear = float(LaunchConfiguration('max_linear').perform(context))
+    # Keep requested speeds within the existing line executor's hardware limits.
+    if not math.isfinite(max_linear) or not .02 <= max_linear <= .15:
+        raise ValueError('max_linear must be finite and in [0.02, 0.15] m/s')
     max_angular = float(LaunchConfiguration('max_angular').perform(context))
     # The line executor's existing rotation floor is .15 rad/s.
     if not math.isfinite(max_angular) or not .15 <= max_angular <= 1.5:
@@ -32,8 +39,8 @@ def _nodes(context):
         Node(package='roport_pinky', executable='trial_guard', output='screen'),
         Node(package='roport_line_nav', executable='line_nav', output='screen',
              parameters=[{'robot': LaunchConfiguration('robot'),
-                          'layout_file': LaunchConfiguration('layout_file'), 'base_speed': 0.03,
-                          'max_linear': 0.03, 'max_angular': max_angular,
+                          'layout_file': LaunchConfiguration('layout_file'), 'base_speed': line_speed,
+                          'max_linear': line_speed, 'max_angular': max_angular,
                           'rotate_speed': max_angular}],
              remappings=[('cmd_vel', 'line_nav/cmd_vel')]),
         Node(package='pinky_sensor_adc', executable='main_node', output='screen',
@@ -50,6 +57,7 @@ def _nodes(context):
             overrides['yaml_filename'] = LaunchConfiguration('map')
         if name == 'controller_server':
             overrides.update(CONTROLLER_OVERRIDES)
+            overrides['FollowPath.desired_linear_vel'] = max_linear
             overrides['FollowPath.rotate_to_heading_angular_vel'] = max_angular
         if name in ('controller_server', 'behavior_server', 'velocity_smoother'):
             overrides['enable_stamped_cmd_vel'] = False
@@ -58,8 +66,8 @@ def _nodes(context):
             overrides['max_rotational_vel'] = max_angular
             overrides['min_rotational_vel'] = max_angular
         if name == 'velocity_smoother':
-            overrides['max_velocity'] = [0.03, 0.0, max_angular]
-            overrides['min_velocity'] = [-0.03, 0.0, -max_angular]
+            overrides['max_velocity'] = [max_linear, 0.0, max_angular]
+            overrides['min_velocity'] = [-max_linear, 0.0, -max_angular]
             remaps.append(('cmd_vel_smoothed', 'trial/nav2_cmd_vel'))
         nodes.append(Node(package=package, executable=name, name=name, output='screen',
                           parameters=[config, overrides], remappings=remaps))
@@ -73,6 +81,10 @@ def generate_launch_description():
     args = [DeclareLaunchArgument('robot'), DeclareLaunchArgument('map'),
             DeclareLaunchArgument('layout_file'),
             DeclareLaunchArgument('ir_node', default_value='false'),
+            DeclareLaunchArgument('line_speed', default_value='0.03',
+                                  description='Line base speed and cap in m/s; match control route limit'),
+            DeclareLaunchArgument('max_linear', default_value='0.03',
+                                  description='Nav2 controller/smoother cap in m/s'),
             DeclareLaunchArgument('max_angular', default_value='0.4',
                                   description='Shared line/Nav2 cap in rad/s; use field-verified value'),
             DeclareLaunchArgument('params_file', default_value=PathJoinSubstitution([
