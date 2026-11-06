@@ -22,6 +22,7 @@
   <exec_depend>pinky_navigation</exec_depend>
   <exec_depend>pinky_test_console</exec_depend>
   <exec_depend>roport_gz_world</exec_depend>
+  <exec_depend>roport_pinky</exec_depend>
   <test_depend>python3-pytest</test_depend>
   <export><build_type>ament_python</build_type></export>
 </package>

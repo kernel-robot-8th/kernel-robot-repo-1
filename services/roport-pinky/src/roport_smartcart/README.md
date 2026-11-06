@@ -182,6 +182,8 @@ ros2 run roport_smartcart navigate --mode real --domain-id "$ROPORT_DOMAIN" \
 ## 준비·취소·연결 조건
 
 - CLI는 매 목표 직전 환경/지도 해시/좌표를 다시 검사한다. scan·odom·AMCL·map→base_footprint TF와 연속 정지가 필요하며 sim clock도 실제로 증가해야 한다.
+- `map_server/map` GetMap 응답의 frame·크기·해상도·원점 자세·점유 셀을 로컬 지도와 대조한다. 매 목표 전 새 응답을 요구하고 주행 중에도 최대 1 Hz로 확인한다. 서비스 부재·응답 실패·지도 불일치·확인 후 2초 초과 시 시작을 거부하거나 진행 목표를 취소한다. 정적 지도의 header timestamp는 수신 최신성 기준으로 쓰지 않는다.
+- AMCL 공분산은 유한하고 대각 성분이 음수가 아니어야 하며 x/y 분산 각각 0.04 m² 이하, yaw 분산 0.1 rad² 이하를 요구한다(공용 trial_driver 기준). 최신 추정이 기준을 벗어나면 이전 정상 샘플도 즉시 무효화한다. frame·위치·단위 quaternion 검사도 적용하며, 이 분산 기준을 실제 정차 정확도로 간주하지 않는다.
 - 준비 대기와 주행 중 `request_nomotion_update`로 AMCL 재관측만 요청한다(최대 1 Hz, 이전 요청 진행 중이면 중복 금지). 초기 위치를 재설정하거나 모터 명령을 보내지 않는다.
 - 기본 준비 대기는 20초(`--startup-wait`), 목표 timeout은 120초다. timeout/Ctrl+C에는 Nav2 취소를 요청하고 terminal result까지 기다린다. 결과가 없으면 소유권을 해제했다고 간주하지 않는다.
 - Nav2 결과는 실제 정차 증거가 아니다. 다음 목표 전에 최신 odom의 연속 정지를 확인한다. CLI는 raw `cmd_vel`을 발행하지 않는다.

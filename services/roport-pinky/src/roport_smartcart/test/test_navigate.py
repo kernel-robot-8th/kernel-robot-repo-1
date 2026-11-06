@@ -196,3 +196,85 @@ def test_newly_received_old_amcl_pose_still_expires_by_measurement_time():
     assert ready.observe('amcl', 15.)
     assert not ready.ready(require_stopped=False)
     assert any(reason.startswith('amcl:') for reason in ready.failures(require_stopped=False))
+
+
+def amcl_message():
+    from types import SimpleNamespace as NS
+    covariance = [0.] * 36
+    covariance[0], covariance[7], covariance[35] = .04, .04, .1
+    return NS(header=NS(frame_id='map', stamp=NS(sec=11, nanosec=0)),
+              pose=NS(covariance=covariance, pose=NS(position=NS(x=0., y=0., z=0.),
+                      orientation=NS(x=0., y=0., z=0., w=1.))))
+
+
+@pytest.mark.parametrize('index,value', [(0, 100.), (7, .041), (35, .101),
+    (0, -.001), (14, -1.), (35, float('nan')), (12, float('inf'))])
+def test_bad_latest_amcl_revokes_good_pose_at_start_and_during_goal(index, value):
+    wall = [10.]
+    ready = Readiness('real', clock=lambda: wall[0])
+    feed(ready, wall, 10.)
+    wall[0] = 10.6
+    feed(ready, wall, 10.6)
+    assert ready.ready()
+    message = amcl_message()
+    message.pose.covariance[index] = value
+    assert not ready.observe_amcl(message)
+    assert not ready.ready() and not ready.ready(require_stopped=False)
+    assert 'amcl' not in ready.samples
+    corrected = amcl_message()
+    corrected.header.stamp.nanosec = 1_000_000
+    assert ready.observe_amcl(corrected)
+    assert ready.ready()  # Inclusive covariance bounds; fresh corrected estimate.
+
+
+@pytest.mark.parametrize('fault', ['frame', 'nan_position', 'quaternion', 'short_covariance'])
+def test_bad_amcl_pose_revokes_previous_good_sample(fault):
+    ready = Readiness('real')
+    message = amcl_message()
+    assert ready.observe_amcl(message)
+    if fault == 'frame':
+        message.header.frame_id = 'odom'
+    elif fault == 'nan_position':
+        message.pose.pose.position.z = float('nan')
+    elif fault == 'quaternion':
+        message.pose.pose.orientation.w = 0.
+    else:
+        message.pose.covariance = [0.] * 35
+    assert not ready.observe_amcl(message)
+    assert 'amcl' not in ready.samples
+
+
+def test_checked_in_places_track_repository_map_hashes():
+    from pathlib import Path
+    package = Path(__file__).parents[1]
+    map_yaml = package.parents[1] / 'maps/airport_map.yaml'
+    hashes = map_hashes(map_yaml)
+    for filename in ('places_sim.yaml', 'places.yaml'):
+        places = package / 'config' / filename
+        data = yaml.safe_load(places.read_text())
+        assert all(data['map'][key] == digest for key, digest in hashes.items()), filename
+        for target, entry in data['places'].items():
+            if filename == 'places_sim.yaml':
+                validate_goal(places, map_yaml, target, 'sim')
+            else:
+                assert entry['measured'] is False
+                with pytest.raises(ValueError, match='unmeasured'):
+                    validate_goal(places, map_yaml, target, 'real')
+
+
+def test_bad_newer_amcl_cannot_be_replaced_with_replayed_old_good_pose():
+    ready = Readiness('real')
+    good = amcl_message()
+    assert ready.observe_amcl(good)
+    bad = amcl_message()
+    bad.header.stamp.sec = 12
+    bad.pose.covariance[0] = 100.
+    assert not ready.observe_amcl(bad)
+    assert not ready.observe_amcl(good)
+    assert 'amcl' not in ready.samples
+    good.header.stamp.sec = 13
+    assert ready.observe_amcl(good)
+    ready.tick(13.)
+    ready.tick(1.)
+    good.header.stamp.sec = 1
+    assert ready.observe_amcl(good)  # ROS clock reset also resets replay history.

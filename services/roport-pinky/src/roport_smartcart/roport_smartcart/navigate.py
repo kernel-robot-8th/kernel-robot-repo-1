@@ -8,6 +8,7 @@ import time
 
 
 from .goals import load_destination
+from .live_map import LiveMapCheck, reference_from_file
 
 
 class Readiness:
@@ -20,12 +21,14 @@ class Readiness:
         self.ros_time = None
         self.clock_changed = None
         self.clock_advances = 0
+        self.amcl_stamp = None
 
     def tick(self, ros_time):
         if self.ros_time is not None and ros_time < self.ros_time:
             self.samples.clear()
             self.stopped_since = None
             self.clock_advances = 0
+            self.amcl_stamp = None
         if self.ros_time is not None and ros_time > self.ros_time:
             self.clock_changed = self.clock()
             self.clock_advances += 1
@@ -42,6 +45,32 @@ class Readiness:
             elif self.stopped_since is None:
                 self.stopped_since = now
         self.samples[name] = stamp, now
+        return True
+
+    def observe_amcl(self, message):
+        """A bad latest estimate immediately revokes any previous good evidence.
+
+        Variance limits match trial_driver: x/y <= .04 m², yaw <= .1 rad².
+        """
+        pose = message.pose.pose
+        stamp = message.header.stamp.sec + message.header.stamp.nanosec / 1e9
+        if not math.isfinite(stamp) or (self.amcl_stamp is not None and stamp <= self.amcl_stamp):
+            self.samples.pop('amcl', None)
+            return False
+        self.amcl_stamp = stamp
+        q = pose.orientation
+        covariance = message.pose.covariance
+        values = (pose.position.x, pose.position.y, pose.position.z, q.x, q.y, q.z, q.w)
+        valid = (message.header.frame_id == 'map'
+                 and all(math.isfinite(v) for v in values)
+                 and abs(sum(v * v for v in (q.x, q.y, q.z, q.w)) - 1.) <= 1e-3
+                 and len(covariance) == 36
+                 and all(math.isfinite(v) for v in covariance)
+                 and all(covariance[i] >= 0 for i in (0, 7, 14, 21, 28, 35))
+                 and all(covariance[i] <= limit for i, limit in ((0, .04), (7, .04), (35, .1))))
+        if not valid or not self.observe('amcl', stamp):
+            self.samples.pop('amcl', None)
+            return False
         return True
 
     def failures(self, *, require_stopped=True):
@@ -142,12 +171,14 @@ def main(args=None):
                           'hardware_checked': False}), flush=True)
         return 0
 
+    reference = reference_from_file(options.map)
     if options.mode == 'sim':
         os.environ['ROS_AUTOMATIC_DISCOVERY_RANGE'] = 'LOCALHOST'
 
     import rclpy
     from geometry_msgs.msg import PoseWithCovarianceStamped
     from nav_msgs.msg import Odometry
+    from nav_msgs.srv import GetMap
     from rclpy.parameter import Parameter
     from rclpy.qos import qos_profile_sensor_data
     from rclpy.signals import SignalHandlerOptions
@@ -180,18 +211,14 @@ def main(args=None):
                for v in message.ranges):
             readiness.observe('scan', stamp(message))
 
-    def amcl(message):
-        pose = message.pose.pose
-        values = (pose.position.x, pose.position.y, pose.orientation.z,
-                  pose.orientation.w, *message.pose.covariance)
-        if all(math.isfinite(v) for v in values) and message.header.frame_id == 'map':
-            readiness.observe('amcl', stamp(message))
+    live_map = LiveMapCheck(node.create_client(GetMap, 'map_server/map'), GetMap.Request,
+                            reference)
 
     refresh = NomotionRefresh(node.create_client(Empty, 'request_nomotion_update'), Empty.Request)
     subscriptions = [
         node.create_subscription(Odometry, 'odom', odom, qos_profile_sensor_data),
         node.create_subscription(LaserScan, 'scan', scan, qos_profile_sensor_data),
-        node.create_subscription(PoseWithCovarianceStamped, 'amcl_pose', amcl, qos_profile_sensor_data),
+        node.create_subscription(PoseWithCovarianceStamped, 'amcl_pose', readiness.observe_amcl, qos_profile_sensor_data),
     ]
 
     def step():
@@ -203,15 +230,20 @@ def main(args=None):
         except TransformException:
             pass
         client.poll()
+        live_map.poll()
+
+    def failures(*, require_stopped=True):
+        return readiness.failures(require_stopped=require_stopped) + live_map.failures()
 
     def await_ready():
+        live_map.recheck()
         deadline = time.monotonic() + options.startup_wait
         while time.monotonic() < deadline:
             refresh.poll()
             step()
-            if readiness.ready():
+            if not failures():
                 return
-        raise RuntimeError('readiness failed: ' + '; '.join(readiness.failures())
+        raise RuntimeError('readiness failed: ' + '; '.join(failures())
                            + '; ' + refresh.error)
 
     def cancel_and_hold():
@@ -240,11 +272,11 @@ def main(args=None):
                 # AMCL may otherwise stop publishing while Nav2 waits at an obstacle.
                 refresh.poll()
                 step()
-                failures = readiness.failures(require_stopped=False)
-                if failures:
+                rejected = failures(require_stopped=False)
+                if rejected:
                     if not readiness_failures:
-                        readiness_failures = failures
-                        node.get_logger().error('Canceling goal: ' + '; '.join(failures))
+                        readiness_failures = rejected
+                        node.get_logger().error('Canceling goal: ' + '; '.join(rejected))
                     client.cancel()
                 if client.lifecycle.fault:
                     cancel_and_hold()
