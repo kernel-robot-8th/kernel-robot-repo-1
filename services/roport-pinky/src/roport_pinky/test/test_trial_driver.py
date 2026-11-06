@@ -1,5 +1,6 @@
 """TrialLogic(관제 trial-v1 드라이버 판정부)을 RouteExecutor + 2D 시뮬레이터로 확인(ROS·MQTT 없음)."""
 
+import hashlib
 import math
 import os
 import sys
@@ -15,9 +16,13 @@ from roport_pinky.trial_driver import TrialLogic, error_code  # noqa: E402
 from sim import Sim  # noqa: E402
 
 LAYOUT = os.path.join(SRC, 'roport_gz_world', 'layout', 'roport_airport.yaml')
-TO_P7 = ['N16', 'N14', 'N02', 'N10', 'N18', 'N07', 'N19', 'N11']
+TO_P7 = ['N16', 'N14', 'N02', 'N10', 'N18', 'N07', 'N23', 'N19', 'N11']
 SOUTH = -math.pi / 2 + math.radians(0.10)
-PROFILE = {'map_id': 'airport_map', 'map_version': 'a6129faca3788697'}
+MAP = os.path.join(SRC, '..', 'maps', 'airport_map')
+# 관제 설정 생성기와 같은 계산(yaml + pgm 의 sha256 앞 16자). 지도를 다시 만들면 값이 바뀐다.
+with open(MAP + '.yaml', 'rb') as _y, open(MAP + '.pgm', 'rb') as _p:
+    PROFILE = {'map_id': 'airport_map',
+               'map_version': hashlib.sha256(_y.read() + _p.read()).hexdigest()[:16]}
 
 
 class Clock:
@@ -78,7 +83,7 @@ class Rig:
 
 def route_cmd(route, heading=SOUTH, maneuver='none', speed=0.1, kind='route.requested'):
     return {'type': kind, 'command_id': 'c-' + route[-1], 'execution_id': 'e-' + route[-1],
-            'payload': {'graph_version': 'line-v13-20261103', 'start_node': route[0],
+            'payload': {'graph_version': 'line-v14-20261106', 'start_node': route[0],
                         'start_heading_rad': heading, 'start_maneuver': maneuver,
                         'route': route, 'speed_limit_mps': speed,
                         'goal': {'node_id': route[-1], 'location_id': None,
@@ -95,7 +100,7 @@ def test_observe_at_start_bay():
     assert s['node_id'] == 'N16' and s['stopped'] and not s['line_enabled']
     assert s['mode'] == 'line' and s['drive_owner'] == 'none' and s['fault'] is None
     assert abs(s['heading_rad'] - SOUTH) < 1e-9            # 칸 바깥(N14 쪽) = 남쪽 + 0.1°
-    assert s['graph_version'] == 'line-v13-20261103'
+    assert s['graph_version'] == 'line-v14-20261106'
     assert s['map_version'] == PROFILE['map_version']
 
 
@@ -109,13 +114,13 @@ def test_p5_to_p7_progress_then_complete_while_loading():
     assert rig.run(until=finished)
     assert 120 < rig.sim.t < 300  # 0.03 m/s: the former 120 s trial deadline was too short
     phases = [(p, d.get('seq')) for _, p, d in rig.results]
-    assert phases == [('progress', i) for i in range(1, 7)] + [('completed', 7)]
+    assert phases == [('progress', i) for i in range(1, 8)] + [('completed', 8)]
     assert rig.ex.state == 'loading'                        # N11: 반시계 90° 뒤 상차 대기
     s = rig.logic.observe()
     assert s['node_id'] == 'N11' and s['stopped'] and not s['line_enabled']
     assert abs(s['heading_rad'] - math.radians(0.10)) < 0.1   # 남쪽 + 90° = 동쪽
     _, _, done = rig.results[-1]
-    assert done == {'seq': 7, 'total': 8, 'prev_node': 'N19', 'next_node': None}
+    assert done == {'seq': 8, 'total': 9, 'prev_node': 'N19', 'next_node': None}
 
 
 def test_next_route_from_loading_sends_load_done_first():
@@ -124,7 +129,7 @@ def test_next_route_from_loading_sends_load_done_first():
     rig.run(until=finished)
     rig.results.clear()
     rig.sent.clear()
-    nxt = route_cmd(['N11', 'N19', 'N09', 'N08', 'N12'], heading=math.radians(0.10))
+    nxt = route_cmd(['N11', 'N19', 'N24', 'N09', 'N08', 'N12'], heading=math.radians(0.10))
     with pytest.raises(ValueError, match='loading_heading_mismatch'):
         rig.logic.validate_action(route_cmd(nxt['payload']['route'], heading=math.pi / 2))
     rig.logic.validate_action(nxt)

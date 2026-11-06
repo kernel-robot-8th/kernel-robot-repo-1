@@ -394,7 +394,7 @@ def test_validate_home():
 def test_return_home_from_handoff(mgr):
     """N12 handoff 뒤 복귀: 등록한 칸(P5 = N16)까지 최단 경로로 시작 명령."""
     mgr.store.upsert(dict(GOOD, home='P5'))
-    _set_state(mgr, 'pinky1', 'handoff', ['N11', 'N19', 'N09', 'N08', 'N12'])
+    _set_state(mgr, 'pinky1', 'handoff', ['N11', 'N19', 'N24', 'N09', 'N08', 'N12'])
     res = mgr.return_home(_graph(), 'pinky1')['pinky1']
     assert res['ok'] and res['route'][0] == 'N12' and res['route'][-1] == 'N16'
     ip, path, body = mgr.client.calls[-1]

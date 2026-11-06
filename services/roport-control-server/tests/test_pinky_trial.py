@@ -725,12 +725,14 @@ def test_single_profile_uses_measured_paths_and_public_goal(single_profile):
         "N10",
         "N18",
         "N07",
+        "N23",
         "N19",
         "N11",
     ]
     assert single_profile["routes"]["cart_to_switch"]["route"] == [
         "N11",
         "N19",
+        "N24",
         "N09",
         "N08",
         "N12",
@@ -774,7 +776,7 @@ def test_single_profile_rejects_wrong_scenario(single_profile, change):
         if change == "start":
             route["route"] = route["route"][1:]
         elif change == "via":
-            route["route"] = ["N16", "N14", "N15", "N05", "N07", "N19", "N11"]
+            route["route"] = ["N16", "N14", "N15", "N05", "N07", "N23", "N19", "N11"]
         else:
             route["route"] = route["route"][:-1]
         route["start_node"] = route["route"][0]

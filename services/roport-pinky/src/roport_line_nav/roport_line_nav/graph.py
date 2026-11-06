@@ -19,6 +19,7 @@ STRAIGHT, LEFT, RIGHT, BACK = 'straight', 'left', 'right', 'back'
 #   park   : P1·P2(스마트카트)·P5·P6(물류) 대기·충전. 180° → 후진해 IR 3개가 가로선을 보면 정지
 #   handoff: N12(nav2_switch). 정지 후 Nav2 전환 가능 보고
 #   stop   : 그 밖의 가로선 노드. 정지만
+# 노드에 arrival: load|park|stop 을 적으면 운영 위치보다 먼저 쓴다(예: 02 인도장 N21·N22 = load, 2026-11-05)
 LOAD, PARK, HANDOFF, STOP = 'load', 'park', 'handoff', 'stop'
 LOAD_PLACES = ('P4', 'P7')
 PARK_PLACES = ('P1', 'P2', 'P5', 'P6')
@@ -38,6 +39,7 @@ class Node:
     place: str = ''
     bar: str = ''            # 정차 가로선 방향 'x'·'y', 없으면 ''
     nav2_switch: bool = False
+    arrival: str = ''        # 도착 동작 직접 지정(LOAD·PARK·STOP), 없으면 운영 위치로 정함
 
 
 def turn_of(heading, new_heading):
@@ -71,9 +73,12 @@ class Graph:
             if nid in nodes:
                 raise GraphError(f'duplicate node id {nid}')
             x, y = (float(v) for v in it['at'])
+            arrival = str(it.get('arrival', ''))
+            if arrival not in ('', LOAD, PARK, STOP):
+                raise GraphError(f'{nid}: arrival must be {LOAD}, {PARK} or {STOP}')
             nodes[nid] = Node(nid, x, y, tuple(str(v) for v in it.get('links') or ()),
                               str(it.get('role', '')), str(it.get('place', '')),
-                              str(it.get('bar', '')), bool(it.get('nav2_switch', False)))
+                              str(it.get('bar', '')), bool(it.get('nav2_switch', False)), arrival)
         width = float((data.get('defaults') or {}).get('line_width', 2.4))
         g = cls(nodes, str(spec.get('graph_version', '')),
                 float(spec.get('bar_length', 12)), width)
@@ -109,6 +114,8 @@ class Graph:
         n = self.nodes[nid]
         if n.nav2_switch:
             return HANDOFF
+        if n.arrival:
+            return n.arrival
         if n.place in LOAD_PLACES:
             return LOAD
         if n.place in PARK_PLACES:

@@ -104,7 +104,7 @@ def test_handoff_manifest_matches_exported_files_and_map(handoff):
     "change",
     [
         lambda v: v.update(units="m"),
-        lambda v: v.update(version="v14"),
+        lambda v: v.update(version="v15"),
         lambda v: v["map"].update(width=1),
         lambda v: v["frame"].update(x_m=float("nan")),
         lambda v: v["nodes"]["items"].append(v["nodes"]["items"][0]),

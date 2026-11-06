@@ -1,4 +1,4 @@
-# 실측 배치 v13(roport_gz_world/layout/roport_airport.yaml)에서 생성한 지도.
+# 실측 배치 v14(roport_gz_world/layout/roport_airport.yaml)에서 생성한 지도.
 # SLAM 지도가 아님. 직접 고치지 말고 python3 -m roport_gz_world.generate_map 으로 만든다.
 image: airport_map.pgm
 mode: trinary

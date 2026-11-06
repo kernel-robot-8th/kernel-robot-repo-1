@@ -36,10 +36,10 @@ MQTT 토픽·메시지 스키마·Pinky 이식 모듈은 기존과 같다. 팀�
 
 | 순서 | 관제 동작 | 실제 조건 / 시험 가정 |
 | --- | --- | --- |
-| 1 | `route.requested / to_delivery` | N16 → N14 → N02 → N10 → **N18** → N07 → **N19 → N11** |
+| 1 | `route.requested / to_delivery` | N16 → N14 → N02 → N10 → **N18** → N07 → N23 → **N19 → N11** |
 | 2 | `WAIT_INBOUND`에서 입고 완료 더미 승인 | N11 도착·정지·라인 해제 후만 허용 |
 | 3 | `WAIT_CART_LOAD`에서 적재 완료 더미 승인 | 같은 기체가 N11에 스마트카트로 들어와 있다고 가정. 실제 복귀/재진입 명령 없음 |
-| 4 | `route.requested / cart_to_switch` | **N11** → N19 → N09 → N08 → **N12** |
+| 4 | `route.requested / cart_to_switch` | **N11** → N19 → N24 → N09 → N08 → **N12** |
 | 5 | `mode_switch.requested`, 완료 후 `navigate.requested` | N12 정지 → Nav2 구동권·위치 추정 준비 확인 → 공용공간 골 전송 |
 
 두 더미는 관제 CLI의 `dummy <gate.stop_session_id>` 입력이다. 실제 OMX 명령은 발행하지 않는다.
@@ -93,15 +93,15 @@ Pinky 측 측정/결과 → MQTT event → 관제 검증·파일 저장 → 다�
 더미는 Pinky의 도착/정지를 대신할 수 없다. 정차 세션은 마지막 route의 execution_id이며 task·step·로봇·노드·물품·수량과 함께 기록된다.
 물류 Pinky가 창고에 복귀한 뒤에만 스마트카트를 출발시켜 인도장 중복 진입을 피한다.
 
-v13 후보 경로는 설정 파일에서 수정할 수 있다. P4/P7의 운영 위치를 확정하는 변경은 아니다.
+v14 후보 경로(2026-11-06 지도, 02 인도장 분기 N23·N24 추가)는 설정 파일에서 수정할 수 있다. P4/P7의 운영 위치를 확정하는 변경은 아니다.
 
 | 단계 | 후보 노드 배열 |
 | --- | --- |
 | to_loading | N16 → N14 → N02 → N10 → N18 → N01 |
-| to_delivery | N01 → N18 → N07 → N19 → N11 |
-| return_warehouse | N11 → N19 → N07 → N05 → N15 → N14 → N16 |
-| cart_to_delivery | H1 → N09 → N19 → N11 |
-| cart_to_switch | N11 → N19 → N09 → N08 → N12 |
+| to_delivery | N01 → N18 → N07 → N23 → N19 → N11 |
+| return_warehouse | N11 → N19 → N23 → N07 → N05 → N15 → N14 → N16 |
+| cart_to_delivery | H1 → N09 → N24 → N19 → N11 |
+| cart_to_switch | N11 → N19 → N24 → N09 → N08 → N12 |
 
 설정 생성기는 웹 지도와 동일한 maps/airport_map.yaml 및 layout/roport_airport.yaml을 읽어 map_version·graph_version과 인접 연결을 확인한다.
 인접 연결 검사는 실제 회전 가능성·장애물·후진 거리·AMCL 정합성을 증명하지 않는다.

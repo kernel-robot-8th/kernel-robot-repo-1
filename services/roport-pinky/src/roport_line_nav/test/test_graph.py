@@ -22,12 +22,14 @@ def test_turn_of():
 
 
 def test_layout_graph_loads(graph):
-    assert graph.version.startswith('line-v13')
+    assert graph.version.startswith('line-v14')
     assert {'N01', 'N11', 'N12', 'N16', 'N17', 'H1', 'H2'} <= set(graph.nodes)
     assert graph.arrival_action('N01') == LOAD and graph.arrival_action('N11') == LOAD
     for p in ('N16', 'N17', 'H1', 'H2'):
         assert graph.arrival_action(p) == PARK, p
     assert graph.arrival_action('N12') == HANDOFF
+    # 02 인도장 새 정차 노드(운영 위치 없음)는 arrival: load 로 N11과 같은 동작
+    assert graph.arrival_action('N21') == LOAD and graph.arrival_action('N22') == LOAD
 
 
 def test_plan_example_route(graph):
@@ -41,9 +43,17 @@ def test_plan_example_route(graph):
 
 
 def test_plan_straight_through_branch(graph):
-    legs = plan_route(graph, ['N10', 'N18', 'N07', 'N19', 'N11'])
-    assert [lg.action for lg in legs] == [STRAIGHT, STRAIGHT, RIGHT, LOAD]
+    legs = plan_route(graph, ['N10', 'N18', 'N07', 'N23', 'N19', 'N11'])
+    assert [lg.action for lg in legs] == [STRAIGHT, STRAIGHT, STRAIGHT, RIGHT, LOAD]
     assert legs[0].sides == {RIGHT}       # N18: P4 분기가 오른쪽(통로 쪽)
+
+
+def test_arrival_override_is_checked():
+    data = {'nodes': {'items': [
+        {'id': 'A', 'at': [0, 0], 'links': ['B']},
+        {'id': 'B', 'at': [0, -40], 'links': ['A'], 'bar': 'x', 'arrival': 'dance'}]}}
+    with pytest.raises(GraphError, match='arrival must be'):
+        Graph.from_dict(data)
 
 
 @pytest.mark.parametrize('route, msg', [

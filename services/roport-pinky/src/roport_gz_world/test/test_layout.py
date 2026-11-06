@@ -85,8 +85,12 @@ def test_line_dimensions_from_measurement(layout):
     n12 = _node(layout, 'N12')
     # 2026-11-03 저녁 재측정 기록지: 벽·칸막이 면 → 세로선 왼쪽 가장자리
     wall_face = layout.raw['defaults']['wall_thickness'] / 2
-    assert _node(layout, 'N16').x - half - wall_face == pytest.approx(44.5)        # [24]
-    assert _node(layout, 'N17').x - half - wall_face == pytest.approx(91.5)        # [25]
+    # 벽-왼쪽은 폼보드 없는 강의실 벽 → 면 = x 0 (2026-11-06 사용자 확인)
+    assert _node(layout, 'N16').x - half == pytest.approx(44.5)                    # [24]
+    assert _node(layout, 'N17').x - half == pytest.approx(91.5)                    # [25]
+    # 02 인도장 세로선: 벽-왼쪽 면 → 왼쪽 가장자리 b · c · d (2026-11-06)
+    for nid, dist in (('N21', 160), ('N11', 208.2), ('N22', 256.8)):
+        assert _node(layout, nid).x - half == pytest.approx(dist), nid
     for stop, length in (('N16', 25), ('N17', 25)):                                # R
         assert _node(layout, stop).y + half - (n05.y + half) == pytest.approx(length)
     for stop, length in (('N01', 29.9), ('H1', 40), ('H2', 40)):                   # Q U
@@ -97,8 +101,10 @@ def test_line_dimensions_from_measurement(layout):
     assert n12.x + half - (h2.x - half) == pytest.approx(38.5)                     # [23]
     # 분기 x: 바깥선 → 바깥선
     assert _node(layout, 'N18').x + half - (n10.x - half) == pytest.approx(43.6)
-    n07 = _node(layout, 'N07')
-    assert _node(layout, 'N19').x + half - (n07.x - half) == pytest.approx(94.0)
+    # 분기는 정차 노드 세로선과 같은 x
+    for branch, stop in (('N19', 'N11'), ('N23', 'N21'), ('N24', 'N22')):
+        assert _node(layout, branch).x == _node(layout, stop).x
+        assert _node(layout, branch).y == _node(layout, 'N07').y
 
 
 def test_delivery_and_warehouse_dimensions(layout):
@@ -118,11 +124,25 @@ def test_delivery_and_warehouse_dimensions(layout):
     half = layout.bar_length / 2
     assert objs['omx12_left']['max'][0] < _node(layout, 'N11').x - half
     assert _node(layout, 'N11').x + half < objs['omx12_right']['min'][0]
-    assert objs['omx12_right']['min'][0] - objs['omx12_left']['max'][0] == pytest.approx(25.5)  # [6]
-    face = 138 + layout.raw['defaults']['wall_thickness'] / 2      # 칸막이-좌 면
-    assert objs['shelf_02']['min'][0] - face == pytest.approx(45.9)                # [2]
+    ol, orr = objs['omx12_left'], objs['omx12_right']
+    assert orr['min'][0] - ol['max'][0] == pytest.approx(25.8)                     # [6] 11-05
+    assert orr['max'][0] - ol['min'][0] == pytest.approx(72.6)                     # [5]+[6]+[7]
+    lw = layout.line_width
+    assert _node(layout, 'N11').x - lw / 2 - ol['max'][0] == pytest.approx(11.4)   # N11 ↔ OMX1
+    assert orr['min'][0] - (_node(layout, 'N11').x + lw / 2) == pytest.approx(11.8, abs=0.3)  # ↔ OMX2
+    # 새 세로선은 받침 바깥 약 11 cm(손그림 A1 11.7 · C1 11)
+    assert ol['min'][0] - (_node(layout, 'N21').x + lw / 2) == pytest.approx(11.0, abs=0.8)
+    assert _node(layout, 'N22').x - lw / 2 - orr['max'][0] == pytest.approx(11.0, abs=0.8)
+    for nid in ('N21', 'N22'):                                      # 가로선이 받침에 안 닿음
+        n = _node(layout, nid)
+        assert n.x + half < ol['min'][0] or n.x - half > orr['max'][0], nid
+    # 칸막이 면 기준 값은 N11 기준으로 놓은 받침과 0.5 cm 안(a 139.8 은 1.9 cm 어긋나 안 씀)
+    face = 138 + layout.raw['defaults']['wall_thickness'] / 2      # 칸막이-좌 면(가정)
+    assert objs['shelf_02']['min'][0] - face == pytest.approx(45.9, abs=0.5)       # [2]
     assert objs['shelf_02']['max'][0] - objs['shelf_02']['min'][0] == pytest.approx(50)  # [3]
-    assert objs['omx12_left']['min'][0] - face == pytest.approx(35.5)              # [4]
+    assert ol['min'][0] - face == pytest.approx(35.5, abs=0.5)                     # [4]
+    right = 280 + layout.raw['defaults']['wall_thickness'] / 2     # 칸막이-우 면
+    assert right - orr['max'][0] == pytest.approx(34, abs=0.5)                     # D1
 
 
 def test_omx12_from_walls(layout):
@@ -141,7 +161,8 @@ def test_omx12_from_walls(layout):
     assert back - aisle_face == pytest.approx(31.5)                              # [10]
     assert face03 - back == pytest.approx(61.5, abs=0.6)                         # [12]
     assert bar_end - aisle_face == pytest.approx(35.7)                           # [15]
-    assert bar_end - back == pytest.approx(4, abs=0.3)                           # [13] V
+    # [13] V 3.8(11-05)은 [15]·[10]으로 계산한 4.2와 0.4 차이
+    assert bar_end - back == pytest.approx(3.8, abs=0.5)                         # [13] V
     assert face03 - aisle_face == pytest.approx(93.5)                            # Ⓓ 벽 → 벽
     # 바닥 P7 마커(2 cm)는 가로선과 오목 바닥 사이
     p7 = next(m for m in layout.raw['markers']['items'] if m['name'] == 'P7')
