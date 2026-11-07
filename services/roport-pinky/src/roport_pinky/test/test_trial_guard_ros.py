@@ -53,7 +53,10 @@ while rclpy.ok():
             pub.publish(msg)
             ex.spin_once(timeout_sec=.02)
     try:
-        spin(2)
+        # Wait for DDS discovery without changing the post-kill stop deadline.
+        ready_deadline = time.monotonic() + 5.
+        while time.monotonic() < ready_deadline and not any(v == .03 for _, v in observed):
+            spin(.1)
         assert any(v == .03 for _, v in observed), child.poll()
         child.kill()
         child.wait(timeout=3)

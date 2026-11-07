@@ -79,7 +79,16 @@ uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --por
 
 TLS 역방향 프록시는 WebSocket upgrade, 브라우저의 `Origin`, 외부 `Host`(비기본 포트 포함)를 그대로 전달하고 `X-Forwarded-Proto`를 실제 외부 scheme으로 설정해야 합니다. 같은 서버의 loopback 프록시라면 위 Uvicorn 명령에 `--proxy-headers --forwarded-allow-ips=127.0.0.1`을 사용합니다. 원격 프록시는 실제 프록시 IP만 신뢰하고 `*`로 열지 않습니다. 신뢰된 HTTPS 전달 헤더는 Uvicorn이 `wss`로 변환하므로 같은 origin 연결이 허용됩니다. 내부 Host로 바꾸거나 신뢰하지 않는 경로에서 HTTPS 헤더만 보내면 거절됩니다. `X-Forwarded-Host`만으로는 보완되지 않습니다.
 
-서버 운영자가 `ROPORT_MAP=/절대경로/map.yaml` 환경변수로 PNG/PGM+YAML 지도를 선택할 수 있습니다. 기본 지도는 공개 예시이며 화면에도 표시합니다. 지도 파일 업로드 API는 없고 원본 파일을 수정하지 않습니다. m/rad, ROS map 축·origin/yaw를 보존하며 벽 높이 0.35m는 표시 가정입니다. 실제 맵과 P4/P7은 팀 확정 후 적용합니다. 지도와 연결한 이미지는 접속자에게 보이므로 공개/접속 권한을 확인합니다.
+서버 운영자가 `ROPORT_MAP=/절대경로/map.yaml`로 PNG/PGM+YAML 지도를 선택하고, `ROPORT_MAP_LAYOUT=/절대경로/layout.yaml`로 실측 레이아웃을 함께 지정할 수 있습니다. 기본 지도는 공개 예시입니다. 파일 업로드 API는 없으며 원본을 수정하지 않습니다. 지도·레이아웃은 접속자에게 표시되므로 접근 권한을 확인하고 현장 원본은 저장소 밖에 둡니다.
+
+```bash
+ROPORT_MAP=/absolute/path/map.yaml ROPORT_MAP_LAYOUT=/absolute/path/layout.yaml uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --port 8000 --ws-max-size 4096 --ws-max-queue 4
+```
+
+- 레이아웃은 `units: cm`, `version`, `map: {width, height, resolution, origin: [x, y]}`, `frame: {x_m, y_m, yaw_deg}`, `defaults.wall_height`, `nodes: {graph_version, items}`를 사용합니다. 노드는 `id`, `at: [x, y]`, 대칭 `links`와 선택 `place`/`nav2_switch`를 가집니다. 지도 격자가 다르거나 노드가 지도 밖이면 서버 시작을 거부합니다. 현재 실측 레이아웃은 지도 origin yaw=0을 요구하며 레이아웃 frame 회전은 지원합니다.
+- 좌표는 frame의 회전·이동과 cm→m 변환 후 ROS map 좌표로 표시합니다. 노드/연결선·장소 별칭은 입력 레이아웃을 따르며 P4/P7의 의미나 주행 경로를 확정하지 않습니다. 지도 이미지와 레이아웃의 내용 해시는 별도로 제공합니다.
+- `objects`의 `omx12_left`/`omx12_right`에 `min`, `max`, `height`(또는 `defaults.object_height`)를 지정하면 OMX1·2를 받침 앞 변(`max.y`) 중앙에 밑판이 닿도록 상호 대향 배치합니다. 현재 현장 배치의 N19 쪽 변에 해당합니다. 설치 배치는 기준값이며 실제 위치·관절 미수신 상태는 그대로 유지합니다.
+- 레이아웃 미지정 시 벽 높이 0.35m는 표시 가정입니다. 실측 레이아웃의 벽 높이도 점유 셀 전체에 일괄 적용하는 표시 기준이며, 실제 구조물별 3D 형상은 아닙니다. DEMO 주행은 선택한 지도 크기에 맞춘 예시 애니메이션으로 장애물 회피·주행 승인에 쓰지 않습니다.
 
 클램쉘 운영은 OS의 덮개 닫힘 절전 해제, 전원·냉각·유선 LAN, 서비스 자동 시작/재시작을 별도로 설정·검증합니다. 이 PR은 OS 설정을 변경하지 않습니다. AI 추론 병행 성능·현장 Wi-Fi·여러 운영자의 조작 권한·장시간 운영은 후속 검증입니다.
 

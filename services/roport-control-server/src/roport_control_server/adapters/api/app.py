@@ -21,7 +21,7 @@ MAX_JSON_BYTES = 4096
 ASSETS = Path(__file__).resolve().parents[2] / "spatial_assets"
 
 
-def create_app(map_path=None):
+def create_app(map_path=None, *, layout_path=None):
     # shortcut: per-worker demo limit; measure with AI load before scaling out.
     stream_slots = asyncio.BoundedSemaphore(8)
 
@@ -29,7 +29,7 @@ def create_app(map_path=None):
     async def lifespan(app):
         # Only the server operator supplies a local path; no file-upload/path API.
         app.state.map = await asyncio.to_thread(
-            load_map, map_path or ASSETS / "maps/demo.yaml"
+            load_map, map_path or ASSETS / "maps/demo.yaml", layout_path
         )
         app.state.example_map = map_path is None
         yield
@@ -131,7 +131,7 @@ def create_app(map_path=None):
         if stream_slots.locked():
             await websocket.close(code=1013)
             return
-        display = Display(demo=mode == "demo")
+        display = Display(demo=mode == "demo", map_geometry=app.state.map)
 
         async def send():
             while True:
@@ -176,4 +176,11 @@ def create_app(map_path=None):
     return app
 
 
-app = create_app(os.environ.get("ROPORT_MAP"))
+def create_app_from_env(environment):
+    return create_app(
+        environment.get("ROPORT_MAP"),
+        layout_path=environment.get("ROPORT_MAP_LAYOUT"),
+    )
+
+
+app = create_app_from_env(os.environ)

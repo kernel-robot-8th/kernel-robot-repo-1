@@ -184,3 +184,48 @@ def test_route_mode_commands_and_estop(tmp_path):
         node.destroy_node()
         probe.destroy_node()
         rclpy.shutdown(context=ctx)
+
+
+def test_monitor_mode_has_no_cmd_vel_publisher_and_refuses_drive(tmp_path, monkeypatch):
+    from pinky_test_console.web_server import ConsoleNode
+    from pinky_test_console.web_app import create_app, default_web_dir
+
+    monkeypatch.setenv('ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST')
+    context = Context()
+    rclpy.init(context=context, domain_id=TEST_DOMAIN_ID)
+    namespace = NS + '/monitor_only'
+    node = ConsoleNode(context=context, namespace=namespace, parameter_overrides=[
+        rclpy.parameter.Parameter('map_dir', value=str(tmp_path)),
+        rclpy.parameter.Parameter('teleop_enabled', value=False)])
+    probe = rclpy.create_node('monitor_probe', context=context, namespace=namespace)
+    received = []
+    probe.create_subscription(Twist, 'cmd_vel', lambda msg: received.append(msg), 10)
+    executor = SingleThreadedExecutor(context=context)
+    executor.add_node(node)
+    executor.add_node(probe)
+    try:
+        assert node.cmd_vel_pub is None
+        assert node.get_info()['teleop_enabled'] is False
+        for call in (lambda: node.teleop(.03, 0.), node.teleop_stop, node.emergency_stop,
+                     lambda: node.publish_twist(0., 0.), lambda: node.send_goal(0., 0., 0.),
+                     node.cancel_goal, lambda: node.route_command({'cmd': 'start'})):
+            with pytest.raises(PermissionError, match='teleop_enabled=false'):
+                call()
+        client = create_app(node, default_web_dir()).test_client()
+        for route, body in [('/api/teleop', {'linear': .03, 'angular': 0}),
+                            ('/api/teleop/stop', {}), ('/api/estop', {}),
+                            ('/api/nav/stop', {}), ('/api/goal', {'x': 0, 'y': 0})]:
+            response = client.post(route, json=body)
+            assert response.status_code == 403 and response.json['success'] is False
+        node.publish_stop_on_exit()
+        until = time.monotonic() + .6
+        while time.monotonic() < until:
+            executor.spin_once(timeout_sec=.02)
+        assert probe.count_publishers(namespace + '/cmd_vel') == 0
+        assert received == []
+        assert node.initial_pose_pub is not None  # Localization setup is preserved.
+    finally:
+        executor.shutdown(timeout_sec=1.)
+        node.destroy_node()
+        probe.destroy_node()
+        context.shutdown()
