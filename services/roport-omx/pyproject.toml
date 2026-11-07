@@ -2,7 +2,7 @@
 name = "roport-omx"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = ["paho-mqtt==2.1.0"]
 
 [build-system]
 requires = ["hatchling==1.32.4"]
