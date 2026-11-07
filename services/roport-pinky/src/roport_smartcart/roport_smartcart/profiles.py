@@ -92,6 +92,13 @@ def build_params(base_params_file, overrides_file, mode, *, footprint=None,
         costmap = params[name][name]['ros__parameters']
         costmap.pop('robot_radius', None)
         costmap['footprint'] = polygon
+        if simulated:
+            costmap['plugins'].insert(-1, 'sonar_layer')
+            costmap['sonar_layer'] = {
+                'plugin': 'nav2_costmap_2d::RangeSensorLayer',
+                'topics': ['/us_sensor/range'], 'input_sensor_type': 'VARIABLE',
+                'clear_on_max_reading': True, 'no_readings_timeout': .5,
+            }
 
     if simulated:
         # Trial closer, more precise stops without changing the hardware profile.

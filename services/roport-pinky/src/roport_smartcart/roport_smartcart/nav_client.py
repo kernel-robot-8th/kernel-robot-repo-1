@@ -42,6 +42,9 @@ class NavClient:
         self._handle = None
         self._lock = RLock()
 
+    def server_is_ready(self):
+        return self._client.server_is_ready()
+
     def start(self, places_file, map_yaml, place_id):
         # Validate before ownership changes or a request reaches Nav2.
         destination = load_destination(places_file, map_yaml, place_id,
@@ -54,7 +57,7 @@ class NavClient:
         goal.pose.pose.orientation.z = math.sin(destination.yaw / 2)
         goal.pose.pose.orientation.w = math.cos(destination.yaw / 2)
         with self._lock:
-            if not self._client.server_is_ready():
+            if not self.server_is_ready():
                 raise RuntimeError('Nav2 action server is unavailable')
             effects = self.lifecycle.start(goal)
             self._handle = None

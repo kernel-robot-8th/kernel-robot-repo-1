@@ -6,6 +6,14 @@ map:
   yaml_sha256: 25f94c8512d99adc41e6f3b59b4136cace3909d82e7b41875045e77d0531ffda
   image_sha256: 0f57d726d0ec781cfbfb78a6bcc7272ccdb643a6cbb60afd54802958c3ef8e0c
 places:
+  return_entry:
+    measured: true
+    pose: [2.55, -1.25, -3.139847]
+    marker_id: null
+  sensor_goal:
+    measured: true
+    pose: [1.2, -0.3, 0.0]
+    marker_id: null
   home:
     measured: true
     pose:

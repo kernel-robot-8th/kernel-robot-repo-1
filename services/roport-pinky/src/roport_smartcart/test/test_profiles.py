@@ -146,3 +146,15 @@ def test_precision_trial_is_sim_only():
         assert params['planner_server']['ros__parameters']['GridBased']['tolerance'] == planner
     assert sim['controller_server']['ros__parameters']['FollowPath'][
         'min_approach_linear_velocity'] == .02
+
+
+def test_range_layers_are_sim_only_and_before_inflation():
+    for mode, kwargs in [('sim', {}), ('real', dict(
+            footprint=FOOTPRINT, max_linear=.12, max_angular=.15))]:
+        p = profile(mode, **kwargs)
+        for name in ('local_costmap', 'global_costmap'):
+            c = p[name][name]['ros__parameters']
+            assert ('sonar_layer' in c['plugins']) is (mode == 'sim')
+            if mode == 'sim':
+                assert c['plugins'][-2:] == ['sonar_layer', 'inflation_layer']
+                assert c['sonar_layer']['clear_on_max_reading'] is True
