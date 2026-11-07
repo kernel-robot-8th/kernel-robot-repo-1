@@ -26,5 +26,6 @@ setup(
     extras_require={'test': ['pytest']},
     entry_points={'console_scripts': ['navigate = roport_smartcart.navigate:main',
                                      'sim_sonar = roport_smartcart.sim_sonar:main',
+                                     'sim_control = roport_smartcart.sim_control:main',
                                      'sim_return_h1 = roport_smartcart.sim_return_h1:main']},
 )

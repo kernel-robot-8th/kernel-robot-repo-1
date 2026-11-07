@@ -31,8 +31,15 @@ case "${1:-start}" in
     exec "$SMARTCART_PYTHON" "$(command -v ros2)" launch roport_smartcart simulation.launch.py \
       gui:="$SMARTCART_GUI" rviz:=false
     ;;
-  h1)
-    exec ros2 run roport_smartcart sim_return_h1
+  control)
+    shift
+    exec ros2 run roport_smartcart sim_control "$@"
+    ;;
+  delivery1|delivery2|delivery3)
+    exec ros2 run roport_smartcart sim_return_h1 --gate "gate${1#delivery}" --wait-for-control
+    ;;
+  h1|h2)
+    exec ros2 run roport_smartcart sim_return_h1 --bay "${1^^}"
     ;;
   gate1|gate2|gate3)
     exec ros2 run roport_smartcart sim_return_h1 --gate "$1"
@@ -52,7 +59,7 @@ case "${1:-start}" in
       --target "$SMARTCART_TARGET" "${SMARTCART_RETURN[@]}" --startup-wait 30 --timeout 120
     ;;
   *)
-    echo '사용법: smartcart_sim.sh [start|headless|sensors [높이_m]|sensor-goal|gate1|gate2|gate3|h1|home]' >&2
+    echo '사용법: smartcart_sim.sh [start|headless|sensors [높이_m]|sensor-goal|gate1|gate2|gate3|delivery1|delivery2|delivery3|control [--occupied H1 H2]|h1|h2|home]' >&2
     exit 2
     ;;
 esac

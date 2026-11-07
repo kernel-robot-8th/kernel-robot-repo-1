@@ -118,9 +118,9 @@ Gazebo에서 동일한 초기 입자가 만드는 미세한 음수 분산은 sim
 두 번째 터미널에서 같은 폴더로 이동한 뒤 게이트 왕복을 실행한다.
 
 ```bash
-./scripts/smartcart_sim.sh gate1  # G1 → 시작 위치 복귀
-./scripts/smartcart_sim.sh gate2  # G2 → 시작 위치 복귀
-./scripts/smartcart_sim.sh gate3  # G3 → 시작 위치 복귀
+./scripts/smartcart_sim.sh gate1  # G1 → H1 자동 복귀 데모
+./scripts/smartcart_sim.sh gate2  # G2 → H1 자동 복귀 데모
+./scripts/smartcart_sim.sh gate3  # G3 → H1 자동 복귀 데모
 ```
 
 한 번에 명령 하나만 실행한다. 시작 위치만 가려면 `home`, 창 없이 실행하려면 시작 명령에 `headless`를 사용한다.
@@ -358,5 +358,55 @@ Gazebo의 일시정지 버튼을 누르면 시뮬레이션 시간과 센서 관�
 2026-11-07 Gazebo에서 출구 접근 Nav2 성공을 확인한 뒤 N12 근처 재시도로 라인 획득 → N08 → N09 → H1
 전체 라인 복귀·180° 회전·후진 주차가 `arrived`로 완료됐다. 최종 실제 모델 위치는
 `(1.532,-1.708)m`, yaw 약1.442rad로 H1 북쪽 방향과 약7.5° 차이가 있었다.
-성공 기록은 N12 근처 재시도 기준이며, G2 → H1 단일 명령 완주는 아직 확인하지 않았다.
+위 기록은 N12 근처 재시도 기준이다. 이후 main에서 공용공간 시작 → G2 → H1을 단일 명령으로 완주하고 최종 정지를 확인했다.
 실제 IR·충전 접점 연결이나 관제 통합 완료를 뜻하지 않는다.
+
+
+### 수령 확인·배정 대기칸 복귀 모의 관제 · FFT1-84
+
+운영 관제 `executor/pinky_trial.py`는 navigate 완료에서 COMPLETE로 끝나며 수령·대기칸 예약 메시지가 없다.
+아래는 **domain198/LOCALHOST 전용 ROS 모의 관제**이며 MQTT trial-v1을 확장하거나 실제 예약 DB에 연결하지 않는다.
+기존 `gate1/2/3`는 수령을 기다리지 않는 자동 복귀 데모다. 수령 대기 시험에는 `delivery1/2/3`를 사용한다.
+
+```bash
+# 터미널 1: 공용공간에서 시작하는 Gazebo (실물 연결 없음)
+./scripts/smartcart_sim.sh
+# 터미널 2: 다른 로봇이 H1을 점유했다고 가정. 둘 다 비어 있으면 --occupied 생략
+./scripts/smartcart_sim.sh control --occupied H1
+# 터미널 3: G2 도착·정지 후 WAIT_UNLOAD에서 유지
+./scripts/smartcart_sim.sh delivery2
+# 터미널 4: 운영자가 수령 확인. 이 터미널도 domain198/LOCALHOST로 격리
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=198 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+unset ROS_STATIC_PEERS ROS_DISCOVERY_SERVER
+ros2 service call /smartcart/sim/confirm_receipt std_srvs/srv/Trigger '{}'
+# 모의 관제가 H2 예약 → 로봇이 N12 → N08 → H2로 후진 주차
+# 취소: 현재 세션의 대기/주행을 중단. 예약은 수동 복구 전까지 유지
+ros2 service call /smartcart/sim/stop std_srvs/srv/Trigger '{}'
+```
+
+모의 관제는 현재 2초 이내 로봇 상태가 WAIT_UNLOAD일 때만 수령 확인을 받는다.
+H1/H2 중 점유되지도 예약되지도 않은 칸을 선택하며, 둘 다 없으면 실패 응답을 내고 로봇은 계속 정지한다.
+ROS `smartcart/sim/state`/`smartcart/sim/control`의 JSON은 이 시험 전용이다.
+매 실행 새 session을 발급하고, 일치하는 session·명시적 receipt_confirmed=true·H1/H2·reservation_id·유한한 만료 시각을 검증한다.
+같은 예약의 0.5초 heartbeat만 받으며 새 목적지나 늘어난 만료 시각으로 예약을 덮어쓰지 않는다.
+예약은 최대290초, heartbeat 2초 초과·만료·정지 요청 시 현재 Nav2 취소와 정지 명령 후 FAULT/CANCELED로 끝낸다.
+승인 대기는 최대120초이며 시간 초과 시 정지 상태로 실패한다. 승인 후 모든 접근·라인 구간에서 기존 센서 신선도 검사도 유지한다.
+도착 시 모의 관제는 배정 칸을 점유 상태로 유지한다. 이 fixture는 메모리만 사용하므로 재시작 후 예약 복구를 보장하지 않는다.
+실행 중 재시작은 heartbeat 소실로 로봇을 중단시키며, 수동 복구 후 새 시험을 시작해야 한다.
+다른 기체·MQTT 운영 인증·영속 점유 저장·실제 수령 확인·실물 IR/마커 전환은 별도 연결 및 현장 검증 대상이다.
+
+
+2026-11-07 Gazebo 모의 관제 시험(각 복귀 1회, 중간 위치 재배치 없음):
+
+| 조건 | 결과 |
+|---|---|
+| G2 도착 후 수령 승인 없음 | 약46초 정지 유지 |
+| H1 점유, 수령 확인 | H2 배정 → N12/N08/H2 → 회전·후진 주차 arrived, 최종 속도0 |
+| H1/H2 모두 점유 | 수령 확인 서비스가 No free bay로 거절, 정지 유지 |
+| 미승인 상태에서 모의 점유 입력을 H2만 점유로 바꾸고 다시 수령 확인 | H1 배정 → N12/N08/N09/H1 → 회전·후진 주차 arrived, 최종 속도0 |
+
+H2 최종 실제 모델 위치는 약(1.862,-1.709)m, yaw1.431rad, H1은 (1.541,-1.708)m, yaw1.497rad였다.
+H1/H2 가로선과 바퀴 축은 IR 장착 거리만큼 다르며 충전 접점 성공을 뜻하지 않는다.
+위 빈칸 변경은 승인 전 모의 관제를 재시작해 점유 입력을 바꾼 시험이다. 예약 영속 복구 시험이 아니다.
+목표 도착 추정 오차는 두 G2 시험에서 약3.3cm/1.6cm였다. 실물·실제 운영 관제 메시지 연결은 미검증이다.
