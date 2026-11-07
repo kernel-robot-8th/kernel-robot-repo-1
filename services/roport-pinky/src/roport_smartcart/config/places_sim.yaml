@@ -34,11 +34,12 @@ places:
     - -0.431649
     - -3.139847
     marker_id: 9
+  # Keep 5 cm lateral clearance from the upper corner for the final turn.
   gate3:
     measured: true
     pose:
     - 0.111423
-    - 0.028351
+    - -0.021649
     - -3.139847
     marker_id: 10
   arrival:
