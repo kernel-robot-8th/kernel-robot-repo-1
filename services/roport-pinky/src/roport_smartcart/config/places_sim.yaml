@@ -1,5 +1,5 @@
-# SIMULATION ONLY. Candidate stop poses retained for v14 map (unchanged free-space targets); not surveyed robot stop poses.
-# Gate targets are 0.30 m in front of proposed wall marker positions.
+# SIMULATION ONLY. Candidate closer stop poses for v14 map; not surveyed robot stop poses.
+# Gate targets are 0.25 m in front of proposed wall marker positions.
 environment: sim
 map:
   frame: map
@@ -23,22 +23,22 @@ places:
   gate1:
     measured: true
     pose:
-    - 0.162887
-    - -0.810561
+    - 0.112887
+    - -0.810648
     - -3.139847
     marker_id: 8
   gate2:
     measured: true
     pose:
-    - 0.162226
-    - -0.431562
+    - 0.112226
+    - -0.431649
     - -3.139847
     marker_id: 9
   gate3:
     measured: true
     pose:
-    - 0.161423
-    - 0.028438
+    - 0.111423
+    - 0.028351
     - -3.139847
     marker_id: 10
   arrival:

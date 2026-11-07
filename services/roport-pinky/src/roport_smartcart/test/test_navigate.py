@@ -286,3 +286,16 @@ def test_bad_newer_amcl_cannot_be_replaced_with_replayed_old_good_pose():
     ready.tick(1.)
     good.header.stamp.sec = 1
     assert ready.observe_amcl(good)  # ROS clock reset also resets replay history.
+
+
+def test_goal_error_reports_position_and_wraps_heading():
+    import math
+    from types import SimpleNamespace as NS
+    from roport_smartcart.goals import Destination
+    from roport_smartcart.navigate import goal_error
+    yaw = -math.pi + .02
+    transform = NS(transform=NS(translation=NS(x=1.03, y=2.04),
+        rotation=NS(x=0., y=0., z=math.sin(yaw/2), w=math.cos(yaw/2))))
+    error = goal_error(Destination(1., 2., math.pi-.01), transform)
+    assert error['position_error_m'] == pytest.approx(.05)
+    assert error['yaw_error_rad'] == pytest.approx(.03)

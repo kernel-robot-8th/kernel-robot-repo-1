@@ -134,3 +134,15 @@ def test_sim_initial_pose_matches_return_home():
     initial = profile()['amcl']['ros__parameters']['initial_pose']
     places = yaml.safe_load((ROOT / 'config/places_sim.yaml').read_text())
     assert places['places']['home']['pose'] == [initial['x'], initial['y'], initial['yaw']]
+
+
+def test_precision_trial_is_sim_only():
+    sim = profile()
+    real = profile('real', footprint=FOOTPRINT, max_linear=.12, max_angular=.15)
+    for params, xy, yaw, planner in ((sim, .03, .08, .02), (real, .06, .15, .1)):
+        checker = params['controller_server']['ros__parameters']['general_goal_checker']
+        assert checker['xy_goal_tolerance'] == xy
+        assert checker['yaw_goal_tolerance'] == yaw
+        assert params['planner_server']['ros__parameters']['GridBased']['tolerance'] == planner
+    assert sim['controller_server']['ros__parameters']['FollowPath'][
+        'min_approach_linear_velocity'] == .02

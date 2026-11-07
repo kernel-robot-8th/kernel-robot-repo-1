@@ -93,11 +93,19 @@ def build_params(base_params_file, overrides_file, mode, *, footprint=None,
         costmap.pop('robot_radius', None)
         costmap['footprint'] = polygon
 
+    if simulated:
+        # Trial closer, more precise stops without changing the hardware profile.
+        checker = params['controller_server']['ros__parameters']['general_goal_checker']
+        checker.update(xy_goal_tolerance=.03, yaw_goal_tolerance=.08)
+        params['planner_server']['ros__parameters']['GridBased']['tolerance'] = .02
+
     follower = params['controller_server']['ros__parameters']['FollowPath']
     follower['desired_linear_vel'] = max_linear
     follower['rotate_to_heading_angular_vel'] = max_angular
     for name in ('min_approach_linear_velocity', 'regulated_linear_scaling_min_speed'):
         follower[name] = min(follower.get(name, .05), max_linear)
+    if simulated:
+        follower['min_approach_linear_velocity'] = min(.02, max_linear)
     behavior = params['behavior_server']['ros__parameters']
     behavior['max_rotational_vel'] = max_angular
     behavior['min_rotational_vel'] = min(behavior.get('min_rotational_vel', .4), max_angular)

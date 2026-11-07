@@ -141,6 +141,18 @@ def validate_goal(places, map_yaml, target, mode):
     return load_destination(places, map_yaml, target, environment=mode)
 
 
+def goal_error(goal, transform):
+    """Localization-based diagnostics, not a physical accuracy measurement."""
+    pose = transform.transform
+    q = pose.rotation
+    yaw = math.atan2(2. * (q.w * q.z + q.x * q.y),
+                     1. - 2. * (q.y * q.y + q.z * q.z))
+    delta = yaw - goal.yaw
+    return {'position_error_m': math.hypot(pose.translation.x - goal.x,
+                                          pose.translation.y - goal.y),
+            'yaw_error_rad': abs(math.atan2(math.sin(delta), math.cos(delta)))}
+
+
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument('--mode', choices=('sim', 'real'), required=True)
@@ -283,7 +295,10 @@ def main(args=None):
                 if client.lifecycle.fault:
                     cancel_and_hold()
             await_ready()
-            print(json.dumps({'target': target, 'outcome': client.lifecycle.outcome,
+            goal = validate_goal(options.places, options.map, target, options.mode)
+            error = goal_error(goal, buffer.lookup_transform(
+                'map', 'base_footprint', rclpy.time.Time()))
+            print(json.dumps({'target': target, **error, 'outcome': client.lifecycle.outcome,
                               'fault': client.lifecycle.fault, 'readiness_failures': readiness_failures,
                               'stopped': True}), flush=True)
             if readiness_failures or client.lifecycle.outcome != 'succeeded' or client.lifecycle.fault:
