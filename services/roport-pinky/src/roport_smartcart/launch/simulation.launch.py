@@ -18,12 +18,16 @@ def generate_launch_description():
         DeclareLaunchArgument('gui', default_value='true'),
         DeclareLaunchArgument('rviz', default_value='false'),
         DeclareLaunchArgument('port', default_value='8081'),
+        DeclareLaunchArgument('max_linear', default_value='0.12'),
+        DeclareLaunchArgument('max_angular', default_value='0.45'),
         SetEnvironmentVariable('ROS_DOMAIN_ID', '198'),
         SetEnvironmentVariable('ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
             str(smartcart / 'launch' / 'navigation.launch.py')), launch_arguments={
                 'mode': 'sim', 'ros_domain_id': '198',
                 'gui': LaunchConfiguration('gui'), 'rviz': LaunchConfiguration('rviz'),
+                'max_linear': LaunchConfiguration('max_linear'),
+                'max_angular': LaunchConfiguration('max_angular'),
             }.items()),
         Node(package='pinky_test_console', executable='web_server',
              prefix=sys.executable, output='screen', parameters=[{

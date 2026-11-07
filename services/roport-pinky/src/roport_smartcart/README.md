@@ -52,7 +52,20 @@ G1 앞 단일 Nav2 정차는 아래 현장 시험에서 확인했다. 마커 인
 스마트카트의 상차 후 H1/H2 복귀·적재 대기·고객 호출 전체 임무는 아직 통합하지 않았다.
 `navigate`는 명시 목표를 보내는 도구이며 상차·하차·관제 임무 실행기가 아니다.
 2026-11-05 Gazebo에서 G1/G2/G3→home 각각 왕복·연속 정지를 확인했다.
-관제와 연결한 실로봇 주행은 아직 검증하지 않았다.
+11/7 관제 시험에서는 H1→N11 상차 대기→N12 라인 도착·Nav2 전환까지 확인했다. 이후 Nav2 목표는 실패했으며 게이트 배송 완료로 처리하지 않는다.
+
+### 11/7 관제·공용 라인 연결 기준
+
+최신 main `c7c5d0e`와 민지님 PR #32·#33·#38·#39의 라인 주행·설정·지도 v14·마커 변경을 대조했다. 공용 라인 노드와 MQTT 실행부를 복제하지 않고 기존 `roport_line_nav`·`roport_pinky.trial_driver`를 사용한다.
+
+| 연결 | 따르는 코드·조건 |
+|---|---|
+| 관제 명령·결과 | `roport_control_server/executor/pinky_trial.py`와 배포 키트의 trial-v1 스키마. 역할 smartcart/pinky3, binding/boot·지도/그래프 버전 일치 |
+| 라인 주행 | `line_nav/command`·`line_nav/state`. N11 loading·N12 handoff와 실제 정지를 관측해서 결과 보고 |
+| N12 인계 | `mode_switch.requested`로 명시 전환. Nav2·위치 추정 준비 확인 후 `navigate.requested`의 map 좌표로 주행 |
+| 전체 배송 | 현재 관제 시험은 N11→N12→단일 `PUBLIC_SPACE_TRIAL` 목표다. H1/H2 적재 대기 복귀·고객 호출·G1/G2/G3 선택은 후속 계약 연결 대상 |
+
+사용 중인 `2026-11-06-dual-web-trial-map-v14` 키트에는 main에 없는 상태 오류 보고 검사·MQTT 수신 시각/발행 보완이 일부 포함돼 있다. main의 통신 파일로 덮어쓰거나 각 PC에서 공유 JSON을 다시 생성하지 않는다. 이 키트의 manifest와 실제 validator를 기준으로 호환성을 검사한다.
 
 ### 11/5 현장·시뮬레이션 결과
 
@@ -98,6 +111,8 @@ python3 -m pytest -q src/roport_smartcart/test
 Gazebo 공항·Pinky·Nav2·웹 지도 화면을 함께 시작한다. 브라우저에서 **http://127.0.0.1:8081**을 연다.
 화면에 `Gazebo 시뮬레이션` 표시가 붙으며, 기존 실물 웹 화면(8080)과 구분한다.
 초기 위치는 자동 설정되며 목표는 자동으로 보내지 않는다. Gazebo는 일시정지를 해제한 상태로 둔다.
+이 통합 시뮬레이션의 Nav2 속도 상한은 직진 0.12m/s·회전 0.45rad/s다. 다른 값은 `ros2 launch roport_smartcart simulation.launch.py max_linear:=0.08 max_angular:=0.5`처럼 명시한다. 라인 센서·상차·N12 구동권 전환은 이 Gazebo Nav2 실행에 포함되지 않는다.
+Gazebo에서 동일한 초기 입자가 만드는 미세한 음수 분산은 sim에서만 `-1e-12`까지 부동소수점 오차로 처리한다. 실물의 분산 하한 0과 양쪽의 불확실성 상한·신선도·정지 기준은 유지한다. Gazebo 창을 닫아도 서버·Nav2는 유지하며, 전체 종료는 시작 터미널의 Ctrl+C로 수행한다.
 웹 지도의 `목표` 모드에서 클릭·드래그하면 목적지·방향을 지정할 수 있고 웹 정지 버튼으로 목표를 취소할 수 있다.
 
 두 번째 터미널에서 같은 폴더로 이동한 뒤 게이트 왕복을 실행한다.

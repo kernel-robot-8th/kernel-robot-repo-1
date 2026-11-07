@@ -107,3 +107,16 @@ def test_gazebo_spawn_uses_amcl_pose_including_heading(launch_module, monkeypatc
     includes = [include_arguments(a, ctx) for a in actions
                 if isinstance(a, IncludeLaunchDescription)]
     Path(next(a['params_file'] for a in includes if 'params_file' in a)).unlink()
+
+
+def test_closing_gazebo_gui_does_not_stop_the_server(launch_module):
+    module, _ = launch_module
+    ctx = context(gui='true')
+    actions = module._launch(ctx)
+    includes = [include_arguments(a, ctx) for a in actions
+                if isinstance(a, IncludeLaunchDescription)]
+    gui = next(a for a in includes if a.get('gz_args') == '-g')
+    server = next(a for a in includes if '-s ' in a.get('gz_args', ''))
+    assert gui['on_exit_shutdown'] == 'false'
+    assert server['on_exit_shutdown'] == 'true'
+    Path(next(a['params_file'] for a in includes if 'params_file' in a)).unlink()

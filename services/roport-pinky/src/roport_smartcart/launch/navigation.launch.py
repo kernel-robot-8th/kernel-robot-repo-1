@@ -89,7 +89,8 @@ def _launch(context):
                               'use_sim_time': True}]),
         ])
         if gui:
-            actions.append(_include('ros_gz_sim', 'gz_sim.launch.py', gz_args='-g'))
+            actions.append(_include('ros_gz_sim', 'gz_sim.launch.py',
+                                    gz_args='-g', on_exit_shutdown='false'))
     if rviz:
         actions.append(Node(package='rviz2', executable='rviz2',
                             arguments=['-d', str(Path(get_package_share_directory(

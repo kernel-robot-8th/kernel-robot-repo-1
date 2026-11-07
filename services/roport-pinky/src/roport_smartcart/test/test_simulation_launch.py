@@ -37,11 +37,13 @@ def test_real_parent_domain_cannot_leak_into_simulation(plan):
     ctx = context(actions)
     assert ctx.environment['ROS_DOMAIN_ID'] == '198'
     assert ctx.environment['ROS_AUTOMATIC_DISCOVERY_RANGE'] == 'LOCALHOST'
-    assert ctx.launch_configurations == {'gui': 'true', 'rviz': 'false', 'port': '8081'}
+    assert ctx.launch_configurations == {'gui': 'true', 'rviz': 'false', 'port': '8081',
+                                        'max_linear': '0.12', 'max_angular': '0.45'}
     child = next(a for a in actions if isinstance(a, IncludeLaunchDescription))
     args = {name: perform_substitutions(ctx, normalize_to_list_of_substitutions(value))
             for name, value in child.launch_arguments}
-    assert args == {'mode': 'sim', 'ros_domain_id': '198', 'gui': 'true', 'rviz': 'false'}
+    assert args == {'mode': 'sim', 'ros_domain_id': '198', 'gui': 'true', 'rviz': 'false',
+                    'max_linear': '0.12', 'max_angular': '0.45'}
     # The only process added here is the console; no CLI or goal sender exists.
     nodes = [a for a in actions if isinstance(a, Node)]
     assert len(nodes) == 1
