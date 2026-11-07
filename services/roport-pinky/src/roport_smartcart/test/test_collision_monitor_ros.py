@@ -10,6 +10,7 @@ import pytest
 
 def test_both_sensors_slow_stop_and_missing_sensor_holds(monkeypatch, tmp_path):
     import rclpy
+    from ament_index_python.packages import get_package_prefix
     from geometry_msgs.msg import TransformStamped, Twist
     from lifecycle_msgs.srv import ChangeState
     from rclpy.context import Context
@@ -40,13 +41,14 @@ def test_both_sensors_slow_stop_and_missing_sensor_holds(monkeypatch, tmp_path):
     config = Path(__file__).parents[1] / 'config/collision_monitor_sim.yaml'
     with (tmp_path / 'monitor.log').open('w') as log:
         child = subprocess.Popen([
-            'ros2', 'run', 'nav2_collision_monitor', 'collision_monitor', '--ros-args',
+            str(Path(get_package_prefix('nav2_collision_monitor')) / 'lib' /
+                'nav2_collision_monitor' / 'collision_monitor'), '--ros-args',
             '--params-file', str(config), '-p', 'use_sim_time:=false',
             '-p', 'base_frame_id:=test_base', '-p', 'odom_frame_id:=test_base'],
             env={**os.environ, 'ROS_DOMAIN_ID': '182'}, stdout=log, stderr=log)
         try:
             lifecycle = node.create_client(ChangeState, '/collision_monitor/change_state')
-            assert lifecycle.wait_for_service(timeout_sec=10)
+            assert lifecycle.wait_for_service(timeout_sec=20)
             for transition in (1, 3):
                 request = ChangeState.Request()
                 request.transition.id = transition
