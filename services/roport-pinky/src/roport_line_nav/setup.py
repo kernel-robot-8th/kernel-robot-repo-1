@@ -24,6 +24,7 @@ setup(
         'console_scripts': [
             'line_nav = roport_line_nav.line_nav_node:main',
             'cmd_vel_guard = roport_line_nav.cmd_vel_guard:main',
+            'status_indicator = roport_line_nav.status_indicator:main',
         ],
     },
 )
