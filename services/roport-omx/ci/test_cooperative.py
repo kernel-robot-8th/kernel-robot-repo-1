@@ -295,6 +295,26 @@ class CooperativeHostTest(unittest.TestCase):
         self.assertEqual(self.cmd(self.inbound())[0]["payload"]["phase"], "ACCEPTED")
         self.assertEqual(len(self.executor.tasks), 1)
 
+    def test_failed_save_of_result_holds_after_restart(self):
+        (accepted,) = self.cmd(self.inbound())
+        real_save = self.journal.save
+
+        def broken(data):
+            raise OSError("disk unavailable")
+
+        self.journal.save = broken
+        with self.assertRaises(StorageError):
+            self.host.poll()  # the completed event could not be recorded
+        self.journal.save = real_save
+        self.assertEqual(
+            [e["message_id"] for e in self.host.pending()], [accepted["message_id"]]
+        )
+        self.journal.close()
+        self.journal = Journal(self.path)
+        restarted = self.make_host()
+        self.assertEqual(restarted.hold, accepted["command_id"])
+        self.assertEqual(restarted.poll(), [])
+
     def test_journal_of_another_registration_is_refused(self):
         self.journal.close()
         self.journal = Journal(self.path)

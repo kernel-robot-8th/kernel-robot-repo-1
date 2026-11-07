@@ -130,11 +130,11 @@ def main() -> None:
             control=args.control,
             binding=args.binding,
         )
+        if args.clear_hold:
+            host.clear_hold()
     except (ValueError, StorageError) as exc:
         journal.close()
         parser.exit(2, f"{args.journal}: {exc}\n")
-    if args.clear_hold:
-        host.clear_hold()
     if host.hold:
         log.warning(
             "HOLD on command %s: new tasks are rejected until --clear-hold", host.hold
