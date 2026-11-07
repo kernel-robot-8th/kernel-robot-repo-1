@@ -16,10 +16,10 @@ def trial_launch(monkeypatch):
     return module
 
 
-def context(limit, linear=.03, line_speed=.03):
+def context(limit, linear=.03, line_speed=.03, line_rotate_speed=.15):
     ctx = LaunchContext()
     ctx.launch_configurations.update(max_angular=str(limit), max_linear=str(linear), robot='test_robot',
-                                    line_speed=str(line_speed),
+                                    line_speed=str(line_speed), line_rotate_speed=str(line_rotate_speed),
                                     map='/unused/map.yaml', layout_file='/unused/layout.yaml',
                                     params_file='/unused/params.yaml', ir_node='false')
     return ctx
@@ -36,7 +36,7 @@ def test_all_trial_velocity_sources_respect_requested_cap(trial_launch, limit, l
     smoother = nodes['velocity_smoother']['parameters'][1]
     assert line['max_linear'] == line['base_speed'] == line_speed
     assert controller['FollowPath.desired_linear_vel'] == linear
-    assert line['max_angular'] == line['rotate_speed'] == limit
+    assert line['max_angular'] == line['rotate_speed'] == .15
     assert controller['FollowPath.rotate_to_heading_angular_vel'] == limit
     assert behavior['min_rotational_vel'] == behavior['max_rotational_vel'] == limit
     assert smoother['max_velocity'] == [linear, 0., limit]
@@ -67,10 +67,29 @@ def test_invalid_linear_caps_fail_before_any_nodes_are_created(trial_launch, lin
     assert created == []
 
 
-@pytest.mark.parametrize('line_speed', [0., .019, .151, 'nan', 'inf', 'invalid'])
+@pytest.mark.parametrize('line_speed', [0., .019, .061, .08, .151, 'nan', 'inf', 'invalid'])
 def test_invalid_line_speeds_fail_before_any_nodes_are_created(trial_launch, line_speed, monkeypatch):
     created = []
     monkeypatch.setattr(trial_launch, 'Node', lambda **kwargs: created.append(kwargs))
     with pytest.raises(ValueError):
         trial_launch._nodes(context(.15, .12, line_speed))
+    assert created == []
+
+
+@pytest.mark.parametrize('rotation', [.15, .3, .4])
+def test_line_rotation_is_independent_of_nav2(trial_launch, rotation):
+    nodes = {n['executable']: n for n in trial_launch._nodes(
+        context(.45, .12, .06, rotation))}
+    line = nodes['line_nav']['parameters'][0]
+    assert line['rotate_speed'] == line['max_angular'] == rotation
+    assert nodes['controller_server']['parameters'][1][
+        'FollowPath.rotate_to_heading_angular_vel'] == .45
+
+
+@pytest.mark.parametrize('rotation', [0., .149, .401, 'nan', 'inf', 'invalid'])
+def test_invalid_line_rotation_fails_before_nodes(trial_launch, rotation, monkeypatch):
+    created = []
+    monkeypatch.setattr(trial_launch, 'Node', lambda **kw: created.append(kw))
+    with pytest.raises(ValueError, match='line_rotate_speed|convert'):
+        trial_launch._nodes(context(.45, line_rotate_speed=rotation))
     assert created == []

@@ -24,24 +24,27 @@ CONTROLLER_OVERRIDES = {
 
 def _nodes(context):
     line_speed = float(LaunchConfiguration('line_speed').perform(context))
-    if not math.isfinite(line_speed) or not .02 <= line_speed <= .15:
-        raise ValueError('line_speed must be finite and in [0.02, 0.15] m/s')
+    if not math.isfinite(line_speed) or not .02 <= line_speed <= .06:
+        raise ValueError('line_speed must be finite and in [0.02, 0.06] m/s')
     max_linear = float(LaunchConfiguration('max_linear').perform(context))
-    # Keep requested speeds within the existing line executor's hardware limits.
+    # Retain the existing Nav2 trial speed range.
     if not math.isfinite(max_linear) or not .02 <= max_linear <= .15:
         raise ValueError('max_linear must be finite and in [0.02, 0.15] m/s')
     max_angular = float(LaunchConfiguration('max_angular').perform(context))
-    # The line executor's existing rotation floor is .15 rad/s.
+    # Retain the existing Nav2 trial rotation range.
     if not math.isfinite(max_angular) or not .15 <= max_angular <= 1.5:
         raise ValueError('max_angular must be finite and in [0.15, 1.5] rad/s')
+    line_rotate_speed = float(LaunchConfiguration('line_rotate_speed').perform(context))
+    if not math.isfinite(line_rotate_speed) or not .15 <= line_rotate_speed <= .4:
+        raise ValueError('line_rotate_speed must be finite and in [0.15, 0.4] rad/s')
     config = LaunchConfiguration('params_file')
     nodes = [
         Node(package='roport_pinky', executable='trial_guard', output='screen'),
         Node(package='roport_line_nav', executable='line_nav', output='screen',
              parameters=[{'robot': LaunchConfiguration('robot'),
                           'layout_file': LaunchConfiguration('layout_file'), 'base_speed': line_speed,
-                          'max_linear': line_speed, 'max_angular': max_angular,
-                          'rotate_speed': max_angular}],
+                          'max_linear': line_speed, 'max_angular': line_rotate_speed,
+                          'rotate_speed': line_rotate_speed}],
              remappings=[('cmd_vel', 'line_nav/cmd_vel')]),
         Node(package='pinky_sensor_adc', executable='main_node', output='screen',
              condition=IfCondition(LaunchConfiguration('ir_node'))),
@@ -89,10 +92,12 @@ def generate_launch_description():
             DeclareLaunchArgument('ir_node', default_value='false'),
             DeclareLaunchArgument('line_speed', default_value='0.03',
                                   description='Line base speed and cap in m/s; match control route limit'),
+            DeclareLaunchArgument('line_rotate_speed', default_value='0.15',
+                                  description='Independent line rotation speed/cap, 0.15..0.4 rad/s'),
             DeclareLaunchArgument('max_linear', default_value='0.03',
                                   description='Nav2 controller/smoother cap in m/s'),
             DeclareLaunchArgument('max_angular', default_value='0.4',
-                                  description='Shared line/Nav2 cap in rad/s; use field-verified value'),
+                                  description='Nav2 rotation cap in rad/s; use field-verified value'),
             DeclareLaunchArgument('params_file', default_value=PathJoinSubstitution([
                 FindPackageShare('pinky_navigation'), 'params', 'nav2_params.yaml']))]
     return LaunchDescription(args + [OpaqueFunction(function=_nodes)])
