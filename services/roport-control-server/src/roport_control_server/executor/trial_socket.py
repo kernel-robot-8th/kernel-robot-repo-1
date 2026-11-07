@@ -111,16 +111,22 @@ class TrialSocket:
             or (request["action"] != "stop" and request["phase"] != state["phase"])
         ):
             raise ValueError("trial changed; refresh status before acting")
-        if request["action"] == "start":
-            self.control.start()
-        elif request["action"] == "dummy":
-            self.control.dummy(request["stop_session_id"])
-        elif request["action"] == "request":
-            self.control.request(request["items"])
-        else:
-            if state["phase"] == "COMPLETE":
-                raise ValueError("trial is already complete")
-            self.control.hold("operator_stopped")
+        try:
+            if request["action"] == "start":
+                self.control.start()
+            elif request["action"] == "dummy":
+                self.control.dummy(request["stop_session_id"])
+            elif request["action"] == "request":
+                self.control.request(request["items"])
+            else:
+                if state["phase"] == "COMPLETE":
+                    raise ValueError("trial is already complete")
+                self.control.hold("operator_stopped")
+        except (ConnectionError, TimeoutError) as exc:
+            self.control.hold("transport_outcome_unknown")
+            raise ValueError(
+                "transport_outcome_unknown; inspect before retrying"
+            ) from exc
         return self.snapshot()
 
     def _drop(self, client):
@@ -157,7 +163,7 @@ class TrialSocket:
             try:
                 raw = json.dumps(result, ensure_ascii=False, allow_nan=False).encode()
                 if len(raw) > 65536:
-                    raise ValueError("trial snapshot exceeds local message limit")
+                    raw = b'{"ok":false,"error":"trial snapshot exceeds local message limit"}'
                 client.send(raw)
             except OSError:
                 pass  # Never block the MQTT/lease loop on a disconnected viewer.

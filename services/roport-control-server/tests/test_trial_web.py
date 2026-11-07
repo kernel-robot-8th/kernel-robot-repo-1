@@ -203,6 +203,7 @@ def test_closed_socket_disables_actions_and_advances_age(local_owner):
     projector = view(channel.path)
     before = projector.snapshot()
     projector.socket_path = str(channel.path) + "-absent"
+    time.sleep(0.21)  # Snapshot reads share a bounded 200 ms cache.
     after = projector.snapshot()
     assert after["robots"][0]["stale"]
     assert after["robots"][0]["age"] >= before["robots"][0]["age"]
@@ -291,6 +292,7 @@ def test_real_mqtt_web_full_trial_and_exclusive_owner(tmp_path, broker, scope, s
         projector = view(channel)
         wait_until(lambda: projector.snapshot()["trial"]["can_start"], timeout=10)
         # Even another journal/socket must not create a second MQTT owner.
+        env["ROPORT_MQTT_HOST"] = "localhost"
         duplicate = start(
             [
                 *owner_args[:],
@@ -300,7 +302,9 @@ def test_real_mqtt_web_full_trial_and_exclusive_owner(tmp_path, broker, scope, s
                 str(tmp_path / "other.sock"),
             ]
         )
+        env["ROPORT_MQTT_HOST"] = "127.0.0.1"
         assert duplicate.wait(5) != 0
+        assert json.loads((tmp_path / "other.json").read_text())["phase"] == "READY"
         app = create_app(
             MAP, trial_socket=channel, trial_layout=LAYOUT, trial_token=TOKEN
         )
@@ -385,7 +389,7 @@ def test_real_mqtt_web_full_trial_and_exclusive_owner(tmp_path, broker, scope, s
                 record["command"]["type"] == "route.requested"
                 for record in robot_journal["records"].values()
             )
-        owner.send_signal(signal.SIGINT)
+        owner.send_signal(signal.SIGTERM if scope == "nav2" else signal.SIGINT)
         assert owner.wait(5) == 0
         assert not channel.exists()
     finally:
@@ -522,3 +526,213 @@ def test_two_robot_start_requires_both_start_nodes(tmp_path):
         assert transport.sent == []
     finally:
         journal.close()
+
+
+@pytest.mark.parametrize("failure", [TimeoutError, ConnectionError])
+@pytest.mark.parametrize("action", ["start", "dummy", "request"])
+def test_web_publish_failure_preserves_unknown_outcome(
+    local_owner, monkeypatch, failure, action
+):
+    client, control, _, transport = local_owner
+    state = deepcopy(control.state)
+    if action == "dummy":
+        state.update(phase="WAIT_CART_LOAD", gate={"stop_session_id": "current-gate"})
+        state["statuses"]["pinky1"]["node_id"] = "N11"
+    elif action == "request":
+        control.config = prepare_module.prepare(MAP, LAYOUT, simulation=True)
+        control.single_robot = False
+        state["phase"] = "WAIT_REQUEST"
+        state["statuses"]["pinky3"] = FakePinky(control.config, "smartcart").state
+        state["statuses"]["pinky3"]["boot_id"] = "boot-cart"
+        control.heard["pinky3"] = time.monotonic()
+    control.journal.save(state)
+    request = fence(client.get("/api/snapshot?mode=trial").json(), action)
+    attempts = []
+
+    def publish(destination, message):
+        attempts.append(message)
+        raise failure("simulated publish failure")
+
+    monkeypatch.setattr(transport, "publish", publish)
+    response = client.post("/api/trial/commands", headers=HEADERS, json=request)
+    assert response.status_code == 409
+    assert "transport_outcome_unknown" in response.text
+    assert len(attempts) == 1
+    assert control.state["phase"] == "HOLD"
+    assert control.state["fault"] == "transport_outcome_unknown"
+    assert control.state["active"]["command_id"] == attempts[0]["command_id"]
+    current = client.get("/api/snapshot?mode=trial").json()
+    assert current["trial"]["available"] and not current["trial"]["can_start"]
+    control.hold("operator_stopped")
+    assert control.state["fault"] == "transport_outcome_unknown"
+
+
+def test_socket_journal_failure_still_stops_owner(local_owner, monkeypatch):
+    client, control, channel, transport = local_owner
+    request = fence(client.get("/api/snapshot?mode=trial").json())
+
+    def save(_state):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(control.journal, "save", save)
+    with pytest.raises(OSError, match="disk failure"):
+        channel.dispatch({**request, "expires_at": time.time() + 1})
+    assert not transport.sent
+
+
+def test_large_snapshot_returns_error_without_killing_owner(local_owner, monkeypatch):
+    _, control, channel, _ = local_owner
+    projector = view(channel.path)
+    with monkeypatch.context() as patch:
+        patch.setattr(channel, "snapshot", lambda: {"oversize": "x" * 65536})
+        with pytest.raises(ValueError, match="message limit"):
+            projector.rpc({"action": "snapshot"})
+    assert projector.rpc({"action": "snapshot"})["state"]["phase"] == "READY"
+    assert control.state["fault"] is None
+
+
+@pytest.mark.parametrize(
+    "mode,url,peer,expected",
+    [
+        ("hardware", "http://127.0.0.1", "127.0.0.1", 200),
+        ("hardware", "http://localhost", "127.0.0.1", 200),
+        ("hardware", "http://[::1]", "::1", 200),
+        ("hardware", "https://control.example", "192.0.2.10", 200),
+        ("hardware", "http://control.example", "192.0.2.10", 403),
+        ("hardware", "http://control.example", "127.0.0.1", 403),
+        ("hardware", "http://localhost", "192.0.2.10", 403),
+        ("simulation", "http://control.example", "192.0.2.10", 200),
+    ],
+)
+def test_hardware_command_transport_boundary(local_owner, mode, url, peer, expected):
+    _, control, channel, transport = local_owner
+    control.config["mode"] = mode  # MemoryTransport only; no hardware is started.
+    app = create_app(
+        MAP, layout_path=LAYOUT, trial_socket=channel.path, trial_token=TOKEN
+    )
+    with TestClient(app, base_url=url, client=(peer, 12345)) as client:
+        request = fence(client.get("/api/snapshot?mode=trial").json())
+        response = client.post(
+            "/api/trial/commands",
+            json=request,
+            headers={
+                "origin": url,
+                "x-roport-trial-token": TOKEN,
+                "x-forwarded-proto": "https",
+            },
+        )
+        assert response.status_code == expected
+        assert len(transport.sent) == (1 if expected == 200 else 0)
+
+
+@pytest.mark.parametrize("peer,expected", [("127.0.0.1", 200), ("192.0.2.10", 403)])
+def test_hardware_https_proxy_must_be_trusted(local_owner, peer, expected):
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    _, control, channel, transport = local_owner
+    control.config["mode"] = "hardware"
+    app = ProxyHeadersMiddleware(
+        create_app(
+            MAP, layout_path=LAYOUT, trial_socket=channel.path, trial_token=TOKEN
+        ),
+        trusted_hosts=["127.0.0.1"],
+    )
+    with TestClient(
+        app, base_url="http://control.example", client=(peer, 12345)
+    ) as client:
+        request = fence(client.get("/api/snapshot?mode=trial").json())
+        response = client.post(
+            "/api/trial/commands",
+            json=request,
+            headers={
+                "origin": "https://control.example",
+                "x-roport-trial-token": TOKEN,
+                "x-forwarded-proto": "https",
+                "x-forwarded-for": "192.0.2.20",
+            },
+        )
+        assert response.status_code == expected
+        assert len(transport.sent) == (1 if expected == 200 else 0)
+
+
+def test_snapshot_reads_share_cache_and_commands_refresh(local_owner, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    _, _, channel, _ = local_owner
+    projector = view(channel.path)
+    calls = []
+    original = projector.rpc
+
+    def rpc(request):
+        calls.append(request["action"])
+        return original(request)
+
+    monkeypatch.setattr(projector, "rpc", rpc)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        snapshots = list(pool.map(lambda _: projector.snapshot(), range(20)))
+    assert calls == ["snapshot"]
+    assert len({s["revision"] for s in snapshots}) == 20
+    projector.command(fence(snapshots[-1]))
+    assert projector.snapshot()["trial"]["phase"] == "to_delivery"
+    assert calls == ["snapshot", "snapshot", "start", "snapshot"]
+    projector.socket_path += "-absent"
+    time.sleep(0.21)
+    assert not projector.snapshot()["trial"]["available"]
+    for _ in range(10):
+        assert not projector.snapshot()["trial"]["available"]
+    assert calls.count("snapshot") == 4
+
+
+def test_late_owner_snapshot_supplies_routes(local_owner):
+    _, _, channel, _ = local_owner
+    projector = view(str(channel.path) + "-absent")
+    assert projector.bootstrap()["trial_routes"] == []
+    projector.socket_path = str(channel.path)
+    assert (
+        projector.snapshot()["trial"]["routes"] == projector.bootstrap()["trial_routes"]
+    )
+    assert projector.snapshot()["trial"]["routes"]
+
+
+def test_startup_failure_keeps_unused_journal_ready_and_cleans_socket(
+    tmp_path, single_profile, monkeypatch
+):
+    from roport_control_server.executor import pinky_trial
+
+    profile = tmp_path / "trial.json"
+    profile.write_text(json.dumps(single_profile))
+    journal = tmp_path / "control.json"
+    channel = tmp_path / "s"
+    monkeypatch.setenv("ROPORT_MQTT_HOST", "127.0.0.1")
+    monkeypatch.setenv("ROPORT_MQTT_TLS", "0")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "trial",
+            "--config",
+            str(profile),
+            "--journal",
+            str(journal),
+            "--socket",
+            str(channel),
+        ],
+    )
+
+    class Unavailable(MemoryTransport):
+        def __init__(self, *_args):
+            super().__init__()
+
+        def start(self):
+            raise ConnectionError("broker unavailable")
+
+    monkeypatch.setattr(pinky_trial, "MqttTransport", Unavailable)
+    previous_handler = signal.getsignal(signal.SIGTERM)
+    for _ in range(2):
+        with pytest.raises(ConnectionError, match="broker unavailable"):
+            pinky_trial.main()
+        state = json.loads(journal.read_text())
+        assert state["phase"] == "READY" and state["fault"] is None
+        assert not channel.exists()
+        assert signal.getsignal(signal.SIGTERM) == previous_handler

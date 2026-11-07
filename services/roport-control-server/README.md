@@ -74,7 +74,7 @@ uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --por
 
 ### 접속·지도·운영
 
-현장 LAN의 다른 PC에서도 보려면 위 명령의 `--host`를 `0.0.0.0`으로 바꾸고 브라우저에서 `http://<서버-LAN-IP>:8000/ui/`를 엽니다. 방화벽은 허용된 현장 망으로 제한합니다. OFFLINE/DEMO 조회는 로그인 인증이 없고 TRIAL 조작 키도 운영 계정/권한 체계를 대체하지 않으며 인터넷 공개·운영 데이터 연결 전 인증/권한·HTTPS/WSS 또는 VPN이 필요합니다. FastAPI와 화면을 같은 origin으로 제공해 별도 CORS 허용이 필요 없습니다.
+현장 LAN의 다른 PC에서도 보려면 위 명령의 `--host`를 `0.0.0.0`으로 바꾸고 브라우저에서 `http://<서버-LAN-IP>:8000/ui/`를 엽니다. 방화벽은 허용된 현장 망으로 제한합니다. 실물 시험의 원격 조작은 HTTPS로만 허용하고 HTTP LAN 접속은 조회만 가능합니다. OFFLINE/DEMO 조회는 로그인 인증이 없고 TRIAL 조작 키도 운영 계정/권한 체계를 대체하지 않으며 인터넷 공개·운영 데이터 연결 전 인증/권한·HTTPS/WSS 또는 VPN이 필요합니다. FastAPI와 화면을 같은 origin으로 제공해 별도 CORS 허용이 필요 없습니다.
 
 상태 WebSocket은 **worker당 OFFLINE/DEMO/TRIAL 합계 8개**로 제한합니다. 초과 접속은 handshake 전에 거절되므로 실제 HTTP 응답은 403이며 브라우저는 기존 재접속 정책을 따릅니다. 연결 종료·오류 시 송수신 작업을 정리하고 자리를 반환합니다. 현재는 worker 1개로 운영하며, 8개는 AI 병행 부하를 보장하는 측정값이 아닌 임시 상한입니다. HTTP 요청·IP별 제한은 포함하지 않습니다.
 

@@ -17,9 +17,26 @@ test(`${scenario}/${scope}: trial UI completes real MQTT simulation, reconnects 
     });
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
+    await page.addInitScript(() => {
+      window.routeLineDraws = 0;
+      for (const method of ['drawArrays', 'drawElements']) {
+        const draw = WebGL2RenderingContext.prototype[method];
+        WebGL2RenderingContext.prototype[method] = function (...args) {
+          if (args[0] === this.LINE_STRIP) window.routeLineDraws++;
+          return draw.apply(this, args);
+        };
+      }
+    });
+    // Reproduce opening the page before the owner supplies its routes.
+    await page.route('**/api/bootstrap*', async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      await route.fulfill({response, json: {...data, trial_routes: []}});
+    });
     await page.goto(`${url}/ui/`);
     await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
     await expect(page.locator('#trial-phase')).toHaveText('출발 대기');
+    await expect.poll(() => page.evaluate(() => window.routeLineDraws)).toBeGreaterThan(0);
     await expect(page.locator('.robot')).toHaveCount(6);
     await expect(page.locator('#map-name')).toContainText('실측 v14');
     await expect(page.locator('[data-robot=omx1]')).toContainText('설치 배치');
@@ -87,3 +104,22 @@ test(`${scenario}/${scope}: trial UI completes real MQTT simulation, reconnects 
 });
 }
 }
+
+test('hardware UI blocks key entry over remote HTTP', async ({ page }) => {
+  await page.route('http://control.example/**', async (route) => {
+    const url = new URL(route.request().url());
+    url.host = '127.0.0.1:18765';
+    await route.fulfill({ response: await route.fetch({ url: url.href }) });
+  });
+  await page.goto('http://control.example/ui/?mode=offline');
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+  await page.evaluate(async () => {
+    const { renderTrial } = await import('/ui/trial.js');
+    document.getElementById('trial-key').value = 'test-only-operation-key';
+    renderTrial({ robots: [], trial: {mode: 'hardware', available: true, can_start: true, phase: 'READY'} });
+  });
+  await expect(page.locator('#trial-key')).toBeDisabled();
+  await expect(page.locator('#trial-key')).toHaveValue('');
+  await expect(page.locator('#trial-readiness')).toContainText('HTTPS');
+  await expect(page.locator('[data-action="start"]')).toBeDisabled();
+});

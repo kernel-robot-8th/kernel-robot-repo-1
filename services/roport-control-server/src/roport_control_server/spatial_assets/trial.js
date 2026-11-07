@@ -6,8 +6,12 @@ const buttons = [...panel.querySelectorAll("button[data-action]")];
 let state, connected = false, pending = false;
 
 function enable() {
+  const local = location.hostname === "localhost" || location.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(location.hostname);
+  const insecure = state?.mode === "hardware" && location.protocol !== "https:" && !local;
+  key.disabled = insecure;
+  if (insecure) key.value = "";
   for (const button of buttons) {
-    button.disabled = !connected || pending || !key.value ||
+    button.disabled = insecure || !connected || pending || !key.value ||
       !state?.[`can_${button.dataset.action}`];
   }
   const reasons = {
@@ -17,6 +21,7 @@ function enable() {
     "MQTT subscriptions not ready": "MQTT 연결 대기 중입니다.",
   };
   document.getElementById("trial-readiness").textContent = !connected ? "실행부 연결 대기 · 조작 비활성"
+    : insecure ? "실물 조작은 로컬 주소 또는 HTTPS로 접속하세요."
     : state?.start_error ? reasons[state.start_error] ?? state.start_error
     : !key.value ? "조작 키를 입력하면 현재 단계에서 가능한 버튼이 활성화됩니다."
     : state?.can_start ? "출발 가능 · 시나리오 출발 버튼을 누르세요."

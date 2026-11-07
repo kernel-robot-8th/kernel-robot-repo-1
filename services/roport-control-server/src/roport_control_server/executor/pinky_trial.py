@@ -12,9 +12,13 @@ import json
 import math
 import os
 import selectors
+import signal
+import socket
 import sys
+from contextlib import ExitStack
 from copy import deepcopy
 from datetime import UTC, datetime
+from ipaddress import ip_address
 from pathlib import Path
 from queue import Empty
 from time import monotonic
@@ -565,7 +569,14 @@ def main():
     selector = selectors.DefaultSelector()
     if not args.socket:
         selector.register(sys.stdin, selectors.EVENT_READ)
-    web = owner = None
+    web = None
+    owner = ExitStack()
+    started = False
+
+    def terminate(_signal, _frame):
+        raise KeyboardInterrupt
+
+    previous_sigterm = signal.signal(signal.SIGTERM, terminate)
     try:
         # Different journals must not let CLI and web owners evict each other in MQTT.
         lock_dir = (
@@ -573,16 +584,26 @@ def main():
             / "roport/trial-owners"
         )
         lock_dir.mkdir(parents=True, exist_ok=True)
-        identity = hashlib.sha256(
-            json.dumps(
-                [connection.host, connection.port, config["control_id"]]
-            ).encode()
-        ).hexdigest()
-        owner = (lock_dir / (identity + ".lock")).open("a")
-        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        addresses = {connection.host}
+        for *_, address in socket.getaddrinfo(
+            connection.host, connection.port, type=socket.SOCK_STREAM
+        ):
+            ip = ip_address(address[0])
+            ip = getattr(ip, "ipv4_mapped", None) or ip
+            addresses.add(str(ip))
+            if ip.is_loopback:
+                addresses.update({"localhost", "127.0.0.1", "::1"})
+        # Lock each resolved endpoint so aliases cannot create a second owner.
+        for address in sorted(addresses):
+            identity = hashlib.sha256(
+                json.dumps([address, connection.port, config["control_id"]]).encode()
+            ).hexdigest()
+            lock = owner.enter_context((lock_dir / (identity + ".lock")).open("a"))
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if args.socket:
             web = TrialSocket(args.socket, control)
         transport.start()
+        started = True
         if web:
             print(
                 "Trial web owner ready; waiting for explicit operator commands.",
@@ -636,16 +657,16 @@ def main():
         pass
     finally:
         try:
-            if control.state["phase"] != "COMPLETE":
+            if started and control.state["phase"] != "COMPLETE":
                 control.hold("operator_stopped")
         finally:
             transport.stop()
             if web:
                 web.close()
-            if owner:
-                owner.close()
+            owner.close()
             journal.close()
             selector.close()
+            signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

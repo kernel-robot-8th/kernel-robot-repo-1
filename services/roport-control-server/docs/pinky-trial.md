@@ -373,8 +373,8 @@ uv run python -m roport_control_server.executor.pinky_trial \
 관제 코드에서 연결하며 통합관제·Pinky 탭은 같은 수신 상태와 조작 패널을 사용한다. Pinky PR #35·새 MQTT 키트·trial-v1 메시지는 그대로 쓴다.
 API와 실행부는 같은 Linux PC에서 **Unix 소켓(SOCK_SEQPACKET)**으로 연결한다. 운영 DB를 대신 구현하지 않으며 JSON 이력은 시험 전용이다.
 
-1. 기존 CLI는 정지 상태를 확인한 뒤 종료한다. 같은 시험을 두 실행부로 운영하지 않는다. 동일 journal은 파일 잠금, 동일 브로커/control ID는 로컬 소유권 잠금으로 중복을 거부한다.
-2. 7.3의 동일 hardware 설정·브로커 환경·현장 확인을 준비한다. 핑키 수신기 실행 방법은 그대로다. 아래는 각 터미널에서 `services/roport-control-server` 기준이다.
+1. 기존 CLI는 정지 상태를 확인한 뒤 종료한다. 같은 시험을 두 실행부로 운영하지 않는다. 동일 journal은 파일 잠금, 동일 브로커/control ID는 로컬 소유권 잠금으로 중복을 거부한다. DNS로 확인한 각 IP와 loopback 별칭(`localhost`/`127.0.0.1`/`::1`)도 함께 잠근다. DNS 대상이 바뀌는 운영 환경은 고정 브로커 주소를 사용한다.
+2. 7.3의 동일 hardware 설정·브로커 환경·현장 확인을 준비한다. Pinky runner·trial_guard를 먼저 준비한 뒤 관제 실행부를 켠다. 초기 상태에 fault가 있으면 기존대로 HOLD한다. 아래는 각 터미널에서 `services/roport-control-server` 기준이다.
 
 관제 실행부 터미널(기존 CLI 명령에 `--socket` 추가):
 
@@ -402,10 +402,14 @@ uv run uvicorn roport_control_server.adapters.api.app:app \
 
 - 지도·OMX 설치 배치·탭은 기존 UI를 유지한다. Pinky는 고정 3자리 중 trial.json에 배정된 기체만 제어하고, 미배정 자리와 OMX 상태는 미수신으로 표시한다. 화면의 등록 편집기로 실기 시험 binding을 변경하지 않는다.
 - 화면을 닫거나 API만 재시작해도 실행부는 계속된다. 새로 열면 같은 작업 상태를 받는다. 실행부 재시작은 기존 HOLD 규칙을 유지한다. 기존 journal에 HOLD가 있으면 웹에서도 자동 출발/초기화하지 않는다.
-- `시험 중단 (보류)`는 후속 명령·lease 갱신을 막는다. 즉시 물리 정지를 보증하는 비상정지 버튼이 아니다. 실제 정지는 Pinky watchdog·현장 정지 장치로 확인한다.
+- `시험 중단 (보류)`는 후속 명령·lease 갱신을 막으며 조작 키가 필요하다. 무인증 중단 허용은 팀 권한 정책 확정 전까지 적용하지 않는다. 즉시 물리 정지를 보증하는 비상정지 버튼이 아니다. 실제 정지는 Pinky watchdog·현장 정지 장치로 확인한다.
 - 마지막 수신 노드의 실측 좌표와 방향만 표시한다. 이동 중 연속 x/y·바퀴 회전은 만들지 않는다. Nav2 이동 중 좌표는 미수신으로 표시하고 완료 응답의 pose만 표시한다. 화면 지도 해시/노드 그래프가 시험과 다르면 표시·출발·더미 승인을 막는다.
 - `mode=demo`는 기존 화면별 모의 재생이고 `mode=trial`은 실제 MQTT 시험이다. 가상 시험도 동일 TRIAL UI를 사용하되 `single/simulation` 또는 `two/simulation`·loopback 브로커·`mock_pinky_trial.py`를 사용한다. 실물용 실행부와 연결하지 않는다.
-- 소켓은 사용자 전용 권한으로 만들고 정상 종료 시 제거한다. 강제 종료로 파일이 남으면 소유 프로세스 종료를 확인한 뒤 소켓 파일만 정리한다. 실행 중 소켓이나 journal을 삭제해 잠금/복구를 우회하지 않는다. Unix 소켓 경로는 107바이트 이하로 사용한다.
+- 소켓은 사용자 전용 권한으로 만들고 Ctrl+C/SIGTERM 종료 시 제거한다. SIGKILL·전원 차단으로 파일이 남으면 소유 프로세스 종료를 확인한 뒤 소켓 파일만 정리한다. 실행 중 소켓이나 journal을 삭제해 잠금/복구를 우회하지 않는다. Unix 소켓 경로는 107바이트 이하로 사용한다.
+
+실물(`mode=hardware`) 명령은 **접속자와 URL 모두 loopback이거나 서버가 HTTPS로 인식한 요청**만 허용한다. 원격 HTTP는 조회만 가능하며 키 입력/조작을 차단한다. HTTPS 프록시에서는 외부 Host/Origin을 유지하고 Uvicorn이 신뢰할 프록시 주소만 `--forwarded-allow-ips`에 지정한다. 클라이언트가 보낸 `X-Forwarded-Proto`만으로 우회할 수 없다. HTTPS로 접속하기 전에 키를 입력하지 않는다.
+
+레이아웃은 `ROPORT_MAP_LAYOUT`이 우선이며 미설정 시 기존 `ROPORT_TRIAL_LAYOUT`을 사용한다. HTTP/WS 상태 조회는 worker당 최대 200ms 캐시를 공유하고 명령 판단은 실행부에서 새로 조회한다. 실행부가 늦게 연결되어도 상태 수신 후 경로선을 복원한다. 기동 중 잠금·소켓·브로커 준비에 실패한 미출발 READY 이력은 유지하며, 구동이 시작된 이력이나 기존 HOLD는 이 규칙으로 초기화하지 않는다.
 
 HOLD의 최초 오류는 이후 운영자 종료·브로커 종료로 덮어쓰지 않는다. 오류가 있는 status 응답도 관측 정보로 저장하지만 완료·진행 성공 응답의 오류는 계속 거부한다. HOLD에서는 lease 갱신을 재개하지 않는다.
 

@@ -42,15 +42,27 @@ function installationPose(mount) {
   return [...new THREE.Vector3(...mount.edge_center).add(offset), Math.atan2(Math.sin(mount.yaw), Math.cos(mount.yaw))];
 }
 
+let trialNodes, trialRouteKey;
+const trialRouteObjects = [];
 function makeTrialRoutes(config) {
+  const key = JSON.stringify(config.trial_routes);
+  if (key === trialRouteKey) return;
+  trialRouteKey = key;
+  for (const line of trialRouteObjects.splice(0)) {
+    views.map.scene.remove(line);
+    line.geometry.dispose();
+    line.material.dispose();
+  }
   for (const route of config.trial_routes) {
     const points = route.map((id) => new THREE.Vector3(...config.trial_nodes[id], 0.015));
-    views.map.scene.add(new THREE.Line(
+    const line = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(points),
       new THREE.LineBasicMaterial({color: 0x257164}),
-    ));
+    );
+    views.map.scene.add(line);
+    trialRouteObjects.push(line);
   }
-
+  views.map.dirty = true;
 }
 
 function text(tag, value, className = "") {
@@ -68,7 +80,8 @@ function view(element) {
   scene.add(light);
   const camera = new THREE.PerspectiveCamera(42, 1, 0.005, 300);
   camera.up.set(0, 0, 1);
-  // Keep the last frame while a stationary robot needs no redraw.
+  // Retain unchanged previews for canvas readback in browser regression checks.
+  // This trades buffer memory for the dirty-only rendering loop below.
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -276,7 +289,10 @@ function updateDetails() {
 function receive(raw) {
   try {
     const data = JSON.parse(raw);
-    if (trial) renderTrial(data);
+    if (trial) {
+      renderTrial(data);
+      if (data.trial?.available) makeTrialRoutes({trial_routes: data.trial.routes, trial_nodes: trialNodes});
+    }
     rows = data.robots;
     for (const row of rows) {
       const id = row.robot_id,
@@ -375,7 +391,10 @@ async function start(config) {
     : "map · m / rad · 벽 높이는 표시용";
   if (config.map.layout) document.querySelector(".map-note").textContent = "실측 지도 · 점유셀 돌출 표시 · 설치 배치는 기준값";
   if (demo && !config.example_map) document.querySelector(".map-note").textContent += " · 움직임은 예시 경로";
-  if (trial) makeTrialRoutes(config);
+  if (trial) {
+    trialNodes = config.trial_nodes;
+    makeTrialRoutes(config);
+  }
   const loader = new GLTFLoader();
   await Promise.all(
     ["pinky", "omx"].map(async (type) => {

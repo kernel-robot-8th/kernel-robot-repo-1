@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Literal
 
@@ -20,6 +21,13 @@ from .trial import TrialView
 MAX_JSON_BYTES = 4096
 
 ASSETS = Path(__file__).resolve().parents[2] / "spatial_assets"
+
+
+def loopback(host):
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def create_app(
@@ -170,8 +178,22 @@ def create_app(
         if error:
             return error
         try:
-            await asyncio.to_thread(trial.command, data)
+            await asyncio.to_thread(
+                trial.command,
+                data,
+                secure_transport=request.url.scheme == "https"
+                or (
+                    request.client is not None
+                    and loopback(request.client.host)
+                    and (
+                        request.url.hostname == "localhost"
+                        or loopback(request.url.hostname)
+                    )
+                ),
+            )
             return {"accepted": True}
+        except PermissionError as exc:
+            return JSONResponse({"detail": str(exc)}, 403)
         except ValueError as exc:
             return JSONResponse({"detail": str(exc)}, 409)
         except OSError:

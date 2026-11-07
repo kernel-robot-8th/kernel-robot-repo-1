@@ -6,6 +6,7 @@ import secrets
 import socket
 import time
 from copy import deepcopy
+from threading import Lock
 from uuid import uuid4
 
 from .display import ROBOTS
@@ -38,6 +39,9 @@ class TrialView:
         self.session = str(uuid4())
         self.revisions = itertools.count(1)
         self.last = None
+        self._snapshot_lock = Lock()
+        self._next_snapshot = 0.0
+        self._available = False
         self.map_id, self.map_version = grid["id"], grid["version"]
         self.graph_version = grid["layout"]["graph_version"]
         self.nodes = {n["id"]: n["position"] for n in grid["layout"]["nodes"]}
@@ -72,13 +76,24 @@ class TrialView:
             and {k: sorted(v) for k, v in config["nodes"].items()} == self.graph
         )
 
-    def command(self, request):
+    def command(self, request, *, secure_transport=False):
         if not isinstance(request, dict) or "expires_at" in request:
             raise ValueError("invalid trial request")
-        snapshot = self.rpc({"action": "snapshot"})
-        if not self.compatible(snapshot["config"]) and request.get("action") != "stop":
-            raise ValueError("trial map/graph mismatch; commands disabled")
-        return self.rpc({**request, "expires_at": time.time() + 0.8})
+        with self._snapshot_lock:
+            try:
+                snapshot = self.rpc({"action": "snapshot"})
+                if snapshot["config"]["mode"] == "hardware" and not secure_transport:
+                    raise PermissionError(
+                        "실물 조작은 로컬 주소 또는 HTTPS에서만 가능합니다."
+                    )
+                if (
+                    not self.compatible(snapshot["config"])
+                    and request.get("action") != "stop"
+                ):
+                    raise ValueError("trial map/graph mismatch; commands disabled")
+                return self.rpc({**request, "expires_at": time.time() + 0.8})
+            finally:
+                self._next_snapshot = 0.0
 
     def bootstrap(self):
         result = {
@@ -103,13 +118,19 @@ class TrialView:
         return result
 
     def snapshot(self):
-        available, error = True, None
-        try:
-            data = self.rpc({"action": "snapshot"})
-            self.last = (data, time.monotonic())
-        except (OSError, ValueError, KeyError):
-            available, error = False, "시험 실행부 미연결 · 조작 비활성"
-        data, received = deepcopy(self.last) if self.last else (None, None)
+        with self._snapshot_lock:
+            if time.monotonic() >= self._next_snapshot:
+                try:
+                    data = self.rpc({"action": "snapshot"})
+                    self.last = (data, time.monotonic())
+                    self._available = True
+                except (OSError, ValueError, KeyError):
+                    self._available = False
+                # Share reads and failed probes across HTTP/WS viewers in this worker.
+                self._next_snapshot = time.monotonic() + 0.2
+            available = self._available
+            data, received = deepcopy(self.last) if self.last else (None, None)
+        error = None if available else "시험 실행부 미연결 · 조작 비활성"
         rows, tasks, trial = [], [], None
         if data:
             state, config = data["state"], data["config"]
@@ -202,6 +223,9 @@ class TrialView:
                 "can_request": safe_wait and not single and phase == "WAIT_REQUEST",
                 "can_stop": available and phase not in {"COMPLETE", "HOLD"},
                 "route": (state["active"] or {}).get("payload", {}).get("route", []),
+                "routes": [r["route"] for r in config["routes"].values()]
+                if matches
+                else [],
             }
             tasks = [
                 {
