@@ -40,9 +40,12 @@ Nav2 smoother ──trial/nav2_cmd_vel──> trial_guard ──cmd_vel──> m
 ```bash
 ros2 launch roport_pinky trial.launch.py robot:=REPLACE_WITH_ROBOT_NAME \
   map:=/absolute/path/airport_map.yaml \
-  layout_file:=/absolute/path/roport_airport.yaml
+  layout_file:=/absolute/path/roport_airport.yaml \
+  max_angular:=0.15
 # IR 노드도 이 launch에서 실행할 경우에만 ir_node:=true
 ```
+
+`max_angular`는 Nav2 controller·behavior·velocity smoother의 회전 상한(0.15~1.5 rad/s, 기본0.4)이다. 라인은 별도 `line_rotate_speed`로 제자리 회전 속도·상한을 정한다(0.15~0.4 rad/s, 기본0.15). Nav2 회전을 올려도 라인은 따라 빨라지지 않는다. 기본값은 각 기체의 현장 승인값을 대신하지 않는다. `line_speed`는 라인 기본 속도·병진 상한으로 0.02~0.06 m/s, `max_linear`는 Nav2 상한으로 0.02~0.15 m/s다(둘 다 기본0.03). 라인0.06·Nav2 0.12 m/s 시험에는 `line_speed:=0.06 max_linear:=0.12`를 추가하고 관제 경로의 `speed_limit_mps`도0.06으로 맞춘다. 더 낮은 관제 제한은 계속 준수한다. 노드 감속은 공용 라인 실행부 설정을 따르며 이 launch가 구현하지 않는다.
 
 5. 새 키트를 실행한다. `broker.env`의 host는 **관제 브로커 PC** 주소이며 Pinky IP를 명령마다 넣지 않는다. 키트 venv에는 ROS 패키지를 사용할 수 있도록 `--system-site-packages`와 paho-mqtt 2.1.0이 필요하다.
 
@@ -79,7 +82,9 @@ cd /path/to/kit
 
 이 ROS 상태는 MQTT trial-v1 스키마를 바꾸지 않습니다. MQTT 응답의 `localization_ready`·`stopped`와 Nav2 완료 판정에 반영합니다. 위치 유효성과 실제 정지는 서로 별도 조건입니다.
 
-trial launch는 `PoseProgressChecker`를 사용해 **15초 안에 0.05m 이동 또는 0.15rad 회전**을 진척으로 판정합니다. 0.03m/s 저속·제자리 회전을 허용하면서 완전히 막힌 상태는 실패시킵니다. controller와 velocity smoother의 직진 속도도 0.03m/s로 맞춥니다. 원본 Pinky Nav2 설정 파일은 수정하지 않습니다.
+trial launch는 `PoseProgressChecker`를 사용해 **15초 안에 0.05m 이동 또는 0.15rad 회전**을 진척으로 판정합니다. 0.03m/s 저속·제자리 회전을 허용하면서 완전히 막힌 상태는 실패시킵니다. controller와 velocity smoother의 직진 속도는 `max_linear`로 맞춥니다. 원본 Pinky Nav2 설정 파일은 수정하지 않습니다.
+
+Pi에서 경로 재계산 중 `follow_path` 목표 수락 응답이 기본 20ms를 넘으면 전체 목표가 실패할 수 있어, trial의 `bt_navigator.default_server_timeout`은 500ms로 지정합니다. 지도 경계 가까운 공용공간 시험점의 주변 검색이 지도 밖을 조회하지 않도록 `planner_server.GridBased.tolerance`는 0.1m로 제한합니다. 이 값은 플래너의 대체 도착점 검색 범위이며, 실제 정지·목표 오차·독립 구동 감시의 완료 조건은 유지합니다.
 
 ## 검증 범위
 

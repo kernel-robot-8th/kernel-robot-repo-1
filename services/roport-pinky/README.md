@@ -36,6 +36,8 @@ python3 -c "import roport_pinky; import rclpy"
 
 팀 패키지 중 실행 노드는 IR 라인 추종 노드 v0([src/roport_pinky_line/](src/roport_pinky_line/), `cmd_vel` 발행, 실로봇 1~3단계 시험 2026-11-03)와 노드 경로 주행([src/roport_line_nav/](src/roport_line_nav/), 물류·스마트카트 공용, 실로봇 미검증)입니다. 스마트카트 작업 위치는 [src/roport_smartcart/](src/roport_smartcart/)입니다. 아래 원본 Pinky Pro에는 실장비 실행 코드가 포함돼 있습니다.
 
+`roport_smartcart`의 작업 계획과 오프라인 검증 구성은 [src/roport_smartcart/](src/roport_smartcart/README.md)에 있습니다. 자동 주행 실행 노드는 아직 없습니다. 아래 원본 Pinky Pro에는 실장비 실행 코드가 포함돼 있습니다.
+
 ## 시연 공간 Gazebo world
 
 [src/roport_gz_world/](src/roport_gz_world/README.md)는 시연 공간 실측 배치(v14)를 Gazebo world로 만든 패키지입니다.

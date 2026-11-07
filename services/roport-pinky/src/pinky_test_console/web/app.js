@@ -235,7 +235,7 @@ $("btnModeInit").addEventListener("click", () => setClickMode("initialpose"));
 function updateNavStatus(navigating) {
   $("navStatusDot").classList.toggle("active", navigating);
   $("navStatusText").textContent = navigating ? "주행 중 (Navigating)" : "대기 중 (Idle)";
-  $("btnNavStop").disabled = !navigating;
+  $("btnNavStop").disabled = !navigating || info.teleop_enabled === false;
 }
 
 $("btnNavStop").addEventListener("click", async () => {
@@ -659,7 +659,8 @@ async function init() {
     const res = await fetch("api/info");
     info = await res.json();
   } catch (_) { /* 기본값 사용 */ }
-  $("modeChip").textContent = "mode: " + info.mode;
+  $("modeChip").textContent = (info.use_sim_time ? "Gazebo 시뮬레이션 · " : "") + "mode: " + info.mode;
+  if (info.use_sim_time) document.title = "스마트카트 Gazebo 주행";
   $("teleopHint").textContent =
     `누르고 있는 동안 / WASD·방향키 (최대 ${info.max_linear} m/s, ${info.max_angular} rad/s). ` +
     `손을 떼면 정지, 입력이 ${info.deadman_sec} s 끊기면 서버가 자동 정지.`;
@@ -668,6 +669,14 @@ async function init() {
   $("slamCard").classList.toggle("dim", info.mode === "nav");
   if (info.mode === "slam") {
     $("mapHint").textContent = "SLAM 모드: 조종 패드/키보드로 천천히 돌며 지도를 만든 뒤 Save Map.";
+  }
+  if (info.teleop_enabled === false) {
+    setClickMode("initialpose");
+    $("btnEstop").disabled = true;
+    $("btnEstop").textContent = "웹 정지 사용 불가";
+    $("teleopHint").textContent = "수동 구동 꺼짐 · 현장 정지 수단을 사용하세요";
+    $("mapHint").textContent = "주행 목표 전송 불가 · 지도/초기 위치 확인 모드";
+    document.querySelectorAll(".pad-btn, #btnModeGoal, #btnNavStop").forEach((button) => { button.disabled = true; });
   }
   refreshMaps();
 }

@@ -1,0 +1,51 @@
+# SIMULATION ONLY. Candidate closer stop poses for v14 map; not surveyed robot stop poses.
+# Gate targets are 0.25 m in front of proposed wall marker positions.
+environment: sim
+map:
+  frame: map
+  yaml_sha256: 25f94c8512d99adc41e6f3b59b4136cace3909d82e7b41875045e77d0531ffda
+  image_sha256: 0f57d726d0ec781cfbfb78a6bcc7272ccdb643a6cbb60afd54802958c3ef8e0c
+places:
+  home:
+    measured: true
+    pose:
+    - 0.3
+    - -0.3
+    - 0.0
+    marker_id: null
+  handoff_n12:
+    measured: true
+    pose:
+    - 2.234217
+    - -1.283947
+    - 0.001745
+    marker_id: null
+  gate1:
+    measured: true
+    pose:
+    - 0.112887
+    - -0.810648
+    - -3.139847
+    marker_id: 8
+  gate2:
+    measured: true
+    pose:
+    - 0.112226
+    - -0.431649
+    - -3.139847
+    marker_id: 9
+  # Keep 5 cm lateral clearance from the upper corner for the final turn.
+  gate3:
+    measured: true
+    pose:
+    - 0.111423
+    - -0.021649
+    - -3.139847
+    marker_id: 10
+  arrival:
+    measured: true
+    pose:
+    - 2.616503
+    - -0.015277
+    - 0.001745
+    marker_id: 27

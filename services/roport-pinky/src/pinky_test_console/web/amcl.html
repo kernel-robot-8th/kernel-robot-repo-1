@@ -5,9 +5,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pinky AMCL 테스트</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=map-view-2">
 </head>
-<body class="ir-page">
+<body class="ir-page amcl-page">
 
 <header id="topbar">
   <div class="brand">Pinky Pro <span>AMCL 테스트</span></div>
@@ -20,14 +20,23 @@
 
 <div id="main">
   <div id="left">
-    <section class="panel-card">
+    <section class="panel-card am-map-card">
       <div class="section-title"><span>지도 · 라이다 스캔 (초록 ≤ 5 cm, 노랑 ≤ 10 cm, 빨강 = 벽과 안 맞음)</span></div>
-      <canvas id="amclCanvas" class="am-canvas" width="920" height="530"></canvas>
+      <div class="am-map-tools">
+        <button id="mapExpand" class="btn btn-outline btn-small" type="button" aria-pressed="false">지도만 크게</button>
+        <button id="mapZoomOut" class="btn btn-outline btn-small" type="button" aria-label="지도 축소">−</button>
+        <span id="mapZoomLabel" class="chip" aria-live="polite">100%</span>
+        <button id="mapZoomIn" class="btn btn-outline btn-small" type="button" aria-label="지도 확대">＋</button>
+        <button id="mapFit" class="btn btn-outline btn-small" type="button">전체 지도</button>
+      </div>
+      <div class="am-map-viewport">
+        <canvas id="amclCanvas" class="am-canvas" width="920" height="530"></canvas>
+      </div>
       <div class="status-msg err" id="amclError" role="status"></div>
       <div class="tiny-note">파란 화살표 = AMCL 위치, 원 = 위치 표준편차(1σ). 주황 점 = 배치 yaml 노드(N12 = Nav2 전환). 위 = 창가, 아래 = 통로.</div>
     </section>
 
-    <section class="panel-card">
+    <section class="panel-card am-instructions">
       <div class="section-title"><span>시험 순서 (03 공용 내부공간 + N12)</span></div>
       <ol class="ir-steps">
         <li><b>준비</b>: 터미널 1에서 bringup(라이다·바퀴), 터미널 2에서 <code>mode:=amcl</code> 콘솔. 이 모드는 Nav2 주행을 띄우지 않아 로봇이 스스로 움직이지 않습니다.</li>
@@ -90,6 +99,6 @@
   </div>
 </div>
 
-<script src="amcl.js"></script>
+<script src="amcl.js?v=map-view-2"></script>
 </body>
 </html>

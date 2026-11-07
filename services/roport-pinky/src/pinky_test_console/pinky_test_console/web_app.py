@@ -27,7 +27,7 @@ from .route_view import RouteCommandError, parse_route_command, plan_via
 STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js',
                 'marker.html', 'marker.js', 'amcl.html', 'amcl.js', 'route.html', 'route.js',
                 'routemap.js', 'fleet.html', 'fleet.js', 'settings.html', 'settings.js',
-                'test.html', 'test.js'}
+                'test.html', 'test.js', 'smartcart.html', 'smartcart.js'}
 POSE_CM_LIMIT = 1000.0   # 실측 좌표 입력 허용 범위(cm, 시연 공간 444.5 x 221)
 
 SECURITY_HEADERS = {
@@ -94,6 +94,10 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
     """
     app = Flask(__name__, static_folder=None)
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024
+
+    @app.errorhandler(PermissionError)
+    def _drive_disabled(exc):
+        return jsonify({'success': False, 'msg': str(exc)}), 403
 
     @app.errorhandler(BadRequest)
     def _bad_request(e):
@@ -307,6 +311,20 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
                                    as_attachment=True, mimetype='text/csv')
 
     # ---------------- AMCL 정합 확인 ----------------
+    @app.route('/api/smartcart')
+    def api_smartcart():
+        return jsonify(node.smartcart_snapshot())
+
+    @app.route('/api/smartcart/initialpose', methods=['POST'])
+    def api_smartcart_initialpose():
+        data = _json_body()
+        try:
+            ok = node.smartcart_initial_pose(data.get('node'), data.get('yaw_deg'),
+                                             data.get('placement_confirmed'))
+        except AmclCheckError as exc:
+            return jsonify({'success': False, 'msg': str(exc)}), 400
+        return jsonify({'success': ok})
+
     @app.route('/api/amcl')
     def api_amcl():
         try:

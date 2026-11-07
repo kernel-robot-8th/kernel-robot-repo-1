@@ -47,7 +47,7 @@ from action_msgs.srv import CancelGoal
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.msg import Costmap
-from nav_msgs.msg import OccupancyGrid, Path
+from nav_msgs.msg import OccupancyGrid, Path, Odometry
 from sensor_msgs.msg import Image, LaserScan
 from slam_toolbox.srv import Reset, SaveMap
 from rcl_interfaces.msg import Log
@@ -56,6 +56,7 @@ from std_srvs.srv import Empty
 from tf2_ros import Buffer, TransformListener
 
 from . import amcl_check, fleet, ir_record, map_store, marker_detect, route_view
+from .smartcart import SmartcartMonitor
 from .sysstats import read_system_stats
 from .teleop import DEADMAN_TIMEOUT, MAX_ANGULAR, MAX_LINEAR, TeleopGuard
 from .web_app import create_app, default_web_dir
@@ -110,6 +111,7 @@ class ConsoleNode(Node):
         self.declare_parameter('ip', '0.0.0.0')
         self.declare_parameter('port', 8080)
         self.declare_parameter('mode', 'slam')
+        self.declare_parameter('teleop_enabled', True)
         self.declare_parameter('map_dir', map_store.DEFAULT_MAP_DIR)
         self.declare_parameter('ir_dir', ir_record.DEFAULT_IR_DIR)
         self.declare_parameter('camera', 'picamera2')
@@ -128,6 +130,7 @@ class ConsoleNode(Node):
         self.declare_parameter('nav_log_dir', '~/roport_logs')
 
         self.mode = self.get_parameter('mode').value
+        self.teleop_enabled = self.get_parameter('teleop_enabled').value
         self.map_dir = map_store.resolve_map_dir(self.get_parameter('map_dir').value)
         self.ir = ir_record.IrRecorder(self.get_parameter('ir_dir').value)
         self.marker = None
@@ -144,6 +147,9 @@ class ConsoleNode(Node):
             'global': {'msg': None, 'version': 0},
             'local': {'msg': None, 'version': 0},
         }
+        self.smartcart_monitor = SmartcartMonitor()
+        self.create_subscription(Odometry, 'odom', self._smartcart_odom,
+                                 QoSProfile(depth=10, reliability=QoSReliabilityPolicy.BEST_EFFORT))
         self.path_msg = None
         self.tf_pose = None  # (x, y, yaw)
         self.battery = {'percent': None, 'voltage': None}  # (value, monotonic time)
@@ -221,12 +227,14 @@ class ConsoleNode(Node):
 
         # ---- Teleop ----
         # pinky_bringup 의 cmd_vel 구독은 depth 10 기본 QoS(RELIABLE).
-        self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        self.cmd_vel_pub = (self.create_publisher(Twist, 'cmd_vel', 10)
+                            if self.teleop_enabled else None)
         self.teleop_guard = TeleopGuard(MAX_LINEAR, MAX_ANGULAR, DEADMAN_TIMEOUT)
         # 안전 타이머는 STEADY 시계: use_sim_time 이고 시뮬레이터가 멈춰도 deadman 동작
         steady = Clock(clock_type=ClockType.STEADY_TIME)
-        self.create_timer(TELEOP_PERIOD, self._teleop_tick, clock=steady)
-        self.create_timer(WATCHDOG_PERIOD, self._watchdog_tick, clock=steady)
+        if self.teleop_enabled:
+            self.create_timer(TELEOP_PERIOD, self._teleop_tick, clock=steady)
+            self.create_timer(WATCHDOG_PERIOD, self._watchdog_tick, clock=steady)
 
         self.get_logger().info(
             f'pinky_test_console started (mode={self.mode}, map_dir={self.map_dir}, '
@@ -267,9 +275,15 @@ class ConsoleNode(Node):
         t = trans.transform
         with self.lock:
             self.tf_pose = (t.translation.x, t.translation.y, quat_to_yaw(t.rotation))
+            self.smartcart_monitor.observe('tf', trans)
 
     # ---------------- Teleop ----------------
+    def _require_web_drive(self):
+        if not self.teleop_enabled:
+            raise PermissionError('수동 구동·웹 정지 사용 불가: teleop_enabled=false. 현장 정지 수단을 사용하세요')
+
     def publish_twist(self, linear, angular):
+        self._require_web_drive()
         msg = Twist()
         msg.linear.x = float(linear)
         msg.angular.z = float(angular)
@@ -288,6 +302,7 @@ class ConsoleNode(Node):
 
     def teleop(self, linear, angular):
         """웹 조종 입력. Nav2 주행 중이면 먼저 목표를 취소한다."""
+        self._require_web_drive()
         nav_cancelled = False
         if self.is_navigating():
             self.get_logger().info('[TELEOP] input during Nav2 goal -> cancel goal first')
@@ -296,11 +311,13 @@ class ConsoleNode(Node):
         return {'linear': lin, 'angular': ang, 'nav_cancelled': nav_cancelled}
 
     def teleop_stop(self):
+        self._require_web_drive()
         if self.teleop_guard.stop():
             self.publish_twist(0.0, 0.0)
 
     def emergency_stop(self):
         """화면 상단 정지 버튼: 경로 주행 정지·속도 0 먼저, 그 다음 Nav2 취소."""
+        self._require_web_drive()
         self.teleop_guard.stop()
         if self.route_cmd_pub is not None:
             self.route_cmd_pub.publish(String(data=json.dumps({'cmd': 'stop'})))
@@ -312,6 +329,8 @@ class ConsoleNode(Node):
 
     def publish_stop_on_exit(self):
         """종료 처리: 속도 0 한 번 발행하고 전달될 때까지 잠깐 기다린다."""
+        if not self.teleop_enabled:
+            return
         try:
             subs = self.cmd_vel_pub.get_subscription_count()
             self.publish_twist(0.0, 0.0)
@@ -376,6 +395,8 @@ class ConsoleNode(Node):
     def get_info(self):
         return {
             'mode': self.mode,
+            'use_sim_time': self.get_parameter('use_sim_time').value,
+            'teleop_enabled': self.teleop_enabled,
             'map_dir': self.map_dir,
             'ir_dir': self.ir.ir_dir,
             'amcl_dir': self.amcl_recorder.amcl_dir,
@@ -441,6 +462,7 @@ class ConsoleNode(Node):
 
     def route_command(self, cmd):
         """cmd = route_view.parse_route_command 결과. line_nav 가 받아 검사·실행한다."""
+        self._require_web_drive()
         if self.route_cmd_pub is None:
             raise route_view.RouteCommandError('route commands need mode:=route or mode:=test')
         self.route_cmd_pub.publish(String(data=json.dumps(cmd)))
@@ -479,6 +501,7 @@ class ConsoleNode(Node):
 
     # ---------------- Goal 전송 ----------------
     def send_goal(self, x, y, yaw):
+        self._require_web_drive()
         if not self.nav_client.wait_for_server(timeout_sec=1.0):
             self.get_logger().error('navigate_to_pose Action Server not available.')
             return False
@@ -526,6 +549,7 @@ class ConsoleNode(Node):
 
     def cancel_goal(self, wait_sec=1.0):
         """Nav2 주행을 취소(정지). goal 출처와 무관하게 모든 goal 취소."""
+        self._require_web_drive()
         if not self.cancel_client.wait_for_service(timeout_sec=wait_sec):
             self.get_logger().warn('navigate_to_pose cancel service not available.')
             return False
@@ -619,6 +643,8 @@ class ConsoleNode(Node):
 
     def _scan_cb(self, msg):
         """스캔을 받은 시점의 map → 라이다 TF로 점을 map 좌표로 바꿔 둔다."""
+        with self.lock:
+            self.smartcart_monitor.observe('scan', msg)
         try:
             t = self.tf_buffer.lookup_transform('map', msg.header.frame_id, Time()).transform
         except Exception:  # noqa: BLE001 - AMCL 이 아직 map TF 를 안 냈을 수 있음
@@ -629,9 +655,41 @@ class ConsoleNode(Node):
         with self.lock:
             self.scan_points = (points, time.monotonic())
 
+    def _smartcart_odom(self, msg):
+        t = msg.twist.twist
+        values = (t.linear.x, t.linear.y, t.linear.z, t.angular.x, t.angular.y, t.angular.z)
+        stopped = all(math.isfinite(v) and abs(v) <= .01 for v in values)
+        with self.lock:
+            self.smartcart_monitor.observe('odom', msg, stopped=stopped)
+
+    def smartcart_snapshot(self):
+        now = self.get_clock().now().nanoseconds / 1e9
+        with self.lock:
+            status = self.smartcart_monitor.snapshot(now)
+            amcl = dict(self.amcl_pose) if self.amcl_pose else None
+            pose = self.tf_pose
+            has_map = self.layers['map']['msg'] is not None
+        if amcl:
+            amcl['age_sec'] = round(time.monotonic() - amcl.pop('stamp'), 2)
+        return {'sensors': status, 'amcl': amcl, 'pose': pose, 'map_loaded': has_map,
+                'navigating': self.is_navigating(), 'nodes': self.amcl_nodes,
+                'mode': self.mode, 'teleop_enabled': self.teleop_enabled, 'delivery_enabled': False,
+                'delivery_reason': '실기 정차 좌표 미측정 · 배송 실행부 미연결'}
+
+    def smartcart_initial_pose(self, node_id, yaw_deg, confirmed):
+        with self.lock:
+            if self.layers['map']['msg'] is None:
+                raise amcl_check.AmclCheckError('지도를 먼저 수신해야 초기 위치를 적용할 수 있습니다')
+            self.smartcart_monitor.require_initial_pose(
+                self.get_clock().now().nanoseconds / 1e9, node_id, yaw_deg,
+                confirmed, self._is_navigating)
+        node = self.amcl_node(node_id)
+        return self.amcl_initial_pose_cm(node['x_cm'], node['y_cm'], yaw_deg)
+
     def _amcl_pose_cb(self, msg):
         p = msg.pose.pose
         with self.lock:
+            self.smartcart_monitor.observe('amcl', msg)
             self.amcl_pose = {'x': p.position.x, 'y': p.position.y,
                               'yaw': quat_to_yaw(p.orientation),
                               'std': amcl_check.pose_std(msg.pose.covariance),
