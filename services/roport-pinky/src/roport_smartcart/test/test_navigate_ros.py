@@ -156,8 +156,9 @@ def test_cli_requires_live_map_and_confident_localization(files, monkeypatch, sc
     monkeypatch.setenv('ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST')
     places, map_file = files
     peer = NavigationPeer(scenario)
+    startup_wait = '8' if scenario == 'action_delayed' else '4'
     arguments = ['ros2', 'run', 'roport_smartcart', 'navigate', '--mode', 'real',
-                 '--domain-id', '192', '--startup-wait', '4', '--timeout', '8',
+                 '--domain-id', '192', '--startup-wait', startup_wait, '--timeout', '8',
                  '--places', str(places), '--map', str(map_file), '--target', 'gate1']
     if scenario.endswith('_during_goal'):
         arguments += ['--return-to', 'home']

@@ -12,14 +12,36 @@ import subprocess
 import time
 
 
+# Same geometry as roport_line_nav/test/sim.py (3 cm / 2 cm / 0.4 cm).
+IR_AHEAD_M = .03
+IR_SPACING_M = .02
+IR_SPOT_RADIUS_M = .004
+
+
+def ignore_shutdown_signals():
+    # Finish the stop burst and cleanup even if shutdown is requested again.
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, signal.SIG_IGN)
+
+
+def in_public_space(layout, position):
+    x, y = layout.frame.to_measured(*position)
+    walls = {wall['name']: wall for wall in layout.raw['walls']}
+    return (x >= walls['zone03_left']['from'][0]
+            and y >= walls['zone03_bottom']['from'][1])
+
+
 def wrap(value):
     return math.atan2(math.sin(value), math.cos(value))
 
 
-def return_waypoints(position, n12):
+def return_waypoints(position, n12, *, public_space):
     # Resume near the handoff without turning back toward the entrance wall.
     if math.hypot(position[0]-n12[0], position[1]-n12[1]) < .4 and abs(position[1]-n12[1]) < .15:
         return []
+    if not public_space:
+        raise RuntimeError('H1 return must start in the public area or N12 approach; '
+                           'Nav2 cannot depart from intermediate line nodes')
     return ['return_entry']
 
 
@@ -28,13 +50,13 @@ def ir_values(lines, pose, calibration):
     x, y, yaw = pose
     c, s = math.cos(yaw), math.sin(yaw)
     values = []
-    for i, lateral in enumerate((.02, 0., -.02)):
-        px, py = x + .03*c - lateral*s, y + .03*s + lateral*c
+    for i, lateral in enumerate((IR_SPACING_M, 0., -IR_SPACING_M)):
+        px, py = x + IR_AHEAD_M*c - lateral*s, y + IR_AHEAD_M*s + lateral*c
         covered = 0
         for j in range(9):
             a = j*math.pi/4
-            qx = px + (.004*math.cos(a) if j < 8 else 0.)
-            qy = py + (.004*math.sin(a) if j < 8 else 0.)
+            qx = px + (IR_SPOT_RADIUS_M*math.cos(a) if j < 8 else 0.)
+            qy = py + (IR_SPOT_RADIUS_M*math.sin(a) if j < 8 else 0.)
             for box in lines:
                 dx, dy = qx-box.cx, qy-box.cy
                 bx = math.cos(box.yaw)*dx + math.sin(box.yaw)*dy
@@ -168,16 +190,16 @@ def main():
                 and abs(wrap(current[2]-math.pi/2-math.radians(layout.frame.yaw_deg))) < .25):
             node.get_logger().info('H1 already parked; holding position')
             return
+        public_space = in_public_space(layout, pose()[:2])
         if options.gate:
-            measured = layout.frame.to_measured(*pose()[:2])
-            if measured[0] < 138 or measured[1] < 94:
+            if not public_space:
                 raise RuntimeError('Gate demo must start inside the public Nav2 area; '
                                    'H1 outbound line handoff is not provided by this return demo')
         # Reuse the map/localization/readiness checks of the existing Nav2 client.
         n12 = graph.nodes['N12']
-        n12_world = layout.frame.to_world(n12.x+3., n12.y)
+        n12_world = layout.frame.to_world(n12.x+IR_AHEAD_M*100., n12.y)
         targets = ([options.gate, 'return_entry'] if options.gate else
-                   return_waypoints(pose()[:2], n12_world))
+                   return_waypoints(pose()[:2], n12_world, public_space=public_space))
         for target in targets:
             node.get_logger().info(f'Nav2 -> {target}')
             child = subprocess.Popen(['ros2', 'run', 'roport_smartcart', 'navigate',
@@ -199,7 +221,7 @@ def main():
         # Sim-only ideal docking fixture: align actual Gazebo pose to the tape.
         # Upgrade to measured IR/marker acquisition before physical deployment.
         n12 = graph.nodes['N12']
-        target = layout.frame.to_world(n12.x+3., n12.y)
+        target = layout.frame.to_world(n12.x+IR_AHEAD_M*100., n12.y)
         heading = wrap(math.pi+math.radians(layout.frame.yaw_deg))
         if math.hypot(target[0]-pose()[0], target[1]-pose()[1]) > .45:
             raise RuntimeError('too far from N12 for simulation line acquisition')
@@ -254,6 +276,7 @@ def main():
         node.get_logger().error(str(exc))
         return 1
     finally:
+        ignore_shutdown_signals()
         if child is not None and child.poll() is None:
             os.killpg(child.pid, signal.SIGINT)
             try:
