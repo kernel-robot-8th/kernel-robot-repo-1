@@ -16,7 +16,7 @@ from queue import Empty
 
 from cooperative_mock import MockExecutor
 
-from roport_omx.cooperative import WORKCELL, CooperativeHost
+from roport_omx.cooperative import WORKCELL, CooperativeHost, StorageError
 from roport_omx.mqtt_link.journal import Journal
 from roport_omx.mqtt_link.messages import decode, topic
 from roport_omx.mqtt_link.mqtt import MqttConfig, MqttTransport
@@ -51,6 +51,7 @@ def publish(transport: MqttTransport, site: str, events: list[dict]) -> None:
 
 
 def serve(host: CooperativeHost, transport: MqttTransport, site: str) -> None:
+    channels = {topic(site, "workcell", WORKCELL, c): c for c in ("cmd", "ack")}
     publish(transport, site, host.pending())
     next_resend = time.monotonic() + RESEND_S
     while True:
@@ -61,12 +62,18 @@ def serve(host: CooperativeHost, transport: MqttTransport, site: str) -> None:
         if delivery is not None:
             events = []
             try:
+                channel = channels.get(delivery.topic)
+                if channel is None:
+                    raise ValueError("unsubscribed topic")
                 events = host.handle(
-                    decode(delivery.payload), retained=delivery.retained
+                    decode(delivery.payload),
+                    channel=channel,
+                    qos=delivery.qos,
+                    retained=delivery.retained,
                 )
             except ValueError as exc:
                 log.warning("dropped message on %s: %s", delivery.topic, exc)
-            # Journal already holds the result; the broker may now forget the delivery.
+            # Reached only when the journal holds the result (StorageError propagates).
             transport.ack(delivery)
             publish(transport, site, events)
         publish(transport, site, host.poll())
@@ -115,9 +122,17 @@ def main() -> None:
         unreturned=set(args.mock_unreturned),
     )
     journal = Journal(args.journal)
-    host = CooperativeHost(
-        journal, executor, site=args.site, control=args.control, binding=args.binding
-    )
+    try:
+        host = CooperativeHost(
+            journal,
+            executor,
+            site=args.site,
+            control=args.control,
+            binding=args.binding,
+        )
+    except (ValueError, StorageError) as exc:
+        journal.close()
+        parser.exit(2, f"{args.journal}: {exc}\n")
     if args.clear_hold:
         host.clear_hold()
     if host.hold:
@@ -139,6 +154,10 @@ def main() -> None:
                 time.sleep(2)
     except KeyboardInterrupt:
         pass
+    except StorageError as exc:
+        # The delivery being handled is not ACKed; restart reconciles from the journal.
+        log.critical("%s; stopping without ACK", exc)
+        sys.exit(1)
     finally:
         journal.close()
     sys.exit(0)

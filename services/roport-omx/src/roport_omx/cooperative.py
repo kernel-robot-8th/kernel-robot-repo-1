@@ -9,6 +9,7 @@ No MQTT, HTTP or motor access here; the executor owns the device.
 
 import json
 import re
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import uuid4
@@ -61,6 +62,10 @@ _IDS = ("type", "task_id", "step_id", "command_id", "execution_id")
 
 class Rejected(ValueError):
     """Request refused before anything started; args[0] is the error code."""
+
+
+class StorageError(RuntimeError):
+    """Journal write failed and memory was rolled back. Do not ACK; restart and reconcile."""
 
 
 class Executor(Protocol):
@@ -131,8 +136,23 @@ class CooperativeHost:
         self.site, self.control, self.binding = site, control, binding
         self.require_armed = require_armed
         self.boot_id = str(uuid4())
-        data = journal.data
+        self.failed = False
+        identity = {
+            "site": site,
+            "control": control,
+            "binding": binding,
+            "workcell": WORKCELL,
+            "profile": PROFILE,
+        }
+        # Copy: rollback after a failed save restores journal.data, which must stay untouched.
+        data = deepcopy(journal.data)
+        if data and data.get("identity") != identity:
+            raise ValueError(
+                "journal belongs to another site/control/binding; "
+                "use a separate --journal for this registration"
+            )
         self._data = {
+            "identity": identity,
             "commands": data.get("commands", {}),
             "outbox": data.get("outbox", []),
             "active": data.get("active"),
@@ -142,6 +162,8 @@ class CooperativeHost:
             # A previous process left a task running: its physical result is unknown.
             self._data["hold"], self._data["active"] = self._data["active"], None
             self._save()
+        elif not data:
+            self._save()
 
     @property
     def hold(self) -> str | None:
@@ -150,6 +172,7 @@ class CooperativeHost:
 
     def clear_hold(self) -> None:
         """Operator confirmed arms, package and Pinky after a failure or restart."""
+        self._usable()
         self._data["hold"] = None
         self._save()
 
@@ -157,8 +180,17 @@ class CooperativeHost:
         """Events not yet acknowledged by control; resend with the same message_id."""
         return list(self._data["outbox"])
 
-    def handle(self, message: dict, *, retained: bool = False) -> list[dict]:
-        """Return events to publish. Raises ValueError for messages that get no reply."""
+    def handle(
+        self, message: dict, *, channel: str, qos: int = 1, retained: bool = False
+    ) -> list[dict]:
+        """Return events to publish for a delivery on the shelf-01 `cmd` or `ack` topic.
+
+        Raises ValueError for deliveries that get no reply, StorageError when the journal
+        could not record the result (the caller must not ACK it).
+        """
+        self._usable()
+        if qos != 1 or retained:
+            raise ValueError("task link requires non-retained QoS1")
         validate(message)
         if (message["site_id"], message["target"], message["source"]) != (
             self.site,
@@ -166,11 +198,13 @@ class CooperativeHost:
             self.control,
         ):
             raise ValueError("routing_mismatch")
-        if message["type"] == "event.ack":
+        if channel == "ack":
+            if message["type"] != "event.ack":
+                raise ValueError("ack channel carries only event.ack")
             self._ack(message)
             return []
-        if not message["type"].endswith(".requested"):
-            raise ValueError("unsupported_type")
+        if channel != "cmd" or not message["type"].endswith(".requested"):
+            raise ValueError("invalid command channel/type")
         record = self._data["commands"].get(message["command_id"])
         if record is not None:
             if record["fingerprint"] == _fingerprint(message):
@@ -191,7 +225,7 @@ class CooperativeHost:
                 site=self.site,
                 target=WORKCELL,
                 source=self.control,
-                retained=retained,
+                retained=False,
             )
             check_expiry(message)
             if message.get("profile") != PROFILE:
@@ -231,6 +265,7 @@ class CooperativeHost:
 
     def poll(self) -> list[dict]:
         """Turn executor observations of the active task into progress/completed/failed."""
+        self._usable()
         command_id = self._data["active"]
         if command_id is None:
             return []
@@ -435,10 +470,27 @@ class CooperativeHost:
         if payload.get("status") != "stored":
             raise ValueError("unsupported_ack")
         outbox = self._data["outbox"]
-        kept = [e for e in outbox if e["message_id"] != payload.get("acked_message_id")]
-        if len(kept) != len(outbox):
-            self._data["outbox"] = kept
-            self._save()
+        acked = payload.get("acked_message_id")
+        event = next((e for e in outbox if e["message_id"] == acked), None)
+        if event is None:
+            return
+        if any(
+            event[k] != message[k]
+            for k in ("task_id", "step_id", "command_id", "execution_id")
+        ):
+            raise ValueError("ack correlation mismatch")
+        self._data["outbox"] = [e for e in outbox if e is not event]
+        self._save()
+
+    def _usable(self) -> None:
+        if self.failed:
+            raise StorageError("journal failed; restart the Host and reconcile")
 
     def _save(self) -> None:
-        self.journal.save(self._data)
+        try:
+            self.journal.save(self._data)
+        except Exception as exc:
+            # Unsaved commands must never answer a retry as if they had been accepted.
+            self.failed = True
+            self._data = deepcopy(self.journal.data)
+            raise StorageError("journal save failed; result not recorded") from exc

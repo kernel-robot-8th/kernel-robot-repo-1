@@ -11,7 +11,7 @@ from uuid import uuid4
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from roport_omx.cooperative import PROFILE, CooperativeHost
+from roport_omx.cooperative import PROFILE, CooperativeHost, StorageError
 from roport_omx.mqtt_link.journal import Journal
 
 spec = importlib.util.spec_from_file_location(
@@ -91,13 +91,28 @@ class CooperativeHostTest(unittest.TestCase):
             "shelf_inbound.requested", task_payload(self.host.boot_id, **changes)
         )
 
+    def cmd(self, message, **delivery):
+        return self.host.handle(message, channel="cmd", **delivery)
+
+    def ack_for(self, event, **changes):
+        ack = request(
+            "event.ack",
+            {"acked_message_id": event["message_id"], "status": "stored"},
+            command_id=event["command_id"],
+            execution_id=event["execution_id"],
+        )
+        del ack["expires_at"]
+        return {
+            **ack,
+            "task_id": event["task_id"],
+            "step_id": event["step_id"],
+        } | changes
+
     def phases(self, events):
         return [(e["type"], e["payload"]["phase"]) for e in events]
 
     def test_status_reports_boot_and_armed(self):
-        (event,) = self.host.handle(
-            request("status.requested", {"binding_id": BINDING})
-        )
+        (event,) = self.cmd(request("status.requested", {"binding_id": BINDING}))
         self.assertEqual(event["type"], "status.completed")
         self.assertEqual(event["payload"]["boot_id"], self.host.boot_id)
         self.assertIs(event["payload"]["armed"], True)
@@ -107,7 +122,7 @@ class CooperativeHostTest(unittest.TestCase):
         )
 
     def test_inbound_completes_when_both_arms_return(self):
-        accepted = self.host.handle(self.inbound())
+        accepted = self.cmd(self.inbound())
         self.assertEqual(
             self.phases(accepted), [("shelf_inbound.accepted", "ACCEPTED")]
         )
@@ -127,7 +142,7 @@ class CooperativeHostTest(unittest.TestCase):
 
     def test_progress_reports_each_step_once(self):
         self.executor.run_s = 60
-        self.host.handle(self.inbound())
+        self.cmd(self.inbound())
         (progress,) = self.host.poll()
         self.assertEqual(
             (progress["payload"]["phase"], progress["payload"]["step"]),
@@ -137,8 +152,8 @@ class CooperativeHostTest(unittest.TestCase):
 
     def test_duplicate_returns_same_events_without_new_start(self):
         command = self.inbound()
-        first = self.host.handle(command)
-        again = self.host.handle({**command, "message_id": str(uuid4())})
+        first = self.cmd(command)
+        again = self.cmd({**command, "message_id": str(uuid4())})
         self.assertEqual(
             [e["message_id"] for e in first], [e["message_id"] for e in again]
         )
@@ -146,15 +161,15 @@ class CooperativeHostTest(unittest.TestCase):
 
     def test_changed_content_with_same_command_id_conflicts(self):
         command = self.inbound()
-        self.host.handle(command)
+        self.cmd(command)
         changed = {**command, "payload": {**command["payload"], "slot_id": "2b"}}
-        (event,) = self.host.handle(changed)
+        (event,) = self.cmd(changed)
         self.assertEqual(event["payload"]["error_code"], "IDEMPOTENCY_CONFLICT")
         self.assertEqual(len(self.executor.tasks), 1)
 
     def test_not_armed_is_rejected_without_start(self):
         self.executor.armed = False
-        (event,) = self.host.handle(self.inbound())
+        (event,) = self.cmd(self.inbound())
         self.assertEqual(
             (event["type"], event["payload"]["error_code"]),
             ("shelf_inbound.rejected", "NOT_ARMED"),
@@ -165,11 +180,14 @@ class CooperativeHostTest(unittest.TestCase):
         self.executor.armed = False
         host = self.make_host(require_armed=False)
         self.host = host
-        self.assertEqual(host.handle(self.inbound())[0]["payload"]["phase"], "ACCEPTED")
+        self.assertEqual(
+            host.handle(self.inbound(), channel="cmd")[0]["payload"]["phase"],
+            "ACCEPTED",
+        )
 
     def test_unreturned_arm_fails_and_holds(self):
         self.executor.unreturned = {"omx2"}
-        self.host.handle(self.inbound())
+        self.cmd(self.inbound())
         (failed,) = self.host.poll()
         p = failed["payload"]
         self.assertEqual(
@@ -178,12 +196,10 @@ class CooperativeHostTest(unittest.TestCase):
         )
         self.assertIs(p["departure_ready"], False)
         self.assertIs(p["arms"]["omx2"]["returned"], False)
-        (event,) = self.host.handle(self.inbound())
+        (event,) = self.cmd(self.inbound())
         self.assertEqual(event["payload"]["error_code"], "HOST_HOLD")
         self.host.clear_hold()
-        self.assertEqual(
-            self.host.handle(self.inbound())[0]["payload"]["phase"], "ACCEPTED"
-        )
+        self.assertEqual(self.cmd(self.inbound())[0]["payload"]["phase"], "ACCEPTED")
 
     def test_invalid_requests_are_rejected(self):
         cases = {
@@ -200,52 +216,101 @@ class CooperativeHostTest(unittest.TestCase):
         }
         for code, command in cases.items():
             with self.subTest(code):
-                (event,) = self.host.handle(command)
+                (event,) = self.cmd(command)
                 self.assertEqual(event["payload"]["error_code"], code)
         expired = request(
             "shelf_inbound.requested", task_payload(self.host.boot_id), expires_s=-1
         )
         expired["sent_at"] = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
         self.assertEqual(
-            self.host.handle(expired)[0]["payload"]["error_code"], "INVALID_REQUEST"
-        )
-        self.assertEqual(
-            self.host.handle(self.inbound(), retained=True)[0]["payload"]["error_code"],
-            "INVALID_REQUEST",
+            self.cmd(expired)[0]["payload"]["error_code"], "INVALID_REQUEST"
         )
         self.assertEqual(self.executor.tasks, [])
 
     def test_each_shelf_slot_is_accepted(self):
         for slot in ("1a", "1b", "1c", "2a", "2b", "2c"):
             with self.subTest(slot):
-                (event,) = self.host.handle(self.inbound(slot_id=slot))
+                (event,) = self.cmd(self.inbound(slot_id=slot))
                 self.assertEqual(event["payload"]["phase"], "ACCEPTED")
                 self.assertEqual(event["payload"]["slot_id"], slot)
                 self.host.poll()
         for slot in ("3a", "1d", "A1"):
             with self.subTest(slot):
-                (event,) = self.host.handle(self.inbound(slot_id=slot))
+                (event,) = self.cmd(self.inbound(slot_id=slot))
                 self.assertEqual(event["payload"]["error_code"], "UNKNOWN_SLOT")
 
     def test_unrouted_sender_gets_no_reply(self):
         with self.assertRaises(ValueError):
-            self.host.handle({**self.inbound(), "source": "intruder"})
+            self.cmd({**self.inbound(), "source": "intruder"})
 
     def test_ack_clears_outbox(self):
-        (event,) = self.host.handle(
-            request("status.requested", {"binding_id": BINDING})
-        )
+        (event,) = self.cmd(request("status.requested", {"binding_id": BINDING}))
         self.assertEqual(self.host.pending(), [event])
-        ack = request(
-            "event.ack", {"acked_message_id": event["message_id"], "status": "stored"}
-        )
-        del ack["expires_at"]
-        self.assertEqual(self.host.handle(ack), [])
+        with self.assertRaises(ValueError):
+            self.host.handle(self.ack_for(event, step_id="other"), channel="ack")
+        self.assertEqual(self.host.pending(), [event])
+        self.assertEqual(self.host.handle(self.ack_for(event), channel="ack"), [])
         self.assertEqual(self.host.pending(), [])
+
+    def test_wrong_channel_qos_or_retain_is_dropped_without_start(self):
+        (status,) = self.cmd(request("status.requested", {"binding_id": BINDING}))
+        cases = {
+            "task on ack topic": {"message": self.inbound(), "channel": "ack"},
+            "ack on cmd topic": {"message": self.ack_for(status), "channel": "cmd"},
+            "unknown topic": {"message": self.inbound(), "channel": "event"},
+            "QoS 0": {"message": self.inbound(), "channel": "cmd", "qos": 0},
+            "retained": {"message": self.inbound(), "channel": "cmd", "retained": True},
+        }
+        for name, delivery in cases.items():
+            with self.subTest(name), self.assertRaises(ValueError):
+                self.host.handle(**delivery)
+        self.assertEqual(self.executor.tasks, [])
+        self.assertEqual(self.host.pending(), [status])
+
+    def test_failed_save_rolls_back_and_blocks_without_start(self):
+        command = self.inbound()
+        real_save = self.journal.save
+
+        def full(data):
+            raise ValueError("trial journal full; archive after reconciliation")
+
+        self.journal.save = full
+        with self.assertRaises(StorageError):
+            self.cmd(command)
+        self.journal.save = real_save
+        self.assertEqual(self.executor.tasks, [])
+        self.assertEqual(self.host.pending(), [])
+        # Even a retry must not be answered from the unsaved attempt.
+        with self.assertRaises(StorageError):
+            self.cmd(command)
+        with self.assertRaises(StorageError):
+            self.host.poll()
+        self.journal.close()
+        self.journal = Journal(self.path)
+        self.assertNotIn(command["command_id"], self.journal.data["commands"])
+        self.host = self.make_host()
+        # The old attempt is unknown after restart: same ID is judged afresh, never ACCEPTED.
+        (retry,) = self.cmd(command)
+        self.assertEqual(retry["payload"]["error_code"], "BOOT_MISMATCH")
+        self.assertEqual(self.cmd(self.inbound())[0]["payload"]["phase"], "ACCEPTED")
+        self.assertEqual(len(self.executor.tasks), 1)
+
+    def test_journal_of_another_registration_is_refused(self):
+        self.journal.close()
+        self.journal = Journal(self.path)
+        for changes in ({"site": "other"}, {"control": "x"}, {"binding": "y"}):
+            with self.subTest(changes):
+                args = {"site": SITE, "control": CONTROL, "binding": BINDING} | changes
+                with self.assertRaises(ValueError):
+                    CooperativeHost(self.journal, self.executor, **args)
+        self.assertIsNone(self.make_host().hold)
+        self.journal.save({"commands": {}, "outbox": []})
+        with self.assertRaises(ValueError):
+            self.make_host()
 
     def test_restart_during_task_holds_and_keeps_unacked_events(self):
         self.executor.run_s = 60
-        accepted = self.host.handle(self.inbound())
+        accepted = self.cmd(self.inbound())
         self.journal.close()
         self.journal = Journal(self.path)
         host = self.make_host()
