@@ -207,6 +207,14 @@ def amcl_message():
                       orientation=NS(x=0., y=0., z=0., w=1.))))
 
 
+@pytest.mark.parametrize('mode,variance,accepted', [
+    ('sim', -2.5e-14, True), ('sim', -1.e-8, False), ('real', -2.5e-14, False)])
+def test_simulation_roundoff_does_not_change_real_variance_checks(mode, variance, accepted):
+    message = amcl_message()
+    message.pose.covariance[35] = variance
+    assert Readiness(mode).observe_amcl(message) is accepted
+
+
 @pytest.mark.parametrize('index,value', [(0, 100.), (7, .041), (35, .101),
     (0, -.001), (14, -1.), (35, float('nan')), (12, float('inf'))])
 def test_bad_latest_amcl_revokes_good_pose_at_start_and_during_goal(index, value):

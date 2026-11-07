@@ -60,13 +60,15 @@ class Readiness:
         self.amcl_stamp = stamp
         q = pose.orientation
         covariance = message.pose.covariance
+        # Identical Gazebo particles can produce negative variance at roundoff scale.
+        min_variance = -1.e-12 if self.mode == 'sim' else 0.
         values = (pose.position.x, pose.position.y, pose.position.z, q.x, q.y, q.z, q.w)
         valid = (message.header.frame_id == 'map'
                  and all(math.isfinite(v) for v in values)
                  and abs(sum(v * v for v in (q.x, q.y, q.z, q.w)) - 1.) <= 1e-3
                  and len(covariance) == 36
                  and all(math.isfinite(v) for v in covariance)
-                 and all(covariance[i] >= 0 for i in (0, 7, 14, 21, 28, 35))
+                 and all(covariance[i] >= min_variance for i in (0, 7, 14, 21, 28, 35))
                  and all(covariance[i] <= limit for i, limit in ((0, .04), (7, .04), (35, .1))))
         if not valid or not self.observe('amcl', stamp):
             self.samples.pop('amcl', None)
