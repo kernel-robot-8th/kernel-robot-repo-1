@@ -1,4 +1,4 @@
-"""Gazebo-only 6 cm moving boxes. Actor motion never publishes robot velocity."""
+"""Gazebo-only 6 cm fixed/moving boxes; never publishes robot velocity."""
 
 import json
 import math
@@ -47,6 +47,7 @@ def main():
     )
     bay_x = float(node.declare_parameter("bay_x", 1.544).value)
     stationary = bool(node.declare_parameter("stationary_line", False).value)
+    stationary_nav = bool(node.declare_parameter("stationary_nav", False).value)
     poses, seen = {}, {}
     triggered = None
     direction = 1.0
@@ -93,7 +94,8 @@ def main():
                         direction = -1.0
                     if p.y < -0.85:
                         direction = 1.0
-                    cmd.linear.y = direction * 0.04
+                    if not stationary_nav:
+                        cmd.linear.y = direction * 0.04
                 else:
                     robot = poses.get("pinky")
                     if (

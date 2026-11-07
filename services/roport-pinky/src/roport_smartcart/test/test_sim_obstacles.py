@@ -48,13 +48,15 @@ def test_obstacle_fixture_cannot_start_in_physical_domain(monkeypatch):
         main()
 
 
+@pytest.mark.parametrize("scenario", ["combined", "nav-static", "nav-moving"])
 def test_spawn_passes_explicit_world_pose_and_bridges_real_contact_topics(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, scenario
 ):
     import importlib.util
     from pathlib import Path
     from launch import LaunchContext
     from launch_ros.actions import Node
+    from launch_ros.utilities import evaluate_parameters
 
     path = Path(__file__).parents[1] / "launch/obstacle_delivery.launch.py"
     spec = importlib.util.spec_from_file_location("obstacle_fixture", path)
@@ -63,16 +65,22 @@ def test_spawn_passes_explicit_world_pose_and_bridges_real_contact_topics(
     monkeypatch.setattr(module, "get_package_share_directory", lambda _: str(tmp_path))
     context = LaunchContext()
     context.launch_configurations.update(
-        bay="H1", gui="false", height="0.125", stationary_line="false"
+        bay="H1",
+        gui="false",
+        height="0.125",
+        stationary_line="false",
+        scenario=scenario,
     )
     actions = module.setup(context)
     creates = [
         a for a in actions if isinstance(a, Node) and a.node_executable == "create"
     ]
-    assert len(creates) == 2
+    assert len(creates) == (2 if scenario == "combined" else 1)
     for a in creates:
         args = ["".join(p.perform(context) for p in arg) for arg in a.cmd[1:13]]
         values = dict(zip(args[::2], args[1::2]))
+        if scenario != "combined":
+            assert values["-name"] == "nav_crossing"
         model = ET.fromstring(values["-string"]).find("model")
         assert list(map(float, model.findtext("pose").split()[:3])) == [
             float(values["-x"]),
@@ -90,3 +98,9 @@ def test_spawn_passes_explicit_world_pose_and_bridges_real_contact_topics(
         in a
         for a in args
     )
+    motion = next(
+        a for a in actions
+        if isinstance(a, Node) and a.node_executable == "sim_obstacles"
+    )
+    parameters = evaluate_parameters(context, motion._Node__parameters)[0]
+    assert parameters["stationary_nav"] == (scenario == "nav-static")

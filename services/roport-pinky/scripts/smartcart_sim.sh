@@ -63,7 +63,7 @@ case "${1:-start}" in
       --target "$SMARTCART_TARGET" "${SMARTCART_RETURN[@]}" --startup-wait 30 --timeout 120
     ;;
   *)
-    echo '사용법: smartcart_sim.sh [start|headless|obstacles [bay:=H1 height:=0.125]|sensors [높이_m]|sensor-goal|gate1|gate2|gate3|delivery1|delivery2|delivery3|control [--occupied H1 H2]|h1|h2|home]' >&2
+    echo '사용법: smartcart_sim.sh [start|headless|obstacles [scenario:=nav-static height:=0.10 bay:=H1]|sensors [높이_m]|sensor-goal|gate1|gate2|gate3|delivery1|delivery2|delivery3|control [--occupied H1 H2]|h1|h2|home]' >&2
     exit 2
     ;;
 esac
