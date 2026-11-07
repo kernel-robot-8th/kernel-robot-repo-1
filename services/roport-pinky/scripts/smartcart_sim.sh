@@ -31,7 +31,13 @@ case "${1:-start}" in
     exec "$SMARTCART_PYTHON" "$(command -v ros2)" launch roport_smartcart simulation.launch.py \
       gui:="$SMARTCART_GUI" rviz:=false
     ;;
-  gate1|gate2|gate3|home|sensor-goal)
+  h1)
+    exec ros2 run roport_smartcart sim_return_h1
+    ;;
+  gate1|gate2|gate3)
+    exec ros2 run roport_smartcart sim_return_h1 --gate "$1"
+    ;;
+  home|sensor-goal)
     SMARTCART_SHARE="$(ros2 pkg prefix --share roport_smartcart)"
     SMARTCART_MAP="$(ros2 pkg prefix --share roport_gz_world)/maps/airport_map.yaml"
     SMARTCART_RETURN=()
@@ -46,7 +52,7 @@ case "${1:-start}" in
       --target "$SMARTCART_TARGET" "${SMARTCART_RETURN[@]}" --startup-wait 30 --timeout 120
     ;;
   *)
-    echo '사용법: smartcart_sim.sh [start|headless|sensors [높이_m]|sensor-goal|gate1|gate2|gate3|home]' >&2
+    echo '사용법: smartcart_sim.sh [start|headless|sensors [높이_m]|sensor-goal|gate1|gate2|gate3|h1|home]' >&2
     exit 2
     ;;
 esac
