@@ -46,7 +46,7 @@ CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 
 ## Pinky MQTT 주행 시험 · FFT1-56
 
-1대/2대 시나리오를 독립 CLI로 실행합니다. `route → 더미 상하차 → N12 mode_switch → navigate`를 완료 응답으로 진행하며, 파일 이력·중복 방지·저장 ACK·오류 시 HOLD를 포함합니다. 기존 CLI와 원본 웹 UI에서 같은 실행부를 사용하며 운영 DB는 연결하지 않습니다. 웹 연결·조작 키·시험 범위는 [가이드 7.4절](docs/pinky-trial.md#74-원본-웹-관제-ui로-실행-fft1-152)을 참고하세요.
+1대/2대 시나리오를 독립 CLI로 실행합니다. `route → 더미 상하차 → N12 mode_switch → navigate`를 완료 응답으로 진행하며, 파일 이력·중복 방지·저장 ACK·오류 시 HOLD를 포함합니다. 기존 CLI와 원본 웹 UI에서 같은 실행부를 사용하며 운영 DB는 연결하지 않습니다. 웹 연결·조작 키·시험 범위는 [가이드 7.4절](docs/pinky-trial.md)을 참고하세요.
 
 **팀원 재현 순서와 메시지/이식 방법은 [주행 시험 가이드](docs/pinky-trial.md)를 따르세요.** `tools/prepare_pinky_trial.py`로 네 설정을 한 번 생성하고 같은 `trial.json`을 양쪽에 배포합니다. `tools/build_pinky_mqtt_kit.py`는 Paho만 필요한 이식 ZIP·JSON Schema·19개 메시지 예제를 생성합니다.
 
