@@ -368,6 +368,47 @@ uv run python -m roport_control_server.executor.pinky_trial \
 관제는 경로/방향/골의 형식도 검증하지만 물리 안전 여부를 자동 판정하지 않는다.
 종료는 `stop`/Ctrl+C다. 관제 종료나 네트워크 단절 시 로봇의 정지는 독립 watchdog과 비상정지로 보장해야 한다.
 
+### 7.4 원본 웹 관제 UI로 실행 · FFT1-152
+
+관제 코드에서 연결하며 통합관제·Pinky 탭은 같은 수신 상태와 조작 패널을 사용한다. Pinky PR #35·새 MQTT 키트·trial-v1 메시지는 그대로 쓴다.
+API와 실행부는 같은 Linux PC에서 **Unix 소켓(SOCK_SEQPACKET)**으로 연결한다. 운영 DB를 대신 구현하지 않으며 JSON 이력은 시험 전용이다.
+
+1. 기존 CLI는 정지 상태를 확인한 뒤 종료한다. 같은 시험을 두 실행부로 운영하지 않는다. 동일 journal은 파일 잠금, 동일 브로커/control ID는 로컬 소유권 잠금으로 중복을 거부한다.
+2. 7.3의 동일 hardware 설정·브로커 환경·현장 확인을 준비한다. 핑키 수신기 실행 방법은 그대로다. 아래는 각 터미널에서 `services/roport-control-server` 기준이다.
+
+관제 실행부 터미널(기존 CLI 명령에 `--socket` 추가):
+
+~~~bash
+export TRIAL_DIR="$HOME/roport-trial/scenarios/single/hardware"
+# 이 터미널에도 7.3의 ROPORT_MQTT_HOST/PORT/TLS 설정을 적용한다.
+uv run python -m roport_control_server.executor.pinky_trial \
+  --config "$TRIAL_DIR/trial.json" --journal "$TRIAL_DIR/control_$(date +%Y%m%d_%H%M%S).json" \
+  --socket "$TRIAL_DIR/trial.sock" --scope line-only --hardware-authorized
+~~~
+
+API 터미널:
+
+~~~bash
+export ROPORT_MAP="$(realpath ../roport-pinky/maps/airport_map.yaml)"
+export ROPORT_MAP_LAYOUT="$(realpath ../roport-pinky/src/roport_gz_world/layout/roport_airport.yaml)"
+export ROPORT_TRIAL_SOCKET="$HOME/roport-trial/scenarios/single/hardware/trial.sock"
+read -rsp '웹 시험 조작 키 (24자 이상): ' ROPORT_TRIAL_TOKEN
+export ROPORT_TRIAL_TOKEN
+uv run uvicorn roport_control_server.adapters.api.app:app \
+  --host 127.0.0.1 --port 8000 --ws-max-size 4096 --ws-max-queue 4
+~~~
+
+`http://127.0.0.1:8000/ui/`를 연다. 시험 소켓이 설정되면 같은 원본 UI에서 자동으로 TRIAL 입력을 선택한다(`?mode=trial`도 호환). 조작 키를 입력한 다음 버튼을 클릭한다. **Enter만 눌러서는 출발하지 않는다.** **1대: 출발 → 입고 더미 승인 → 카트 적재 더미 승인**. **2대: 출발 → 창고 상차 더미 → 인도장 입고 더미 → 창고 복귀 확인 → 시험 물품 요청 → 카트 적재 더미** 순으로 현재 단계에서만 가능하다. 2대는 두 터미널의 디렉터리를 `scenarios/two/hardware`로 맞춘다. 화면에서 시나리오나 노드를 변경하는 기능은 후속이다. `--scope line-only`는 N12 도착·정지 응답을 받으면 완료하며 mode_switch/navigate를 보내지 않는다. Nav2까지 검증할 때는 새 이력 파일로 `--scope nav2`를 명시한다(생략 시 기존 nav2 동작). scope는 관제 이력에 저장하므로 같은 파일의 시험 범위를 변경할 수 없다. 양쪽 trial.json과 MQTT 스키마는 바꾸지 않는다. 토큰을 사용자가 복사할 필요 없이 현재 `stop_session_id`를 보내며, 오래된 탭/중복 클릭은 실행부가 거부한다. 조작 키는 로그인 계정 시스템을 대신하지 않는다. 원격 접속은 인증된 사설망·HTTPS 리버스 프록시 등 배포 보호가 있는 환경에서 구성하며 무인증 공개 인터넷에 노출하지 않는다.
+
+- 지도·OMX 설치 배치·탭은 기존 UI를 유지한다. Pinky는 고정 3자리 중 trial.json에 배정된 기체만 제어하고, 미배정 자리와 OMX 상태는 미수신으로 표시한다. 화면의 등록 편집기로 실기 시험 binding을 변경하지 않는다.
+- 화면을 닫거나 API만 재시작해도 실행부는 계속된다. 새로 열면 같은 작업 상태를 받는다. 실행부 재시작은 기존 HOLD 규칙을 유지한다. 기존 journal에 HOLD가 있으면 웹에서도 자동 출발/초기화하지 않는다.
+- `시험 중단 (보류)`는 후속 명령·lease 갱신을 막는다. 즉시 물리 정지를 보증하는 비상정지 버튼이 아니다. 실제 정지는 Pinky watchdog·현장 정지 장치로 확인한다.
+- 마지막 수신 노드의 실측 좌표와 방향만 표시한다. 이동 중 연속 x/y·바퀴 회전은 만들지 않는다. Nav2 이동 중 좌표는 미수신으로 표시하고 완료 응답의 pose만 표시한다. 화면 지도 해시/노드 그래프가 시험과 다르면 표시·출발·더미 승인을 막는다.
+- `mode=demo`는 기존 화면별 모의 재생이고 `mode=trial`은 실제 MQTT 시험이다. 가상 시험도 동일 TRIAL UI를 사용하되 `single/simulation` 또는 `two/simulation`·loopback 브로커·`mock_pinky_trial.py`를 사용한다. 실물용 실행부와 연결하지 않는다.
+- 소켓은 사용자 전용 권한으로 만들고 정상 종료 시 제거한다. 강제 종료로 파일이 남으면 소유 프로세스 종료를 확인한 뒤 소켓 파일만 정리한다. 실행 중 소켓이나 journal을 삭제해 잠금/복구를 우회하지 않는다. Unix 소켓 경로는 107바이트 이하로 사용한다.
+
+HOLD의 최초 오류는 이후 운영자 종료·브로커 종료로 덮어쓰지 않는다. 오류가 있는 status 응답도 관측 정보로 저장하지만 완료·진행 성공 응답의 오류는 계속 거부한다. HOLD에서는 lease 갱신을 재개하지 않는다.
+
 ## 8. 오류·재시작·저장 동작
 
 | 상황 | 처리 |
@@ -396,7 +437,8 @@ Pinky 구동 드라이버의 독립 cmd_vel timeout/비상정지 구현과 측�
 
 | 파일 | 역할 |
 | --- | --- |
-| src/roport_control_server/executor/pinky_trial.py | 관제 CLI/상태 전이 |
+| src/roport_control_server/executor/pinky_trial.py | 관제 CLI/웹 공통 상태 전이 |
+| executor/trial_socket.py · adapters/api/trial.py · spatial_assets/trial.js | 단일 소유자 IPC · 상태 투영/API · 원본 UI 조작 |
 | src/roport_control_server/adapters/mqtt/pinky_trial.py | 이식용 Pinky 수신·반환·중복/정지 경계 |
 | adapters/mqtt/trial_runner.py | 동일 설정·역할로 Pinky 모듈과 팀원 driver 연결 |
 | adapters/mqtt/trial_wire.py | 19개 메시지 형태, payload 및 의미 검사 |

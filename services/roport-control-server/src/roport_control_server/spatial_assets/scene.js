@@ -2,6 +2,8 @@ import * as THREE from "three";
 import { OrbitControls } from "./vendor/three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "./vendor/three/examples/jsm/loaders/GLTFLoader.js";
 
+import { renderTrial, trialDisconnected } from "./trial.js";
+
 const $ = (id) => document.getElementById(id);
 let ids = [], inventory = [];
 const title = (id) => inventory.find((r) => r.id === id)?.name ?? id;
@@ -11,7 +13,7 @@ let selected,
   views,
   models = {},
   definitions = {};
-let demo = false,
+let demo = false, trial = false,
   playing = true,
   dropped = new Set(),
   mapCenter,
@@ -40,6 +42,17 @@ function installationPose(mount) {
   return [...new THREE.Vector3(...mount.edge_center).add(offset), Math.atan2(Math.sin(mount.yaw), Math.cos(mount.yaw))];
 }
 
+function makeTrialRoutes(config) {
+  for (const route of config.trial_routes) {
+    const points = route.map((id) => new THREE.Vector3(...config.trial_nodes[id], 0.015));
+    views.map.scene.add(new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(points),
+      new THREE.LineBasicMaterial({color: 0x257164}),
+    ));
+  }
+
+}
+
 function text(tag, value, className = "") {
   const node = document.createElement(tag);
   node.textContent = value;
@@ -55,7 +68,8 @@ function view(element) {
   scene.add(light);
   const camera = new THREE.PerspectiveCamera(42, 1, 0.005, 300);
   camera.up.set(0, 0, 1);
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  // Keep the last frame while a stationary robot needs no redraw.
+  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   element.prepend(renderer.domElement);
@@ -241,6 +255,7 @@ function updateDetails() {
     ["속도 (m/s)", row?.velocity?.toFixed(2) ?? "—"],
   ];
   if (installedPoses[selected]) values.push(["설치 배치 (기준값)", "받침 앞 변 · 상호 대향 · 실기 미검증"]);
+  if (row?.pose_source) values.push(["위치 근거", row.pose_source]);
   for (const [name, angle] of Object.entries(row?.joints ?? {}))
     values.push([name, `${((angle * 180) / Math.PI).toFixed(1)}°`]);
   if (!Object.keys(row?.joints ?? {}).length)
@@ -261,13 +276,14 @@ function updateDetails() {
 function receive(raw) {
   try {
     const data = JSON.parse(raw);
+    if (trial) renderTrial(data);
     rows = data.robots;
     for (const row of rows) {
       const id = row.robot_id,
         model = instances[id];
       if (!model) continue;
       buttons[id].dataset.stale = row.stale;
-      buttons[id].querySelector("small").textContent = row.stale
+      buttons[id].querySelector("small").textContent = trial ? row.mode : row.stale
         ? "미수신 / 지연"
         : row.mode;
       const pose = displayedPose(row);
@@ -330,6 +346,7 @@ function receive(raw) {
 }
 async function start(config) {
   demo = config.demo;
+  trial = config.trial === true;
   inventory = config.robots;
   ids = inventory.map((r) => r.id);
   selected = ids[0];
@@ -341,6 +358,15 @@ async function start(config) {
     ? "DEMO · 모의 상태"
     : "OFFLINE · 표시 입력 미연결";
   $("demo-controls").hidden = !demo;
+  $("trial-panel").hidden = !trial;
+  $("pinky-trial-details").hidden = !trial;
+  $("pinky-detail").hidden = trial;
+  $("offline-actions").hidden = trial;
+  if (trial) {
+    $("mode").textContent = "TRIAL · MQTT 시나리오";
+    $("inventory-label").textContent = "고정 자리";
+    $("scope-note").textContent = "시험 제어 · 출발/더미 승인 수동";
+  }
   views = { map: view($("map")), detail: view($("model")) };
   makeMap(config.map);
   $("map-name").textContent = config.map.id + (config.map.layout ? ` · 실측 ${config.map.layout.version}` : config.example_map ? " · 예시 지도" : "");
@@ -349,6 +375,7 @@ async function start(config) {
     : "map · m / rad · 벽 높이는 표시용";
   if (config.map.layout) document.querySelector(".map-note").textContent = "실측 지도 · 점유셀 돌출 표시 · 설치 배치는 기준값";
   if (demo && !config.example_map) document.querySelector(".map-note").textContent += " · 움직임은 예시 경로";
+  if (trial) makeTrialRoutes(config);
   const loader = new GLTFLoader();
   await Promise.all(
     ["pinky", "omx"].map(async (type) => {
@@ -478,11 +505,13 @@ async function start(config) {
   requestAnimationFrame(draw);
 }
 let socket, retry, lastReceived = 0, revision = -1, session;
-const mode = new URLSearchParams(location.search).get("mode") === "demo" ? "demo" : "offline";
+const requestedMode = new URLSearchParams(location.search).get("mode");
+let mode = ["offline", "demo", "trial"].includes(requestedMode) ? requestedMode : "auto";
 function sendControl(data) {
   if (demo && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
 }
 function disconnected() {
+  if (trial) trialDisconnected();
   $("source").textContent = "서버 연결 끊김 · 재연결 중";
   $("task-source").textContent = "연결 끊김 · 마지막 작업 상태";
   for (const row of rows) {
@@ -523,6 +552,7 @@ function connect() {
 }
 for (const button of document.querySelectorAll("[data-tab]")) {
   button.onclick = () => {
+    if (trial) $(button.dataset.tab === "pinky" ? "trial-pinky-panel" : "trial-overview").append($("trial-panel"));
     for (const tab of document.querySelectorAll("[data-tab]")) {
       const active = tab === button;
       tab.setAttribute("aria-pressed", String(active));
@@ -533,7 +563,9 @@ for (const button of document.querySelectorAll("[data-tab]")) {
 async function boot() {
   const response = await fetch(`/api/bootstrap?mode=${mode}`, {cache: "no-store"});
   if (!response.ok) throw new Error(`bootstrap: ${response.status}`);
-  await start(await response.json());
+  const bootstrap = await response.json();
+  mode = bootstrap.mode;
+  await start(bootstrap);
   connect();
   setInterval(() => {
     if (performance.now() - lastReceived > 2500) {

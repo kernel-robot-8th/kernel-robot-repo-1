@@ -287,7 +287,11 @@ def check_result(request, event):
     if "expected_boot_id" in p and result["boot_id"] != p["expected_boot_id"]:
         raise ValueError("robot restarted")
     phase = event["type"].split(".")[1]
-    if phase in {"completed", "progress"} and result["fault"] is not None:
+    if (
+        kind != "status"
+        and phase in {"completed", "progress"}
+        and result["fault"] is not None
+    ):
         raise ValueError("faulted result")
     if kind == "route" and phase in {"completed", "progress"}:
         route, index = p["route"], result["seq"]

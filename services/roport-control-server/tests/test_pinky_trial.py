@@ -828,3 +828,34 @@ def test_single_dummy_requires_same_safe_n11_stop(single_profile, tmp_path, chan
         assert control.state == state and control.transport.sent == []
     finally:
         journal.close()
+
+
+def test_fault_status_is_observed_and_first_hold_survives_shutdown(control_memory):
+    control = control_memory
+    control.poll(0)
+    request = next(
+        c for c in control.pending_status.values() if c["target"] == "pinky1"
+    )
+    event = status_reply(control, request)
+    event["payload"]["fault"] = "local_watchdog"
+    control.transport.incoming.put(delivery(event, "event"))
+    control.poll(0)
+    assert control.state["fault"] == "robot_fault"
+    assert control.state["statuses"]["pinky1"]["fault"] == "local_watchdog"
+    sent = len(control.transport.sent)
+    control.hold("operator_stopped")
+    control.transport.ready = False
+    control.poll(0)
+    assert control.state["fault"] == "robot_fault"
+    assert len(control.transport.sent) == sent
+
+
+def test_scope_is_persisted_and_cannot_change_on_resume(single_profile, tmp_path):
+    journal = Journal(tmp_path / "scope.json")
+    try:
+        TrialControl(single_profile, MemoryTransport(), journal, scope="line-only")
+        assert journal.data["scope"] == "line-only"
+        with pytest.raises(ValueError, match="scope changed"):
+            TrialControl(single_profile, MemoryTransport(), journal)
+    finally:
+        journal.close()

@@ -1,17 +1,21 @@
 """One trial owner: warehouse cycle, dummy transfers, smartcart and Nav2.
 
 Run with --config FILE --journal FILE. Nothing moves until stdin 'start'.
-This isolated CLI does not register real robots in the development web registry.
+CLI and web IPC share one owner; this trial does not implement an operating DB.
 """
 
 import argparse
+import fcntl
+import hashlib
 import itertools
 import json
 import math
+import os
 import selectors
 import sys
 from copy import deepcopy
 from datetime import UTC, datetime
+from pathlib import Path
 from queue import Empty
 from time import monotonic
 from uuid import uuid4
@@ -28,6 +32,7 @@ from roport_control_server.adapters.mqtt.trial_wire import (
     reply,
     validate_trial,
 )
+from roport_control_server.executor.trial_socket import TrialSocket
 
 ROUTES = (
     "to_loading",
@@ -144,7 +149,12 @@ def validate_config(config):
 
 
 class TrialControl:
-    def __init__(self, config, transport, journal):
+    def __init__(self, config, transport, journal, *, scope="nav2"):
+        if scope not in {"line-only", "nav2"}:
+            raise ValueError("unknown trial scope")
+        if journal.data and journal.data.get("scope", "nav2") != scope:
+            raise ValueError("journal scope changed; use a new trial journal")
+        self.scope = scope
         validate_config(config)
         self.config, self.transport, self.journal = deepcopy(config), transport, journal
         self.single_robot = config.get("scenario") == "single_pinky"
@@ -154,6 +164,7 @@ class TrialControl:
             journal.save(
                 {
                     "config": config,
+                    "scope": scope,
                     "task_id": str(uuid4()),
                     "phase": "READY",
                     "active": None,
@@ -178,6 +189,8 @@ class TrialControl:
         return self.journal.data
 
     def hold(self, reason):
+        if self.state["phase"] in {"HOLD", "COMPLETE"}:
+            return  # Preserve the first failure or completed result during shutdown.
         state = deepcopy(self.state)
         state.update(phase="HOLD", fault=reason)
         self.journal.save(state)
@@ -246,11 +259,32 @@ class TrialControl:
             topic(self.config["site_id"], "robot", robot["robot_id"], "cmd"), cmd
         )
 
-    def start(self):
+    def start_error(self):
         if self.state["phase"] != "READY":
-            raise ValueError("trial already started")
-        for robot in self.config["robots"].values():
-            self._status(robot)
+            return "trial already started"
+        if not self.transport.ready:
+            return "MQTT subscriptions not ready"
+        try:
+            starts = (
+                ["to_delivery"]
+                if self.single_robot
+                else ["to_loading", "cart_to_delivery"]
+            )
+            for step in starts:
+                status = self._status(self._robot(step))
+                if (
+                    status["node_id"] != self.config["routes"][step]["start_node"]
+                    or status["mode"] != "line"
+                ):
+                    return "unexpected route start"
+        except ValueError as exc:
+            return str(exc)
+        return None
+
+    def start(self):
+        error = self.start_error()
+        if error:
+            raise ValueError(error)
         self._send("to_delivery" if self.single_robot else "to_loading")
 
     def dummy(self, token):
@@ -424,10 +458,15 @@ class TrialControl:
                         "package_id": self.config["package_id"],
                         "quantity": 1,
                     }
-            elif step == "navigate":
+            elif step == "navigate" or (
+                step == "cart_to_switch" and self.scope == "line-only"
+            ):
                 state["phase"] = "COMPLETE"
             self.journal.save(state)
-            if step in {"cart_to_switch", "mode_switch"}:
+            if state["phase"] != "COMPLETE" and step in {
+                "cart_to_switch",
+                "mode_switch",
+            }:
                 self._send("mode_switch" if step == "cart_to_switch" else "navigate")
 
     def poll(self, timeout=0.1):
@@ -492,6 +531,15 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--journal", required=True)
     parser.add_argument("--hardware-authorized", action="store_true")
+    parser.add_argument(
+        "--scope",
+        choices=("line-only", "nav2"),
+        default="nav2",
+        help="line-only completes stopped at N12; nav2 also verifies the public goal",
+    )
+    parser.add_argument(
+        "--socket", help="Unix socket for the trial web UI; disables stdin"
+    )
     args = parser.parse_args()
     with open(args.config) as file:
         config = json.load(file)
@@ -513,11 +561,36 @@ def main():
             for r in config["robots"].values()
         ],
     )
-    control = TrialControl(config, transport, journal)
+    control = TrialControl(config, transport, journal, scope=args.scope)
     selector = selectors.DefaultSelector()
-    selector.register(sys.stdin, selectors.EVENT_READ)
+    if not args.socket:
+        selector.register(sys.stdin, selectors.EVENT_READ)
+    web = owner = None
     try:
+        # Different journals must not let CLI and web owners evict each other in MQTT.
+        lock_dir = (
+            Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+            / "roport/trial-owners"
+        )
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        identity = hashlib.sha256(
+            json.dumps(
+                [connection.host, connection.port, config["control_id"]]
+            ).encode()
+        ).hexdigest()
+        owner = (lock_dir / (identity + ".lock")).open("a")
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.socket:
+            web = TrialSocket(args.socket, control)
         transport.start()
+        if web:
+            print(
+                "Trial web owner ready; waiting for explicit operator commands.",
+                flush=True,
+            )
+            while True:
+                control.poll(0.05)
+                web.poll()
         print(
             "Inputs: start | dummy <stop_session_id> | request <package_id> | status | stop",
             flush=True,
@@ -562,11 +635,17 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        if control.state["phase"] != "COMPLETE":
-            control.hold("operator_stopped")
-        transport.stop()
-        journal.close()
-        selector.close()
+        try:
+            if control.state["phase"] != "COMPLETE":
+                control.hold("operator_stopped")
+        finally:
+            transport.stop()
+            if web:
+                web.close()
+            if owner:
+                owner.close()
+            journal.close()
+            selector.close()
 
 
 if __name__ == "__main__":
