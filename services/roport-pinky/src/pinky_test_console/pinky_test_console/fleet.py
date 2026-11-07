@@ -42,8 +42,8 @@ SRC_PREFIX = 'services/roport-pinky/src'
 REMOTE_WS = '~/pinky_test_ws'
 DOMAIN_MARK = '# roport-domain'
 RELEASE_REF = 'origin/main'
-ROBOT_PATHS = ('/api/route', '/api/status', '/api/route/command', '/api/estop', '/api/logs',
-               '/api/logs/files')
+ROBOT_PATHS = ('/api/route', '/api/status', '/api/route/command', '/api/route/return',
+               '/api/estop', '/api/logs', '/api/logs/files')
 MAX_RESPONSE = 256 * 1024
 TIMEOUTS = {'check': 15, 'read_domain': 15, 'set_domain': 15, 'deploy': 180, 'build': 900,
             'fetch_log': 60, 'fetch_roslog': 120, 'console_start': 40, 'console_stop': 25}
@@ -618,6 +618,15 @@ class FleetManager:
         if not isinstance(st, dict):
             return no('콘솔 연결 안 됨')
         state, route = st.get('state'), st.get('route') or []
+        if state == 'loading':
+            # 경로 끝 상차 대기: 로봇 콘솔이 상차 완료 → 도착 확인 → 복귀 출발을 맡는다
+            try:
+                res = self.client.request(robot.ip, '/api/route/return', {'goal': goal})
+            except (OSError, ValueError) as e:
+                return no(f'복귀 요청 실패(로봇 콘솔 업데이트 필요?): {e}')
+            if not res.get('success'):
+                return no(str(res.get('msg', res)))
+            return {'ok': True, 'msg': str(res.get('msg', '')), 'route': list(res.get('route') or [])}
         if state not in ('arrived', 'handoff') or not route:
             if state in ('stopped', 'error', 'idle'):
                 return no(f'위치 모름({state}) — 노드에 두고 출발을 골라 시작')
