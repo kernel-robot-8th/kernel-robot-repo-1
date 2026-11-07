@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from roport_control_server.contracts.snapshot import Snapshot, TaskRow
 
+from .maps import pixel_to_map
+
 ROBOTS = tuple(
     {"id": f"{kind}{i}", "kind": kind, "name": f"{name} {i:02}"}
     for kind, name in (("pinky", "Pinky"), ("omx", "OMX"))
@@ -17,8 +19,9 @@ ROBOTS = tuple(
 class Display:
     """A browser-local demonstration, not the future DB-backed runtime."""
 
-    def __init__(self, demo=False):
+    def __init__(self, demo=False, map_geometry=None):
         self.demo = demo
+        self.map_geometry = map_geometry
         self.session_id = str(uuid4())
         self.revision = 0
         self.playing = True
@@ -82,6 +85,20 @@ class Display:
                     }
                     joints["gripper_joint_1"] = 0.3 + 0.2 * math.sin(t)
                     mode, velocity = "관절 표시 · 모의", None
+                if self.map_geometry:
+                    # Synthetic animation stays in the selected map; it is not a drivable route.
+                    m = self.map_geometry
+                    pose[:2] = pixel_to_map(
+                        pose[0] / 4.6 * m["width"] - 0.5,
+                        m["height"] - pose[1] / 2.65 * m["height"] - 0.5,
+                        height=m["height"],
+                        resolution=m["resolution"],
+                        origin=m["origin"],
+                    )
+                    pose[3] = math.atan2(
+                        math.sin(pose[3] + m["origin"][2]),
+                        math.cos(pose[3] + m["origin"][2]),
+                    )
                 self.samples[robot_id] = (
                     now,
                     {

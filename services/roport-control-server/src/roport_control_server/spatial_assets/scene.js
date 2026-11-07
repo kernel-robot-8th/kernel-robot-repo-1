@@ -21,6 +21,24 @@ const instances = {},
   buttons = {},
   labels = {};
 const vector = new THREE.Vector3();
+const mapLabels = [];
+const installedPoses = {};
+
+function displayedPose(row) {
+  return (demo ? installedPoses[row.robot_id] : null) ?? row.pose ?? installedPoses[row.robot_id] ?? null;
+}
+
+function installationPose(mount) {
+  const base = models.omx.getObjectByName("link0_visual_0");
+  if (!base) throw new Error("OMX base mesh missing");
+  const bounds = new THREE.Box3().setFromObject(base).applyMatrix4(
+    new THREE.Matrix4().makeRotationZ(mount.yaw - mount.edge_yaw),
+  );
+  // Align the physical base footprint with the support edge, not the arm's full reach.
+  const offset = new THREE.Vector3(-(bounds.min.x + bounds.max.x) / 2, -bounds.max.y, -bounds.min.z);
+  offset.applyAxisAngle(new THREE.Vector3(0, 0, 1), mount.edge_yaw);
+  return [...new THREE.Vector3(...mount.edge_center).add(offset), Math.atan2(Math.sin(mount.yaw), Math.cos(mount.yaw))];
+}
 
 function text(tag, value, className = "") {
   const node = document.createElement(tag);
@@ -92,7 +110,7 @@ function makeMap(map) {
   group.rotation.z = map.origin[2];
   const width = map.width * map.resolution,
     height = map.height * map.resolution;
-  const texture = new THREE.TextureLoader().load(map.image);
+  const texture = new THREE.TextureLoader().load(map.image, () => { views.map.dirty = true; });
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.magFilter = THREE.NearestFilter;
   const floor = new THREE.Mesh(
@@ -130,7 +148,24 @@ function makeMap(map) {
   mapCenter = group.localToWorld(new THREE.Vector3(width / 2, height / 2, 0));
   mapExtent = Math.max(width, height, 0.5);
   home();
-  $("map-name").textContent = map.id + (demo ? " · 예시 지도" : "");
+  if (map.layout) {
+    const points = [], edges = [], nodes = new Map(map.layout.nodes.map(n => [n.id, n]));
+    for (const node of nodes.values()) {
+      const position = new THREE.Vector3(...node.position, 0.012);
+      points.push(...position);
+      for (const id of node.links) {
+        if (node.id < id) edges.push(...position, ...nodes.get(id).position, 0.012);
+      }
+      const label = text("span", node.place ? `${node.place} · ${node.id}` : node.nav2_switch ? `${node.id} · Nav2` : node.id, "map-node");
+      label.dataset.node = node.id;
+      label.title = "배치 원본의 노드 위치 · 주행 승인 아님";
+      $("labels").append(label);
+      mapLabels.push({position, label});
+    }
+    const geometry = values => new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(values, 3));
+    views.map.scene.add(new THREE.LineSegments(geometry(edges), new THREE.LineBasicMaterial({color: 0x81939e})));
+    views.map.scene.add(new THREE.Points(geometry(points), new THREE.PointsMaterial({color: 0x526774, size: 0.035})));
+  }
 }
 function robot(type) {
   const group = models[type].clone(true);
@@ -205,6 +240,7 @@ function updateDetails() {
     ],
     ["속도 (m/s)", row?.velocity?.toFixed(2) ?? "—"],
   ];
+  if (installedPoses[selected]) values.push(["설치 배치 (기준값)", "받침 앞 변 · 상호 대향 · 실기 미검증"]);
   for (const [name, angle] of Object.entries(row?.joints ?? {}))
     values.push([name, `${((angle * 180) / Math.PI).toFixed(1)}°`]);
   if (!Object.keys(row?.joints ?? {}).length)
@@ -217,7 +253,7 @@ function updateDetails() {
       ? "수신 이력 없음"
       : `${row.age.toFixed(1)}초 전${row.stale ? " · 마지막 수신 상태" : ""}`;
   $("freshness").style.color = row?.stale ? "var(--warn)" : "var(--muted)";
-  $("focus").disabled = !row?.pose;
+  $("focus").disabled = !row || !displayedPose(row);
   $("drop").textContent = dropped.has(selected)
     ? "선택 장비 수신 복원"
     : "선택 장비 수신 중단";
@@ -234,20 +270,22 @@ function receive(raw) {
       buttons[id].querySelector("small").textContent = row.stale
         ? "미수신 / 지연"
         : row.mode;
-      const poseKey = JSON.stringify([row.pose, row.joints]);
+      const pose = displayedPose(row);
+      const poseKey = JSON.stringify([pose, row.joints]);
       if (model.userData.poseKey !== poseKey) {
         views.map.dirty = true;
         if (id === selected) views.detail.dirty = true;
         model.userData.poseKey = poseKey;
       }
-      model.visible = !!row.pose;
-      if (row.pose) {
-        model.position.set(...row.pose.slice(0, 3));
-        model.rotation.z = row.pose[3];
+      model.visible = !!pose;
+      if (pose) {
+        model.position.set(...pose.slice(0, 3));
+        model.rotation.z = pose[3];
       }
       poseModel(model, row);
       poseModel(previews[id], row);
       labels[id].classList.toggle("stale", row.stale);
+      labels[id].textContent = title(id) + (installedPoses[id] && (demo || !row.pose) ? " · 설치 배치" : "");
     }
     $("source").textContent = data.source;
     $("task-source").textContent = data.task_source;
@@ -305,7 +343,12 @@ async function start(config) {
   $("demo-controls").hidden = !demo;
   views = { map: view($("map")), detail: view($("model")) };
   makeMap(config.map);
-  $("map-name").textContent = config.map.id + (config.example_map ? " · 예시 지도" : "");
+  $("map-name").textContent = config.map.id + (config.map.layout ? ` · 실측 ${config.map.layout.version}` : config.example_map ? " · 예시 지도" : "");
+  $("map-detail").textContent = config.map.layout
+    ? `map · 벽 ${(config.map.wall_height * 100).toFixed(0)}cm 기준 · ${config.map.layout.graph_version}`
+    : "map · m / rad · 벽 높이는 표시용";
+  if (config.map.layout) document.querySelector(".map-note").textContent = "실측 지도 · 점유셀 돌출 표시 · 설치 배치는 기준값";
+  if (demo && !config.example_map) document.querySelector(".map-note").textContent += " · 움직임은 예시 경로";
   const loader = new GLTFLoader();
   await Promise.all(
     ["pinky", "omx"].map(async (type) => {
@@ -317,6 +360,9 @@ async function start(config) {
       definitions[type] = joints;
     }),
   );
+  for (const mount of config.map.layout?.mounts ?? []) {
+    if (ids.includes(mount.robot_id)) installedPoses[mount.robot_id] = installationPose(mount);
+  }
   for (const id of ids) {
     instances[id] = robot(kind(id));
     instances[id].visible = false;
@@ -335,6 +381,7 @@ async function start(config) {
     buttons[id] = button;
     $("robots").append(button);
     labels[id] = text("span", title(id), "label");
+    labels[id].dataset.robot = id;
     $("labels").append(labels[id]);
   }
   select(selected);
@@ -371,8 +418,9 @@ async function start(config) {
   );
   $("focus").onclick = () => {
     const row = rows.find((r) => r.robot_id === selected);
-    if (!row?.pose) return;
-    views.map.controls.target.set(...row.pose.slice(0, 3));
+    const pose = row && displayedPose(row);
+    if (!pose) return;
+    views.map.controls.target.set(...pose.slice(0, 3));
     views.map.camera.position
       .copy(views.map.controls.target)
       .add(new THREE.Vector3(-0.8, -1, 1));
@@ -409,6 +457,12 @@ async function start(config) {
         .add(new THREE.Vector3(0, 0, kind(id) === "pinky" ? 0.2 : 0.4))
         .project(views.map.camera);
       label.hidden = vector.z > 1 || vector.z < -1;
+      label.style.left = `${(vector.x * 0.5 + 0.5) * $("map").clientWidth}px`;
+      label.style.top = `${(-vector.y * 0.5 + 0.5) * $("map").clientHeight}px`;
+    }
+    for (const {position, label} of mapLabels) {
+      vector.copy(position).project(views.map.camera);
+      label.hidden = vector.z < -1 || vector.z > 1 || Math.abs(vector.x) > 1 || Math.abs(vector.y) > 1;
       label.style.left = `${(vector.x * 0.5 + 0.5) * $("map").clientWidth}px`;
       label.style.top = `${(-vector.y * 0.5 + 0.5) * $("map").clientHeight}px`;
     }

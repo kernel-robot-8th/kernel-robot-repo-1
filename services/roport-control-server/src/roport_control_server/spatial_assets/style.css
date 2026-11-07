@@ -417,3 +417,14 @@ nav a { margin-left:auto; color:var(--muted); padding:10px; }
 #ps-msg[data-kind="warn"] { color: var(--warn); }
 #ps-msg[data-kind="err"] { color: #a33; }
 .ps-jobs { color: var(--muted); padding-left: 18px; }
+
+.map-node {
+  position: absolute;
+  transform: translate(-50%, 5px);
+  padding: 1px 3px;
+  border-radius: 3px;
+  font-size: 9px;
+  color: #41525d;
+  background: #fffffff0;
+  white-space: nowrap;
+}
