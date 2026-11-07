@@ -84,6 +84,8 @@ cd /path/to/kit
 
 trial launch는 `PoseProgressChecker`를 사용해 **15초 안에 0.05m 이동 또는 0.15rad 회전**을 진척으로 판정합니다. 0.03m/s 저속·제자리 회전을 허용하면서 완전히 막힌 상태는 실패시킵니다. controller와 velocity smoother의 직진 속도는 `max_linear`로 맞춥니다. 원본 Pinky Nav2 설정 파일은 수정하지 않습니다.
 
+Pi에서 경로 재계산 중 `follow_path` 목표 수락 응답이 기본 20ms를 넘으면 전체 목표가 실패할 수 있어, trial의 `bt_navigator.default_server_timeout`은 500ms로 지정합니다. 지도 경계 가까운 공용공간 시험점의 주변 검색이 지도 밖을 조회하지 않도록 `planner_server.GridBased.tolerance`는 0.1m로 제한합니다. 이 값은 플래너의 대체 도착점 검색 범위이며, 실제 정지·목표 오차·독립 구동 감시의 완료 조건은 유지합니다.
+
 ## 검증 범위
 
 `bash ci/test.sh`: ROS 빌드, 라인 시뮬레이터, 별도 ROS domain의 가상 map/TF/AMCL/ActionServer, owner 프로세스 강제 종료 시험. 실제 controller/progress plugin의 회전·10초 이상 저속 주행·막힘 판정도 합성 odom/TF로 검사합니다. 실제 모터·LiDAR·Nav2 경로 계획의 현장 검증은 별도다. 테스트는 loopback으로 격리하며 bringup을 실행하지 않는다.

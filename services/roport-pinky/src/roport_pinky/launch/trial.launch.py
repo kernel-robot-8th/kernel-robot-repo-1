@@ -55,6 +55,12 @@ def _nodes(context):
         remaps = []
         if name == 'map_server':
             overrides['yaml_filename'] = LaunchConfiguration('map')
+        if name == 'bt_navigator':
+            # Goal acknowledgements must survive short scheduling delays on the Pi.
+            overrides['default_server_timeout'] = 500  # milliseconds
+        if name == 'planner_server':
+            # The public-space goal is near the map edge; a .5 m search crosses it.
+            overrides['GridBased.tolerance'] = 0.1  # meters
         if name == 'controller_server':
             overrides.update(CONTROLLER_OVERRIDES)
             overrides['FollowPath.desired_linear_vel'] = max_linear

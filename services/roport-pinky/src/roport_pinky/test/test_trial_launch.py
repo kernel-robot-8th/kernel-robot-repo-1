@@ -41,6 +41,8 @@ def test_all_trial_velocity_sources_respect_requested_cap(trial_launch, limit, l
     assert behavior['min_rotational_vel'] == behavior['max_rotational_vel'] == limit
     assert smoother['max_velocity'] == [linear, 0., limit]
     assert smoother['min_velocity'] == [-linear, 0., -limit]
+    assert nodes['bt_navigator']['parameters'][1]['default_server_timeout'] == 500
+    assert nodes['planner_server']['parameters'][1]['GridBased.tolerance'] == .1
     # A field-specific cap must not change exclusive guard wiring.
     assert ('cmd_vel', 'line_nav/cmd_vel') in nodes['line_nav']['remappings']
     assert ('cmd_vel_smoothed', 'trial/nav2_cmd_vel') in nodes['velocity_smoother']['remappings']
