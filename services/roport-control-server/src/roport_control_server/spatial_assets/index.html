@@ -19,13 +19,14 @@
       <button data-tab="overview" aria-pressed="true">통합관제</button>
       <button data-tab="pinky" aria-pressed="false">Pinky</button>
       <button data-tab="omx" aria-pressed="false">OMX</button>
+      <a href="?mode=auto">현장 관제</a>
       <a id="mode-link" href="?mode=demo">DEMO 보기</a>
     </nav>
     <section id="overview">
     <header>
       <h1>현장 관제</h1>
       <div>
-        <span id="mode">OFFLINE</span><span>예시 장비 <b id="robot-count">—</b></span
+        <span id="mode">OFFLINE</span><span><span id="inventory-label">예시 장비</span> <b id="robot-count">—</b></span
         ><span id="source">표시 입력 미연결</span>
       </div>
     </header>
@@ -80,11 +81,30 @@
             <h2>작업 현황</h2>
             <small id="task-source">실행부 미연결</small>
           </div>
-          <div class="actions" aria-label="실행부 연결 후 사용 가능">
+          <div id="offline-actions" class="actions" aria-label="실행부 연결 후 사용 가능">
             <button disabled title="실행부 미구현">작업 승인</button>
             <button disabled title="실행부 미구현">출발 승인</button>
             <button disabled title="실행부 미구현">작업 취소</button>
           </div>
+          <div id="trial-overview"><div id="trial-panel" hidden>
+            <div class="section-head"><h3 id="trial-phase">연결 대기</h3><small id="trial-connection">MQTT 미연결</small></div>
+            <p id="trial-scenario" class="note"></p>
+            <p id="trial-package" class="note"></p>
+            <p id="trial-scope" class="note"></p>
+            <p id="trial-status">핑키 상태 응답 대기</p>
+            <p id="trial-route" class="note"></p>
+            <label>시험 조작 키 <input id="trial-key" type="password" autocomplete="off" placeholder="서버에서 설정한 키" aria-describedby="trial-key-help" /></label>
+            <p id="trial-key-help" class="note">키를 입력한 뒤 아래 버튼을 누르세요. Enter만으로 출발하지 않습니다.</p>
+            <p id="trial-readiness" role="status"></p>
+            <div class="actions">
+              <button data-action="start" disabled>시나리오 출발</button>
+              <button id="trial-dummy" data-action="dummy" disabled>OMX 입고 완료 (더미)</button>
+              <button id="trial-request" data-action="request" disabled hidden>시험 물품 요청</button>
+              <button data-action="stop" disabled>시험 중단 (보류)</button>
+            </div>
+            <p id="trial-feedback" role="status">출발·더미 승인은 수동입니다. 중단은 후속 명령과 lease 갱신을 멈춥니다.</p>
+            <details><summary>최근 수신 이벤트</summary><ul id="trial-events"></ul></details>
+          </div></div>
           <div id="tasks" aria-live="polite">
             <p class="note">수신된 작업이 없습니다.</p>
           </div>
@@ -117,11 +137,11 @@
       </aside>
     </div>
     </section>
-    <section id="pinky" class="detail-page" hidden><h1>Pinky 세부 관제</h1><p>주행 세부 관제 화면 준비 중 · 아래는 Pinky Settings</p><div id="pinky-detail"></div></section>
+    <section id="pinky" class="detail-page" hidden><h1>Pinky 세부 관제</h1><p>주행 세부 관제 화면 준비 중 · 아래는 Pinky Settings</p><section id="pinky-trial-details" hidden><p class="note">최대 3자리 · 시험 배정과 수신 상태는 통합관제와 같습니다. 미배정 기체는 구동하지 않습니다.</p><div id="trial-slots"></div><div id="trial-pinky-panel"></div></section><div id="pinky-detail"></div></section>
     <section id="omx" class="detail-page" hidden><h1>OMX 세부 관제</h1><p>세부 관제 화면 준비 중</p><div id="omx-detail"></div></section>
     <footer>
       <span id="message" role="status">3D 장면 준비 중</span
-      ><span id="fps">—</span><span>읽기 전용 · 실제 제어 없음</span>
+      ><span id="fps">—</span><span id="scope-note">읽기 전용 · 실제 제어 없음</span>
     </footer>
     <script type="module" src="scene.js"></script>
     <script type="module" src="pinky_settings.js"></script>

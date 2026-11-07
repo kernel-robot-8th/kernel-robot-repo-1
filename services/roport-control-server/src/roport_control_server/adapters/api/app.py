@@ -1,9 +1,10 @@
-"""Headless web display API. No DB, executor, MQTT or UDP connections at startup."""
+"""Web display and opt-in trial IPC; never owns MQTT or robot execution."""
 
 import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Literal
 
@@ -15,13 +16,28 @@ from ...contracts.pinky_settings import validate_job, validate_registration
 from .display import ROBOTS, Display
 from .maps import load_map
 from .pinky_settings import NOT_CONNECTED, settings_view
+from .trial import TrialView
 
 MAX_JSON_BYTES = 4096
 
 ASSETS = Path(__file__).resolve().parents[2] / "spatial_assets"
 
 
-def create_app(map_path=None, *, layout_path=None):
+def loopback(host):
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def create_app(
+    map_path=None,
+    *,
+    layout_path=None,
+    trial_socket=None,
+    trial_layout=None,
+    trial_token=None,
+):
     # shortcut: per-worker demo limit; measure with AI load before scaling out.
     stream_slots = asyncio.BoundedSemaphore(8)
 
@@ -29,9 +45,14 @@ def create_app(map_path=None, *, layout_path=None):
     async def lifespan(app):
         # Only the server operator supplies a local path; no file-upload/path API.
         app.state.map = await asyncio.to_thread(
-            load_map, map_path or ASSETS / "maps/demo.yaml", layout_path
+            load_map, map_path or ASSETS / "maps/demo.yaml", layout_path or trial_layout
         )
         app.state.example_map = map_path is None
+        app.state.trial = (
+            TrialView(trial_socket, trial_token, app.state.map)
+            if trial_socket
+            else None
+        )
         yield
 
     app = FastAPI(title="RO:PORT control web display", lifespan=lifespan)
@@ -56,24 +77,45 @@ def create_app(map_path=None, *, layout_path=None):
         return RedirectResponse("/ui/")
 
     @app.get("/api/bootstrap")
-    def bootstrap(mode: Literal["offline", "demo"] = "offline"):
-        return {
+    def bootstrap(
+        mode: Literal["auto", "offline", "demo", "trial"] = "auto",
+    ):
+        if mode == "auto":
+            mode = "trial" if app.state.trial else "offline"
+        result = {
+            "mode": mode,
             "map": app.state.map,
             "example_map": app.state.example_map,
             "demo": mode == "demo",
             "robots": ROBOTS,
         }
+        if mode == "trial":
+            if not app.state.trial:
+                return JSONResponse({"detail": "trial UI is not configured"}, 503)
+            try:
+                result.update(app.state.trial.bootstrap())
+            except (OSError, ValueError):
+                return JSONResponse(
+                    {"detail": "시험 실행부 연결·지도 설정을 확인하세요."}, 503
+                )
+        return result
 
     @app.get("/api/snapshot")
-    def snapshot():
+    def snapshot(mode: Literal["offline", "trial"] = "offline"):
+        if mode == "trial":
+            if not app.state.trial:
+                return JSONResponse({"detail": "trial UI is not configured"}, 503)
+            return app.state.trial.snapshot()
         return Display().snapshot()
 
     async def json_object(request):
         if request.headers.get("content-type", "").split(";")[0] != "application/json":
             return None, JSONResponse({"detail": "application/json required"}, 415)
-        raw = await request.body()
-        if len(raw) > MAX_JSON_BYTES:
-            return None, JSONResponse({"detail": "body too large"}, 413)
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > MAX_JSON_BYTES:
+                return None, JSONResponse({"detail": "body too large"}, 413)
+            raw.extend(chunk)
         try:
             data = json.loads(raw)
         except (ValueError, RecursionError):
@@ -119,8 +161,51 @@ def create_app(map_path=None, *, layout_path=None):
             return JSONResponse({"detail": str(e)}, 400)
         return JSONResponse({"detail": NOT_CONNECTED, "value": value}, 503)
 
+    @app.post("/api/trial/commands")
+    async def trial_command(request: Request):
+        trial = app.state.trial
+        if trial is None:
+            return JSONResponse({"detail": "trial UI is not configured"}, 503)
+        if (
+            request.headers.get("origin")
+            != f"{request.url.scheme}://{request.headers.get('host')}"
+            or not trial.authorized(request.headers.get("x-roport-trial-token", ""))
+        ):
+            return JSONResponse(
+                {"detail": "같은 화면에서 올바른 조작 키를 입력하세요."}, 403
+            )
+        data, error = await json_object(request)
+        if error:
+            return error
+        try:
+            await asyncio.to_thread(
+                trial.command,
+                data,
+                secure_transport=request.url.scheme == "https"
+                or (
+                    request.client is not None
+                    and loopback(request.client.host)
+                    and (
+                        request.url.hostname == "localhost"
+                        or loopback(request.url.hostname)
+                    )
+                ),
+            )
+            return {"accepted": True}
+        except PermissionError as exc:
+            return JSONResponse({"detail": str(exc)}, 403)
+        except ValueError as exc:
+            return JSONResponse({"detail": str(exc)}, 409)
+        except OSError:
+            return JSONResponse(
+                {"detail": "실행부 응답 없음 · 결과 미확인. 상태 확인 후 조작하세요."},
+                503,
+            )
+
     @app.websocket("/api/state")
-    async def state(websocket: WebSocket, mode: Literal["offline", "demo"] = "offline"):
+    async def state(
+        websocket: WebSocket, mode: Literal["offline", "demo", "trial"] = "offline"
+    ):
         scheme = "https" if websocket.url.scheme == "wss" else "http"
         if (
             websocket.headers.get("origin")
@@ -131,18 +216,29 @@ def create_app(map_path=None, *, layout_path=None):
         if stream_slots.locked():
             await websocket.close(code=1013)
             return
+        if mode == "trial" and app.state.trial is None:
+            await websocket.close(code=1008)
+            return
         display = Display(demo=mode == "demo", map_geometry=app.state.map)
 
         async def send():
             while True:
+                data = (
+                    await asyncio.to_thread(app.state.trial.snapshot)
+                    if mode == "trial"
+                    else display.snapshot()
+                )
                 # No unbounded broadcast queue: slow clients time out independently.
-                await asyncio.wait_for(websocket.send_json(display.snapshot()), 3)
-                await asyncio.sleep(0.1)
+                await asyncio.wait_for(websocket.send_json(data), 3)
+                await asyncio.sleep(0.25 if mode == "trial" else 0.1)
 
         async def receive():
             while True:
                 message = await websocket.receive()
                 if message["type"] == "websocket.disconnect":
+                    return
+                if mode == "trial":
+                    await websocket.close(code=1008)
                     return
                 raw = message.get("text")
                 if raw is None:
@@ -180,6 +276,9 @@ def create_app_from_env(environment):
     return create_app(
         environment.get("ROPORT_MAP"),
         layout_path=environment.get("ROPORT_MAP_LAYOUT"),
+        trial_socket=environment.get("ROPORT_TRIAL_SOCKET"),
+        trial_layout=environment.get("ROPORT_TRIAL_LAYOUT"),
+        trial_token=environment.get("ROPORT_TRIAL_TOKEN"),
     )
 
 
