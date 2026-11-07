@@ -17,7 +17,7 @@ from queue import Empty
 from time import monotonic
 from uuid import uuid4
 
-from roport_omx.cooperative import PROFILE, WORKCELL
+from roport_omx.cooperative import PROFILE, SLOTS, WORKCELL
 from roport_omx.mqtt_link.messages import decode, topic
 from roport_omx.mqtt_link.mqtt import MqttConfig, MqttTransport
 
@@ -124,7 +124,7 @@ def main() -> None:
     parser.add_argument("--site", default="test")
     parser.add_argument("--control", default="control-test")
     parser.add_argument("--binding", default="test-binding")
-    parser.add_argument("--slot", default="slot-A1")
+    parser.add_argument("--slot", default="1a", choices=list(SLOTS))
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument(
         "--log", type=Path, default=Path("cooperative_sim_events.jsonl")

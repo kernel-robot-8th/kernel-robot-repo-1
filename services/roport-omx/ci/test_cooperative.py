@@ -54,7 +54,7 @@ def task_payload(boot_id: str, **changes) -> dict:
         "robot_ids": ["omx1", "omx2"],
         "package_id": "pkg-1",
         "quantity": 1,
-        "slot_id": "slot-A1",
+        "slot_id": "1a",
         "pinky_id": "pinky1",
         "dock_session_id": "dock-1",
         "resource_token": "grant-1",
@@ -102,6 +102,9 @@ class CooperativeHostTest(unittest.TestCase):
         self.assertEqual(event["payload"]["boot_id"], self.host.boot_id)
         self.assertIs(event["payload"]["armed"], True)
         self.assertIs(event["payload"]["ready"], True)
+        self.assertEqual(
+            event["payload"]["slots"], ["1a", "1b", "1c", "2a", "2b", "2c"]
+        )
 
     def test_inbound_completes_when_both_arms_return(self):
         accepted = self.host.handle(self.inbound())
@@ -118,7 +121,7 @@ class CooperativeHostTest(unittest.TestCase):
         self.assertIsNone(p["placement_confirmed"])
         self.assertIsNone(p["quantity_confirmed"])
         self.assertEqual(p["evidence"], "arm_return_only")
-        self.assertEqual(p["slot_id"], "slot-A1")
+        self.assertEqual(p["slot_id"], "1a")
         self.assertEqual(self.host.poll(), [])
         self.assertIsNone(self.host.hold)
 
@@ -144,7 +147,7 @@ class CooperativeHostTest(unittest.TestCase):
     def test_changed_content_with_same_command_id_conflicts(self):
         command = self.inbound()
         self.host.handle(command)
-        changed = {**command, "payload": {**command["payload"], "slot_id": "slot-B2"}}
+        changed = {**command, "payload": {**command["payload"], "slot_id": "2b"}}
         (event,) = self.host.handle(changed)
         self.assertEqual(event["payload"]["error_code"], "IDEMPOTENCY_CONFLICT")
         self.assertEqual(len(self.executor.tasks), 1)
@@ -189,6 +192,7 @@ class CooperativeHostTest(unittest.TestCase):
             "COOPERATIVE_SHELF_REQUIRED": self.inbound(manipulation_mode="DEDICATED"),
             "QUANTITY_UNSUPPORTED": self.inbound(quantity=True),
             "UNSUPPORTED_FIELDS": self.inbound(extra="x"),
+            "UNKNOWN_SLOT": self.inbound(slot_id="1A"),
             "UNSUPPORTED_PROFILE": {
                 **self.inbound(),
                 "profile": "roport-pinky-driving-trial-v1",
@@ -210,6 +214,18 @@ class CooperativeHostTest(unittest.TestCase):
             "INVALID_REQUEST",
         )
         self.assertEqual(self.executor.tasks, [])
+
+    def test_each_shelf_slot_is_accepted(self):
+        for slot in ("1a", "1b", "1c", "2a", "2b", "2c"):
+            with self.subTest(slot):
+                (event,) = self.host.handle(self.inbound(slot_id=slot))
+                self.assertEqual(event["payload"]["phase"], "ACCEPTED")
+                self.assertEqual(event["payload"]["slot_id"], slot)
+                self.host.poll()
+        for slot in ("3a", "1d", "A1"):
+            with self.subTest(slot):
+                (event,) = self.host.handle(self.inbound(slot_id=slot))
+                self.assertEqual(event["payload"]["error_code"], "UNKNOWN_SLOT")
 
     def test_unrouted_sender_gets_no_reply(self):
         with self.assertRaises(ValueError):

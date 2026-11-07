@@ -52,6 +52,9 @@ ECHO_FIELDS = (
     "model_version",
     "calibration_version",
 )
+# shelf-01 is 2 rows x 3 columns: row 1 = lower, 2 = upper; a/b/c = left to right seen from the
+# arms. Values are the slot's ArUco marker IDs (docs/aruco/markers.yaml v1.4, S1A..S2C).
+SLOTS = {"1a": 28, "1b": 29, "1c": 30, "2a": 31, "2b": 32, "2c": 33}
 _ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _IDS = ("type", "task_id", "step_id", "command_id", "execution_id")
 
@@ -310,6 +313,7 @@ class CooperativeHost:
             "executor_error": ready["error"],
             "arms": _arms(ready.get("arms")),
             "supported_profiles": [PROFILE],
+            "slots": list(SLOTS),
         }
         return self._remember(message, record, "completed", "STATUS", payload)
 
@@ -348,6 +352,8 @@ class CooperativeHost:
         }:
             if not isinstance(p[key], str) or not _ID.fullmatch(p[key]):
                 raise Rejected("INVALID_FIELD")
+        if p["slot_id"] not in SLOTS:
+            raise Rejected("UNKNOWN_SLOT")
         task = {k: p[k] for k in TASK_FIELDS - {"binding_id", "expected_boot_id"}}
         return {
             **task,
