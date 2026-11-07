@@ -35,8 +35,9 @@ def loaded_waiting(mission):
     token = mission.start_loading()
     # These route results are explicitly fabricated, not automatic completion.
     token = mission.complete('load_route_finished', token)
+    mission.assign_wait_bay('wait_p1', token)
     token = mission.complete('load_confirmed', token)
-    mission.complete('wait_route_finished', token)
+    mission.complete('wait_route_finished', token, place_id='wait_p1')
     assert mission.state == 'WAIT_DISPATCH' and mission.loaded
 
 
@@ -74,15 +75,16 @@ def test_scripted_loaded_delivery_and_explicit_return(parts):
     operation = mission.complete('delivery_reached', operation)
     assert mission.state == 'WAIT_UNLOAD' and mission.loaded
     assert gate.output() == (0., 0.)
+    mission.assign_wait_bay('wait_p1', operation)
     operation = mission.complete('unload_confirmed', operation)
     assert not mission.loaded
-    home = load_destination(places, map_yaml, 'wait_p1')
+    home = load_destination(places, map_yaml, mission.wait_bay)
     nav.start(home)
     nav.goal_response(nav.token, True)
     enable_nav(gate)
     nav.result(nav.token, 'succeeded')
     acknowledge_synthetic_stop(gate, nav)
-    mission.complete('home_reached', operation)
+    mission.complete('home_reached', operation, place_id='wait_p1')
     assert mission.state == 'IDLE_EMPTY' and mission.destination is None
     assert gate.output() == (0., 0.)
 
