@@ -57,6 +57,17 @@ def line_return_route(bay):
     raise ValueError('return bay must be H1 or H2')
 
 
+def line_blocked_since(since, requested, measured, now):
+    moving = abs(measured[0]) > .003 or abs(measured[1]) > .01
+    requested = abs(requested[0]) > .005 or abs(requested[1]) > .02
+    if moving or not requested:
+        return None
+    since = now if since is None else since
+    if now-since >= 12:
+        raise RuntimeError('line_motion_blocked: no motion for 12 seconds; stop and request recovery')
+    return since
+
+
 def ir_values(lines, pose, calibration):
     """Nine-point IR footprint on generated world tape boxes, metres/radians."""
     x, y, yaw = pose
@@ -244,7 +255,7 @@ def main():
             child = subprocess.Popen(['ros2', 'run', 'roport_smartcart', 'navigate',
                 '--mode', 'sim', '--domain-id', '198', '--places',
                 str(smart/'config/places_sim.yaml'), '--map', str(world/'maps/airport_map.yaml'),
-                '--target', target, '--startup-wait', '30', '--timeout', '150'],
+                '--target', target, '--startup-wait', '30', '--timeout', '180'],
                 start_new_session=True)
             while child.poll() is None:
                 spin(.1)
@@ -306,6 +317,7 @@ def main():
         node.get_logger().info(f'LINE -> {line_return_route(bay)} (0.06 m/s, geometric IR)')
         end = time.monotonic()+150
         previous = None
+        blocked_since = None
         while time.monotonic() < end:
             fresh()
             control_ready()
@@ -317,6 +329,10 @@ def main():
             output = route.step(reading, (odom.position.x*100., odom.position.y*100., odom_yaw),
                                 node.get_clock().now().nanoseconds/1e9)
             if output is not None:
+                measured = samples['odom'].twist.twist
+                blocked_since = line_blocked_since(blocked_since,
+                    (output.linear, output.angular), (measured.linear.x, measured.angular.z),
+                    node.get_clock().now().nanoseconds/1e9)
                 command(output.linear, output.angular)
             state = (route.state, route.index)
             if state != previous:

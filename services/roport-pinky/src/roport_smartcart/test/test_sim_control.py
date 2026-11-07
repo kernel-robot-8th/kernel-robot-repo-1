@@ -29,7 +29,7 @@ def grant(**changes):
         {"expires_at": float("nan")},
         {"expires_at": float("inf")},
         {"expires_at": True},
-        {"expires_at": 401.0},
+        {"expires_at": 501.0},
     ],
 )
 def test_invalid_grants_cannot_release_wait(changes):

@@ -35,7 +35,7 @@ class ReturnPermit:
             or isinstance(expires, bool)
             or not isinstance(expires, (int, float))
             or not math.isfinite(expires)
-            or not 0 < expires - now <= 300
+            or not 0 < expires - now <= 400
         ):
             return
         if self.grant is None:
@@ -114,7 +114,7 @@ def main():
                 "receipt_confirmed": True,
                 "bay": bay,
                 "reservation_id": uuid4().hex,
-                "expires_at": time.time() + 290,
+                "expires_at": time.time() + 390,
             }
         response.success, response.message = True, json.dumps(grants[session])
         publisher.publish(String(data=response.message))

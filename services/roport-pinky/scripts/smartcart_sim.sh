@@ -16,7 +16,7 @@ unset ROS_STATIC_PEERS ROS_DISCOVERY_SERVER
 cd "$SMARTCART_WS"
 
 case "${1:-start}" in
-  start|headless|sensors)
+  start|headless|sensors|obstacles)
     SMARTCART_GUI=true
     if [[ "${1:-start}" == headless ]]; then SMARTCART_GUI=false; fi
     SMARTCART_PYTHON="${SMARTCART_PYTHON:-$(dirname "$(dirname "$SMARTCART_WS")")/../.venvs/smartcart-console/bin/python}"
@@ -24,6 +24,10 @@ case "${1:-start}" in
     if ! "$SMARTCART_PYTHON" -c 'import flask, rclpy' >/dev/null 2>&1; then
       echo 'Flask와 ROS를 함께 읽는 Python이 필요합니다. README의 가상환경 준비 절차를 확인하세요.' >&2
       exit 1
+    fi
+    if [[ "${1:-start}" == obstacles ]]; then
+      shift
+      exec "$SMARTCART_PYTHON" "$(command -v ros2)" launch roport_smartcart obstacle_delivery.launch.py "$@"
     fi
     if [[ "${1:-start}" == sensors ]]; then
       exec "$SMARTCART_PYTHON" "$(command -v ros2)" launch roport_smartcart sensor_demo.launch.py height:="${2:-0.05}"
@@ -59,7 +63,7 @@ case "${1:-start}" in
       --target "$SMARTCART_TARGET" "${SMARTCART_RETURN[@]}" --startup-wait 30 --timeout 120
     ;;
   *)
-    echo '사용법: smartcart_sim.sh [start|headless|sensors [높이_m]|sensor-goal|gate1|gate2|gate3|delivery1|delivery2|delivery3|control [--occupied H1 H2]|h1|h2|home]' >&2
+    echo '사용법: smartcart_sim.sh [start|headless|obstacles [bay:=H1 height:=0.125]|sensors [높이_m]|sensor-goal|gate1|gate2|gate3|delivery1|delivery2|delivery3|control [--occupied H1 H2]|h1|h2|home]' >&2
     exit 2
     ;;
 esac

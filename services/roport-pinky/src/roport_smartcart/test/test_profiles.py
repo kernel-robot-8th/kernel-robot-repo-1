@@ -157,4 +157,9 @@ def test_range_layers_are_sim_only_and_before_inflation():
             assert ('sonar_layer' in c['plugins']) is (mode == 'sim')
             if mode == 'sim':
                 assert c['plugins'][-2:] == ['sonar_layer', 'inflation_layer']
-                assert c['sonar_layer']['clear_on_max_reading'] is True
+                assert c['sonar_layer']['plugin'] == 'nav2_costmap_2d::ObstacleLayer'
+                source = c['sonar_layer']['sonar_proxy']
+                assert source['topic'] == '/sim/sonar_scan'
+                assert source['marking'] and source['clearing'] and source['inf_is_valid']
+                assert source['expected_update_rate'] == .5
+                assert source['obstacle_max_range'] < source['raytrace_max_range'] == .95
