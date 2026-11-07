@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro" name="pinky">
+  <xacro:include filename="$(find pinky_description)/urdf/robot.urdf.xacro"/>
+  <!-- Horizontal ray fan approximates distance geometry, not acoustic physics. -->
+  <gazebo reference="ultrasonic_link">
+    <sensor name="sonar_proxy" type="gpu_lidar">
+      <topic>sim/sonar_scan</topic>
+      <gz_frame_id>ultrasonic_link</gz_frame_id>
+      <update_rate>20</update_rate>
+      <lidar>
+        <scan>
+          <horizontal>
+            <samples>9</samples>
+            <resolution>1</resolution>
+            <min_angle>-0.13</min_angle>
+            <max_angle>0.13</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.02</min>
+          <max>0.95</max>
+          <resolution>0.005</resolution>
+        </range>
+      </lidar>
+      <always_on>true</always_on>
+      <visualize>true</visualize>
+    </sensor>
+  </gazebo>
+</robot>

@@ -13,6 +13,7 @@ setup(
         ('share/' + package_name, ['package.xml', 'README.md', 'IMPLEMENTATION_PLAN.md']),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
         ('share/' + package_name + '/launch', glob('launch/*.py')),
+        ('share/' + package_name + '/urdf', glob('urdf/*.xacro')),
         ('share/' + package_name + '/config/reference/2026-09-14',
          glob('config/reference/2026-09-14/*.txt')),
     ],
@@ -23,5 +24,6 @@ setup(
     description='RO:PORT smart cart (Pinky3) mission package',
     license='LicenseRef-Proprietary',
     extras_require={'test': ['pytest']},
-    entry_points={'console_scripts': ['navigate = roport_smartcart.navigate:main']},
+    entry_points={'console_scripts': ['navigate = roport_smartcart.navigate:main',
+                                     'sim_sonar = roport_smartcart.sim_sonar:main']},
 )
