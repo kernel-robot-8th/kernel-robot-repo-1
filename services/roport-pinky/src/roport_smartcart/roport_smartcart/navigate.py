@@ -255,9 +255,10 @@ def main(args=None):
         while time.monotonic() < deadline:
             refresh.poll()
             step()
-            if not failures():
+            if not failures() and client.server_is_ready():
                 return
-        raise RuntimeError('readiness failed: ' + '; '.join(failures())
+        pending = failures() + ([] if client.server_is_ready() else ['Nav2 action server unavailable'])
+        raise RuntimeError('readiness failed: ' + '; '.join(pending)
                            + '; ' + refresh.error)
 
     def cancel_and_hold():

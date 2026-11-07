@@ -97,8 +97,16 @@ class NavigationPeer:
             handle.succeed()
             return NavigateToPose.Result()
 
-        self.action = ActionServer(self.node, NavigateToPose, 'navigate_to_pose', execute,
-                                   cancel_callback=cancel, callback_group=group)
+        self.action = None
+        def start_action():
+            self.action = ActionServer(self.node, NavigateToPose, 'navigate_to_pose', execute,
+                                       cancel_callback=cancel, callback_group=group)
+            if scenario == 'action_delayed':
+                self.action_timer.cancel()
+        if scenario == 'action_delayed':
+            self.action_timer = self.node.create_timer(3., start_action, callback_group=group)
+        else:
+            start_action()
         self.timer = self.node.create_timer(.05, publish, callback_group=group)
         self.executor = MultiThreadedExecutor(num_threads=4, context=self.context)
         self.executor.add_node(self.node)
@@ -119,7 +127,8 @@ class NavigationPeer:
         self.shutdown_requested.set()
         self.executor.shutdown(timeout_sec=3.)
         self.thread.join(timeout=3.)
-        self.action.destroy()
+        if self.action is not None:
+            self.action.destroy()
         self.node.destroy_node()
         self.context.shutdown()
 
@@ -140,7 +149,7 @@ def files(tmp_path):
 
 
 @pytest.mark.parametrize('scenario', [
-    'map_wrong', 'map_missing', 'covariance_high', 'healthy',
+    'map_wrong', 'map_missing', 'covariance_high', 'healthy', 'action_delayed',
     'map_changes_during_goal', 'covariance_worsens_during_goal',
 ])
 def test_cli_requires_live_map_and_confident_localization(files, monkeypatch, scenario):
@@ -156,7 +165,7 @@ def test_cli_requires_live_map_and_confident_localization(files, monkeypatch, sc
         result = subprocess.run(arguments, env={**os.environ, 'ROS_DOMAIN_ID': '192'},
                                 capture_output=True, text=True, timeout=22)
         output = result.stdout + result.stderr
-        if scenario == 'healthy':
+        if scenario in ('healthy', 'action_delayed'):
             assert result.returncode == 0, output
             assert len(peer.goals) == 1, output
             assert peer.cancellations == 0, output
