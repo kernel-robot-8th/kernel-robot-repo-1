@@ -39,9 +39,9 @@ Pinky Pro(ROS 2 Jazzy, Ubuntu 24.04, Raspberry Pi 5) 테스트용 웹 콘솔.
 | AMCL 테스트(`amcl.html`) | 지도 위 라이다 스캔(벽까지 5·10 cm로 색 구분)·AMCL 위치·표준편차, 정합 점수, 배치 yaml 노드(N12 등) 초기 위치 버튼, 제자리 갱신, 실제 위치와 비교 기록(CSV) |
 | 마커 테스트(`marker.html`) | 카메라 영상에 인식한 마커 표시, ID·이름(`docs/aruco/markers.yaml`)·화면 크기·참고 거리, 표의 마커별 확인 ✓·최근 5 s 인식률 |
 | IR 측정(`ir.html`) | `ir_sensor/range` 원시값 3개 실시간 표시·10 s 그래프, 라벨·시간 지정 CSV 기록(`~/roport_ir/`), 평균·표준편차, carpet/tape 참고 임계값 |
-| 경로 주행(`route.html`, 로봇) | 노드 그래프에서 경로 지정(클릭·경로 예시), 시작·상차 완료·정지, `line_nav/state`(구간·감지 창·회전·IR·이벤트) 표시. 경로 주행은 [roport_line_nav](../roport_line_nav/) |
+| 경로 주행(`route.html`, 로봇) | 노드 그래프에서 경로 지정(클릭·경로 예시), 시작·상차 완료·정지·**⌂ P5 복귀**, 배터리(%·V), `line_nav/state`(구간·감지 창·회전·IR·이벤트) 표시. 경로 주행은 [roport_line_nav](../roport_line_nav/) |
 | 통합 테스트(`test.html`, 노트북) | 탭 하나로 테스트 관제·Pinky 설정과 로봇별 경로 주행·IR 측정·조종/지도·AMCL 화면을 엶(로봇 화면은 노트북이 `/robot/<이름>/`으로 중계). 마커 탭은 마커 부착·시험 뒤 추가 |
-| 테스트 관제(`fleet.html`, 노트북) | 전체 지도(벽·물체·구역·게이트·ARR)에 로봇별 추정 위치·지나온 구간(로봇 색, 새 경로 시작 때 지움). 출발(P1·P2·P5·P6 또는 현재 위치) 고르고 목적지 정차 노드를 누르면 최단 경로. 시작·상차 완료·정지·복귀, 전체 정지·전체 복귀. 로그 화면(로봇 ROS 로그 포함)·CSV 저장. 로봇 콘솔 원격 켜기·끄기(`test`·`ir`), 로봇 로그 파일 가져오기(scp). 각 로봇의 `mode:=test`(또는 `route`) 콘솔을 HTTP로 부름(MQTT 없음) |
+| 테스트 관제(`fleet.html`, 노트북) | 전체 지도(벽·물체·구역·게이트·ARR)에 로봇별 추정 위치·지나온 구간(로봇 색, 새 경로 시작 때 지움). 출발(P1·P2·P5·P6 또는 현재 위치) 고르고 목적지 정차 노드를 누르면 최단 경로. 시작·상차 완료·정지·복귀(경로 끝 상차 대기 중이면 로봇 콘솔이 상차 완료 뒤 출발), 전체 정지·전체 복귀. 로봇 표에 배터리 %. 로그 화면(로봇 ROS 로그 포함)·CSV 저장. 로봇 콘솔 원격 켜기·끄기(`test`·`ir`), 로봇 로그 파일 가져오기(scp). 각 로봇의 `mode:=test`(또는 `route`) 콘솔을 HTTP로 부름(MQTT 없음) |
 | Pinky 설정(`settings.html`, 노트북) | IP로 등록(이름·역할·ROS_DOMAIN_ID·IR 기준값·복귀 칸·RMW), 연결 확인, 업데이트(브랜치)·릴리즈(`origin/main`) 설치, 빌드, 도메인 읽기·적용, 작업 기록 |
 
 ### 조종 안전 규칙 (서버에서 강제)
@@ -139,6 +139,10 @@ ros2 launch pinky_test_console console.launch.py mode:=nav map:=$HOME/roport_map
 | `ssh_key` | `~/.ssh/pinky_ed25519` | `mode:=fleet` SSH 키. 비밀번호는 받지 않음(BatchMode) |
 | `fleet_log_dir` | `~/roport_fleet_logs` | `mode:=fleet` 날짜별 로그 CSV 폴더. 로봇에서 가져온 파일은 `<폴더>/<로봇 이름>/` |
 | `nav_log_dir` | `~/roport_logs` | `mode:=route`·`test` 경로 상세 기록(route_*.csv) 폴더(line_nav `log_dir`) |
+| `line_max_linear` | `0.06` | `mode:=route`·`test` line_nav 직선 속도 상한(m/s, 코드 상한 0.15). 화면 속도 슬라이더 최대. 0.08 시험: `line_max_linear:=0.08` |
+| `approach_lead_cm` | `5.0` | `mode:=route`·`test` 예상 노드 위치 몇 cm 전부터 0.03 m/s로 감속(line_nav) |
+| `line_kp`·`line_kd` | `1.0`·`0.05` | `mode:=route`·`test` 라인 추종 게인(line_nav `kp`·`kd`) |
+| `line_gain_ref_speed` | `0.06` | 이 속도(m/s)까지는 `kp` 그대로, 넘으면 `kp × 속도/이 값`(0.08이면 1.33). `0.15`면 속도 맞춤 끔. 시험판, 실로봇 미검증 |
 | `use_sim_time` | `false` | Gazebo/MuJoCo 시뮬레이션이면 `true` |
 | `map_dir` | `~/roport_maps` | 지도 저장 폴더 |
 | `ir_dir` | `~/roport_ir` | IR 기록 CSV 폴더 |
@@ -247,6 +251,14 @@ ros2 launch pinky_test_console console.launch.py mode:=test robot:=pinky_d660   
 터미널 2는 노트북 테스트 관제의 「경로+IR 켜기」로 대신할 수 있습니다(터미널 1 bringup은 원격으로 켜지 않음).
 
 브라우저에서 `http://<로봇IP>:8080/route.html`을 엽니다(콘솔 상단 **경로 주행** 버튼).
+
+- **⌂ P5 복귀**: 지금 노드에서 P5(N16)까지 최단 경로로 출발(`POST /api/route/return {start?, goal?}`).
+  - 끝난 경로의 도착 노드(arrived·handoff)에서 바로 출발합니다.
+  - 경로 끝 상차 대기(loading)면 상차 완료를 보내고 도착(arrived)을 확인한 뒤 출발합니다(최대 40 s).
+  - 정지·오류 뒤처럼 위치를 모르면 지도에서 지금 서 있는 노드를 먼저 누릅니다(첫 노드 = 현재 위치, 첫 구간 방향으로 세움).
+  - 주행 중·경유 상차 중에는 거부합니다. 로봇끼리 충돌 회피는 없습니다.
+- 경로 예시 **P5 → P4 상차 → P5 왕복**: P4에서 상차 대기(「상차 완료」) 뒤 P5 칸으로 돌아와 후진 정차.
+- 상단 **배터리** 칩: `battery/percent`·`voltage`(bringup의 battery_publisher, 5 s 주기). 40% 미만 노랑, 20% 미만 빨강, 15 s 넘게 안 오면 흐리게.
 
 1. 로봇을 첫 노드 위에 첫 구간 방향으로 세웁니다(대기·충전 칸·상차 노드에서 끝난 경로는 그 자리에서 바로 다음 경로).
 2. 지도에서 노드를 차례로 누르거나 「경로 예시」를 고르고 **경로 시작**. 예시에 「P5 → P4 상차 → P7 상차 (한 번에)」(P4 경유)·「P5 → P7 바로」가 있음. 「속도 적용」으로 직선·회전 속도를 바꿀 수 있음(최대 6 cm/s·0.6 rad/s).

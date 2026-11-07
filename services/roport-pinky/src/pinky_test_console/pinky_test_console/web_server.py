@@ -417,9 +417,11 @@ class ConsoleNode(Node):
                 'ros_logs': route_view.list_ros_log_dirs('~/.ros/log')}
 
     def route_snapshot(self):
+        now = time.monotonic()
         with self.lock:
             st = self.route_state
-        age = None if st is None else round(time.monotonic() - st[1], 2)
+            battery = dict(self.battery)
+        age = None if st is None else round(now - st[1], 2)
         return {
             'mode': self.mode,
             'robot': str(self.get_parameter('robot').value),
@@ -427,7 +429,45 @@ class ConsoleNode(Node):
             'state': None if st is None else st[0],
             'age_sec': age,
             'stale': st is None or age > ROUTE_STALE_SEC,
+            # 경로 화면·테스트 관제의 배터리 표시(battery_publisher 5 s 주기, 15 s 넘으면 stale)
+            'battery': {k: None if v is None else round(v[0], 2) for k, v in battery.items()} | {
+                'stale': all(v is None or now - v[1] > BATTERY_STALE_SEC
+                             for v in battery.values())},
         }
+
+    def route_return(self, goal=None, start=None, wait_sec=40.0):
+        """「복귀」: 지금 노드 → goal(기본 P5). 경로 끝 상차 대기면 상차 완료를 먼저 보내고
+        도착(arrived)을 기다렸다가 출발한다(별도 스레드). → {'success', 'msg', 'route'}"""
+        with self.lock:
+            st = self.route_state
+        state = None if st is None or time.monotonic() - st[1] > ROUTE_STALE_SEC else st[0]
+        plan = route_view.plan_return(self.route_graph(), state, goal=goal, start=start)
+        if not plan['route']:
+            return {'success': True, 'msg': plan['msg'], 'route': []}
+        start_cmd = {'cmd': 'start', 'route': plan['route']}
+        if not plan['load_done_first']:
+            self.route_command(start_cmd)
+            return {'success': True, 'msg': plan['msg'], 'route': plan['route']}
+        self.route_command({'cmd': 'load_done'})
+        seq0 = (state or {}).get('event_seq')
+
+        def wait_then_start():
+            deadline = time.monotonic() + wait_sec
+            while time.monotonic() < deadline:
+                time.sleep(0.1)
+                with self.lock:
+                    cur = self.route_state
+                s = cur[0] if cur else {}
+                if s.get('state') == 'arrived' and s.get('event_seq') != seq0:
+                    self.route_command(start_cmd)
+                    return
+                if s.get('state') in ('error', 'stopped'):
+                    break
+            self.get_logger().warn(f'[WEB] return: no arrival after load_done ({s.get("state")}); '
+                                   'route not started')
+
+        threading.Thread(target=wait_then_start, daemon=True).start()
+        return {'success': True, 'msg': plan['msg'], 'route': plan['route']}
 
     def route_graph(self):
         if self._route_graph is None:

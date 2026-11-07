@@ -135,3 +135,83 @@ def test_presets_are_valid_routes():
     for p in PRESETS:
         legs, _ = ex._plan_segments(p['route'])
         assert len(legs) == len(p['route']) - 1, p['name']
+
+
+def _ld(state, route, index=None, to=None, **kw):
+    leg = {'to': to or (route[-1] if route else None)}
+    return {'state': state, 'route': route, 'index': len(route) - 2 if index is None else index,
+            'leg': leg, **kw}
+
+
+def test_round_trip_preset():
+    p = next(p for p in PRESETS if p['name'] == 'P5 → P4 상차 → P5 왕복')
+    assert p['route'][0] == p['route'][-1] == 'N16' and 'N01' in p['route']
+
+
+def test_plan_return():
+    from pinky_test_console.route_view import plan_return
+    g = graph_view(LAYOUT)
+    r = plan_return(g, _ld('arrived', ['N11', 'N19', 'N24', 'N09', 'N08', 'N12']))
+    assert r['route'][0] == 'N12' and r['route'][-1] == 'N16' and not r['load_done_first']
+    r = plan_return(g, _ld('loading', ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']))   # 경로 끝 상차
+    assert r['load_done_first'] and r['route'][0] == 'N01' and r['route'][-1] == 'N16'
+    assert '상차 완료' in r['msg']
+    with pytest.raises(RouteCommandError, match='경유 상차'):                  # 경유 상차 중
+        plan_return(g, _ld('loading', ['N16', 'N14', 'N02', 'N10', 'N18', 'N01', 'N18', 'N07',
+                                       'N23', 'N19', 'N11'], index=4, to='N01'))
+    with pytest.raises(RouteCommandError, match='주행 중'):
+        plan_return(g, _ld('follow', ['N16', 'N14']))
+    for st in ('stopped', 'error', 'idle', None):
+        with pytest.raises(RouteCommandError, match='위치 모름'):
+            plan_return(g, None if st is None else _ld(st, []))
+        r = plan_return(g, None if st is None else _ld(st, []), start='N11')   # 지도에서 지정
+        assert r['route'][0] == 'N11' and r['route'][-1] == 'N16'
+    assert plan_return(g, _ld('arrived', ['N14', 'N16']))['route'] == []     # 이미 P5
+    with pytest.raises(RouteCommandError):
+        plan_return(g, _ld('stopped', []), start='N99')
+
+
+def test_console_route_return_sends_load_done_then_start():
+    """로봇 콘솔 route_return: 경로 끝 상차 대기 → load_done, 도착(arrived) 뒤 복귀 start."""
+    import threading
+    import time
+    ws = pytest.importorskip('pinky_test_console.web_server')
+
+    class Log:
+        def warn(self, *_):
+            pass
+
+        def info(self, *_):
+            pass
+
+    class Fake:
+        def __init__(self, state):
+            self.lock = threading.Lock()
+            self.route_state = (state, time.monotonic())
+            self.sent = []
+            self._g = graph_view(LAYOUT)
+
+        def route_graph(self):
+            return self._g
+
+        def route_command(self, cmd):
+            self.sent.append(cmd)
+            return True
+
+        def get_logger(self):
+            return Log()
+
+    route = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']
+    fake = Fake({'state': 'loading', 'route': route, 'index': 4, 'leg': {'to': 'N01'},
+                 'event_seq': 10})
+    res = ws.ConsoleNode.route_return(fake)
+    assert res['success'] and res['route'][0] == 'N01' and fake.sent == [{'cmd': 'load_done'}]
+    with fake.lock:                                            # 상차 완료 → 회전 → 도착
+        fake.route_state = ({'state': 'arrived', 'route': route, 'event_seq': 13}, time.monotonic())
+    t_end = time.monotonic() + 3
+    while len(fake.sent) < 2 and time.monotonic() < t_end:
+        time.sleep(0.05)
+    assert fake.sent[1] == {'cmd': 'start', 'route': res['route']}
+    fake2 = Fake({'state': 'arrived', 'route': ['N11', 'N19', 'N24', 'N09', 'N08', 'N12']})
+    res = ws.ConsoleNode.route_return(fake2)
+    assert fake2.sent == [{'cmd': 'start', 'route': res['route']}] and res['route'][-1] == 'N16'

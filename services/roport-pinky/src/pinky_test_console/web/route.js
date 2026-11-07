@@ -17,6 +17,7 @@ function updateButtons() {
   const busy = st && !["idle", "arrived", "handoff", "stopped", "error"].includes(st);
   $("btnStart").disabled = routeIds.length < 2 || !!busy;
   $("btnLoad").disabled = st !== "loading";
+  $("btnHome").disabled = !!busy && st !== "loading";
   map.editable = !busy;
 }
 
@@ -39,7 +40,8 @@ function syncSpeed(sp) {
   $("spLin").max = String(sp.max_linear * 100);
   $("spRot").min = String(sp.rotate_min_speed);
   $("spRot").max = String(sp.max_angular);
-  $("spNow").textContent = `현재 ${(sp.base_speed * 100).toFixed(1)} cm/s · ${sp.rotate_speed.toFixed(2)} rad/s`;
+  const near = typeof sp.approach_speed === "number" ? ` · 노드 앞 ${(sp.approach_speed * 100).toFixed(1)} cm/s` : "";
+  $("spNow").textContent = `현재 ${(sp.base_speed * 100).toFixed(1)} cm/s · ${sp.rotate_speed.toFixed(2)} rad/s${near}`;
   if (!speedDirty) {
     $("spLin").value = String(sp.base_speed * 100);
     $("spRot").value = String(sp.rotate_speed);
@@ -62,6 +64,12 @@ $("btnStart").addEventListener("click", () => {
 });
 $("btnLoad").addEventListener("click", () => command({ cmd: "load_done" }));
 $("btnStop").addEventListener("click", () => command({ cmd: "stop" }));
+$("btnHome").addEventListener("click", async () => {
+  // 위치를 모를 때(정지·오류 뒤)는 지도에서 누른 첫 노드를 지금 위치로 보냄
+  const body = routeIds.length ? { start: routeIds[0] } : {};
+  const r = await RM.postJson("api/route/return", body);
+  RM.setMsg($("cmdMsg"), r.success ? r.msg : `복귀 실패: ${r.msg || r.httpStatus}`, r.success ? "ok" : "err");
+});
 $("btnClear").addEventListener("click", () => map.setRoute([]));
 $("presets").addEventListener("change", (ev) => {
   const v = ev.target.value;
@@ -84,7 +92,20 @@ document.addEventListener("keydown", (ev) => {
 
 function fmt(v) { return v === null || v === undefined ? "-" : String(v); }
 
+function showBattery(b) {
+  const chip = $("battChip");
+  if (!b || b.percent === null || b.percent === undefined) {
+    chip.textContent = "배터리 -";
+    chip.className = "chip";
+    return;
+  }
+  const v = b.voltage === null || b.voltage === undefined ? "" : ` ${b.voltage.toFixed(1)} V`;
+  chip.textContent = `배터리 ${Math.round(b.percent)}%${v}${b.stale ? " (오래됨)" : ""}`;
+  chip.className = "chip" + (b.stale ? " batt-stale" : b.percent < 20 ? " batt-low" : b.percent < 40 ? " batt-mid" : "");
+}
+
 function render(snap) {
+  showBattery(snap.battery);
   const s = snap.state;
   syncSpeed(s && s.speed);
   lastState = s;
