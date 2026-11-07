@@ -1,5 +1,47 @@
 import { test, expect } from '@playwright/test';
 
+test('measured layout: map origin, node labels and height survive view changes', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/api/bootstrap?*', async route => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.example_map = false;
+    data.map.origin = [-2, -1, 0];
+    data.map.wall_height = 0.24;
+    data.map.layout = {version: 'fixture-v1', graph_version: 'fixture-lines-v1', mounts: [
+      {robot_id: 'omx1', edge_center: [-0.5, 0, 0.24], edge_yaw: 0, yaw: 0},
+      {robot_id: 'omx2', edge_center: [0, 0, 0.24], edge_yaw: 0, yaw: Math.PI},
+    ], nodes: [
+      {id: 'N01', place: 'P4', position: [-1, 0], links: ['N12']},
+      {id: 'N12', nav2_switch: true, position: [0, 0], links: ['N01']},
+    ]};
+    await route.fulfill({response, json: data});
+  });
+  await page.goto('/ui/');
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+  await expect(page.locator('#map-detail')).toContainText('24cm');
+  await expect(page.locator('#map-name')).toContainText('실측 fixture-v1');
+  const point = page.locator('[data-node="N01"]');
+  await expect(point).toHaveText('P4 · N01');
+  await expect(point).toBeVisible();
+  const before = await point.boundingBox();
+  await page.getByRole('button', {name: '평면', exact: true}).click();
+  await expect.poll(async () => (await point.boundingBox()).y).not.toBe(before.y);
+  await expect(page.locator('[data-node="N12"]')).toHaveText('N12 · Nav2');
+  await expect(page.locator('[data-robot="omx1"]')).toHaveText('OMX 01 · 설치 배치');
+  await expect(page.locator('[data-robot="omx2"]')).toBeVisible();
+  await page.getByRole('button', {name: 'OMX 01 선택'}).click();
+  await expect(page.locator('#telemetry')).toContainText('설치 배치 (기준값)');
+  await expect(page.locator('#state')).toContainText('미수신');
+  await expect(page.locator('#freshness')).toHaveText('수신 이력 없음');
+  await expect(page.locator('#focus')).toBeEnabled();
+  await expect(page.locator('#telemetry')).toContainText('미수신 · 기준 자세');
+  await expect(page.locator('[data-robot="pinky1"]')).toBeHidden();
+  await expect(page.locator('[data-robot="omx3"]')).toBeHidden();
+  expect(errors).toEqual([]);
+});
+
 test('OFFLINE loads local 3D assets and retains detail tabs', async ({ page }) => {
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -31,6 +73,8 @@ test('DEMO playback, stale state, disconnect and fresh reconnect', async ({ page
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
   await expect(page.locator('#source')).toHaveText('모의 상태 수신');
   await expect(page.locator('#mode')).toContainText('DEMO');
+  await expect(page.locator('[data-robot="pinky1"]')).toBeVisible();
+  await expect(page.locator('[data-robot="omx1"]')).toBeVisible();
   await expect(page.locator('.task')).toHaveCount(3);
   await page.locator('#play').click();
   await expect(page.locator('#play')).toHaveText('동작 재생');

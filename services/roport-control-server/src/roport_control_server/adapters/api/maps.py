@@ -1,12 +1,15 @@
 """Read ROS trinary PNG/PGM maps without changing their frame or source files."""
 
 import base64
+import hashlib
 import math
 from io import BytesIO
 from pathlib import Path
 
 import yaml
 from PIL import Image
+
+from .map_layout import load_layout
 
 
 def pixel_to_map(column, row, *, height, resolution, origin):
@@ -15,7 +18,7 @@ def pixel_to_map(column, row, *, height, resolution, origin):
     return origin[0] + c * x - s * y, origin[1] + s * x + c * y
 
 
-def load_map(path: str | Path) -> dict:
+def load_map(path: str | Path, layout_path: str | Path | None = None) -> dict:
     path = Path(path).resolve()
     if path.stat().st_size > 64 * 1024:
         raise ValueError("map YAML exceeds 64 KiB")
@@ -76,8 +79,11 @@ def load_map(path: str | Path) -> dict:
             raise ValueError("map exceeds the 20000 wall-run display limit")
     output = BytesIO()
     image.save(output, format="PNG")
-    return {
+    result = {
         "id": path.stem,
+        "version": hashlib.sha256(
+            path.read_bytes() + image_path.read_bytes()
+        ).hexdigest()[:16],
         "frame_id": "map",
         "width": w,
         "height": h,
@@ -89,3 +95,9 @@ def load_map(path: str | Path) -> dict:
         "image": "data:image/png;base64,"
         + base64.b64encode(output.getvalue()).decode(),
     }
+    if layout_path is not None:
+        layout = load_layout(layout_path, result)
+        result.update(
+            layout=layout, wall_height=layout["wall_height"], height_verified=True
+        )
+    return result
