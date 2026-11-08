@@ -75,7 +75,10 @@ class Executor(Protocol):
         """{"armed": bool|None, "busy": bool, "error": str|None, "arms": {arm: flags}}"""
 
     def start(self, task: dict) -> None:
-        """Begin one task; raise to refuse. Must return quickly."""
+        """Begin one task; raise to refuse. Must return quickly.
+
+        An executor may also define check(task), raising Rejected before acceptance.
+        """
 
     def observe(self) -> dict:
         """{"state": "running"|"finished"|"failed", "step": str, "error": str|None, "arms": ...}"""
@@ -244,6 +247,9 @@ class CooperativeHost:
                 raise Rejected("EXECUTOR_BUSY")
             if self.require_armed and ready["armed"] is not True:
                 raise Rejected("NOT_ARMED")
+            check = getattr(self.executor, "check", None)
+            if check is not None:
+                check(task)  # executor-specific refusal (e.g. no model for this slot)
         except ValueError as exc:
             code = exc.args[0] if isinstance(exc, Rejected) else "INVALID_REQUEST"
             detail = {} if isinstance(exc, Rejected) else {"detail": str(exc)}

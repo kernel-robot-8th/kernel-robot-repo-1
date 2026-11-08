@@ -1,0 +1,12 @@
+{
+  "routes": [
+    {
+      "operation": "INBOUND",
+      "slot_id": "2b",
+      "model_path": "REPLACE_WITH_MODEL_PATH_FROM_PANEL_MODEL_LIST",
+      "task": "INBOUND tray->shelf 2B | marker {box}",
+      "episode_s": 40,
+      "reset_s": 15
+    }
+  ]
+}
