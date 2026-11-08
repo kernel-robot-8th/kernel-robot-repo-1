@@ -6,14 +6,20 @@ RO:PORT · GATE CREW — 통합관제 및 로봇 통신
 
 Python 3.12 / FastAPI / uv / Three.js / Paho MQTT / pytest / Playwright / Ruff. 정확한 버전은 manifest와 lockfile을 따릅니다.
 2026-11-03 팀 합의: **브라우저 웹 UI ↔ FastAPI ↔ 운영 DB ↔ 관제 실행부(별도 프로세스 1개)**. API와 실행부의 목표 연결은 운영 DB이며, 원격 서비스 WSS는 실행부가 담당합니다. AI 노트북에 서버를 배치하고 다른 PC에서 접속합니다. AI 추론은 API와 별도 프로세스로 운영합니다.
-현재 구현은 **웹 UI·REST 조회·WebSocket 모의/OFFLINE 상태 스트림**과 독립 MQTT/UDP 모듈입니다. 운영 DB·웹에 연결된 관제 실행부·WSS·카메라 웹 중계는 미구현입니다. 별도 CLI로 Pinky MQTT 주행 시험을 제공합니다. 브라우저는 DB/MQTT/UDP에 직접 연결하지 않습니다.
+현재 구현은 **웹 UI·REST 조회·WebSocket 모의/OFFLINE 상태 스트림**과 독립 MQTT/UDP 모듈입니다. 운영 DB·WSS·카메라 웹 중계는 후속입니다. DB 구현은 보류하며, Pinky 시험은 **원본 웹 UI ↔ FastAPI ↔ Unix socket ↔ 시험 실행부 1개 ↔ MQTT**로 연결합니다. 시험 이력은 파일 journal에 저장합니다. 브라우저는 DB/MQTT/UDP에 직접 연결하지 않습니다.
+
+## 공통 실행부 · 구간별 시험
+
+공통 `two_pinky` 설정으로 `--smartcart-only` 없이 한 번 실행하면 원본 UI의 **시나리오 선택 · 노드 편집**에서 1대·2대·스마트카트 기본안을 불러오고 노드 경로를 편집할 수 있습니다. 선택한 계획의 참여 기체만 연결을 요구합니다. 같은 패널에서 라인 이동·더미 작업 승인·물품 요청 대기·N12 모드 전환·Nav2 목표 이동을 조합합니다. 기존 1대/2대/스마트카트 시험도 같은 실행부의 기본 계획입니다. 시험 출고 요청은 현재 위치에 따라 기체와 최소 간선 경로를 선택하며, 실제 서비스 WSS·재고·동시 주행 스케줄링은 후속입니다.
+
+설정 검증 → 서버 저장(선택) → 실행 계획 적용 → 별도 출발 순서입니다. 실행 중 편집 적용과 HOLD 재개는 금지하며, 완료 후 새 실행은 이전 결과를 자동 보관합니다. 기존 Pinky MQTT schema/runner/ROS 드라이버와 `trial.json`은 그대로 사용합니다. 현재 주행기의 경로 종료점은 정차선 노드만 가능하며 교차로는 경유 지점입니다. 자세한 범위·명령·제약은 [주행 시험 가이드 7.7](docs/pinky-trial.md#77-공통-실행부와-구간작업-설정)을 따릅니다.
 
 ## 구조 · FFT1-122
 
 ```
 src/roport_control_server/
   domain/      __init__.py만: Workflow·Allocation·State/Recovery 규칙 자리 (골격, 미구현)
-  executor/    pinky_trial.py: 격리된 Pinky 시험 CLI (운영 실행부는 후속, FFT1-106)
+  executor/    plans.py: 계획 검증·경로/배정; pinky_trial.py·trial_socket.py: CLI/웹 공통 시험 실행부
   contracts/   snapshot.py: TaskRow·Snapshot 표시 계약과 검증 (표준 라이브러리만)
   adapters/
     mqtt/      MQTT 5 명령·이벤트·trial-v1 스키마/수신기/저장 ACK (이식 키트 제공)
@@ -35,7 +41,7 @@ tests/         test_layers.py: 아래 import 규칙 검사
 | `domain/` (골격) | 표준 라이브러리 |
 | `executor/` | 표준 라이브러리, `domain`, `contracts`, `adapters`(api 제외) |
 
-패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`은 골격이며 `executor/pinky_trial.py`는 웹/DB와 분리된 시험 실행부입니다. `adapters/db/`·`adapters/wss/`는 DB 종류와 WSS 메시지 계약이 확정된 뒤 만듭니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
+패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`은 골격이며 `executor/pinky_trial.py`는 웹 API와 IPC로 연결되는 DB 비의존 시험 실행부입니다. `adapters/db/`·`adapters/wss/`는 DB 종류와 WSS 메시지 계약이 확정된 뒤 만듭니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
 
 ## 현재 범위
 
@@ -46,7 +52,7 @@ CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 
 ## Pinky MQTT 주행 시험 · FFT1-56
 
-1대/2대 시나리오를 독립 CLI로 실행합니다. `route → 더미 상하차 → N12 mode_switch → navigate`를 완료 응답으로 진행하며, 파일 이력·중복 방지·저장 ACK·오류 시 HOLD를 포함합니다. 웹 UI나 운영 DB를 연결하는 변경은 아닙니다.
+1대/2대/스마트카트 시나리오를 CLI 또는 원본 웹 UI에서 실행합니다. `route → 더미 상하차 → N12 mode_switch → navigate`를 완료 응답으로 진행하며, 파일 이력·중복 방지·저장 ACK·오류 시 HOLD를 포함합니다. 같은 실행부를 사용하며 운영 DB는 연결하지 않습니다. 웹 연결·조작 키·시험 범위는 [가이드 7.4절](docs/pinky-trial.md)을 참고하세요.
 
 **팀원 재현 순서와 메시지/이식 방법은 [주행 시험 가이드](docs/pinky-trial.md)를 따르세요.** `tools/prepare_pinky_trial.py`로 네 설정을 한 번 생성하고 같은 `trial.json`을 양쪽에 배포합니다. `tools/build_pinky_mqtt_kit.py`는 Paho만 필요한 이식 ZIP·JSON Schema·19개 메시지 예제를 생성합니다.
 
@@ -63,19 +69,20 @@ uv sync --locked
 uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --port 8000 --ws-max-size 4096 --ws-max-queue 4
 ```
 
-- OFFLINE: `http://localhost:8000/ui/` — 실행부 미연결, 작업 없음, 실제 위치 미표시.
+- OFFLINE: `http://localhost:8000/ui/?mode=offline` — 실행부 미연결, 작업 없음, 실제 위치 미표시.
+- TRIAL: `ROPORT_TRIAL_SOCKET`을 설정하면 `/ui/`가 시험 모드로 연결됩니다. 미설정 시 기본 OFFLINE입니다. 지도·레이아웃·24자 이상 조작 키가 필요하며, API 시작이나 화면 접속만으로 출발하지 않습니다.
 - DEMO: `http://localhost:8000/ui/?mode=demo` — 예시 Pinky 3대/OMX 3대의 모의 동작. 재생·시각 이동·수신 중단은 이 브라우저 세션에만 적용됩니다. 재접속 시 DEMO는 새 세션으로 시작하며 실제 작업 복구 시험이 아닙니다.
 - 서버가 제공한 목록으로 화면을 만들지만 현재 목록은 6대 예시입니다. 로봇 등록/제외와 실제 장비 목록 연동은 후속입니다.
 - Pinky 탭 > Pinky Settings(FFT1-124, 시안 v0.2): 등록(이름·IPv4·역할·ROS_DOMAIN_ID 0~101·IR 기준값)과 작업(연결 확인·도메인 읽기/적용·업데이트/릴리즈 설치·빌드) 화면입니다. `contracts/pinky_settings.py`가 입력 형식을 정합니다.
   OFFLINE에서는 `POST /api/pinky/settings/robots`·`/jobs`가 형식만 검사하고 `503 executor_not_connected`를 돌려줍니다(저장·실행 없음). DEMO는 예시 3대를 브라우저 안에서만 바꿉니다.
   실제 설치·도메인 적용은 실행부·운영 DB 연결 뒤에 붙이며, 그 전까지는 Pinky 테스트 콘솔 `mode:=fleet`에서 시험합니다.
-- 기존 회백색 3열 구성, 3D/평면·회전·선택 장비 확대, 관절 모델과 작업·오류 표시를 제공합니다. 실기 URDF 보정과 양팔 협업 동기화는 검증하지 않았습니다. 승인·출발·취소는 비활성화합니다.
+- 기존 회백색 3열 구성, 3D/평면·회전·선택 장비 확대, 관절 모델과 작업·오류 표시를 제공합니다. 실기 URDF 보정과 양팔 협업 동기화는 검증하지 않았습니다. OFFLINE/DEMO의 승인·출발·취소는 비활성화합니다. TRIAL에서는 시험 실행부가 허용하는 출발·더미 승인·물품 요청·보류만 조작합니다.
 
 ### 접속·지도·운영
 
-현장 LAN의 다른 PC에서도 보려면 위 명령의 `--host`를 `0.0.0.0`으로 바꾸고 브라우저에서 `http://<서버-LAN-IP>:8000/ui/`를 엽니다. 방화벽은 허용된 현장 망으로 제한합니다. 이번 버전은 인증 없는 모의/읽기 전용 뼈대이며 인터넷 공개·운영 데이터 연결 전 인증/권한·HTTPS/WSS 또는 VPN이 필요합니다. FastAPI와 화면을 같은 origin으로 제공해 별도 CORS 허용이 필요 없습니다.
+현장 LAN의 다른 PC에서도 보려면 위 명령의 `--host`를 `0.0.0.0`으로 바꾸고 브라우저에서 `http://<서버-LAN-IP>:8000/ui/`를 엽니다. 방화벽은 허용된 현장 망으로 제한합니다. 실물 시험의 원격 조작은 HTTPS로만 허용하고 HTTP LAN 접속은 조회만 가능합니다. OFFLINE/DEMO 조회는 로그인 인증이 없고 TRIAL 조작 키도 운영 계정/권한 체계를 대체하지 않으며 인터넷 공개·운영 데이터 연결 전 인증/권한·HTTPS/WSS 또는 VPN이 필요합니다. FastAPI와 화면을 같은 origin으로 제공해 별도 CORS 허용이 필요 없습니다.
 
-상태 WebSocket은 **worker당 OFFLINE/DEMO 합계 8개**로 제한합니다. 초과 접속은 handshake 전에 거절되므로 실제 HTTP 응답은 403이며 브라우저는 기존 재접속 정책을 따릅니다. 연결 종료·오류 시 송수신 작업을 정리하고 자리를 반환합니다. 현재는 worker 1개로 운영하며, 8개는 AI 병행 부하를 보장하는 측정값이 아닌 임시 상한입니다. HTTP 요청·IP별 제한은 포함하지 않습니다.
+상태 WebSocket은 **worker당 OFFLINE/DEMO/TRIAL 합계 8개**로 제한합니다. 초과 접속은 handshake 전에 거절되므로 실제 HTTP 응답은 403이며 브라우저는 기존 재접속 정책을 따릅니다. 연결 종료·오류 시 송수신 작업을 정리하고 자리를 반환합니다. 현재는 worker 1개로 운영하며, 8개는 AI 병행 부하를 보장하는 측정값이 아닌 임시 상한입니다. HTTP 요청·IP별 제한은 포함하지 않습니다.
 
 TLS 역방향 프록시는 WebSocket upgrade, 브라우저의 `Origin`, 외부 `Host`(비기본 포트 포함)를 그대로 전달하고 `X-Forwarded-Proto`를 실제 외부 scheme으로 설정해야 합니다. 같은 서버의 loopback 프록시라면 위 Uvicorn 명령에 `--proxy-headers --forwarded-allow-ips=127.0.0.1`을 사용합니다. 원격 프록시는 실제 프록시 IP만 신뢰하고 `*`로 열지 않습니다. 신뢰된 HTTPS 전달 헤더는 Uvicorn이 `wss`로 변환하므로 같은 origin 연결이 허용됩니다. 내부 Host로 바꾸거나 신뢰하지 않는 경로에서 HTTPS 헤더만 보내면 거절됩니다. `X-Forwarded-Host`만으로는 보완되지 않습니다.
 
@@ -96,13 +103,15 @@ ROPORT_MAP=/absolute/path/map.yaml ROPORT_MAP_LAYOUT=/absolute/path/layout.yaml 
 
 | 경로 | 동작 |
 | --- | --- |
+| `POST /api/trial/commands` | 동일 origin·조작 키와 현재 session/task/phase를 확인한 후 별도 실행부에 전달 |
+| `GET /api/snapshot?mode=trial` · `WS /api/state?mode=trial` | 시험 상태 조회·0.25초 주기 표시; 브라우저에서 MQTT 직접 연결 없음 |
 | `GET /healthz` | 프로세스 생존 확인; 장비 준비 판정 아님 |
-| `GET /api/bootstrap?mode=offline 또는 demo` | 지도·예시 장비 목록·표시 모드 |
+| `GET /api/bootstrap?mode=auto/offline/demo/trial` | 지도·예시 장비 목록·표시 모드 |
 | `GET /api/snapshot` | OFFLINE 전체 상태; DB 연동 자리 |
 | `WS /api/state?mode=offline 또는 demo` | 전체 snapshot을 최대 10Hz 전송; session_id/revision 포함 |
 | `/ui/` | 인터넷 CDN 없는 정적 웹 화면·3D 자산 |
 
-WebSocket은 같은 origin만 허용합니다. DEMO에서만 `play(bool)`, `seek(0..24초)`, `drop(robot_id,bool)` 표시 명령을 받고 실제 로봇 명령 endpoint는 없습니다. 브라우저는 증가한 revision만 적용하고 단절/2.5초 이상 미갱신을 표시하며 재접속합니다. DEMO 장비의 2초 stale과 UI 단절 시간은 표시 시험용이며 장비 안전 timeout이 아닙니다. 오류·식별자는 HTML이 아닌 텍스트로 표시합니다.
+WebSocket은 같은 origin만 허용합니다. DEMO에서만 `play(bool)`, `seek(0..24초)`, `drop(robot_id,bool)` 표시 명령을 받고 TRIAL 조작은 조작 키를 검사하는 별도 REST endpoint를 통해 실행부에 전달합니다. TRIAL WebSocket은 조회 전용입니다. 브라우저는 증가한 revision만 적용하고 단절/2.5초 이상 미갱신을 표시하며 재접속합니다. DEMO 장비의 2초 stale과 UI 단절 시간은 표시 시험용이며 장비 안전 timeout이 아닙니다. 오류·식별자는 HTML이 아닌 텍스트로 표시합니다.
 
 `adapters/api/display.py`는 OFFLINE/DEMO 표시 전용입니다. 실제 상태 연동(FFT1-110)에서는 DB/실행부 상태 조회 경로를 별도로 두고, 이 생성기와 `play/seek/drop`을 실제 상태·명령 경로에서 호출하지 않습니다.
 
@@ -120,7 +129,7 @@ uv build
 uv run python tools/check_asset_package.py dist/*.whl
 ```
 
-CI는 Mosquitto loopback, API·계층·지도·계약, Chromium OFFLINE/DEMO·단절/재접속 및 wheel 자산을 검사합니다. 설치형 PyQt 실행 명령과 `--extra ui`는 더 이상 사용하지 않습니다. [Jira FFT1-109](https://fp-team1.atlassian.net/browse/FFT1-109).
+CI는 Mosquitto loopback, API·계층·지도·계약, Chromium OFFLINE/DEMO/TRIAL·단절/재접속 및 wheel 자산을 검사합니다. 설치형 PyQt 실행 명령과 `--extra ui`는 더 이상 사용하지 않습니다. [Jira FFT1-109](https://fp-team1.atlassian.net/browse/FFT1-109).
 
 ## 관련 문서
 
