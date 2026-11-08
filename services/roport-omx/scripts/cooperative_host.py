@@ -1,9 +1,13 @@
 """Run the shelf-01 COOPERATIVE Host: broker ↔ CooperativeHost ↔ executor.
 
-Only the simulated executor exists so far; the panel adapter follows once its armed/result API is
-fixed. Broker settings come from ROPORT_MQTT_* like the control server; secrets stay in the env.
+--executor mock (default) simulates the arms. --executor panel runs each task through the local OMX
+control panel (v3.8+, armed switch on the panel screen) with the model routed for its slot; the
+arms move, so a person stays by them. Broker settings come from ROPORT_MQTT_* like the control
+server; secrets stay in the env.
 
   uv run python scripts/cooperative_host.py --journal ~/.local/state/roport/shelf-01.json
+  uv run python scripts/cooperative_host.py --executor panel --routes ~/.config/roport/shelf-01-routes.json \
+      --box-marker 16 --journal ~/.local/state/roport/shelf-01.json
 """
 
 import argparse
@@ -20,6 +24,7 @@ from roport_omx.cooperative import WORKCELL, CooperativeHost, StorageError
 from roport_omx.mqtt_link.journal import Journal
 from roport_omx.mqtt_link.messages import decode, topic
 from roport_omx.mqtt_link.mqtt import MqttConfig, MqttTransport
+from roport_omx.panel_executor import PanelExecutor, load_routes
 
 RESEND_S = 5.0
 log = logging.getLogger("cooperative_host")
@@ -104,6 +109,14 @@ def main() -> None:
         action="store_true",
         help="after checking arms, package and Pinky",
     )
+    parser.add_argument("--executor", choices=["mock", "panel"], default="mock")
+    parser.add_argument("--panel-url", default="http://127.0.0.1:8865")
+    parser.add_argument(
+        "--routes", type=Path, help="panel: (operation, slot) → model JSON file"
+    )
+    parser.add_argument(
+        "--box-marker", type=int, help="panel test: box ArUco ID used for every task"
+    )
     parser.add_argument("--mock-run-s", type=float, default=3.0)
     parser.add_argument("--mock-disarmed", action="store_true")
     parser.add_argument(
@@ -116,11 +129,20 @@ def main() -> None:
     if str(args.journal.resolve()).startswith("/tmp/"):
         parser.error("journal must survive a restart; do not use /tmp")
 
-    executor = MockExecutor(
-        args.mock_run_s,
-        armed=not args.mock_disarmed,
-        unreturned=set(args.mock_unreturned),
-    )
+    if args.executor == "panel":
+        if args.routes is None:
+            parser.error("--executor panel needs --routes")
+        executor = PanelExecutor(
+            load_routes(args.routes),
+            box_marker=args.box_marker,
+            base_url=args.panel_url,
+        )
+    else:
+        executor = MockExecutor(
+            args.mock_run_s,
+            armed=not args.mock_disarmed,
+            unreturned=set(args.mock_unreturned),
+        )
     journal = Journal(args.journal)
     try:
         host = CooperativeHost(
@@ -139,7 +161,12 @@ def main() -> None:
         log.warning(
             "HOLD on command %s: new tasks are rejected until --clear-hold", host.hold
         )
-    log.info("SIMULATED executor; boot_id=%s site=%s", host.boot_id, args.site)
+    if args.executor == "panel":
+        routes = ", ".join(f"{o}:{s}" for o, s in executor.routes)
+        log.info("PANEL executor %s routes=[%s]; arms move", args.panel_url, routes)
+    else:
+        log.info("SIMULATED executor")
+    log.info("boot_id=%s site=%s", host.boot_id, args.site)
     subscriptions = [topic(args.site, "workcell", WORKCELL, c) for c in ("cmd", "ack")]
     try:
         while True:
