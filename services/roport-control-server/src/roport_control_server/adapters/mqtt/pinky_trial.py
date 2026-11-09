@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from .journal import Journal
 from .messages import check_command, check_expiry, decode, timestamp, topic
+from .motion import motion_message, motion_topic
 from .mqtt import MqttTransport
 from .trial_wire import check_result, fresh, reply, validate_trial
 
@@ -37,6 +38,7 @@ class PinkyTrialClient:
         validate_action,
         dispatch,
         safe_stop,
+        observe_motion=None,
     ):
         if robot not in {"pinky1", "pinky2", "pinky3"}:
             raise ValueError("Pinky slot required")
@@ -48,6 +50,8 @@ class PinkyTrialClient:
         )
         self.observe, self.dispatch, self.safe_stop = observe, dispatch, safe_stop
         self.validate_action = validate_action
+        self.observe_motion = observe_motion
+        self.motion_sequence, self.motion_errors, self.motion_sent = 0, 0, 0.0
         self.boot = str(uuid4())
         self.journal = Journal(journal_path)
         identity = {
@@ -74,6 +78,25 @@ class PinkyTrialClient:
         if self.halted:
             self.safe_stop(self.halted)
         self.transport.start()
+
+    def publish_motion(self):
+        if self.observe_motion is None or monotonic() - self.motion_sent < 0.2:
+            return
+        self.motion_sent = monotonic()
+        self.motion_sequence += 1
+        try:
+            message = motion_message(
+                self.site,
+                self.robot,
+                self.binding,
+                self.boot,
+                self.motion_sequence,
+                self.observe_motion(),
+            )
+            self.transport.publish_motion(motion_topic(self.site, self.robot), message)
+        except (ValueError, TypeError, KeyError, ConnectionError, TimeoutError):
+            # A display sample cannot authorize motion or interrupt an approved action.
+            self.motion_errors += 1
 
     def _state(self):
         state = dict(self.observe())

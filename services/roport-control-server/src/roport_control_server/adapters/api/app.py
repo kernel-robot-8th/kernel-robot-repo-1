@@ -37,6 +37,7 @@ def create_app(
     trial_socket=None,
     trial_layout=None,
     trial_token=None,
+    virtual_reset_path=None,
 ):
     # shortcut: per-worker demo limit; measure with AI load before scaling out.
     stream_slots = asyncio.BoundedSemaphore(8)
@@ -49,7 +50,12 @@ def create_app(
         )
         app.state.example_map = map_path is None
         app.state.trial = (
-            TrialView(trial_socket, trial_token, app.state.map)
+            TrialView(
+                trial_socket,
+                trial_token,
+                app.state.map,
+                virtual_reset_path=virtual_reset_path,
+            )
             if trial_socket
             else None
         )
@@ -279,6 +285,7 @@ def create_app_from_env(environment):
         trial_socket=environment.get("ROPORT_TRIAL_SOCKET"),
         trial_layout=environment.get("ROPORT_TRIAL_LAYOUT"),
         trial_token=environment.get("ROPORT_TRIAL_TOKEN"),
+        virtual_reset_path=environment.get("ROPORT_VIRTUAL_RESET_FILE"),
     )
 
 

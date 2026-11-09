@@ -156,10 +156,10 @@ def test_trial_state_staleness_and_no_invented_nav2_pose(local_owner):
     state["statuses"]["pinky1"]["mode"] = "nav2"
     state["statuses"]["pinky1"]["node_id"] = "N12"
     control.journal.save(state)
-    client.app.state.trial._next_snapshot = 0
     row = client.get("/api/snapshot?mode=trial").json()["robots"][0]
-    assert row["pose"] is None
-    assert row["pose_source"] == "위치 미수신"
+    assert row["pose"] == snapshot["robots"][0]["pose"]
+    assert row["pose_stale"] and not row["pose_live"]
+    assert "마지막 확인" in row["pose_source"]
 
 
 def test_map_mismatch_blocks_start_but_allows_hold(local_owner):
@@ -387,8 +387,7 @@ def test_real_mqtt_web_full_trial_and_exclusive_owner(
                 ]
             if scope == "nav2":
                 assert cart["pose_source"].startswith("Nav2 완료 응답 위치")
-                goal = profile["nav_goal"]["pose"]
-                assert cart["pose"] == [goal["x"], goal["y"], 0, goal["yaw"]]
+                assert cart["pose_stale"]
             else:
                 assert cart["status"]["node_id"] == "N12"
                 assert cart["status"]["stopped"]
@@ -480,6 +479,44 @@ def test_original_ui_bootstraps_without_owner_and_keeps_storage_disabled(tmp_pat
         assert client.get("/api/robots").status_code == 404
 
 
+def test_virtual_reset_requires_launcher_auth_and_current_simulation(
+    local_owner, tmp_path
+):
+    client, control, _, transport = local_owner
+    url = "/api/trial/commands"
+    snapshot = client.get("/api/snapshot?mode=trial").json()
+    request = fence(snapshot, "reset")
+    assert not snapshot["trial"]["reset_available"]
+    assert client.post(url, headers=HEADERS, json=request).status_code == 409
+    marker = tmp_path / "reset.request"
+    client.app.state.trial.reset_path = marker
+    for headers in (
+        {"origin": "http://testserver"},
+        {**HEADERS, "origin": "http://other"},
+    ):
+        assert client.post(url, headers=headers, json=request).status_code == 403
+    assert not marker.exists()
+    for field in ("session_id", "task_id"):
+        assert (
+            client.post(
+                url, headers=HEADERS, json={**request, field: "old"}
+            ).status_code
+            == 409
+        )
+    control.config["mode"] = "hardware"
+    assert not client.get("/api/snapshot?mode=trial").json()["trial"]["reset_available"]
+    assert client.post(url, headers=HEADERS, json=request).status_code == 403
+    control.config["mode"] = "simulation"
+    state_before = deepcopy(control.state)
+    for _ in range(2):
+        assert client.post(url, headers=HEADERS, json=request).status_code == 200
+    assert json.loads(marker.read_text()) == request
+    snapshot = client.get("/api/snapshot?mode=trial").json()
+    assert snapshot["trial"]["reset_pending"] and not snapshot["trial"]["can_reset"]
+    assert client.post(url, headers=HEADERS, json=fence(snapshot)).status_code == 409
+    assert control.state == state_before and not transport.sent
+
+
 @pytest.mark.parametrize("single_profile", [False], indirect=True)
 @pytest.mark.parametrize("phase", ["READY", "WAIT_REQUEST"])
 @pytest.mark.parametrize(
@@ -549,6 +586,91 @@ def test_two_robot_dummy_does_not_record_transfer_before_start_validation(local_
         == 409
     )
     assert control.state == state and not transport.sent
+
+
+def test_live_motion_crosses_nav2_and_freezes_without_authorizing_tasks(local_owner):
+    from uuid import uuid4
+
+    from test_motion import delivery as motion_delivery
+    from test_motion import sample
+
+    from roport_control_server.adapters.mqtt.motion import MotionReceiver
+
+    client, control, _, _ = local_owner
+    state = deepcopy(control.state)
+    state["statuses"]["pinky1"]["boot_id"] = str(uuid4())
+    control.journal.save(state)
+    motion = MotionReceiver(control.config, MemoryTransport())
+    control.motion = motion
+    statuses = control.state["statuses"]
+    boot = statuses["pinky1"]["boot_id"]
+    motion.consume(motion_delivery(sample(control.config, boot)), statuses)
+    time.sleep(0.21)  # Allow the shared snapshot cache to observe the new sample.
+    row = client.get("/api/snapshot?mode=trial").json()["robots"][0]
+    assert row["pose"] == [0.1, 0.2, 0, 0.3] and row["pose_live"]
+    control.heard["pinky1"] = time.monotonic() - 5
+    time.sleep(0.21)  # Allow the shared snapshot cache to observe the new sample.
+    row = client.get("/api/snapshot?mode=trial").json()["robots"][0]
+    assert row["stale"] and row["pose_live"]  # Motion cannot refresh task readiness.
+    state = deepcopy(control.state)
+    state["statuses"]["pinky1"].update(mode="nav2", node_id=None)
+    control.journal.save(state)
+    time.sleep(0.21)  # Allow the shared snapshot cache to observe the new sample.
+    row = client.get("/api/snapshot?mode=trial").json()["robots"][0]
+    assert row["pose"] == [0.1, 0.2, 0, 0.3]
+    state_before = deepcopy(control.state)
+    motion.samples["pinky1"]["received"] -= 2
+    time.sleep(0.21)  # Allow the shared snapshot cache to observe the new sample.
+    row = client.get("/api/snapshot?mode=trial").json()["robots"][0]
+    assert row["pose"] == [0.1, 0.2, 0, 0.3] and row["pose_stale"]
+    assert row["pose_age"] >= 2
+    assert control.state == state_before
+    # New browser/API projection can recover the last received point from the owner.
+    observer = view("unused")
+    observer.rpc = lambda request: client.app.state.trial.rpc(request)
+    assert observer.snapshot()["robots"][0]["pose"] == row["pose"]
+    state = deepcopy(control.state)
+    state["statuses"]["pinky1"]["boot_id"] = str(uuid4())
+    control.journal.save(state)
+    time.sleep(0.21)
+    assert client.get("/api/snapshot?mode=trial").json()["robots"][0]["pose"] is None
+
+
+@pytest.mark.parametrize("motion_newer", [False, True])
+def test_final_position_uses_latest_observation(local_owner, motion_newer):
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from test_motion import delivery as motion_delivery
+    from test_motion import sample
+
+    from roport_control_server.adapters.mqtt.motion import MotionReceiver
+
+    client, control, _, _ = local_owner
+    state = deepcopy(control.state)
+    boot = str(uuid4())
+    state["statuses"]["pinky1"].update(boot_id=boot, mode="nav2", node_id=None)
+    now = datetime.now(UTC)
+    state["phase"] = "COMPLETE"
+    state["completed"]["navigate"] = {
+        "type": "navigate.completed",
+        "source": "pinky1",
+        "payload": {
+            "observed_at": (now - timedelta(seconds=0.2)).isoformat(),
+            "pose": {"x": 0.15, "y": 0.25, "yaw": 0.4},
+        },
+    }
+    control.journal.save(state)
+    control.motion = MotionReceiver(control.config, MemoryTransport())
+    observation = sample(
+        control.config,
+        boot,
+        observed_at=(now - timedelta(seconds=0.1 if motion_newer else 0.3)).isoformat(),
+    )
+    control.motion.consume(motion_delivery(observation), state["statuses"])
+    row = client.get("/api/snapshot?mode=trial").json()["robots"][0]
+    assert row["pose"] == ([0.1, 0.2, 0, 0.3] if motion_newer else [0.15, 0.25, 0, 0.4])
+    assert row["pose_live"] is motion_newer
 
 
 @pytest.mark.parametrize("single_profile", [False], indirect=True)
@@ -768,9 +890,11 @@ def test_startup_failure_keeps_unused_journal_ready_and_cleans_socket(
 
 @pytest.mark.parametrize(
     "action",
-    ["configure", "save_plan", "load_plan", "route_plan", "submit_delivery"],
+    ["configure", "save_plan", "load_plan", "route_plan", "submit_delivery", "reset"],
 )
-def test_hardware_plan_requests_also_require_secure_transport(local_owner, action):
+def test_hardware_plan_and_reset_requests_also_require_secure_transport(
+    local_owner, action
+):
     _, control, channel, transport = local_owner
     control.config["mode"] = "hardware"
     projector = view(channel.path)

@@ -203,6 +203,21 @@ class MqttTransport:
         with self._publish_lock:
             self._publish(destination, message, timeout)
 
+    def publish_motion(self, destination, message):
+        """Best-effort latest display sample; never wait for PUBACK or replay it."""
+        from .motion import encode_motion
+
+        raw = encode_motion(destination, message)
+        if not self.ready:
+            raise ConnectionError("motion transport unavailable")
+        properties = Properties(PacketTypes.PUBLISH)
+        properties.MessageExpiryInterval = 1
+        info = self._client.publish(
+            destination, raw, qos=0, retain=False, properties=properties
+        )
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            raise ConnectionError("motion sample not sent")
+
     def _publish(self, destination: str, message: dict, timeout: float) -> None:
         if not self.ready:
             raise ConnectionError(self._fault or "MQTT subscriptions not ready")

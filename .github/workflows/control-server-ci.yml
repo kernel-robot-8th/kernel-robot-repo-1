@@ -3,10 +3,12 @@ on:
   push:
     paths:
       - 'services/roport-control-server/**'
+      - 'services/roport-pinky/**'
       - '.github/workflows/control-server-ci.yml'
   pull_request:
     paths:
       - 'services/roport-control-server/**'
+      - 'services/roport-pinky/**'
       - '.github/workflows/control-server-ci.yml'
   workflow_dispatch:
 permissions:
