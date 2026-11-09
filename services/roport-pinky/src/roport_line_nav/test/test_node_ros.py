@@ -37,7 +37,7 @@ ROUTE = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']
 
 
 class Harness:
-    def __init__(self, log_dir):
+    def __init__(self, log_dir, extra=()):
         from roport_line_nav.line_nav_node import LineNavNode
         self.ctx = Context()
         rclpy.init(context=self.ctx, domain_id=TEST_DOMAIN_ID)
@@ -48,6 +48,7 @@ class Harness:
                 Parameter('calibration_file', value=str(CONFIG)),
                 Parameter('layout_file', value=str(LAYOUT)),
                 Parameter('log_dir', value=str(log_dir)),     # 홈 ~/roport_logs 에 쓰지 않게
+                *extra,
             ])
         self.probe = rclpy.create_node('probe', context=self.ctx, namespace=NS)
         self.cmds = []
@@ -177,8 +178,36 @@ def test_speed_command(ros):
     ros.command({'cmd': 'speed', 'base_speed': 0.05, 'rotate_speed': 0.5})
     ros.wait(lambda: ros.states and ros.states[-1]['speed']['base_speed'] == 0.05)
     assert ros.states[-1]['speed']['rotate_speed'] == 0.5
+    # 노드 앞 감속은 별도 파라미터(approach_speed·approach_lead_cm): 직선 속도를 바꿔도 그대로
+    assert ros.states[-1]['speed']['approach_speed'] == 0.03
+    assert ros.states[-1]['speed']['approach_lead_cm'] == 5.0
     ros.command({'cmd': 'speed', 'base_speed': 0.2})
     ros.wait(lambda: ros.states and ros.states[-1]['last_command']['cmd'] == 'speed'
              and not ros.states[-1]['last_command']['ok'])
     assert ros.node.ex.cfg.base_speed == 0.05
     assert ros.cmds == []                       # 속도 바꾸기만으로는 움직이지 않음
+
+
+def test_approach_parameters(tmp_path):
+    """approach_speed·approach_lead_cm 파라미터: 범위 안이면 적용, 밖이면 노드가 뜨지 않음."""
+    h = Harness(tmp_path / 'logs', extra=[Parameter('base_speed', value=0.05),
+                                          Parameter('approach_speed', value=0.02),
+                                          Parameter('approach_lead_cm', value=8.0)])
+    try:
+        assert h.node.ex.cfg.approach_lead_cm == 8.0
+        assert h.node.ex.approach_speed == 0.02 and h.node.ex.cfg.base_speed == 0.05
+    finally:
+        h.close()
+    from roport_line_nav.line_nav_node import LineNavNode
+    ctx = Context()
+    rclpy.init(context=ctx, domain_id=TEST_DOMAIN_ID)
+    try:
+        with pytest.raises(ValueError, match='approach_speed'):
+            LineNavNode(context=ctx, namespace=NS, parameter_overrides=[
+                Parameter('robot', value='pinky_d660'),
+                Parameter('calibration_file', value=str(CONFIG)),
+                Parameter('layout_file', value=str(LAYOUT)),
+                Parameter('log_dir', value=str(tmp_path / 'logs2')),
+                Parameter('approach_speed', value=0.2)])     # 하드 상한 0.15 초과
+    finally:
+        rclpy.shutdown(context=ctx)

@@ -96,6 +96,12 @@ def launch_setup(context):
                 'robot': plan.robot,
                 'layout_file': os.path.expanduser(LaunchConfiguration('layout').perform(context)),
                 'log_dir': LaunchConfiguration('nav_log_dir').perform(context),
+                # 직선 속도 상한·노드 앞 감속 거리(화면 슬라이더 최대 = line_max_linear)
+                'max_linear': float(LaunchConfiguration('line_max_linear').perform(context)),
+                'approach_lead_cm': float(LaunchConfiguration('approach_lead_cm').perform(context)),
+                # 라인 추종 게인(시험판): gain_ref_speed 를 넘는 속도에서 kp × 속도/gain_ref_speed
+                **{k: float(LaunchConfiguration(f'line_{k}').perform(context))
+                   for k in ('kp', 'kd', 'gain_ref_speed')},
             }], remappings=[('cmd_vel', 'line_nav/cmd_vel')]))
         actions.append(Node(package='roport_line_nav', executable='cmd_vel_guard',
                             output='screen'))
@@ -153,6 +159,20 @@ def generate_launch_description():
                               description='ArUco ID table (docs/aruco/markers.yaml) for names'),
         DeclareLaunchArgument('camera_hfov_deg', default_value='0',
                               description='camera horizontal FOV for rough distance (0 = off)'),
+        DeclareLaunchArgument('line_max_linear', default_value='0.06',
+                              description='mode:=route|test line_nav straight speed cap m/s '
+                                          '(hard cap 0.15). 0.08 시험: line_max_linear:=0.08'),
+        DeclareLaunchArgument('approach_lead_cm', default_value='5.0',
+                              description='mode:=route|test slow to approach speed this many cm '
+                                          'before the expected node (0.08 m/s 에서 회전이 늦으면 7)'),
+        DeclareLaunchArgument('line_kp', default_value='1.0',
+                              description='mode:=route|test line following kp (rad/s per error); '
+                                          'grows x speed/line_gain_ref_speed above that speed'),
+        DeclareLaunchArgument('line_kd', default_value='0.05',
+                              description='mode:=route|test line following kd'),
+        DeclareLaunchArgument('line_gain_ref_speed', default_value='0.06',
+                              description='mode:=route|test kp stays as is up to this m/s '
+                                          '(0.15 = speed scaling off)'),
         DeclareLaunchArgument('layout', default_value='',
                               description='mode:=amcl|route|fleet layout yaml (default for '
                                           'route/fleet: roport_gz_world share)'),
