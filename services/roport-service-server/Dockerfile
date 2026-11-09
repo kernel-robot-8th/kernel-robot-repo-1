@@ -13,5 +13,5 @@ COPY --from=build /app/build/libs/*.jar app.jar
 USER roport
 ENV SERVER_ADDRESS=0.0.0.0
 EXPOSE 8080
-HEALTHCHECK --interval=15s --timeout=3s --retries=5 CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080'
+HEALTHCHECK --interval=15s --timeout=3s --retries=5 CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /actuator/health HTTP/1.0\\r\\n\\r\\n" >&3; grep -q "\"status\":\"UP\"" <&3'
 CMD ["java", "-jar", "app.jar"]
