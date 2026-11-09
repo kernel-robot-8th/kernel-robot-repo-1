@@ -84,6 +84,7 @@ def launch_setup(context):
                 'ssh_key': LaunchConfiguration('ssh_key').perform(context),
                 'fleet_log_dir': LaunchConfiguration('fleet_log_dir').perform(context),
                 'nav_log_dir': LaunchConfiguration('nav_log_dir').perform(context),
+                'dock_dir': LaunchConfiguration('dock_dir').perform(context),
             }],
         ),
     ]
@@ -140,6 +141,9 @@ def generate_launch_description():
                               description='mode:=fleet daily log CSV folder'),
         DeclareLaunchArgument('nav_log_dir', default_value='~/roport_logs',
                               description='mode:=route|test per-route detail CSV folder (robot)'),
+        DeclareLaunchArgument('dock_dir', default_value='~/roport_dock',
+                              description='mode:=fleet precision docking: cameras.json and '
+                                          'calib_*.json folder (top-view cameras over SSH)'),
         DeclareLaunchArgument('use_sim_time', default_value='false',
                               description='true for Gazebo/MuJoCo simulation'),
         DeclareLaunchArgument('map_dir', default_value='~/roport_maps',
