@@ -15,3 +15,5 @@
 
 - `executor/plans.py`의 순차 계획을 기존 시험과 UI 구간/작업·출고 요청 시험이 공유한다. 저장 정의는 journal 옆 `scenario-plans.json`, 실행본은 journal에 고정한다. 현재 로봇 주행기와 동일하게 정차선 노드에서만 route를 끝내며, 중간 U턴·정차선 통과·line-only의 Nav2 추가를 거부한다. 실제 WSS/재고/OMX 공동 작업·동시 스케줄링을 구현 완료로 설명하지 않는다.
 - UI 시나리오 선택은 공통 `two_pinky` 설정과 기존 binding을 유지한 채 1대/2대/스마트카트 계획을 적용한다. `allowed_robots`는 선택 가능 범위, `robots`는 현재 계획 참여 기체다. 참여 기체만 폴링/준비/timeout/점유 검사하며 비참여 기체는 현장에서 통로 밖에 둔다. 선택/노드 편집은 구동하지 않고 READY/COMPLETE에서 검증·적용 후 별도 출발한다. HOLD는 UI로 해제하지 않는다.
+
+- 실물 코드 기반 가상 환경은 `tools/run_virtual_trial.py` → `scripts/virtual_pinky.py`다. 현재 checkout의 Pinky TrialDriver/TrialLogic/RouteExecutor와 팀 2D Sim을 재사용한다. Nav2·lease는 모사이며 물리 검증으로 표현하지 않는다. loopback·새 binding·이력 보존과 가상 전용 초기화 경계를 유지한다.

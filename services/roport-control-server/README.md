@@ -256,3 +256,14 @@ uv build
 통합 테스트는 실제 Mosquitto를 임시 loopback 포트로 실행·종료합니다. PATH에 없다면 `MOSQUITTO_BIN=/절대경로/mosquitto`를 지정합니다. 브로커가 없을 때 일반 pytest는 통합 시험을 skip하지만 CI와 위 명령은 실패하므로 누락을 숨기지 않습니다. ROS가 로드된 터미널에서 pytest 플러그인 충돌이 나면 `env -u PYTHONPATH REQUIRE_MQTT_TESTS=1 uv run pytest`로 관제 가상환경만 사용하세요.
 
 관련 작업: [FFT1-104](https://fp-team1.atlassian.net/browse/FFT1-104). 설계 참고: [MQTT](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/10125435), [Pinky 인터페이스 검토안](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/2752522). 후자의 v0.1은 검토 중이며 이 예제가 현장 계약 확정을 대신하지 않습니다.
+
+## 실시간 위치·가상 Pinky 시험
+
+TRIAL 화면은 표시용 MQTT motion의 출처·관측 시각·지도 버전을 확인해 위치를 갱신합니다. 주행 명령/완료 판정과는 별도 경로이며, 지연·단절 시 마지막 위치를 표시합니다. 실물 Pinky에도 이 PR의 MQTT 모듈과 `trial_driver.py`를 함께 적용해야 연속 위치가 발행됩니다.
+
+```bash
+# 이 서비스 폴더에서. PATH에 Mosquitto가 없으면 MOSQUITTO_BIN을 지정합니다.
+env -u PYTHONPATH uv run python tools/run_virtual_trial.py
+```
+
+출력된 URL을 열고 `key_file`의 키를 입력하면 1대·2대·스마트카트 계획을 선택할 수 있습니다. 가상 시험 초기화는 기존 기록을 보존하고 같은 URL에서 새 시험을 시작합니다. 기본 가상 속도는 기존 실물 기록 기준 0.03 m/s이며, Nav2는 장애물 없는 모사입니다. 자세한 범위·종료·오류 주입은 [가상 시험 가이드](docs/pinky-trial.md#10-실물-드라이버를-사용하는-가상-시험-환경)를 따릅니다.

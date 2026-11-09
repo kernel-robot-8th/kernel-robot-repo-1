@@ -92,6 +92,7 @@
             <p id="trial-scenario" class="note"></p>
             <p id="trial-package" class="note"></p>
             <p id="trial-status">핑키 상태 응답 대기</p>
+            <p id="trial-motion-diagnostics" role="status" hidden></p>
             <p id="trial-route" class="note"></p>
             <label>시험 조작 키 <input id="trial-key" type="password" autocomplete="off" placeholder="서버에서 설정한 키" aria-describedby="trial-key-help" /></label>
             <p id="trial-key-help" class="note">키를 입력한 뒤 아래 버튼을 누르세요. Enter만으로 출발하지 않습니다.</p>
@@ -131,6 +132,7 @@
               <button id="trial-dummy" data-action="dummy" disabled>OMX 입고 완료 (더미)</button>
               <button id="trial-request" data-action="request" hidden disabled>물품 요청 · 스마트카트 호출</button>
               <button data-action="stop" disabled>시험 중단 (보류)</button>
+              <button id="trial-reset" data-action="reset" disabled hidden>가상 시험 초기화</button>
             </div>
             <p id="trial-feedback" role="status">출발·더미 승인은 수동입니다. 중단은 후속 명령과 lease 갱신을 멈춥니다.</p>
             <details><summary>최근 수신 이벤트</summary><ul id="trial-events"></ul></details>

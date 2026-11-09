@@ -7,6 +7,8 @@ import secrets
 import socket
 import time
 from copy import deepcopy
+from datetime import UTC, datetime
+from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
@@ -36,6 +38,8 @@ class TrialView:
         socket_path,
         token,
         grid,
+        *,
+        virtual_reset_path=None,
     ):
         if not token or len(token) < 24:
             raise ValueError("ROPORT_TRIAL_TOKEN requires at least 24 characters")
@@ -45,6 +49,8 @@ class TrialView:
         self.session = str(uuid4())
         self.revisions = itertools.count(1)
         self.last = None
+        self.last_positions = {}
+        self.reset_path = Path(virtual_reset_path) if virtual_reset_path else None
         self._snapshot_lock = Lock()
         self._next_snapshot = 0.0
         self._available = False
@@ -108,6 +114,29 @@ class TrialView:
                     raise PermissionError(
                         "실물 조작은 로컬 주소 또는 HTTPS에서만 가능합니다."
                     )
+                if request.get("action") == "reset":
+                    if (
+                        not self.reset_path
+                        or snapshot["config"]["mode"] != "simulation"
+                    ):
+                        raise ValueError(
+                            "가상 핑키 실행기로 시작한 시험만 초기화할 수 있습니다."
+                        )
+                    if set(request) != {"action", "session_id", "task_id", "phase"} or (
+                        request["session_id"] != snapshot["session_id"]
+                        or request["task_id"] != snapshot["state"]["task_id"]
+                    ):
+                        raise ValueError(
+                            "시험이 변경되었습니다. 최신 화면에서 다시 조작하세요."
+                        )
+                    try:
+                        with self.reset_path.open("x") as file:
+                            json.dump(request, file)
+                    except FileExistsError:
+                        pass  # The supervisor consumes one reset per run, including retries.
+                    return {"reset_pending": True}
+                if self.reset_path and self.reset_path.exists():
+                    raise ValueError("가상 시험 초기화 중입니다. 새 연결을 기다리세요.")
                 if (
                     not self.compatible(snapshot["config"])
                     and request.get("action") != "stop"
@@ -183,11 +212,29 @@ class TrialView:
                     not available or not data["mqtt_ready"] or age is None or age > 3
                 )
                 pose, source = None, "위치 미수신"
+                pose_age, pose_stale, pose_live, pose_key = None, True, False, None
+                identity = (
+                    device["binding_id"],
+                    status.get("boot_id"),
+                    config["map_version"],
+                )
+                previous = self.last_positions.get(robot)
+                if previous and (previous["identity"] != identity or not matches):
+                    self.last_positions.pop(robot)
+                    previous = None
                 node = status.get("node_id")
                 if matches and status.get("mode") == "line" and node in self.nodes:
                     pose = [*self.nodes[node], 0, status["heading_rad"]]
                     source = "마지막 확인 노드 기준 · 연속 위치 아님"
-                completed = state["completed"].get("navigate")
+                completed = next(
+                    (
+                        event
+                        for event in reversed(list(state["completed"].values()))
+                        if event["type"] == "navigate.completed"
+                        and event["source"] == robot
+                    ),
+                    None,
+                )
                 if (
                     matches
                     and phase == "COMPLETE"
@@ -196,12 +243,84 @@ class TrialView:
                 ):
                     p = completed["payload"]["pose"]
                     pose, source = [p["x"], p["y"], 0, p["yaw"]], "Nav2 완료 응답 위치"
+                    pose_age = max(
+                        0,
+                        (
+                            datetime.now(UTC)
+                            - datetime.fromisoformat(
+                                completed["payload"]["observed_at"]
+                            )
+                        ).total_seconds(),
+                    )
+                motion = data.get("motion", {}).get(robot) if matches else None
+                if motion and not all(
+                    self.grid["origin"][i]
+                    <= motion["pose"][axis]
+                    <= self.grid["origin"][i]
+                    + self.grid[size] * self.grid["resolution"]
+                    for i, axis, size in ((0, "x", "width"), (1, "y", "height"))
+                ):
+                    motion = None
+                    if pose_age is None:
+                        pose = None
+                if (
+                    motion
+                    and pose_age is not None
+                    and (
+                        datetime.fromisoformat(motion["observed_at"])
+                        < datetime.fromisoformat(completed["payload"]["observed_at"])
+                    )
+                ):
+                    motion = None
+                if motion:
+                    p = motion["pose"]
+                    pose = [p["x"], p["y"], p["z"], p["yaw"]]
+                    source = {
+                        "tf": "TF 지도 위치",
+                        "line_estimate": "라인 주행 추정 위치",
+                        "simulation": "가상 센서 위치",
+                    }.get(motion["pose_source"], motion["pose_source"])
+                    pose_age = motion["age"] + time.monotonic() - received
+                    pose_stale = not available or motion["stale"] or pose_age > 1
+                    pose_live = not pose_stale
+                    pose_key = f"{motion['boot_id']}:{motion['sequence']}"
+                if pose is not None:
+                    if pose_age is None:
+                        # A node is a confirmed landmark, not a continuous observation.
+                        same = (
+                            previous
+                            and previous["pose"] == pose
+                            and previous["source"] == source
+                        )
+                        pose_age = (
+                            (time.monotonic() - previous["at"] + previous["age"])
+                            if same
+                            else (age or 0)
+                        )
+                    self.last_positions[robot] = {
+                        "identity": identity,
+                        "pose": pose,
+                        "source": source,
+                        "age": pose_age,
+                        "at": time.monotonic(),
+                        "key": pose_key,
+                    }
+                elif previous and matches:
+                    pose, source = previous["pose"], previous["source"]
+                    pose_age = previous["age"] + time.monotonic() - previous["at"]
+                    pose_key = previous["key"]
+                if pose_stale and pose is not None:
+                    source += " · 마지막 확인 위치"
                 rows.append(
                     {
                         "robot_id": robot,
                         "role": role,
                         "pose": pose,
                         "pose_source": source,
+                        "pose_age": pose_age,
+                        "pose_stale": pose_stale,
+                        "pose_live": pose_live,
+                        "pose_key": pose_key,
                         "joints": {},
                         "velocity": None,
                         "age": age,
@@ -223,6 +342,13 @@ class TrialView:
                 for r in rows
             )
             trial = {
+                "reset_available": bool(self.reset_path)
+                and config["mode"] == "simulation",
+                "can_reset": available
+                and config["mode"] == "simulation"
+                and bool(self.reset_path)
+                and not self.reset_path.exists(),
+                "reset_pending": bool(self.reset_path and self.reset_path.exists()),
                 "session_id": data["session_id"],
                 "plan": plan,
                 "plan_revision": data.get("plan_revision"),
@@ -253,6 +379,9 @@ class TrialView:
                 ).get("source"),
                 "mode": config["mode"],
                 "mqtt_ready": data["mqtt_ready"] and available,
+                "motion_diagnostics": deepcopy(
+                    data.get("motion_diagnostics", {"rejected": 0, "reasons": {}})
+                ),
                 "gate": state["gate"],
                 "fault": state["fault"],
                 "events": data["events"],
@@ -319,5 +448,5 @@ class TrialView:
             if data
             else "시험 설정 응답 대기",
             "errors": [e for e in (error, trial and trial["fault"]) if e],
-            "message": "마지막 확인 노드 기준 · 연속 위치 미수신 · 중단은 보류/lease 갱신 중단",
+            "message": "위치 출처·관측 경과 확인 · 지연 시 마지막 위치 유지 · 중단은 보류/lease 갱신 중단",
         }

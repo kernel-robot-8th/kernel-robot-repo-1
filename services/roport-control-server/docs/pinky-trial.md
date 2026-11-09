@@ -565,3 +565,97 @@ mode_switch 명령, 좌표/버전을 포함한 navigate, payload 내부 공통 �
 팀원 연결 전 확인: 노드/출발 방향/출발 동작, 선택한 시나리오의 robot/binding, map/graph 버전, 시험 목표 pose,
 라인/AMCL 상태 제공, 로컬 watchdog, Nav2 구동권 이전, 완료 측정값.
 PR #35의 `trial_driver`·`trial_guard`·`trial.launch.py`와 새 이식 키트를 함께 사용한다. heartbeat/close hook이 없는 이전 키트와 혼합하지 않는다. 실제 모터·Nav2 경로와 장애물 회피 검증은 남아 있다.
+
+## 10. 실물 드라이버를 사용하는 가상 시험 환경
+
+`mock_pinky_trial.py`는 빠른 메시지 검사용이다. 실제 주행과 연결된 시험에는 아래 환경을 사용한다.
+**원본 웹 UI → FastAPI → 동일 관제 실행부 → 실제 loopback Mosquitto → 동일 MQTT runner →
+Pinky의 `TrialDriver`·`TrialLogic`·`RouteExecutor` → 가상 IR/odom/모터**로 연결한다.
+팀원 소스를 수정하거나 복사하지 않고 현재 checkout에서 불러온다. ROS 설치 없이 실행하며 wheel에는 포함하지 않는다.
+
+```bash
+# services/roport-control-server에서. Mosquitto가 PATH에 없으면 MOSQUITTO_BIN 지정.
+env -u PYTHONPATH uv run python tools/run_virtual_trial.py
+# 기본: UI에서 1대/2대/스마트카트 선택. 아래는 기존 제한 실행 옵션.
+# 2대: logistics=pinky1 / smartcart=pinky3
+env -u PYTHONPATH uv run python tools/run_virtual_trial.py --scenario two
+# 스마트카트만 H1 → N11 → N12 → 모의 Nav2 목표
+env -u PYTHONPATH uv run python tools/run_virtual_trial.py --scenario smartcart
+```
+
+1. 터미널에 출력된 `url`을 브라우저에서 연다. 임의의 빈 포트를 써 기존 8000·현장 브로커와 충돌하지 않는다.
+2. 출력된 `key_file`을 `cat`으로 확인해 웹 화면의 **시험 조작 키**에 입력한다.
+3. 기존 출발·더미 완료·물품 요청 버튼 또는 시나리오 설정을 사용한다. 기본 실행은 1배속이며 자동 승인은 없다.
+4. 종료는 실행 터미널에서 **Ctrl+C**. 자식 프로세스도 종료하고 모든 기록은 `~/roport-trial/virtual/<실행별 폴더>/`에 남긴다.
+
+**가상 시험 초기화** 버튼은 조작 키 입력 후 사용할 수 있다. 가상 주행 중·완료·보류 상태에서
+실행기의 가상 프로세스들을 종료하고, 로봇 위치·계획·binding을 실행 당시 초기값으로 새로 만든다.
+편집한 계획도 초기화되며 자동 출발하지 않는다. 같은 URL·조작 키로 재연결되고, 이전 기록 전체는
+기존 실행 폴더 이름 뒤에 `-before-reset-…`가 붙은 형제 폴더에 보존한다. 현재 `run.json`의
+`previous_run_dir`로 직전 기록을 찾을 수 있다. 실물 시험과 개별 수동 실행에는 이 버튼을 제공하지 않는다.
+
+`--verify`를 추가하면 가상 상하차·물품 요청을 HTTP API로 자동 승인해 끝까지 검증한 뒤 종료한다.
+실물 명령은 발행하지 않는다. 실행마다 site/control/binding·journal을 새로 만들며, 기존 `ROPORT_*` 환경값을
+자식에게 넘기지 않는다. MQTT·웹 서버 모두 127.0.0.1에만 바인딩하고 DB는 disabled다.
+실패한 실행을 이력 수정으로 재개하지 말고 원인을 확인한 뒤 새 실행을 만든다.
+
+### 실물 완료 이력의 설정 가져오기
+
+```bash
+env -u PYTHONPATH uv run python tools/run_virtual_trial.py \
+  --scenario two --record /absolute/path/to/hardware/control_completed.json
+```
+
+`--record`는 hardware 관제 journal의 설정을 읽어 경로·출발 방향·제한 속도·deadline·Nav2 목표를 유지한다.
+연결 ID와 hardware 승인은 가상 시험용으로 바꾸고 원본 파일은 수정하지 않는다. 현재 지도/graph/node/scenario와
+다른 기록은 거부한다. v13 실물 기록을 v14에 그대로 재생하지 않는다. `smartcart`는 two 기록을 사용할 수 있다.
+기록 미지정 시 현재 v14 경로와 실물 완료 시험 당시의 0.03m/s 제한을 사용한다.
+
+- `run.json`: 시뮬레이션 조건, 원본 기록 SHA256, 실제 accepted→completed 구간 시간, 실행한 코드·지도 해시, PID.
+- `control.json`, `logistics.json`, `smartcart.json`: 실제 MQTT 명령·응답 및 상태 전이 이력.
+- `*.log`, `outcome.json`: 프로세스 진단과 자동 검증 결과. `ui-key.txt`는 로컬 비밀 파일이며 공유하지 않는다.
+
+실물과 가상의 accepted→completed 시간을 비교할 수 있지만, 실물의 도착 시간을 강제로 재생하지는 않는다.
+실제 명령에 따라 현재 드라이버가 IR를 판독하고 경유·회전·정차를 계산해야 구현 오류가 드러나기 때문이다.
+
+### 재현 범위와 실패 시험
+
+| 항목 | 적용 범위 |
+| --- | --- |
+| 명령/응답·중복·ACK·재시도·boot/binding·정차 판정 | 실제 MQTT 모듈과 Pinky 드라이버 공통 코드 |
+| 경로·상하차 90° 회전·load_done 후 복귀·창고 후진 정차·N12 handoff | 현재 실측 맵 + 실제 라인 실행 코드 |
+| 센서·바퀴 | 팀의 2D `Sim`: 20Hz, IR 3채널, 선폭·센서 위치, 이상적인 odom. 기체별 재측정값은 아님 |
+| 속도 | 실제와 같이 `min(로컬 base_speed=0.03, 명령 상한)`. 관제 상한만 0.06으로 바꿔도 두 배로 빨라지지 않음 |
+| Nav2 | `--nav2 simulated` 기본: 0.03m/s의 장애물 없는 가상 목표 이동. 실제 드라이버의 전환/완료 검사를 사용하나 Nav2·AMCL·경로 계획은 실행하지 않음 |
+| 구동권 watchdog | 가상 프로세스 내 1초 lease 모델. 실제 ROS 독립 guard 및 프로세스 강제 종료 시 물리 정지를 검증한 것은 아님 |
+
+- `--scope line-only`: N12 정차까지만 검증.
+- `--nav2 off`: 준비되지 않은 Nav2로 전환/출발이 진행되지 않는지 확인.
+- `--fault line-loss`: 해당 로봇의 누적 주행 5초 후 가상 테이프를 제거, 실제 라인 유실 오류와 HOLD 확인.
+- `--fault odom-stale`: 5초 후 odom 갱신 중단, 정차 완료를 인정하지 않고 최종 timeout/HOLD 확인.
+
+Nav2 장애물 회피·실제 Wi-Fi 손실/지연·기체별 센서 편차·마찰·배터리·하중은 재현하지 않는다.
+모의 Nav2 성공이나 실제와 비슷한 주행 시간은 실물 Nav2 성공 증거가 아니다.
+
+
+## 11. 실시간 위치 표시 · DB 없이 연결
+
+`TrialDriver.observe_motion()` → 이식 MQTT runner → `roport/v1/{site}/robot/{pinky1|pinky2|pinky3}/motion` → 관제의 별도 수신 연결/메모리 최신값 → Unix socket → FastAPI → 원본 웹 UI. 기존 주행 명령·완료 응답 `trial-v1`과 `trial.json`은 변경하지 않는다.
+
+| 항목 | 규격/처리 |
+| --- | --- |
+| Envelope | `schema_version=1.1`, `profile=roport-state-dev-v1`, `type=motion`, `message_id`, `site_id`, `source=기체 ID`, `target=control`, `sent_at` |
+| Payload 식별 | 같은 시험의 `binding_id`, runner와 같은 `boot_id`, 증가하는 `sequence`, 실제 관측의 `observed_at` |
+| Payload 위치 | `map_id`, `map_version`, `frame_id=map`, `pose_source`, `pose={x,y,z,yaw}`(m/rad) 또는 null, `velocity=null`, `joints={}` |
+| 출처 | `tf`: 로봇의 유효한 지도 TF(계산 시각이 아닌 TF 근거의 경과 시간 반영); `line_estimate`: 실측 원점 + 상태 heading과 같은 frame_yaw의 표시용 pose_est; `simulation`: 가상 센서 위치 |
+| 주기/전달 | 5 Hz, 정지 중에도 유효 관측 발행. QoS0, retain=false, MQTT expiry 1초. 작업 ACK/재전송/고빈도 journal 저장 없음 |
+| 수신 검증 | 현재 시험 site/binding, 상태 응답으로 확인된 boot, 순번/측정 시각, map/frame 검증. 1초 초과 표본·역순·중복·retained는 폐기 |
+| 화면 | 상태 스트림 약 10 Hz. 수신 좌표 사이만 최대 0.2초 보간하며 외삽하지 않음. 모드 전환·무효 위치·수신 단절 시 마지막 위치/경과 시간 표시. 다른 boot/지도 위치 재사용 금지 |
+
+이 motion 표본은 준비·도착·정지·자원 점유·다음 단계 승인에 사용하지 않는다. 위치 수신 연결과 작업 명령 연결의 큐를 분리해 표시 입력의 오류·적체가 작업 이벤트를 소비하지 않게 한다. 관제 프로세스가 재시작되면 메모리 위치는 새 표본을 기다리며, 운영 DB/보류된 registry 기능은 필요하지 않다.
+
+**실물 배포:** 관제 코드와 Pinky의 `roport_pinky/trial_driver.py` 및 MQTT 모듈(`motion.py`, `mqtt.py`, `pinky_trial.py`, `trial_runner.py`)을 함께 갱신한다. 재생성한 이식 키트에도 `motion.py`를 포함한다. 기존 실행 명령/브로커/기체 ID/binding/trial.json은 유지한다. ACL을 사용하는 현장은 기체의 자기 motion 토픽 발행과 관제의 해당 토픽 구독을 허용한다. 기존 드라이버에는 선택 hook이 없으므로 작업 시험은 계속 가능하지만 연속 위치는 표시되지 않는다. 실물 주행은 업데이트 후 별도 재검증해야 한다.
+
+위치 시각 보정에는 Pinky의 `trial_nav2.py`도 함께 갱신한다. 라인 추정은 현재 노드를 알며 STOPPED·ERROR가 아닐 때만 사용하고, HOLD·safe_stop 뒤에는 null을 발행해 이전 좌표를 마지막 확인 위치로 표시한다. 유효한 지도 TF는 정지 중에도 사용할 수 있다. 표시 hook의 예외는 작업 루프로 전파하지 않고 집계하며 첫 오류와 50건마다 예외 종류를 로그에 남긴다. 웹 시험 패널의 `위치 수신 거부 누적`에는 시각 지연/시계 차이·중복/역순·기체 식별 불일치·잘못된 표본의 건수를 표시한다. 시각 사유가 있으면 PC와 로봇 시계를 동기화하며 허용 시간 기준을 완화하지 않는다. 이 진단은 관제 실행부 재시작 시 초기화되고 주행 승인에는 사용하지 않는다.
+
+TF는 기존 `trial/localization_state`의 유효성 검사를 그대로 사용한다. Nav2/AMCL/TF가 준비되지 않은 라인 모드는 `pose_est`를 실측 frame의 cm→m, 회전/이동 변환으로 표시한다. 이 추정은 바퀴 축 위치의 근사이며 정밀 localization을 대체하지 않는다. 가상 Nav2도 실제 ROS Nav2의 장애물 회피 검증을 대체하지 않는다.

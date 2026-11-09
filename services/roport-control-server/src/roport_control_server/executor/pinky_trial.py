@@ -17,6 +17,7 @@ import socket
 import sys
 from contextlib import ExitStack
 from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
@@ -26,6 +27,7 @@ from uuid import uuid4
 
 from roport_control_server.adapters.mqtt.journal import Journal
 from roport_control_server.adapters.mqtt.messages import decode, timestamp, topic
+from roport_control_server.adapters.mqtt.motion import MotionReceiver, motion_topic
 from roport_control_server.adapters.mqtt.mqtt import MqttTransport
 from roport_control_server.adapters.mqtt.trial_wire import (
     PROFILE,
@@ -221,6 +223,7 @@ class TrialControl:
                 }
             )
         self.pending_status, self.heard = {}, {}
+        self.motion = None
         self.last_poll = 0.0
         self.deadline = None
         if self.state["phase"] not in {"READY", "COMPLETE", "HOLD"}:
@@ -657,6 +660,8 @@ class TrialControl:
                 self.hold("next_step_not_ready")
 
     def poll(self, timeout=0.1):
+        if self.motion is not None:
+            self.motion.poll(self.state["statuses"])
         try:
             if not self.transport.ready:
                 self.hold("mqtt_disconnected")
@@ -772,7 +777,7 @@ def main():
     selector = selectors.DefaultSelector()
     if not args.socket:
         selector.register(sys.stdin, selectors.EVENT_READ)
-    web = None
+    web = motion_transport = None
     owner = ExitStack()
     started = False
 
@@ -807,6 +812,20 @@ def main():
             web = TrialSocket(args.socket, control)
         transport.start()
         started = True
+        motion_transport = MqttTransport(
+            replace(connection, client_id=connection.client_id + "-motion"),
+            [
+                motion_topic(config["site_id"], r["robot_id"])
+                for r in config["robots"].values()
+            ],
+        )
+        control.motion = MotionReceiver(config, motion_transport)
+        try:
+            motion_transport.start()
+        except ConnectionError:
+            print(
+                "Display motion unavailable; task connection is unchanged.", flush=True
+            )
         if web:
             print(
                 "Trial web owner ready; waiting for explicit operator commands.",
@@ -864,6 +883,8 @@ def main():
                 control.hold("operator_stopped")
         finally:
             transport.stop()
+            if motion_transport:
+                motion_transport.stop()
             if web:
                 web.close()
             owner.close()

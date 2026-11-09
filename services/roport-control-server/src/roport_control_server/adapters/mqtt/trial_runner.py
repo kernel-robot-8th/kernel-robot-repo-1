@@ -62,6 +62,7 @@ def run(profile, role, connection, journal_path, driver):
         validate_action=driver.validate_action,
         dispatch=driver.dispatch,
         safe_stop=driver.safe_stop,
+        observe_motion=getattr(driver, "observe_motion", None),
     )
     try:
         client.start()
@@ -77,6 +78,7 @@ def run(profile, role, connection, journal_path, driver):
                 heartbeat()
             for original, phase, details in driver.drain_results():
                 client.report(original, phase, **details)
+            client.publish_motion()
     except KeyboardInterrupt:
         pass
     finally:

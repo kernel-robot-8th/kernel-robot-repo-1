@@ -29,6 +29,35 @@ function displayedPose(row) {
   return (demo ? installedPoses[row.robot_id] : null) ?? row.pose ?? installedPoses[row.robot_id] ?? null;
 }
 
+function displayMotion(model, pose, row) {
+  if (!pose) { delete model.userData.motion; return; }
+  const now = performance.now(), previous = model.userData.motion;
+  const continuous = trial && row.pose_live && !row.pose_stale
+    && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (continuous && previous?.key === row.pose_key) return;
+  const from = [...model.position.toArray(), model.rotation.z];
+  const sameBoot = previous?.key?.split(":")[0] === row.pose_key?.split(":")[0];
+  if (continuous && model.visible && sameBoot && Math.hypot(pose[0] - from[0], pose[1] - from[1]) < 0.5) {
+    model.userData.motion = {from, to: pose, at: now, key: row.pose_key, active: true};
+  } else {
+    model.position.set(...pose.slice(0, 3));
+    model.rotation.z = pose[3];
+    model.userData.motion = {key: row.pose_key, active: false};
+  }
+}
+
+function animateMotion(model, now) {
+  const motion = model.userData.motion;
+  if (!motion?.active) return false;
+  const t = Math.min(1, Math.max(0, (now - motion.at) / 200));
+  const pose = motion.from.map((value, i) => value + (motion.to[i] - value) * t);
+  pose[3] = motion.from[3] + Math.atan2(Math.sin(motion.to[3] - motion.from[3]), Math.cos(motion.to[3] - motion.from[3])) * t;
+  model.position.set(...pose.slice(0, 3));
+  model.rotation.z = pose[3];
+  motion.active = t < 1; // Interpolate received samples only; never predict beyond the target.
+  return true;
+}
+
 function installationPose(mount) {
   const base = models.omx.getObjectByName("link0_visual_0");
   if (!base) throw new Error("OMX base mesh missing");
@@ -277,6 +306,7 @@ function updateDetails() {
   ];
   if (installedPoses[selected]) values.push(["설치 배치 (기준값)", "받침 앞 변 · 상호 대향 · 실기 미검증"]);
   if (row?.pose_source) values.push(["위치 근거", row.pose_source]);
+  if (row?.pose_age != null) values.push(["위치 관측 경과", `${row.pose_age.toFixed(1)}초${row.pose_stale ? " · 갱신 지연 / 마지막 확인" : " · 수신 중"}`]);
   for (const [name, angle] of Object.entries(row?.joints ?? {}))
     values.push([name, `${((angle * 180) / Math.PI).toFixed(1)}°`]);
   if (!Object.keys(row?.joints ?? {}).length)
@@ -319,15 +349,12 @@ function receive(raw) {
         if (id === selected) views.detail.dirty = true;
         model.userData.poseKey = poseKey;
       }
-      if (pose) {
-        model.position.set(...pose.slice(0, 3));
-        model.rotation.z = pose[3];
-      }
+      displayMotion(model, pose, row);
       model.visible = !!pose;
       poseModel(model, row);
       poseModel(previews[id], row);
-      labels[id].classList.toggle("stale", row.stale);
-      labels[id].textContent = title(id) + (installedPoses[id] && (demo || !row.pose) ? " · 설치 배치" : "");
+      labels[id].classList.toggle("stale", row.stale || row.pose_stale === true);
+      labels[id].textContent = title(id) + (installedPoses[id] && (demo || !row.pose) ? " · 설치 배치" : trial && row.pose_stale && pose ? " · 마지막 위치" : "");
       labels[id].title = row.pose_source ?? "";
     }
     $("source").textContent = data.source;
@@ -493,6 +520,9 @@ async function start(config) {
     if (document.hidden || now - last < 32) return;
     last = now;
     let rendered = false;
+    for (const id of ids) {
+      if (animateMotion(instances[id], now)) views.map.dirty = true;
+    }
     for (const v of Object.values(views)) {
       v.controls.update();
       if (v.dirty) {
@@ -543,6 +573,8 @@ function disconnected() {
   $("task-source").textContent = "연결 끊김 · 마지막 작업 상태";
   for (const row of rows) {
     row.stale = true;
+    if (trial) { row.pose_stale = true; row.pose_live = false; }
+    if (instances[row.robot_id]?.userData.motion) instances[row.robot_id].userData.motion.active = false;
     buttons[row.robot_id].dataset.stale = "true";
     buttons[row.robot_id].querySelector("small").textContent = "미수신 / 지연";
     labels[row.robot_id].classList.add("stale");

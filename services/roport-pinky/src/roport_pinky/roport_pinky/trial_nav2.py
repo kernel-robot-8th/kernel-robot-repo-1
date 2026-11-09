@@ -169,9 +169,16 @@ class Nav2Bridge:
                     pose = candidate
         except TransformException:
             pass
+        observed = datetime.now(UTC)
+        # Preserve TF evidence age across ROS/wall clocks; cached snapshots must not freshen it.
+        pose_observed = None
+        if pose:
+            age = max(0., now - min(sources['map_to_base'], sources['odom_to_base']))
+            pose_observed = datetime.fromtimestamp(observed.timestamp() - age, UTC).isoformat()
         return {'nav2_ready': bool(ready), 'localization_ready': pose is not None,
                 'pose': pose, 'stopped': stopped, 'frame_id': 'map',
-                'observed_at': datetime.now(UTC).isoformat(), 'source_stamps': sources}
+                'observed_at': observed.isoformat(), 'pose_observed_at': pose_observed,
+                'source_stamps': sources}
 
     def _publish_localization(self):
         with self.lock:
