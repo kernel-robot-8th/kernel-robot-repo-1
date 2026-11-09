@@ -82,6 +82,8 @@ cd /path/to/kit
 
 이 ROS 상태는 MQTT trial-v1 스키마를 바꾸지 않습니다. MQTT 응답의 `localization_ready`·`stopped`와 Nav2 완료 판정에 반영합니다. 위치 유효성과 실제 정지는 서로 별도 조건입니다.
 
+웹 지도 표시는 선택 hook `TrialDriver.observe_motion()`으로 별도 연결합니다. 최신 MQTT runner는 이를 5 Hz `motion` 표본으로 전송하며, 기존 runner/주행 명령/완료 판정은 바꾸지 않습니다. 유효한 TF를 우선하고 라인 모드에서 localization이 없으면 실측 layout으로 변환한 `pose_est`를 표시용 추정으로 구분합니다. 정지 중에도 관측 시각을 유지하고 무효 위치는 null을 보냅니다. 배포할 MQTT 파일과 별도 토픽/ACL은 [관제 시험 가이드 11절](../../../roport-control-server/docs/pinky-trial.md#11-실시간-위치-표시--db-없이-연결)을 따릅니다.
+
 trial launch는 `PoseProgressChecker`를 사용해 **15초 안에 0.05m 이동 또는 0.15rad 회전**을 진척으로 판정합니다. 0.03m/s 저속·제자리 회전을 허용하면서 완전히 막힌 상태는 실패시킵니다. controller와 velocity smoother의 직진 속도는 `max_linear`로 맞춥니다. 원본 Pinky Nav2 설정 파일은 수정하지 않습니다.
 
 Pi에서 경로 재계산 중 `follow_path` 목표 수락 응답이 기본 20ms를 넘으면 전체 목표가 실패할 수 있어, trial의 `bt_navigator.default_server_timeout`은 500ms로 지정합니다. 지도 경계 가까운 공용공간 시험점의 주변 검색이 지도 밖을 조회하지 않도록 `planner_server.GridBased.tolerance`는 0.1m로 제한합니다. 이 값은 플래너의 대체 도착점 검색 범위이며, 실제 정지·목표 오차·독립 구동 감시의 완료 조건은 유지합니다.

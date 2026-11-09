@@ -108,6 +108,7 @@ class TrialSocket:
                 for r in c.robots.values()
             },
             "mqtt_ready": c.transport.ready,
+            "motion": c.motion.snapshot(state["statuses"]) if c.motion else {},
             "events": [
                 {k: e[k] for k in ("message_id", "type", "source", "sent_at")}
                 for e in list(state["events"].values())[-12:]

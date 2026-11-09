@@ -15,7 +15,7 @@ function enable() {
   key.disabled = blocked;
   if (blocked) key.value = '';
   for (const button of buttons) {
-    button.disabled = blocked || !connected || pending || !key.value ||
+    button.disabled = blocked || !connected || pending || state?.reset_pending || !key.value ||
       (button.dataset.action === 'start' && hasUnappliedChanges()) ||
       !state?.[`can_${button.dataset.action}`];
   }
@@ -35,7 +35,7 @@ function enable() {
     : state?.can_start ? "출발 가능 · 시나리오 출발 버튼을 누르세요."
     : "현재 단계에서 가능한 버튼만 활성화됩니다.";
 }
-key.addEventListener("input", () => { enable(); renderComposer(state, connected, key.value); });
+key.addEventListener("input", () => { enable(); renderComposer(state, connected && !state?.reset_pending, key.value); });
 document.addEventListener('scenario-draft-change', enable);
 
 export function trialDisconnected() {
@@ -47,6 +47,7 @@ export function trialDisconnected() {
 export function renderTrial(data) {
   state = data.trial;
   connected = !!state?.available;
+  document.getElementById("trial-reset").hidden = !state?.reset_available;
   document.getElementById("trial-phase").textContent = state?.label ?? "실행부 미연결";
   document.getElementById("trial-connection").textContent =
     !state ? "실행부 미연결" : `${state?.mode === "hardware" ? "실물 시험" : "가상 시험"} · MQTT ${state?.mqtt_ready ? "연결" : "미연결"}`;
@@ -95,11 +96,12 @@ export function renderTrial(data) {
     }),
   );
   enable();
-  renderComposer(state, connected && !transportBlocked(), key.value);
+  renderComposer(state, connected && !state?.reset_pending && !transportBlocked(), key.value);
 }
 
 for (const button of buttons) button.addEventListener("click", async () => {
   if (button.disabled || !state) return;
+  if (button.dataset.action === "reset" && !confirm("가상 로봇 위치·진행 상태·편집 계획을 실행 당시 초기값으로 되돌립니다. 이전 시험 기록은 보존합니다. 초기화할까요?")) return;
   const request = {
     action: button.dataset.action, session_id: state.session_id,
     task_id: state.task_id, phase: state.phase,
@@ -116,7 +118,7 @@ for (const button of buttons) button.addEventListener("click", async () => {
     });
     const result = await response.json();
     feedback.textContent = response.ok
-      ? "요청 접수 · 수신 상태에서 진행을 확인하세요."
+      ? request.action === "reset" ? "초기화 요청 접수 · 잠시 후 같은 화면에서 새 시험이 연결됩니다." : "요청 접수 · 수신 상태에서 진행을 확인하세요."
       : result.detail;
   } catch {
     feedback.textContent = "응답 미확인 · 자동 재전송하지 않습니다. 현재 상태를 확인하세요.";

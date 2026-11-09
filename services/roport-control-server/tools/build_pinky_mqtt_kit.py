@@ -192,6 +192,7 @@ def build(output, *, scenarios_dir=None):
             "pinky_trial.py",
             "trial_wire.py",
             "trial_runner.py",
+            "motion.py",
         )
     }
     files["README.md"] = (SERVICE / "docs/pinky-trial.md").read_bytes()
@@ -212,7 +213,7 @@ def build(output, *, scenarios_dir=None):
                     ).read_bytes()
     manifest = {
         "profile": PROFILE,
-        "kit_revision": "2026-11-05-reviewable-handoff",
+        "kit_revision": "2026-11-07-display-motion-v1",
         "source_status": "local implementation; not a merged release",
         "files": {
             name: hashlib.sha256(raw).hexdigest() for name, raw in sorted(files.items())
