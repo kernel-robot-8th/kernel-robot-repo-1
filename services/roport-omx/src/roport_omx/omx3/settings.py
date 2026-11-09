@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-# ArUco 마커 ID 표 v1.4(docs/aruco/markers.yaml)의 포장물품 PKG1~PKG8 = ID 15~22
-DEFAULT_ID_TABLE = {f"PKG{n}": 14 + n for n in range(1, 9)}
+# ArUco 마커 ID 표 v1.4(docs/aruco/markers.yaml) group: package = PKG1~PKG8
+PACKAGE_MARKER_IDS = frozenset(range(15, 23))
 
 
 @dataclass(frozen=True)
 class Omx3Settings:
-    # payload에서 대상 ID를 찾을 필드(앞에서부터)와 이름 → 마커 번호 표.
-    # 관제와 형식이 정해지면 이 값만 바꾼다.
-    id_fields: tuple[str, ...] = ("marker_id", "package_id")
-    id_table: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_ID_TABLE))
+    # 상차 요청 payload에서 대상 상자의 ArUco 마커 번호를 담은 필드(관제와 합의: 문자열)
+    id_field: str = "package_id"
+    package_ids: frozenset[int] = PACKAGE_MARKER_IDS

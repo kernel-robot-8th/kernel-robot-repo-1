@@ -1,47 +1,37 @@
-"""payload의 대상 ID → ArUco 마커 번호.
+"""상차 요청 payload의 ``package_id`` → 상자의 ArUco 마커 번호.
 
-번호(17), 숫자 문자열("17"), 표에 있는 이름("PKG3")을 모두 받는다.
-찾을 필드 이름과 이름 표는 ``Omx3Settings``에서 바꾼다.
+관제와 합의한 형식: ``package_id``는 상자에 붙은 ArUco 마커 번호의 문자열(예: ``"17"``).
+포장물품 마커(ArUco v1.4 PKG1~PKG8 = 15~22)만 받는다. 트레이·바닥·선반·예비 마커는
+상차 위치 근처에 실제로 있으므로 팔이 엉뚱한 대상을 고르지 않게 거절한다.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Mapping
 
-MARKER_ID_MIN, MARKER_ID_MAX = 0, 49  # DICT_4X4_50
+from .settings import PACKAGE_MARKER_IDS
+
+_NUMBER = re.compile(r"[1-9]?[0-9]")  # ASCII만, 앞자리 0·공백·부호 없음
 
 
 class InvalidTarget(ValueError):
-    """대상 ID가 없거나 해석할 수 없다. 동작 없이 거절한다."""
+    """대상 ID가 없거나 포장물품 마커가 아니다. 동작 없이 거절한다."""
 
 
 def resolve_marker_id(
-    payload: Mapping,
-    fields: Sequence[str] = ("marker_id", "package_id"),
-    table: Mapping[str, int] | None = None,
+    payload,
+    field: str = "package_id",
+    allowed: frozenset[int] = PACKAGE_MARKER_IDS,
 ) -> int:
-    """``fields`` 순서대로 처음 값이 있는 필드를 마커 번호로 바꾼다."""
-    for name in fields:
-        if payload.get(name) is not None:
-            return to_marker_id(payload[name], table)
-    raise InvalidTarget(f"대상 ID 필드가 없습니다: {', '.join(fields)}")
-
-
-def to_marker_id(value, table: Mapping[str, int] | None = None) -> int:
-    if isinstance(value, bool):  # bool은 int의 하위 타입이라 먼저 막는다
-        raise InvalidTarget("대상 ID가 bool입니다")
-    if isinstance(value, int):
-        marker = value
-    elif isinstance(value, str):
-        text = value.strip()
-        if table and text in table:
-            marker = table[text]
-        elif text.isdecimal():
-            marker = int(text)
-        else:
-            raise InvalidTarget(f"알 수 없는 대상 ID: {value!r}")
-    else:
-        raise InvalidTarget(f"대상 ID 형식이 아닙니다: {type(value).__name__}")
-    if not MARKER_ID_MIN <= marker <= MARKER_ID_MAX:
-        raise InvalidTarget(f"마커 번호 범위 밖: {marker}")
+    if not isinstance(payload, Mapping):
+        raise InvalidTarget(f"payload가 객체가 아닙니다: {type(payload).__name__}")
+    value = payload.get(field)
+    if not isinstance(value, str):
+        raise InvalidTarget(f"{field}는 문자열이어야 합니다: {value!r}")
+    if not _NUMBER.fullmatch(value):
+        raise InvalidTarget(f"{field}가 마커 번호 문자열이 아닙니다: {value!r}")
+    marker = int(value)
+    if marker not in allowed:
+        raise InvalidTarget(f"포장물품 마커가 아닙니다: {marker}")
     return marker
