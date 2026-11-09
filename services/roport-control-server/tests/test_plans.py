@@ -129,11 +129,38 @@ def test_shortest_path_and_occupied_nodes(profile):
         shortest_route(profile["nodes"], "unknown", "N11")
 
 
+@pytest.mark.parametrize("speed", [0.01, 0.014, 0.0801, 0.1])
+def test_unsupported_speed_rejected_before_state_change(control_memory, speed):
+    c = control_memory
+    p = legacy_plan(c.config)
+    p["steps"][0]["payload"]["speed_limit_mps"] = speed
+    before = deepcopy(c.state)
+    with pytest.raises(ValueError, match="local trial speed must be 0.015..0.08"):
+        c.configure(p)
+    assert c.state == before and c.transport.sent == []
+
+
+@pytest.mark.parametrize("speed", [0.015, 0.06, 0.08])
+def test_route_speed_reaches_unchanged_pinky_driver(control_memory, rig_module, speed):
+    c = control_memory
+    p = legacy_plan(c.config)
+    p["steps"][0]["payload"]["speed_limit_mps"] = speed
+    c.configure(p)
+    c.start()
+    assert c.state["active"]["payload"]["speed_limit_mps"] == speed
+    rig_module.Rig().logic.validate_action(c.state["active"])
+
+
 def test_request_assignment_and_replanning(control_memory):
     c = control_memory
     p = c.plan_delivery(request(c.config))
     assert p["steps"][0]["role"] == "smartcart"
     assert p["steps"][0]["payload"]["route"] == ["H1", "N09", "N24", "N19", "N11"]
+    assert all(
+        s["payload"]["speed_limit_mps"] == 0.06
+        for s in p["steps"]
+        if s["kind"] == "route"
+    )
     statuses = deepcopy(c.state["statuses"])
     statuses["pinky3"]["node_id"] = "N11"
     p = delivery_plan(c.config, request(c.config), statuses)

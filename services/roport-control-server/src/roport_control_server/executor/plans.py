@@ -231,8 +231,8 @@ def validate_plan(config, value, *, allowed_roles=None):
                 raise ValueError(
                     f"{sid}: installed Pinky driver supports maneuver none only"
                 )
-            if p["speed_limit_mps"] > 0.06:
-                raise ValueError(f"{sid}: local trial speed cap is 0.06 m/s")
+            if not 0.015 <= p["speed_limit_mps"] <= 0.08:
+                raise ValueError(f"{sid}: local trial speed must be 0.015..0.08 m/s")
             # A bay arrival has a driver-specific loading turn; it cannot be a through node.
             if any(len(config["nodes"][n]) == 1 for n in path[1:-1]):
                 raise ValueError(f"{sid}: split route at a bay before continuing")
