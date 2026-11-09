@@ -2,11 +2,12 @@
 
 - Python 3.12 / FastAPI / uv를 사용한다. FastAPI 앱은 `src/roport_control_server/adapters/api/app.py`, 웹 화면은 `spatial_assets/`다. 계층과 import 규칙은 README의 구조 절과 `tests/test_layers.py`를 따른다.
 - 2026-11-03 팀 합의는 브라우저 웹 UI ↔ FastAPI ↔ 운영 DB ↔ 별도 관제 실행부 1개다. AI 노트북에서 서버를 운영하고 다른 PC에서 접속한다. AI 추론은 별도 프로세스다. API와 실행부는 운영 DB로 연결하고 서비스 WSS는 실행부가 담당한다.
-- 현재는 OFFLINE/DEMO와 명시적으로 설정한 TRIAL 웹 UI를 제공한다. DB 구현은 보류하며 WSS·브라우저 영상 중계·운영 인증은 후속이다. `executor/pinky_trial.py`는 별도 프로세스 1개로 MQTT를 소유하고 API는 Unix socket으로 시험 조작·상태를 주고받는다. CLI와 웹 소유자를 중복 실행하지 않는다. 파일 journal은 시험용이며 운영 DB로 취급하지 않는다. 시험 계약·배포는 `docs/pinky-trial.md`를 따른다. 서버 시작으로 로봇을 연결하지 않는다. DEMO 제어는 브라우저별로 격리하며 영속 복구로 설명하지 않는다.
+- 현재는 OFFLINE/DEMO와 명시적으로 설정한 TRIAL 웹 UI를 제공한다. 운영 DB 연결은 보류하며 공유 등록 계약·PostgreSQL 저장소는 API/UI에 연결하지 않은 채 제공한다. WSS·브라우저 영상 중계·운영 인증은 후속이다. `executor/pinky_trial.py`는 별도 프로세스 1개로 MQTT를 소유하고 API는 Unix socket으로 시험 조작·상태를 주고받는다. CLI와 웹 소유자를 중복 실행하지 않는다. 파일 journal은 시험용이며 운영 DB로 취급하지 않는다. 시험 계약·배포는 `docs/pinky-trial.md`를 따른다. 서버 시작으로 로봇을 연결하지 않는다. DEMO 제어는 브라우저별로 격리하며 영속 복구로 설명하지 않는다.
 - Qt/QWidget을 다시 추가하지 않는다. Pinky/OMX 상세 탭은 웹 모듈로 연결하고 UI는 DB/MQTT/UDP에 직접 접근하지 않는다. PyYAML/Pillow는 서버 운영자가 지정한 지도 읽기에만 사용한다. 공개 예시 외 지도/영상은 커밋하지 않는다.
 - `adapters/mqtt/`는 Paho·표준 라이브러리·자기 폴더만, `adapters/udp/`는 표준 라이브러리·자기 폴더만 사용한다. Qt·ROS·DB·관제 실행부를 import하지 않아 팀원이 이식할 수 있어야 한다(MQTT는 폴더 단위, UDP는 OMX=protocol+sender·AI=protocol+receiver).
 - 모의 장비(`MockExecutor`)와 데모는 `scripts/`에 두며 패키지(wheel)에 넣지 않는다.
 - MQTT 통합 검증에는 Mosquitto가 필요하다. CI처럼 `REQUIRE_MQTT_TESTS=1 uv run pytest`로 skip 없는 검증을 수행한다.
+- DB 드라이버는 `adapters/db/`만 import한다. 등록 검증에는 격리 PostgreSQL의 `ROPORT_TEST_DATABASE_URL`과 `REQUIRE_REGISTRY_TESTS=1`이 필요하다. 테스트는 UUID 스키마를 만들고 자신이 만든 스키마만 삭제한다. 운영 DB를 테스트에 사용하지 않는다. 초기화는 명시적 CLI로만 실행하며 개발 모드는 `sim-` 기체만 허용한다.
 - 자산 준비: `npm ci --ignore-scripts`, `npm run prepare:assets`. 브라우저 검사: `npx playwright install chromium`, `npm run test:web`.
 - 검사: `uv sync --locked`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run pytest`, `uv build`.
 - `/healthz`는 프로세스 생존 확인이다. ROS 연결·장비 준비·작업 완료 판정으로 확장 해석하지 않는다.
