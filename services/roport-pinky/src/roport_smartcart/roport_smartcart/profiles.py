@@ -95,9 +95,18 @@ def build_params(base_params_file, overrides_file, mode, *, footprint=None,
         if simulated:
             costmap['plugins'].insert(-1, 'sonar_layer')
             costmap['sonar_layer'] = {
-                'plugin': 'nav2_costmap_2d::RangeSensorLayer',
-                'topics': ['/us_sensor/range'], 'input_sensor_type': 'VARIABLE',
-                'clear_on_max_reading': True, 'no_readings_timeout': .5,
+                # The simulated fan already provides rays; retain their clearing geometry.
+                # ObstacleLayer recovers its current state after delayed observations.
+                'plugin': 'nav2_costmap_2d::ObstacleLayer',
+                'observation_sources': 'sonar_proxy',
+                'sonar_proxy': {
+                    'topic': '/sim/sonar_scan', 'data_type': 'LaserScan',
+                    'marking': True, 'clearing': True, 'inf_is_valid': True,
+                    'expected_update_rate': .5, 'observation_persistence': 0.,
+                    'obstacle_min_range': .02, 'obstacle_max_range': .94,
+                    'raytrace_min_range': .02, 'raytrace_max_range': .95,
+                    'max_obstacle_height': .2,
+                },
             }
 
     if simulated:

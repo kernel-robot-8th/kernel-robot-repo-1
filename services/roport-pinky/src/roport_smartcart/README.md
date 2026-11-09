@@ -118,9 +118,9 @@ Gazebo에서 동일한 초기 입자가 만드는 미세한 음수 분산은 sim
 두 번째 터미널에서 같은 폴더로 이동한 뒤 게이트 왕복을 실행한다.
 
 ```bash
-./scripts/smartcart_sim.sh gate1  # G1 → 시작 위치 복귀
-./scripts/smartcart_sim.sh gate2  # G2 → 시작 위치 복귀
-./scripts/smartcart_sim.sh gate3  # G3 → 시작 위치 복귀
+./scripts/smartcart_sim.sh gate1  # G1 → H1 자동 복귀 데모
+./scripts/smartcart_sim.sh gate2  # G2 → H1 자동 복귀 데모
+./scripts/smartcart_sim.sh gate3  # G3 → H1 자동 복귀 데모
 ```
 
 한 번에 명령 하나만 실행한다. 시작 위치만 가려면 `home`, 창 없이 실행하려면 시작 명령에 `headless`를 사용한다.
@@ -305,7 +305,7 @@ Gazebo 전용이다. 원본 Pinky xacro를 포함한 팀 wrapper에 전방 거�
 웹 지도는 기존처럼 `http://127.0.0.1:8081`에서 확인한다.
 
 - `/scan`은 기존 라이다, `/sim/sonar_scan`은 낮은 수평 광선, `/us_sensor/range`는 Range 변환 출력이다.
-- 시뮬의 두 costmap에 `RangeSensorLayer`를 추가해 낮은 장애물을 반영한다.
+- 시뮬의 두 costmap에 낮은 `/sim/sonar_scan`을 받는 `ObstacleLayer`를 추가해 장애물 표시·광선 지우기를 수행한다. Range 출력은 Collision Monitor에서 계속 사용한다.
 - Nav2 출력은 Collision Monitor → `/cmd_vel_safe` → Gazebo bridge 순서다. 원래 `/cmd_vel`이 구동 bridge로 직접 가지 않는다.
 - 후보 전방 감속 영역45cm에서는 속도를30%로 줄이고 정지 영역22cm에서는0을 보낸다. 거리는 로봇 중심 기준 영역이며 실물 제동거리 설정이 아니다.
 - 라이다 또는 Range가0.5초 이상 오래되면 명령 처리 시 정지한다. 정상 관측이 돌아오면 필터가 다시 통과시킬 수 있다. 임무 복구/재출발 승인은 별도 실행부 책임이다.
@@ -358,5 +358,120 @@ Gazebo의 일시정지 버튼을 누르면 시뮬레이션 시간과 센서 관�
 2026-11-07 Gazebo에서 출구 접근 Nav2 성공을 확인한 뒤 N12 근처 재시도로 라인 획득 → N08 → N09 → H1
 전체 라인 복귀·180° 회전·후진 주차가 `arrived`로 완료됐다. 최종 실제 모델 위치는
 `(1.532,-1.708)m`, yaw 약1.442rad로 H1 북쪽 방향과 약7.5° 차이가 있었다.
-성공 기록은 N12 근처 재시도 기준이며, G2 → H1 단일 명령 완주는 아직 확인하지 않았다.
+위 기록은 N12 근처 재시도 기준이다. 이후 main에서 공용공간 시작 → G2 → H1을 단일 명령으로 완주하고 최종 정지를 확인했다.
 실제 IR·충전 접점 연결이나 관제 통합 완료를 뜻하지 않는다.
+
+
+### 수령 확인·배정 대기칸 복귀 모의 관제 · FFT1-84
+
+운영 관제 `executor/pinky_trial.py`는 navigate 완료에서 COMPLETE로 끝나며 수령·대기칸 예약 메시지가 없다.
+아래는 **domain198/LOCALHOST 전용 ROS 모의 관제**이며 MQTT trial-v1을 확장하거나 실제 예약 DB에 연결하지 않는다.
+기존 `gate1/2/3`는 수령을 기다리지 않는 자동 복귀 데모다. 수령 대기 시험에는 `delivery1/2/3`를 사용한다.
+
+```bash
+# 터미널 1: 공용공간에서 시작하는 Gazebo (실물 연결 없음)
+./scripts/smartcart_sim.sh
+# 터미널 2: 다른 로봇이 H1을 점유했다고 가정. 둘 다 비어 있으면 --occupied 생략
+./scripts/smartcart_sim.sh control --occupied H1
+# 터미널 3: G2 도착·정지 후 WAIT_UNLOAD에서 유지
+./scripts/smartcart_sim.sh delivery2
+# 터미널 4: 운영자가 수령 확인. 이 터미널도 domain198/LOCALHOST로 격리
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=198 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+unset ROS_STATIC_PEERS ROS_DISCOVERY_SERVER
+ros2 service call /smartcart/sim/confirm_receipt std_srvs/srv/Trigger '{}'
+# 모의 관제가 H2 예약 → 로봇이 N12 → N08 → H2로 후진 주차
+# 취소: 현재 세션의 대기/주행을 중단. 예약은 수동 복구 전까지 유지
+ros2 service call /smartcart/sim/stop std_srvs/srv/Trigger '{}'
+```
+
+모의 관제는 현재 2초 이내 로봇 상태가 WAIT_UNLOAD일 때만 수령 확인을 받는다.
+H1/H2 중 점유되지도 예약되지도 않은 칸을 선택하며, 둘 다 없으면 실패 응답을 내고 로봇은 계속 정지한다.
+ROS `smartcart/sim/state`/`smartcart/sim/control`의 JSON은 이 시험 전용이다.
+매 실행 새 session을 발급하고, 일치하는 session·명시적 receipt_confirmed=true·H1/H2·reservation_id·유한한 만료 시각을 검증한다.
+같은 예약의 0.5초 heartbeat만 받으며 새 목적지나 늘어난 만료 시각으로 예약을 덮어쓰지 않는다.
+예약은390초(수신 상한400초), heartbeat 2초 초과·만료·정지 요청 시 현재 Nav2 취소와 정지 명령 후 FAULT/CANCELED로 끝낸다.
+승인 대기는 최대120초이며 시간 초과 시 정지 상태로 실패한다. 승인 후 모든 접근·라인 구간에서 기존 센서 신선도 검사도 유지한다.
+도착 시 모의 관제는 배정 칸을 점유 상태로 유지한다. 이 fixture는 메모리만 사용하므로 재시작 후 예약 복구를 보장하지 않는다.
+실행 중 재시작은 heartbeat 소실로 로봇을 중단시키며, 수동 복구 후 새 시험을 시작해야 한다.
+다른 기체·MQTT 운영 인증·영속 점유 저장·실제 수령 확인·실물 IR/마커 전환은 별도 연결 및 현장 검증 대상이다.
+
+
+2026-11-07 Gazebo 모의 관제 시험(각 복귀 1회, 중간 위치 재배치 없음):
+
+| 조건 | 결과 |
+|---|---|
+| G2 도착 후 수령 승인 없음 | 약46초 정지 유지 |
+| H1 점유, 수령 확인 | H2 배정 → N12/N08/H2 → 회전·후진 주차 arrived, 최종 속도0 |
+| H1/H2 모두 점유 | 수령 확인 서비스가 No free bay로 거절, 정지 유지 |
+| 미승인 상태에서 모의 점유 입력을 H2만 점유로 바꾸고 다시 수령 확인 | H1 배정 → N12/N08/N09/H1 → 회전·후진 주차 arrived, 최종 속도0 |
+
+H2 최종 실제 모델 위치는 약(1.862,-1.709)m, yaw1.431rad, H1은 (1.541,-1.708)m, yaw1.497rad였다.
+H1/H2 가로선과 바퀴 축은 IR 장착 거리만큼 다르며 충전 접점 성공을 뜻하지 않는다.
+위 빈칸 변경은 승인 전 모의 관제를 재시작해 점유 입력을 바꾼 시험이다. 예약 영속 복구 시험이 아니다.
+목표 도착 추정 오차는 두 G2 시험에서 약3.3cm/1.6cm였다. 실물·실제 운영 관제 메시지 연결은 미검증이다.
+
+
+### 이동 장애물 배송·복귀 시험 · FFT1-120
+
+```bash
+# 담당 Nav2 구간만 시험: 라인 구간에는 물체를 생성하지 않음
+./scripts/smartcart_sim.sh obstacles scenario:=nav-static height:=0.10 gui:=true
+# 같은 위치에서 왕복 이동하는 물체: scenario:=nav-moving
+# 아래 combined는 기존 라인 안전 정지 회귀 시험까지 포함한 별도 장면
+# 실물 없이 독립 시뮬레이션. Nav2 구간의 상자는 6×6×12.5cm로 왕복 이동
+./scripts/smartcart_sim.sh obstacles bay:=H1 gui:=true
+# 라이다보다 낮은 10cm 상자로 H2를 시험하려면 bay:=H2 height:=0.10
+# 별도 터미널: 반대편 칸 점유 → delivery2 → confirm_receipt는 위 모의 관제 절차와 같음
+./scripts/smartcart_sim.sh control --occupied H2
+./scripts/smartcart_sim.sh delivery2
+```
+
+기본 `scenario:=combined`는 주황 상자 2개를 생성한다.
+`nav-static`은 공용공간 `(0.95,-0.55)`m에 고정 상자 하나만 생성하며, `nav-moving`은 같은 상자만 왕복 이동한다.
+라인 구간에 장애물이 없는 배송 조건은 이 두 Nav2 전용 장면으로 시험한다.
+공용공간 이동 상자는 x=0.95m에서 y=-0.85..-0.25m를 0.04m/s로 왕복한다.
+라인 상자는 선택 칸 앞(y=-1.48m)에 있는 6×6×10cm 물체다. 해당 분기 근처에서 Collision Monitor 정지를 관측한 뒤
+시뮬레이션 시간3초 정지하고, 0.05m/s로 옆으로30cm 이동한다. 이는 정지→통과→재개를 재현하는 시험 동작이며
+관제의 로봇 목표·속도에는 접근하지 않는다. 상태 수신이1초 이상 끊기면 상자 이동도 멈춘다.
+`stationary_line:=true`는 상자를 계속 두어 라인 차단 실패를 시험한다.
+
+Nav2는 기존 라이다와 낮은 모의 거리 스캔을 장애물 지도에 반영해 재계획하고, 마지막 Collision Monitor가 감속·정지한다.
+`inf_is_valid`로 생성되는 최대 거리의 지우기용 점을 장애물로 표시하지 않도록, 표시 최대0.94m와 광선 지우기0.95m를 구분한다.
+초음파의 acoustic 반사·흡수·재질 특성은 구현하지 않았다. 실물 초음파 Range를 이 LaserScan 경로에 그대로 연결하면 안 된다.
+이전 RangeSensorLayer의 초기 관측 지연 후 current 상태 복구 문제는 실제 Nav2 controller 회귀 시험으로 재현·교체 검증했다.
+참고: [Nav2 Jazzy RangeSensorLayer 구현](https://github.com/ros-navigation/navigation2/blob/jazzy/nav2_costmap_2d/plugins/range_sensor_layer.cpp).
+
+라인 구간은 탈선 우회하지 않는다. 감지된 장애물 때문에 정지한 동안 이동·회전 odom이 진행되지 않으면 기다리며,
+12초(시뮬레이션 시간) 이상 계속 막히면 `line_motion_blocked` 오류로 정지하고 복구 지시를 기다린다.
+그 전에 통로가 열리면 기존 라인 명령이 다시 통과한다. 센서 신선도0.5초·예약 heartbeat2초 기준은 유지한다.
+장애물 대기·벽 앞 감속 회전 시간을 포함하도록 이 모의 복귀 CLI의 Nav2 목표 제한은180초로 둔다.
+복귀 예약390초는 Nav2 180초+정렬40초+라인150초의 상한에 여유를 둔 값이다. heartbeat 소실 정지는 별도로 유지한다.
+
+각 상자에는 Gazebo Contact 센서를 붙이고 실제 모델 pose와 함께 기록한다. 로봇의 위치/거리 평가에는 wheel odom+spawn 추정을 쓰지 않는다.
+접촉 토픽은 Gazebo가 실제 발행하는 scoped sensor 경로를 ROS `sim/obstacles/{name}/contacts`로 remap한다.
+출발·도착 테스트와 마찬가지로 이 장면은 domain198/LOCALHOST 전용이며 운영 MQTT·실물 설정을 변경하지 않는다.
+
+2026-11-08 Gazebo 결과(각1회):
+
+| 장면 | 확인 결과 |
+|---|---|
+| Nav2 전용 고정 상자6×6×10cm, 라인 물체 없음 | 공용공간 입구 출발→상자 우회→G2→수령 확인→N12→H1 주차 성공, 최종 정지, 로봇 접촉 이벤트0 |
+| Nav2 전용 이동 상자6×6×10cm, 라인 물체 없음 | 공용공간 입구 출발→상자 회피→G2→수령 확인→N12→H2 주차 성공, 최종 정지, 로봇 접촉 이벤트0 |
+| 6×6×12.5cm 이동 상자 + H1 앞10cm 상자 | G2→배정 H1 회전·후진 주차 성공, 최종 정지, 로봇 접촉 이벤트0 |
+| 두 상자 모두 높이10cm + H2 배정 | G2→라인에서 실제 정지→상자 이동 후 재개→H2 주차 성공, 최종 정지, 로봇 접촉 이벤트0 |
+| 별도 N12 출발 라인 fixture에서 H1 앞 상자를 고정 | 무동작12초 후 line_motion_blocked/FAULT, 최종 정지, 임의 탈선 없음 |
+
+Nav2 전용 두 시험은 시작 전에만 모델과 AMCL을 공용공간 입구 `(2.55,-0.95,pi)`에 배치했다.
+고정 시험 상자의 실제 좌표 변화는0m였고, 이동 시험 상자는0.04m/s로 왕복했다.
+두 시험 모두 주행 중 로봇·상자를 재배치하지 않았다. 기본 launch의 spawn은 기존 home이므로
+위 입구 왕복 시험과 출발 위치가 다르다. 고정 시험에서는 센서 관측 후 초기 경로 대신 상자 옆을 지나는 경로를 받는 것과 실제 모델 궤적을 함께 확인했다.
+G2/복귀 인계점의 Nav2 보고 오차는 고정 약2.1/1.7cm, 이동 약2.7/1.3cm였다.
+이는 AMCL 추정 기준이며, 실제 Gazebo 모델과 G2 목표의 거리는 각각 약7.5/6.2cm로 정밀 정차 보정이 남아 있다.
+이 결과는 각 장면1회의 Gazebo 검증이며 실물·사람 인식·운영 MQTT 연동 완료를 뜻하지 않는다.
+
+H1 시험 뒤 최대 거리 무반사 점 표시를 수정하고 H2를 최종 설정으로 시험했다.
+H1의 라인 상자는 분기 진입 뒤3초 후 이동시키는 초기 fixture였고, H2는 실제 안전 정지를 관측한 뒤3초 후 이동시켰다.
+두 성공 실행은 중간 위치 재배치·명령 재시도 없이 공용공간에서 출발했다. 영구 차단 시험만 별도로 N12에 배치한 실패 경로 검증이다.
+Contact 센서 경로는 성공 시험 뒤 별도 접촉 probe를 상자와 겹쳐 실제 이벤트가 수신되는 것도 확인했다(로봇과의 접촉 시험이 아님).
+각 결과는 반복 신뢰성·충전 접점·실물 검증을 대체하지 않는다.
