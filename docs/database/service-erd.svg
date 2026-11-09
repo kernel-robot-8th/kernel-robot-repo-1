@@ -9,7 +9,7 @@
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(25.2 973.2)">
 <title>ERD</title>
 <polygon fill="white" stroke="transparent" points="-25.2,25.2 -25.2,-973.2 1883.2,-973.2 1883.2,25.2 -25.2,25.2"/>
-<text text-anchor="middle" x="929" y="-928" font-family="DejaVu Sans" font-size="20.00">Service DB &#45; proposal v0.1</text>
+<text text-anchor="middle" x="929" y="-928" font-family="DejaVu Sans" font-size="20.00">Service DB &#45; proposal v0.2</text>
 <text text-anchor="middle" x="929" y="-906" font-family="DejaVu Sans" font-size="20.00">PK/FK relations; cross&#45;database refs are not FKs</text>
 <!-- members -->
 <g id="node1" class="node">

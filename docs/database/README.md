@@ -89,7 +89,7 @@ erDiagram
 | `pickup_locations` | `location_id PK`, `site_id`, `name`, `control_point_ref`, `is_active` | Gate1·2·3·입국장 4곳(고정). `(site_id,control_point_ref)` UQ. 위치 관리 화면은 P2. 물리 좌표·점유는 관제 지도가 원본. |
 | `orders` | `order_id PK`, `order_no UQ`, `member_id FK`, `site_id`, `revision`, `business_status`, `ordered_at` | `CONFIRMED/RECEIVED/CANCELLED` 제안. 실제 receipt가 있을 때만 RECEIVED. 적재·이동·오류는 관제 사본에서 표시. |
 | `order_items` | `item_id PK`, `order_id FK`, `product_name`, `quantity` | `(order_id,item_id)` UQ. 상품 카탈로그·결제 모델은 제외. |
-| `packages` | `package_id PK`, `order_id FK`, `package_revision`, `label_ref`, `manifest_locked_at?` | `(order_id,package_id)` UQ. 슬롯/로봇 FK 없음. **manifest 잠금은 되돌릴 수 없고, 재포장은 새 `package_id`를 발급한다.** `package_revision`은 외부 계약 변경이 합의될 때까지 유지. |
+| `packages` | `package_id PK`, `order_id FK`, `package_revision`, `label_ref`, `manifest_locked_at?`, `inactive_at?`, `replaced_by_package_id?` | `(order_id,package_id)` UQ. 슬롯/로봇 FK 없음. **manifest 잠금은 되돌릴 수 없고, 재포장은 새 `package_id`를 발급한다.** 이전 포장품은 지우지 않고 `inactive_at`을 채워 비활성으로 표시한다. 재포장으로 대체되면 `replaced_by_package_id`에 새 포장품을, 폐기(대체 없음)면 NULL을 둔다. 상품별 합계=주문 수량 검사와 수령 대상은 `inactive_at IS NULL`인 포장품만 센다. 이전 포장품 비활성화와 새 포장품 manifest 잠금은 같은 트랜잭션에서 하며, 그 사이의 중간 상태는 수령 대상이 아니다. 이 두 컬럼과 사유 구분 방식은 제안이며 ERD 그림에는 아직 반영하지 않았다. `package_revision`은 외부 계약 변경이 합의될 때까지 유지. |
 | `package_items` | `order_id`, `package_id`, `item_id`, `quantity`; `PK(package_id,item_id)` | `(order_id,package_id)`와 `(order_id,item_id)` 복합 FK로 다른 주문 혼입 차단. 상품별 합계=주문 수량은 주문 잠금 후 트랜잭션 검사. **잠금 후 INSERT·UPDATE·DELETE 거부(다른 package로 옮기는 UPDATE는 이전·새 부모 모두 검사)는 trigger로 강제.** trigger는 부모 package를 `FOR SHARE`로 읽어 manifest 잠금 UPDATE와 동시에 경쟁하지 않게 한다. |
 | `pickups` | `pickup_id PK`, `request_id UQ`, `reservation_no UQ`, `order_id FK`, `location_id FK`, `flight_id FK`, `flight_revision`, `flight_snapshot jsonb`, `pickup_at`, `channel`, `status`, `pending_request_id? UQ`, `pending_change jsonb?`, `revision`, `UQ(pickup_id,order_id)` | 같은 주문의 활성 예약은 1개: 부분 UQ `order_id WHERE status IN ('REQUESTED','CONFIRMED','CHANGE_PENDING','CANCEL_PENDING')`. CHECK: CHANGE_PENDING은 `pending_request_id`·`pending_change` 둘 다 필수, CANCEL_PENDING은 request id만, 그 외 둘 다 NULL. 예약 당시 항공편 snapshot은 감사용. |
 | `qr_credentials` | `credential_id PK`, `token_hash UQ`, `member_id? FK`, `order_id? FK`, `pickup_id? FK`, `issued_at`, `expires_at?`, `revoked_at?` | 소유 FK 정확히 하나만 non-null(`num_nonnulls(...)=1`). 소유 대상이 곧 용도다(회원 QR / 주문 QR / **예약 QR = 카트가 읽는 QR**). 토큰 원문·QR 이미지는 저장하지 않는다. 소유권 불일치·폐기·만료 검사는 서버 책임. |
@@ -97,7 +97,7 @@ erDiagram
 | `handover_approvals` | `approval_id PK`, `pickup_id`, `order_id`, `verification_id`, `task_ref`, `cart_ref`, `order_revision`, `manifest_hash`, `expires_at?`, `revoked_at?`, `consumed_at?`, `UQ(approval_id,order_id,pickup_id)` | **복합 FK** `(pickup_id,order_id)`→pickups, `(verification_id,pickup_id)`→verifications. 부분 UQ `pickup_id WHERE consumed_at IS NULL AND revoked_at IS NULL`(활성 승인 1개; 만료 행은 새 승인 전에 같은 트랜잭션에서 명시적으로 철회). 만료 수치 미정. |
 | `receipts` | `receipt_id PK`, `order_id`, `pickup_id`, `approval_id`, `confirmation_request_id UQ`, `confirmed_by`, `channel`, `received_at`, `order_revision` | `order_id UQ`, `approval_id UQ`, `UNIQUE(receipt_id,order_id)`(receipt_packages 복합 FK 대상). **복합 FK** `(approval_id,order_id,pickup_id)`→handover_approvals. 주문당 전체 수령 1회. 같은 요청 재전송은 기존 결과 반환. 실제 회수 확인 없이 생성 금지. |
 | `receipt_packages` | `receipt_id`, `order_id`, `package_id`, `package_revision`; `PK(receipt_id,package_id)` | `(receipt_id,order_id)`→receipts, `(order_id,package_id)`→packages 복합 FK. `package_id` UQ로 중복 수령 금지. |
-| `customer_service_requests` | `request_id PK`, `pickup_id`, `verification_id`, `mode`, `expected_pickup_revision`, `supersedes_request_id?`, `status`, `requested_at`, `UQ(pickup_id,request_id)` | 입국장 인증 후 안내/추종 선택·모드 변경 이력. **복합 FK** `(verification_id,pickup_id)`, `(pickup_id,supersedes_request_id)`. 같은 pickup의 활성 선택은 부분 UQ로 1개, 같은 이전 요청을 두 번 대체하지 못하게 `UQ(supersedes_request_id)`. **로봇의 일시정지 상태는 이 테이블에 두지 않는다(원본은 관제).** |
+| `customer_service_requests` | `request_id PK`, `pickup_id`, `verification_id`, `mode`, `expected_pickup_revision`, `supersedes_request_id?`, `status`, `requested_at`, `UQ(pickup_id,request_id)` | 입국장 인증 후 안내/추종 선택·모드 변경 이력. **복합 FK** `(verification_id,pickup_id)`, `(pickup_id,supersedes_request_id)`. 같은 pickup의 활성 선택은 부분 UQ로 1개, 같은 이전 요청을 동시에 유효하게 두 번 대체하지 못하게 `supersedes_request_id`의 부분 UQ를 둔다. 거절·실패로 끝난 요청은 제외해야 같은 이전 선택에 다시 요청할 수 있다. 상태 이름이 확정되기 전이라 제외할 종결 상태 목록은 미정이며, 이름이 정해질 때 함께 확정한다. **로봇의 일시정지 상태는 이 테이블에 두지 않는다(원본은 관제).** |
 | `notifications` | `notification_id PK`, `pickup_id FK`, `event_key UQ`, `type`, `delivery_status`, `sent_at?`, `task_ref?`, `robot_ref?` | 카트 도착·미수령·탑승 알림. 전달 성공과 고객 확인을 구분. 동일 사건 replay로 중복 알림 금지. |
 | `control_task_views` | `task_ref PK`, `pickup_id FK`, `site_id`, `task_revision`, `state`, `progress_payload`, `observed_at`, `synced_at` | 고객 화면용 관제 상태 사본. 서비스는 현장 관제에 새 연결을 열 수 없고 관제가 시작한 WSS로만 받으므로 **직접 조회가 아니라 사본**이다. 오래된 revision 거부·공백 재동기화. 이 테이블로 새 명령/자원을 승인하지 않는다. 채우는 것은 WSS 구현 이후. |
 
@@ -207,14 +207,14 @@ WSS 구현 시 추가할 테이블(`message_inbox`, `message_outbox`, `message_s
 - 주문별 활성 상위 작업 1개(SR-13-2, 통합관제 v6): `control_tasks`가 포장품 단위라 v1에서 보장하지 않는다.
 - 주문 없는 작업(SR-25-1 운영자 이동, SR-16-1 배터리 복귀)의 현황 표시: `order_ref`·`package_ref`가 nullable이라 담을 수는 있으나 v1 지원 여부는 미정.
 
-사람이 정해야 하는 값: 추종 marker를 여러 고객이 동시에 같은 ID로 쓸 수 있는지(마커 UNIQUE 여부), 승인·QR 만료 수치, 비밀번호 해시 방식, 보존 기간.
+사람이 정해야 하는 값: `request_id`를 요청자와 무관하게 전역 유일로 볼지, 추종 marker를 여러 고객이 동시에 같은 ID로 쓸 수 있는지(마커 UNIQUE 여부), 승인·QR 만료 수치, 비밀번호 해시 방식, 보존 기간.
 
 ## 9. 설계 검증 기준
 
 실행 결과가 아닌 후속 구현의 수용 기준이다.
 
 - 다른 주문의 상품을 포장품·approval·receipt에 연결하는 요청, 같은 주문의 동시 활성 예약, 중복 인도는 거절된다.
-- 동일 요청 ID 재전송은 기존 결과, 같은 ID/다른 내용·다른 요청자는 conflict다.
+- 동일 요청자의 같은 요청 ID 재전송은 기존 결과, 같은 ID/다른 내용은 conflict다. `request_results` 키에 요청자가 들어 있어 다른 요청자의 같은 ID는 별도 행으로 저장된다. 이를 conflict로 볼지(전역 유일 `request_id`)는 정할 것이며, 업무 테이블별 `request_id` UQ의 적용 범위를 확인해 맞춘다.
 - 승인된 전체 manifest를 실제 회수 확인한 뒤에만 receipt가 1개 생성된다. 잠긴 manifest는 INSERT·UPDATE·DELETE로 바뀌지 않는다. 입국장 QR 인증 직후나 카트 도착만으로 수령 완료가 되지 않는다.
 - 관제 DB: 한 포장품이 두 선반 칸에 동시에 표시되지 않고 같은 포장품의 진행 중 작업은 1개다. 관제 재시작 후 모든 로봇·선반 상태는 새 보고 전까지 UNKNOWN이며, 알 수 없는 값은 0/false가 되지 않는다.
 - 로컬 개발 DB와 운영 DB를 분리하고, 기존 registry 데이터 보존 업그레이드·백업 복원·private 접속/TLS를 검증한다.
