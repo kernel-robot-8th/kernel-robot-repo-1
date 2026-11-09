@@ -94,9 +94,15 @@ class PinkyTrialClient:
                 self.observe_motion(),
             )
             self.transport.publish_motion(motion_topic(self.site, self.robot), message)
-        except (ValueError, TypeError, KeyError, ConnectionError, TimeoutError):
+        except Exception as exc:  # noqa: BLE001 - display plugins must not interrupt the owner loop.
             # A display sample cannot authorize motion or interrupt an approved action.
             self.motion_errors += 1
+            if self.motion_errors == 1 or self.motion_errors % 50 == 0:
+                LOG.warning(
+                    "Display motion unavailable (%s errors): %s",
+                    self.motion_errors,
+                    type(exc).__name__,
+                )
 
     def _state(self):
         state = dict(self.observe())

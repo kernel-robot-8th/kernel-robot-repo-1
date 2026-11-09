@@ -4,6 +4,10 @@ const copy = (value) => structuredClone(value);
 let current, connected, token, draft, draftSession, templates = [], generatedRequest = null, pending = false, revision;
 let dirty = false;
 export function hasUnappliedChanges() { return dirty; }
+export function newRequestId() {
+  // getRandomValues also works on remote HTTP simulation pages.
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+}
 const names = {route: '라인 이동', gate: '작업 완료 대기', request: '물품 요청 대기', mode_switch: 'Nav2 전환', navigate: 'Nav2 목표 이동'};
 
 export async function send(action, extra = {}) {
@@ -124,7 +128,7 @@ $('scenario-preset-load').addEventListener('click', () => {
 $('scenario-copy').addEventListener('click', () => { draft = copy(current.plan); draftSession = current.session_id; draft.name += ' 복제'; changed(); renderSteps(); });
 $('scenario-add').addEventListener('click', () => {
   const step = copy(templates[Number($('scenario-template').value)]); if (!step) return;
-  step.id = 'step_' + crypto.randomUUID(); draft.steps.push(step); changed(); renderSteps();
+  step.id = 'step_' + newRequestId(); draft.steps.push(step); changed(); renderSteps();
 });
 $('scenario-load').addEventListener('click', () => perform(async () => {
   const r = await send('load_plan', {name: $('scenario-saved').value}); draft = r.plan; draftSession = current.session_id; changed(); renderSteps(); return '저장된 계획을 편집창에 불러왔습니다.';
@@ -173,7 +177,7 @@ export function renderComposer(state, online, operationToken) {
     if (!templates.some(s => s.kind === 'navigate')) templates.push({id: 'navigate', kind: 'navigate', role, label: 'Nav2 목표 이동', payload: state.catalogue.nav_goal});
     $('scenario-template').replaceChildren(...templates.map((s,i) => new Option(`${names[s.kind]} · ${s.label}`, i)));
     $('delivery-role').replaceChildren(new Option('자동 배정', 'auto'), ...Object.entries(state.catalogue.robots).map(([r,v]) => new Option(`${v.robot_id} · ${r}`, r)));
-    $('delivery-id').value = 'request_' + crypto.randomUUID();
+    $('delivery-id').value = 'request_' + newRequestId();
     renderSteps();
   }
   const saved = state.catalogue.saved ?? [];

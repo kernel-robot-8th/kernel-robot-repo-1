@@ -267,6 +267,7 @@ test(`common owner/${selected}: select preset and edit nodes without scenario CL
 }
 
 test('hardware UI blocks key entry over remote HTTP', async ({ page, baseURL }) => {
+  const errors = []; page.on('pageerror', e => errors.push(e.message));
   await page.route('http://control.example/**', async (route) => {
     const url = new URL(route.request().url());
     url.host = new URL(baseURL).host;
@@ -274,6 +275,8 @@ test('hardware UI blocks key entry over remote HTTP', async ({ page, baseURL }) 
   });
   await page.goto('http://control.example/ui/?mode=offline');
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+  const id = await page.evaluate(async () => (await import('/ui/scenario.js')).newRequestId());
+  expect(id).toMatch(/^[a-f0-9]{32}$/);
   await page.evaluate(async () => {
     const { renderTrial } = await import('/ui/trial.js');
     document.getElementById('trial-key').value = 'test-only-operation-key';
@@ -285,4 +288,6 @@ test('hardware UI blocks key entry over remote HTTP', async ({ page, baseURL }) 
   await expect(page.locator('[data-action="start"]')).toBeDisabled();
   await expect(page.locator('#scenario-fields')).toHaveJSProperty('disabled', true);
   await expect(page.locator('#scenario-fields input').first()).toBeDisabled();
+  await expect(page.locator('#service-fields')).toBeDisabled();
+  expect(errors).toEqual([]);
 });

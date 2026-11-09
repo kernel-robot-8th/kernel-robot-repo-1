@@ -1,13 +1,13 @@
-import { send, acceptServicePlan, hasUnappliedChanges } from './scenario.js';
+import { send, acceptServicePlan, hasUnappliedChanges, newRequestId } from './scenario.js';
 const $ = id => document.getElementById(id);
-let state, connected, token, preview, busy = false, dirty = false, requestId = crypto.randomUUID();
+let state, connected, token, preview, busy = false, dirty = false, requestId = newRequestId();
 export function hasServiceDraft() { return dirty; }
 function refresh() {
   $('service-fields').disabled = !connected || !token || busy || !state?.can_configure || !!(state?.service_request && state.phase !== 'COMPLETE');
   $('service-apply').disabled = !preview || busy;
 }
 function changed() {
-  preview = null; dirty = true; requestId = crypto.randomUUID();
+  preview = null; dirty = true; requestId = newRequestId();
   $('service-preview-steps').replaceChildren(); $('service-field-confirm').checked = false;
   refresh(); document.dispatchEvent(new Event('service-draft-change'));
 }
@@ -50,7 +50,7 @@ $('service-apply').addEventListener('click', () => perform(async () => {
 export function renderService(next, online, key) {
   const phaseChanged = state?.phase !== next?.phase || state?.task_id !== next?.task_id;
   if (state && next?.session_id !== state.session_id) {
-    preview = null; dirty = false; requestId = crypto.randomUUID();
+    preview = null; dirty = false; requestId = newRequestId();
     $('service-source-confirm').checked = false; $('service-field-confirm').checked = false;
     $('service-preview-steps').replaceChildren();
     document.dispatchEvent(new Event('service-draft-change'));

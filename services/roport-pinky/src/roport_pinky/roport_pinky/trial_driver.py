@@ -386,13 +386,16 @@ class TrialDriver:
             pose, source, observed = None, 'unavailable', self.logic.now()
             if nav.get('localization_ready') and nav.get('pose') and nav.get('observed_at'):
                 pose, source = dict(nav['pose']), getattr(self, 'pose_source', 'tf')
-                observed = datetime.fromisoformat(nav['observed_at']).timestamp()
-            elif self.mode == 'line' and self.logic.own and self.logic.st is not None:
+                observed = datetime.fromisoformat(
+                    nav.get('pose_observed_at') or nav['observed_at']).timestamp()
+            elif (self.mode == 'line' and self.logic.own and self.logic.node is not None
+                  and self.logic.st is not None
+                  and self.logic.st['state'] not in ('stopped', 'error')):
                 observed = self.logic.st_t
                 estimate = self.logic.st.get('pose_est')
                 if estimate and self.logic.now() - observed <= STATE_MAX_AGE:
                     x, y = estimate['x_cm'] / 100, estimate['y_cm'] / 100
-                    angle = math.radians(self.frame['yaw_deg'])
+                    angle = self.logic.frame_yaw
                     pose = {
                         'x': self.frame['x_m'] + math.cos(angle) * x - math.sin(angle) * y,
                         'y': self.frame['y_m'] + math.sin(angle) * x + math.cos(angle) * y,

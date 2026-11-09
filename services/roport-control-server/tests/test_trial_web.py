@@ -87,6 +87,22 @@ def local_owner(tmp_path, single_profile):
         journal.close()
 
 
+def test_motion_rejection_diagnostics_reach_ui_without_blocking_start(local_owner):
+    from roport_control_server.adapters.mqtt.motion import MotionReceiver
+
+    client, control, _, _ = local_owner
+    control.motion = MotionReceiver(control.config, MemoryTransport())
+    control.motion.rejected = 2
+    control.motion.rejection_reasons = {"clock_skew_or_expired": 2}
+    snapshot = client.get("/api/snapshot?mode=trial").json()
+    assert snapshot["trial"]["motion_diagnostics"] == {
+        "rejected": 2,
+        "reasons": {"clock_skew_or_expired": 2},
+    }
+    assert snapshot["trial"]["can_start"]
+    assert control.state["phase"] == "READY" and control.state["fault"] is None
+
+
 def test_trial_start_auth_reconnect_duplicate_and_stop(local_owner):
     client, control, _, transport = local_owner
     bootstrap = client.get("/api/bootstrap?mode=trial").json()
