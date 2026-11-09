@@ -37,10 +37,12 @@ ROUTE = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']
 
 
 class Harness:
-    def __init__(self, log_dir, extra=()):
+    def __init__(self, log_dir, extra=(), dock_file=None):
         from roport_line_nav.line_nav_node import LineNavNode
         self.ctx = Context()
         rclpy.init(context=self.ctx, domain_id=TEST_DOMAIN_ID)
+        # 홈 ~/roport_dock.yaml 을 읽거나 쓰지 않게 테스트 임시 경로
+        self.dock_file = str(dock_file or Path(log_dir).parent / 'roport_dock.yaml')
         self.node = LineNavNode(
             context=self.ctx, namespace=NS,
             parameter_overrides=[
@@ -48,6 +50,7 @@ class Harness:
                 Parameter('calibration_file', value=str(CONFIG)),
                 Parameter('layout_file', value=str(LAYOUT)),
                 Parameter('log_dir', value=str(log_dir)),     # 홈 ~/roport_logs 에 쓰지 않게
+                Parameter('dock_file', value=self.dock_file),
                 *extra,
             ])
         self.probe = rclpy.create_node('probe', context=self.ctx, namespace=NS)
@@ -160,6 +163,18 @@ def test_no_odom_stops(ros):
     '{"cmd": "start", "route": ["N16", "N14"], "start_offset_cm": true}',
     '{"cmd": "speed"}', '{"cmd": "speed", "base_speed": "fast"}',
     '{"cmd": "speed", "base_speed": NaN}', '{"cmd": "speed", "rotate_speed": true}',
+    '{"cmd": "dock"}', '{"cmd": "dock", "node": "n11"}',
+    '{"cmd": "dock", "node": "N11", "advance_cm": 1, "rotate_deg": 90}',
+    '{"cmd": "dock", "node": "N11", "advance_cm": "1", "rotate_deg": 90, "move_cm": 0}',
+    '{"cmd": "dock", "node": "N11", "advance_cm": true, "rotate_deg": 90, "move_cm": 0}',
+    '{"cmd": "dock", "node": "N11", "advance_cm": NaN, "rotate_deg": 90, "move_cm": 0}',
+    '{"cmd": "dock", "node": "N11", "reset": "yes"}',
+    '{"cmd": "start", "route": ["N07", "N18"], "start_cross": 1, "start_facing": "S"}',
+    '{"cmd": "start", "route": ["N07", "N18"], "start_cross": true}',
+    '{"cmd": "start", "route": ["N07", "N18"], "start_cross": true, "start_facing": "south"}',
+    '{"cmd": "start", "route": ["N07", "N18"], "start_facing": "S"}',
+    '{"cmd": "start", "route": ["N07", "N18"], "start_cross": true, "start_facing": "S",'
+    ' "start_offset_cm": 3}',
 ])
 def test_parse_command_rejects(text):
     with pytest.raises(ValueError):
@@ -169,7 +184,17 @@ def test_parse_command_rejects(text):
 def test_parse_command_ok():
     assert parse_command('{"cmd": "stop"}') == ('stop', {})
     cmd, args = parse_command('{"cmd": "start", "route": ["N16", "N14"], "start_offset_cm": 7}')
-    assert cmd == 'start' and args == {'route': ['N16', 'N14'], 'start_offset_cm': 7.0}
+    assert cmd == 'start' and args == {'route': ['N16', 'N14'], 'start_offset_cm': 7.0,
+                                       'start_cross': False, 'start_facing': None}
+    cmd, args = parse_command('{"cmd": "start", "route": ["N07", "N18", "N01"], '
+                              '"start_cross": true, "start_facing": "S"}')
+    assert args['start_cross'] is True and args['start_facing'] == 'S'
+    assert parse_command('{"cmd": "dock", "node": "N11", "advance_cm": 1.5, "rotate_deg": 96, '
+                         '"move_cm": -2}') == ('dock', {'node': 'N11', 'reset': False,
+                                                        'advance_cm': 1.5, 'rotate_deg': 96.0,
+                                                        'move_cm': -2.0})
+    assert parse_command('{"cmd": "dock", "node": "N11", "reset": true}') == \
+        ('dock', {'node': 'N11', 'reset': True})
 
 
 def test_speed_command(ros):
@@ -208,6 +233,93 @@ def test_approach_parameters(tmp_path):
                 Parameter('calibration_file', value=str(CONFIG)),
                 Parameter('layout_file', value=str(LAYOUT)),
                 Parameter('log_dir', value=str(tmp_path / 'logs2')),
+                Parameter('dock_file', value=str(tmp_path / 'dock2.yaml')),
                 Parameter('approach_speed', value=0.2)])     # 하드 상한 0.15 초과
     finally:
         rclpy.shutdown(context=ctx)
+
+
+# ---------------------------------------------------------------- 정밀 도킹(FFT1-112)
+def _last(ros, cmd):
+    ros.wait(lambda: ros.states and (ros.states[-1]['last_command'] or {}).get('cmd') == cmd)
+    return ros.states[-1]['last_command']
+
+
+def test_dock_command_saves_and_reloads(tmp_path):
+    import yaml
+    h = Harness(tmp_path / 'logs')
+    try:
+        assert h.node.ex.dock.as_dict() == {}            # 파일 없음 = 기본
+        h.feed(2)
+        h.command({'cmd': 'dock', 'node': 'N11', 'advance_cm': 1.5, 'rotate_deg': 96,
+                   'move_cm': 2})
+        last = _last(h, 'dock')
+        assert last['ok'], last
+        h.wait(lambda: h.states[-1]['dock'].get('N11'))
+        assert h.states[-1]['dock'] == {
+            'N11': {'advance_cm': 1.5, 'rotate_deg': 96.0, 'move_cm': 2.0}}
+        h.command({'cmd': 'dock', 'node': 'N01', 'advance_cm': -2, 'rotate_deg': 84,
+                   'move_cm': -3})
+        h.wait(lambda: 'N01' in h.states[-1]['dock'])
+        data = yaml.safe_load(Path(h.dock_file).read_text())
+        assert data['version'] == 1 and set(data['nodes']) == {'N01', 'N11'}
+        h.command({'cmd': 'dock', 'node': 'N01', 'reset': True})
+        h.wait(lambda: 'N01' not in h.states[-1]['dock'])
+        assert h.cmds == []                              # 값 바꾸기만으로는 움직이지 않음
+    finally:
+        h.close()
+    h = Harness(tmp_path / 'logs')                       # 다시 켜면 파일에서 읽음
+    try:
+        assert h.node.ex.dock.as_dict() == {
+            'N11': {'advance_cm': 1.5, 'rotate_deg': 96.0, 'move_cm': 2.0}}
+    finally:
+        h.close()
+
+
+def test_dock_command_rejected(ros):
+    ros.feed(3)
+    for bad in ({'node': 'N11', 'advance_cm': 7, 'rotate_deg': 90, 'move_cm': 0},
+                {'node': 'N11', 'advance_cm': 0, 'rotate_deg': 130, 'move_cm': 0},
+                {'node': 'N16', 'advance_cm': 0, 'rotate_deg': 90, 'move_cm': 0}):
+        n = len(ros.states)
+        ros.command({'cmd': 'dock', **bad})
+        ros.wait(lambda: len(ros.states) > n and ros.states[-1]['last_command']['cmd'] == 'dock')
+        assert ros.states[-1]['last_command']['ok'] is False
+    assert not Path(ros.dock_file).exists() and ros.node.ex.dock.as_dict() == {}
+    ros.command({'cmd': 'start', 'route': ROUTE})
+    ros.wait(lambda: ros.node.ex.state == 'follow')
+    ros.command({'cmd': 'dock', 'node': 'N11', 'advance_cm': 1, 'rotate_deg': 90, 'move_cm': 0})
+    ros.wait(lambda: ros.states[-1]['last_command']['cmd'] == 'dock')
+    last = ros.states[-1]['last_command']
+    assert last['ok'] is False and 'while driving' in last['detail']
+    assert ros.node.ex.state == 'follow' and not Path(ros.dock_file).exists()
+    ros.command({'cmd': 'stop'})
+    ros.wait(lambda: ros.node.ex.state == 'stopped')
+
+
+def test_broken_dock_file_uses_defaults(tmp_path):
+    bad = tmp_path / 'roport_dock.yaml'
+    bad.write_text('version: 1\nnodes:\n  N11: {advance_cm: 99, rotate_deg: 90, move_cm: 0}\n')
+    h = Harness(tmp_path / 'logs', dock_file=bad)
+    try:
+        assert h.node.ex.dock.as_dict() == {}
+        h.feed(2)
+        h.command({'cmd': 'dock', 'node': 'N11', 'advance_cm': 1, 'rotate_deg': 90, 'move_cm': 0})
+        assert _last(h, 'dock')['ok']                    # 깨진 파일은 새 값으로 원자적 교체
+        assert 'advance_cm: 1.0' in bad.read_text()
+    finally:
+        h.close()
+
+
+def test_start_cross_command(ros):
+    ros.feed(3)
+    ros.command({'cmd': 'start', 'route': ['N07', 'N18', 'N01'], 'start_cross': True,
+                 'start_facing': 'S'})
+    ros.wait(lambda: ros.node.ex.state == 'advance')
+    ros.feed(2)
+    assert any(v > 0 for v, _ in ros.cmds)
+    ros.command({'cmd': 'stop'})
+    ros.wait(lambda: ros.node.ex.state == 'stopped')
+    ros.command({'cmd': 'start', 'route': ROUTE, 'start_cross': True, 'start_facing': 'S'})
+    last = _last(ros, 'start')
+    assert last['ok'] is False and 'bar' in last['detail']

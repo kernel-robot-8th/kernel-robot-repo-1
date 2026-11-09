@@ -4,7 +4,11 @@
       odom (nav_msgs/Odometry, pinky_bringup 엔코더) — 이동 거리·회전 각도
       line_nav/command (std_msgs/String, JSON)
         {"cmd": "start", "route": ["N16", "N14", ...], "start_offset_cm": 0}  (start_offset 생략 가능)
+        {"cmd": "start", "route": ["N07", "N18", "N01"], "start_cross": true, "start_facing": "S"}
+                               (IR 3개가 N07 을 지나는 교차선 위, 남쪽을 봄)
         {"cmd": "stop"}        {"cmd": "load_done"}   (상차 완료: N01·N11 에서 대기 중일 때)
+        {"cmd": "dock", "node": "N11", "advance_cm": 1.5, "rotate_deg": 96, "move_cm": 2}
+        {"cmd": "dock", "node": "N11", "reset": true}   (정밀 도킹 값 적용·저장, 주행 중 거부)
 발행  cmd_vel (geometry_msgs/Twist) — 주행 중일 때만. dry_run 이면 발행하지 않음
       line_nav/state (std_msgs/String, JSON) — 상태·현재 구간·이벤트·IR·마지막 명령 결과
 
@@ -12,6 +16,8 @@ line_follower(roport_pinky_line)와 동시에 실행하지 않는다(둘 다 cmd
 정지: stop 명령, 오류(노드 놓침·라인 놓침 지속·회전 중 선 못 찾음·후진 초과), IR 끊김(ir_timeout_sec),
 odom 끊김(odom_timeout_sec), SIGINT/SIGTERM/SIGHUP 종료 때 0 속도. kill -9·전원 차단에는 보낼 수 없고
 pinky_bringup 에는 cmd_vel 타임아웃이 없어 마지막 속도가 남는다.
+도킹 값 파일: 파라미터 dock_file(기본 ~/roport_dock.yaml, 빈 값 = 파일 안 씀). 시작 때 읽고(없거나 깨지면 경고 후
+기본 0·90·0), dock 명령 때 임시 파일 + rename 으로 저장한 뒤 적용한다(저장 실패면 적용하지 않음).
 """
 
 import json
@@ -30,7 +36,8 @@ from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import String, UInt16MultiArray
 
-from roport_line_nav.executor import NavConfig, RouteExecutor
+from roport_line_nav.dock import load_file as load_dock_file, save_file as save_dock_file
+from roport_line_nav.executor import FACINGS, NavConfig, RouteExecutor
 from roport_line_nav.graph import Graph, GraphError
 from roport_line_nav.recorder import RouteRecorder
 from roport_pinky_line.calibration import load_calibration
@@ -66,6 +73,22 @@ def parse_command(text):
     cmd = data['cmd']
     if cmd in ('stop', 'load_done'):
         return cmd, {}
+    if cmd == 'dock':           # 범위·상차 노드 여부는 실행부(DockTable)가 검사
+        node = data.get('node')
+        if not isinstance(node, str) or not NODE_ID.match(node):
+            raise ValueError('dock needs "node" (node id)')
+        reset = data.get('reset', False)
+        if not isinstance(reset, bool):
+            raise ValueError('reset must be true or false')
+        if reset:
+            return cmd, {'node': node, 'reset': True}
+        args = {'node': node, 'reset': False}
+        for k in ('advance_cm', 'rotate_deg', 'move_cm'):
+            v = data.get(k)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                raise ValueError(f'dock needs {k} (number)')
+            args[k] = float(v)
+        return cmd, args
     if cmd == 'speed':          # 범위는 실행부가 설정 상한으로 검사
         args = {}
         for k in ('base_speed', 'rotate_speed'):
@@ -91,7 +114,20 @@ def parse_command(text):
                 or not math.isfinite(offset) or not 0.0 <= offset <= 50.0:
             raise ValueError('start_offset_cm must be a number in 0..50')
         offset = float(offset)
-    return cmd, {'route': route, 'start_offset_cm': offset}
+    cross = data.get('start_cross', False)
+    if not isinstance(cross, bool):
+        raise ValueError('start_cross must be true or false')
+    facing = data.get('start_facing')
+    if facing is not None and facing not in FACINGS:
+        raise ValueError(f'start_facing must be one of {"/".join(FACINGS)}')
+    if cross and facing is None:
+        raise ValueError('start_cross needs start_facing')
+    if facing is not None and not cross:
+        raise ValueError('start_facing is only for start_cross')
+    if cross and offset is not None:
+        raise ValueError('start_cross cannot be combined with start_offset_cm')
+    return cmd, {'route': route, 'start_offset_cm': offset,
+                 'start_cross': cross, 'start_facing': facing}
 
 
 def yaw_of(q):
@@ -127,7 +163,15 @@ class LineNavNode(Node):
 
         self.graph = Graph.load(layout_file)
         self.sensor = LineSensor(load_calibration(cal_file, robot))
-        self.ex = RouteExecutor(self.graph, cfg)
+        dock_file = str(p('dock_file', '~/roport_dock.yaml').value)
+        self.dock_file = os.path.expanduser(dock_file) if dock_file else ''
+        if self.dock_file:
+            dock, warning = load_dock_file(self.dock_file, self.graph)
+            if warning:
+                self.get_logger().warn(warning)
+        else:
+            dock = None
+        self.ex = RouteExecutor(self.graph, cfg, dock)
         self._last_ir = None
         self._reading = None
         self._odom = None
@@ -144,7 +188,8 @@ class LineNavNode(Node):
         self.create_timer(0.1, self._watchdog)
         self.get_logger().info(
             f'robot={robot} layout={layout_file} graph={self.graph.version} '
-            f'dry_run={self.dry_run} '
+            f'dry_run={self.dry_run} dock_file={self.dock_file or "(none)"} '
+            f'dock={self.ex.dock.as_dict() or "defaults"} '
             f'base={cfg.base_speed} m/s approach={cfg.approach_speed} m/s '
             f'(from {cfg.approach_lead_cm} cm before node, straight pass {"full" if cfg.pass_full_speed else "slow"}) ir_ahead={cfg.ir_ahead_cm} cm '
             f'kp={cfg.kp} kd={cfg.kd} (x speed/{cfg.gain_ref_speed} above it: {cfg.kp_speed_scale})')
@@ -173,17 +218,42 @@ class LineNavNode(Node):
             elif cmd == 'speed':
                 base, rot = self.ex.set_speed(**args)
                 ok, detail = True, f'{base:.3f} m/s, {rot:.2f} rad/s'
+            elif cmd == 'dock':
+                ok, detail = True, self._apply_dock(args)
             else:
                 if self._reading is None:
                     raise ValueError('no IR yet')
                 self.sensor.reset()
-                self.ex.start(args['route'], args['start_offset_cm'])
+                self.ex.start(args['route'], args['start_offset_cm'],
+                              start_cross=args['start_cross'], start_facing=args['start_facing'])
                 ok, detail = True, 'started'
-        except (ValueError, GraphError) as e:
+        except (ValueError, GraphError, OSError) as e:
             ok, detail = False, str(e)
         self._last_command = {'cmd': cmd, 'ok': ok, 'detail': detail}
         self.get_logger().info(f'command {cmd}: {"ok" if ok else "rejected"} ({detail})')
         self._flush()
+
+    def _apply_dock(self, args):
+        """검사 → (dock_file 이면) 원자적 저장 → 적용. 주행 중·범위 밖·저장 실패면 예외(그대로 유지)."""
+        if self.ex.active:
+            raise ValueError(f'dock rejected while driving ({self.ex.state}); stop first')
+        table = self.ex.dock.copy()
+        node = args['node']
+        if args['reset']:
+            table.reset(node)
+            v = table.get(node)
+        else:
+            v = table.set(node, args['advance_cm'], args['rotate_deg'], args['move_cm'])
+        if self.dock_file:
+            try:
+                save_dock_file(self.dock_file, table)
+            except OSError as e:
+                raise OSError(f'dock not applied, save failed: {e.strerror or e}') from None
+        self.ex.replace_dock(table, f'{node} ' + ('reset' if args['reset'] else
+                                                  f'a={v.advance_cm:g} r={v.rotate_deg:g} b={v.move_cm:g}'))
+        saved = 'saved' if self.dock_file else 'not saved (no dock_file)'
+        return (f'{node} advance={v.advance_cm:g} cm rotate={v.rotate_deg:g} deg '
+                f'move={v.move_cm:g} cm, {saved}')
 
     def _on_ir(self, msg):
         try:
@@ -195,7 +265,7 @@ class LineNavNode(Node):
         self._last_ir = now
         self._reading = reading
         pose = self._pose(now)
-        cmd = self.ex.step(reading, pose, now)
+        cmd = self.ex.step(reading, pose, now, self._odom_t)
         if cmd is not None:
             self._publish_cmd(cmd.linear, cmd.angular)
         self._record(now, reading, cmd, pose)
@@ -227,7 +297,7 @@ class LineNavNode(Node):
     def _flush(self):
         """명령·감시로 상태가 바뀌었을 때 IR 샘플을 기다리지 않고 0 속도·상태를 낸다."""
         now = time.monotonic()
-        cmd = self.ex.step(self._reading, self._pose(now), now) \
+        cmd = self.ex.step(self._reading, self._pose(now), now, self._odom_t) \
             if self._reading is not None or not self.ex.active else None
         if cmd is not None:
             self._publish_cmd(cmd.linear, cmd.angular)
