@@ -1,0 +1,2 @@
+# Windows 배치 파일은 CRLF를 유지한다. CI의 git diff --check가 줄 끝 CR을 오류로 보지 않게 한다.
+gradlew.bat text eol=crlf whitespace=cr-at-eol
