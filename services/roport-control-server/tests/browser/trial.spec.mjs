@@ -136,12 +136,14 @@ test(`composer/${source}: edit, validate, persist and execute through shared MQT
     await page.goto(`${url}/ui/`);
     await page.locator('#trial-key').fill(token);
     await page.locator('#scenario-editor > summary').click();
+    await expect(page.locator('#scenario-steps > li')).not.toHaveCount(0);
     if (source === 'segment') {
       while (await page.locator('#scenario-steps button').filter({hasText:'삭제'}).count()) {
         await page.locator('#scenario-steps button').filter({hasText:'삭제'}).first().click();
       }
       await page.locator('#scenario-template').selectOption({label:'라인 이동 · cart_to_delivery'});
       await page.locator('#scenario-add').click();
+      await expect(page.locator('#scenario-steps > li')).toHaveCount(1);
       await page.locator('#scenario-name').fill('H1에서 N11 구간 검증');
       const nodes = page.locator('#scenario-steps input').nth(1);
       await nodes.fill('H1 N99 N11');
