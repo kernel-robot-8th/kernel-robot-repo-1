@@ -407,7 +407,7 @@ def test_return_home_refusals(mgr):
     assert '미등록' in mgr.return_home(g, 'pinky1')['pinky1']['msg']        # home 없음
     mgr.store.upsert(dict(GOOD, home='P1'))
     assert '연결' in mgr.return_home(g, 'pinky1')['pinky1']['msg']          # 상태 없음
-    for state, word in (('follow', '주행 중'), ('loading', '주행 중'), ('stopped', '위치 모름'),
+    for state, word in (('follow', '주행 중'), ('stopped', '위치 모름'),
                         ('error', '위치 모름')):
         _set_state(mgr, 'pinky1', state, ['N16', 'N14'])
         res = mgr.return_home(g, 'pinky1')['pinky1']
@@ -418,6 +418,15 @@ def test_return_home_refusals(mgr):
     assert len(mgr.client.calls) == n                                       # 명령 안 보냄
     with pytest.raises(FleetError):
         mgr.return_home(g, 'nobody')
+
+
+def test_return_home_from_loading_delegates_to_robot(mgr):
+    """경로 끝 상차 대기: 로봇 콘솔 /api/route/return 에 맡김(상차 완료 → 도착 → 복귀 출발)."""
+    mgr.store.upsert(dict(GOOD, home='P5'))
+    _set_state(mgr, 'pinky1', 'loading', ['N16', 'N14', 'N02', 'N10', 'N18', 'N01'])
+    res = mgr.return_home(_graph(), 'pinky1')['pinky1']
+    ip, path, body = mgr.client.calls[-1]
+    assert res['ok'] and path == '/api/route/return' and body == {'goal': 'N16'}
 
 
 def test_return_home_all(mgr):

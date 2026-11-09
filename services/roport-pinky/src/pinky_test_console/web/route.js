@@ -5,6 +5,7 @@ const $ = (id) => document.getElementById(id);
 const POLL_MS = 250;
 let routeIds = [];
 let lastState = null;
+let lastStale = true;
 
 const map = new RM.RouteMap($("routeCanvas"), (ids) => {
   routeIds = ids;
@@ -17,6 +18,7 @@ function updateButtons() {
   const busy = st && !["idle", "arrived", "handoff", "stopped", "error"].includes(st);
   $("btnStart").disabled = routeIds.length < 2 || !!busy;
   $("btnLoad").disabled = st !== "loading";
+  $("btnHome").disabled = !!busy && st !== "loading";
   map.editable = !busy;
 }
 
@@ -39,7 +41,8 @@ function syncSpeed(sp) {
   $("spLin").max = String(sp.max_linear * 100);
   $("spRot").min = String(sp.rotate_min_speed);
   $("spRot").max = String(sp.max_angular);
-  $("spNow").textContent = `현재 ${(sp.base_speed * 100).toFixed(1)} cm/s · ${sp.rotate_speed.toFixed(2)} rad/s`;
+  const near = typeof sp.approach_speed === "number" ? ` · 노드 앞 ${(sp.approach_speed * 100).toFixed(1)} cm/s` : "";
+  $("spNow").textContent = `현재 ${(sp.base_speed * 100).toFixed(1)} cm/s · ${sp.rotate_speed.toFixed(2)} rad/s${near}`;
   if (!speedDirty) {
     $("spLin").value = String(sp.base_speed * 100);
     $("spRot").value = String(sp.rotate_speed);
@@ -62,6 +65,22 @@ $("btnStart").addEventListener("click", () => {
 });
 $("btnLoad").addEventListener("click", () => command({ cmd: "load_done" }));
 $("btnStop").addEventListener("click", () => command({ cmd: "stop" }));
+$("btnHome").addEventListener("click", async () => {
+  // 경로 끝(도착·인계·상차 대기)이면 로봇이 아는 위치에서 복귀. 그 밖(대기·정지·오류·상태 오래됨)은
+  // 지금 노드를 「지금 위치」에서 새로 골라야 함. 지난 경로의 출발점은 쓰지 않음(PR #43 리뷰 P2)
+  const st = lastState ? lastState.state : null;
+  const known = !lastStale && ["arrived", "handoff", "loading"].includes(st);
+  const here = $("homeFrom").value;
+  if (!known && !here) {
+    RM.setMsg($("cmdMsg"), "로봇 위치를 모릅니다. 「지금 위치」에서 로봇이 서 있는 노드를 고르세요.", "err");
+    $("homeFrom").focus();
+    return;
+  }
+  const body = known ? {} : { start: here };
+  $("homeFrom").value = "";
+  const r = await RM.postJson("api/route/return", body);
+  RM.setMsg($("cmdMsg"), r.success ? r.msg : `복귀 실패: ${r.msg || r.httpStatus}`, r.success ? "ok" : "err");
+});
 $("btnClear").addEventListener("click", () => map.setRoute([]));
 $("presets").addEventListener("change", (ev) => {
   const v = ev.target.value;
@@ -84,10 +103,24 @@ document.addEventListener("keydown", (ev) => {
 
 function fmt(v) { return v === null || v === undefined ? "-" : String(v); }
 
+function showBattery(b) {
+  const chip = $("battChip");
+  if (!b || b.percent === null || b.percent === undefined) {
+    chip.textContent = "배터리 -";
+    chip.className = "chip";
+    return;
+  }
+  const v = b.voltage === null || b.voltage === undefined ? "" : ` ${b.voltage.toFixed(1)} V`;
+  chip.textContent = `배터리 ${Math.round(b.percent)}%${v}${b.stale ? " (오래됨)" : ""}`;
+  chip.className = "chip" + (b.stale ? " batt-stale" : b.percent < 20 ? " batt-low" : b.percent < 40 ? " batt-mid" : "");
+}
+
 function render(snap) {
+  showBattery(snap.battery);
   const s = snap.state;
   syncSpeed(s && s.speed);
   lastState = s;
+  lastStale = !!snap.stale;
   $("robotChip").textContent = "robot " + (snap.robot || "-");
   $("stateChip").textContent = "state " + (s ? s.state : "-");
   $("sStale").hidden = !snap.stale;
@@ -134,6 +167,12 @@ async function init() {
     RM.setMsg($("cmdMsg"), `노드 그래프 없음: ${g.msg || g.httpStatus}`, "err");
   } else {
     map.setGraph(g);
+    for (const n of g.nodes) {
+      const o = document.createElement("option");
+      o.value = n.id;
+      o.textContent = n.place ? `${n.id} (${n.place})` : n.id;
+      $("homeFrom").appendChild(o);
+    }
     for (const p of g.presets) {
       const o = document.createElement("option");
       o.value = p.route.join(",");

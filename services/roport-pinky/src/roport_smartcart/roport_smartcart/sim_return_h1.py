@@ -4,12 +4,16 @@ Ideal ground-truth alignment is a simulation fixture, not an ArUco or real IR
 implementation. Explicit invocation only; never subscribes to MQTT missions.
 """
 import argparse
+import json
 import math
 import os
 from pathlib import Path
 import signal
 import subprocess
 import time
+from uuid import uuid4
+
+from .sim_control import ReturnPermit
 
 
 # Same geometry as roport_line_nav/test/sim.py (3 cm / 2 cm / 0.4 cm).
@@ -45,6 +49,25 @@ def return_waypoints(position, n12, *, public_space):
     return ['return_entry']
 
 
+def line_return_route(bay):
+    if bay == 'H1':
+        return ['N12', 'N08', 'N09', 'H1']
+    if bay == 'H2':
+        return ['N12', 'N08', 'H2']
+    raise ValueError('return bay must be H1 or H2')
+
+
+def line_blocked_since(since, requested, measured, now):
+    moving = abs(measured[0]) > .003 or abs(measured[1]) > .01
+    requested = abs(requested[0]) > .005 or abs(requested[1]) > .02
+    if moving or not requested:
+        return None
+    since = now if since is None else since
+    if now-since >= 12:
+        raise RuntimeError('line_motion_blocked: no motion for 12 seconds; stop and request recovery')
+    return since
+
+
 def ir_values(lines, pose, calibration):
     """Nine-point IR footprint on generated world tape boxes, metres/radians."""
     x, y, yaw = pose
@@ -72,7 +95,11 @@ def ir_values(lines, pose, calibration):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gate', choices=('gate1', 'gate2', 'gate3'))
+    parser.add_argument('--bay', choices=('H1', 'H2'), default='H1')
+    parser.add_argument('--wait-for-control', action='store_true')
     options = parser.parse_args()
+    if options.wait_for_control and not options.gate:
+        parser.error('--wait-for-control requires --gate')
     if os.environ.get('ROS_DOMAIN_ID') != '198':
         parser.error('Gazebo domain 198 only; use scripts/smartcart_sim.sh')
     os.environ['ROS_AUTOMATIC_DISCOVERY_RANGE'] = 'LOCALHOST'
@@ -94,6 +121,7 @@ def main():
     from roport_pinky_line.calibration import load_calibration
     from roport_pinky_line.line_sensor import LineSensor
     from sensor_msgs.msg import LaserScan, Range
+    from std_msgs.msg import String
     from tf2_msgs.msg import TFMessage
 
     smart = Path(get_package_share_directory('roport_smartcart'))
@@ -110,6 +138,28 @@ def main():
     executor = SingleThreadedExecutor()
     executor.add_node(node)
     samples, received = {}, {}
+    permit = ReturnPermit(uuid4().hex)
+    bay = options.bay
+    phase = 'NAVIGATING'
+    state_pub = node.create_publisher(String, 'smartcart/sim/state', 10)
+
+    def publish_state():
+        state_pub.publish(String(data=json.dumps({'session': permit.session,
+            'state': phase, 'bay': (bay if permit.grant or not options.wait_for_control else None),
+            'gate': options.gate})))
+
+    def control(message):
+        try:
+            permit.observe(json.loads(message.data), time.time())
+        except ValueError:
+            pass
+
+    node.create_subscription(String, 'smartcart/sim/control', control, 10)
+    node.create_timer(.25, publish_state)
+
+    def control_ready():
+        if options.wait_for_control:
+            permit.check(time.time())
 
     def observe(name, message):
         previous = samples.get(name)
@@ -181,14 +231,14 @@ def main():
                 if time.monotonic() >= deadline:
                     raise
 
-        h1 = graph.nodes['H1']
+        h1 = graph.nodes[bay]
         h1_world = layout.frame.to_world(h1.x, h1.y)
         current = pose()
         on_bar = LineSensor(calibration).update(ir_values(layout.lines, current, calibration)).node
         if (not options.gate and on_bar
                 and math.hypot(current[0]-h1_world[0], current[1]-h1_world[1]) < .06
                 and abs(wrap(current[2]-math.pi/2-math.radians(layout.frame.yaw_deg))) < .25):
-            node.get_logger().info('H1 already parked; holding position')
+            node.get_logger().info(f'{bay} already parked; holding position')
             return
         public_space = in_public_space(layout, pose()[:2])
         if options.gate:
@@ -205,13 +255,32 @@ def main():
             child = subprocess.Popen(['ros2', 'run', 'roport_smartcart', 'navigate',
                 '--mode', 'sim', '--domain-id', '198', '--places',
                 str(smart/'config/places_sim.yaml'), '--map', str(world/'maps/airport_map.yaml'),
-                '--target', target, '--startup-wait', '30', '--timeout', '150'],
+                '--target', target, '--startup-wait', '30', '--timeout', '180'],
                 start_new_session=True)
             while child.poll() is None:
                 spin(.1)
+                control_ready()
             if child.returncode:
                 raise RuntimeError(f'Nav2 {target} failed ({child.returncode})')
             child = None
+            if target == options.gate and options.wait_for_control:
+                phase = 'WAIT_UNLOAD'
+                permit.waiting = True
+                publish_state()
+                node.get_logger().info('WAIT_UNLOAD: stopped; awaiting receipt + reserved H1/H2')
+                deadline = time.monotonic()+120
+                while permit.grant is None:
+                    fresh()
+                    control_ready()
+                    command()
+                    spin(.1)
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('receipt/return reservation timeout; staying stopped')
+                control_ready()
+                bay = permit.grant['bay']
+                phase = 'RETURNING'
+                publish_state()
+                node.get_logger().info(f'CONTROL -> {bay}; receipt confirmed, reservation accepted')
         spin(1.)
         fresh()
         twist = samples['odom'].twist.twist
@@ -228,6 +297,7 @@ def main():
         end = time.monotonic()+40
         while time.monotonic() < end:
             fresh()
+            control_ready()
             x, y, yaw = pose()
             dx, dy = target[0]-x, target[1]-y
             distance = math.hypot(dx, dy)
@@ -243,12 +313,14 @@ def main():
         spin(.3)
         sensor = LineSensor(calibration)
         route = RouteExecutor(graph, NavConfig(base_speed=.06, rotate_speed=.45))
-        route.start(['N12', 'N08', 'N09', 'H1'])
-        node.get_logger().info('LINE -> N12 -> N08 -> N09 -> H1 (0.06 m/s, geometric IR)')
+        route.start(line_return_route(bay))
+        node.get_logger().info(f'LINE -> {line_return_route(bay)} (0.06 m/s, geometric IR)')
         end = time.monotonic()+150
         previous = None
+        blocked_since = None
         while time.monotonic() < end:
             fresh()
+            control_ready()
             x, y, yaw = pose()
             reading = sensor.update(ir_values(layout.lines, (x, y, yaw), calibration))
             odom = samples['odom'].pose.pose
@@ -257,22 +329,40 @@ def main():
             output = route.step(reading, (odom.position.x*100., odom.position.y*100., odom_yaw),
                                 node.get_clock().now().nanoseconds/1e9)
             if output is not None:
+                measured = samples['odom'].twist.twist
+                blocked_since = line_blocked_since(blocked_since,
+                    (output.linear, output.angular), (measured.linear.x, measured.angular.z),
+                    node.get_clock().now().nanoseconds/1e9)
                 command(output.linear, output.angular)
             state = (route.state, route.index)
             if state != previous:
                 node.get_logger().info(f'line state={route.state}, leg={route.index}, {route.reason}')
                 previous = state
             if route.state == 'arrived':
-                node.get_logger().info(f'H1 ARRIVED: world=({x:.3f}, {y:.3f}), yaw={yaw:.3f}')
+                command()
+                spin(.5)
+                fresh()
+                control_ready()
+                stopped = samples['odom'].twist.twist
+                if abs(stopped.linear.x) > .01 or abs(stopped.angular.z) > .01:
+                    raise RuntimeError('parking stop not confirmed')
+                x, y, yaw = pose()
+                phase = 'ARRIVED'
+                publish_state()
+                node.get_logger().info(f'{bay} ARRIVED: world=({x:.3f}, {y:.3f}), yaw={yaw:.3f}')
                 return
             if route.state in ('error', 'stopped'):
                 raise RuntimeError(f'H1 return stopped: {route.reason}')
             spin(.05)
         raise RuntimeError('H1 line return timed out')
     except KeyboardInterrupt:
+        phase = 'CANCELED'
+        publish_state()
         node.get_logger().warning('H1 return canceled')
         return 130
     except RuntimeError as exc:
+        phase = 'FAULT'
+        publish_state()
         node.get_logger().error(str(exc))
         return 1
     finally:

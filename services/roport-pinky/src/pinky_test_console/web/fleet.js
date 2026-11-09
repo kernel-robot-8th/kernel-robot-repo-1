@@ -212,6 +212,12 @@ function render(snap) {
     cell(tr, r.name);
     cell(tr, r.home || "-");
     cell(tr, r.status ? (r.status.ok ? "OK" : "꺼짐") : "-");
+    const b = r.status && r.status.ok && r.status.route ? r.status.route.battery : null;
+    const bc = cell(tr, b && b.percent !== null && b.percent !== undefined
+      ? `${Math.round(b.percent)}%${b.stale ? " (오래됨)" : ""}` : "-");
+    if (b && b.percent !== null && b.percent !== undefined) {
+      bc.classList.add(b.stale ? "batt-stale" : b.percent < 20 ? "batt-low" : b.percent < 40 ? "batt-mid" : "batt-ok");
+    }
     cell(tr, consoleMode(r));
     cell(tr, st ? st.state : "-");
     cell(tr, st && st.leg ? `${st.leg.from}→${st.leg.to}` : "-");

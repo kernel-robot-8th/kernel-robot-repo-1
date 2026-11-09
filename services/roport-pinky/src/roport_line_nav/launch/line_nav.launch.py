@@ -15,6 +15,11 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 FLOAT_ARGS = {
     'base_speed': ('0.03', 'm/s line following'),
+    'approach_speed': ('0.03', 'm/s near nodes, pass/advance (capped by base_speed)'),
+    'approach_lead_cm': ('5.0', 'slow down this many cm before the expected node position'),
+    'kp': ('1.0', 'rad/s per line error (x speed/gain_ref_speed above gain_ref_speed)'),
+    'kd': ('0.05', 'line error rate gain'),
+    'gain_ref_speed': ('0.06', 'm/s; kp grows with speed only above this'),
     'max_linear': ('0.06', 'm/s cap (hard cap 0.15 in code)'),
     'max_angular': ('0.6', 'rad/s cap (hard cap 1.5 in code)'),
     'rotate_speed': ('0.4', 'rad/s in-place rotation'),

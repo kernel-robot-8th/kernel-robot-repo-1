@@ -137,6 +137,7 @@ def test_api_uses_operator_map_and_layout_without_db_or_path_disclosure(measured
         value = response.json()
         assert not value["example_map"]
         assert value["map"]["layout"]["graph_version"] == "fixture-lines-v1"
+        assert client.get("/api/robots").status_code == 404
         assert client.get("/api/snapshot").json()["source"] == "OFFLINE · 실행부 미연결"
 
 

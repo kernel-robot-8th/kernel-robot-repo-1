@@ -137,6 +137,10 @@ class FakeNode:
         self.calls.append(('route', cmd))
         return True
 
+    def route_return(self, goal=None, start=None):
+        self.calls.append(('return', goal, start))
+        return {'success': True, 'msg': 'P5(N16)로 복귀', 'route': ['N14', 'N16']}
+
     def ros_log_snapshot(self, after=0):
         rows = [{'seq': 1, 'level': 'INFO', 'node': 'line_nav', 'msg': 'hi'}]
         return {'entries': [r for r in rows if r['seq'] > after], 'last': 1}
@@ -559,3 +563,15 @@ def test_fleet_return_api(fleet_client, node):
     assert c.post('/api/fleet/return', headers=h, json={'name': 3}).status_code == 400
     assert c.post('/api/fleet/return', headers=h, json={'name': 'nobody'}).status_code == 400
     assert c.post('/api/fleet/return', headers=h, data='x').status_code == 400
+
+
+def test_route_return_endpoint():
+    node = FakeNode()
+    client = create_app(node, WEB_DIR).test_client()
+    res = client.post('/api/route/return', json={'start': 'N14'})
+    assert res.status_code == 200 and res.get_json()['success']
+    assert node.calls[-1] == ('return', None, 'N14')
+    assert client.post('/api/route/return', json={}).status_code == 200
+    assert node.calls[-1] == ('return', None, None)
+    assert client.post('/api/route/return', json={'start': 'x;y'}).status_code == 400
+    assert client.post('/api/route/return', json={'goal': 5}).status_code == 400
