@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import closing
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -290,6 +291,37 @@ def test_wrong_dummy_request_and_restart_are_fenced(control_memory):
     assert len(control.transport.sent) == 1
 
 
+@pytest.mark.parametrize("role", ["logistics", "smartcart"])
+@pytest.mark.parametrize("problem", ["stale", "restart"])
+def test_either_robot_loss_holds_two_robot_scenario(control_memory, role, problem):
+    control = control_memory
+    device = control.config["robots"][role]["robot_id"]
+    control.start()
+    control.poll(0)
+    if problem == "stale":
+        control.heard[device] -= 4
+    else:
+        cmd = next(c for c in control.pending_status.values() if c["target"] == device)
+        event = reply(
+            cmd,
+            "status.completed",
+            {
+                **control.state["statuses"][device],
+                "observed_at": datetime.now(UTC).isoformat(),
+                "phase_revision": 1,
+                "boot_id": "new-boot",
+            },
+        )
+        control.transport.incoming.put(delivery(event, "event"))
+    control.poll(0)
+    assert control.state["phase"] == "HOLD"
+    assert control.state["fault"] == (
+        "robot_status_timeout" if problem == "stale" else "robot_restarted"
+    )
+    assert control.state["completed"] == {}
+    assert sum(c["type"] == "route.requested" for _, c in control.transport.sent) == 1
+
+
 def status_reply(control, request):
     robot = control.config["robots"]["logistics"]
     return reply(
@@ -446,7 +478,18 @@ def test_wrong_event_type_holds_without_crashing(control_memory, kind):
 
 
 @pytest.mark.parametrize(
-    "change", ["node", "moving", "line_enabled", "boot", "stale", "wrong_step", "map"]
+    "change",
+    [
+        "node",
+        "moving",
+        "line_enabled",
+        "boot",
+        "stale",
+        "wrong_step",
+        "map",
+        "other_robot",
+        "binding",
+    ],
 )
 def test_bad_completion_cannot_advance(control_memory, pair, change):
     control = control_memory
@@ -472,6 +515,12 @@ def test_bad_completion_cannot_advance(control_memory, pair, change):
         event["sent_at"] = (datetime.now(UTC) - timedelta(seconds=10)).isoformat()
     elif change == "map":
         event["payload"]["map_version"] = "changed-map"
+    elif change == "other_robot":
+        other = control.config["robots"]["smartcart"]
+        event["source"] = other["robot_id"]
+        event["payload"]["binding_id"] = other["binding_id"]
+    elif change == "binding":
+        event["payload"]["binding_id"] = "other-binding"
     else:
         event["step_id"] = "older-step"
     with pytest.raises(ValueError):
@@ -828,3 +877,78 @@ def test_single_dummy_requires_same_safe_n11_stop(single_profile, tmp_path, chan
         assert control.state == state and control.transport.sent == []
     finally:
         journal.close()
+
+
+def test_fault_status_is_observed_and_first_hold_survives_shutdown(control_memory):
+    control = control_memory
+    control.poll(0)
+    request = next(
+        c for c in control.pending_status.values() if c["target"] == "pinky1"
+    )
+    event = status_reply(control, request)
+    event["payload"]["fault"] = "local_watchdog"
+    control.transport.incoming.put(delivery(event, "event"))
+    control.poll(0)
+    assert control.state["fault"] == "robot_fault"
+    assert control.state["statuses"]["pinky1"]["fault"] == "local_watchdog"
+    sent = len(control.transport.sent)
+    control.hold("operator_stopped")
+    control.transport.ready = False
+    control.poll(0)
+    assert control.state["fault"] == "robot_fault"
+    assert len(control.transport.sent) == sent
+
+
+def test_scope_is_persisted_and_cannot_change_on_resume(single_profile, tmp_path):
+    journal = Journal(tmp_path / "scope.json")
+    try:
+        TrialControl(single_profile, MemoryTransport(), journal, scope="line-only")
+        assert journal.data["scope"] == "line-only"
+        with pytest.raises(ValueError, match="scope changed"):
+            TrialControl(single_profile, MemoryTransport(), journal)
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("problem", ["node", "stale", "fault"])
+def test_smartcart_only_checks_one_robot_and_never_commands_logistics(
+    profile, tmp_path, problem
+):
+    with closing(Journal(tmp_path / "cart.json")) as journal:
+        transport = MemoryTransport()
+        control = TrialControl(profile, transport, journal, smartcart_only=True)
+        cart = profile["robots"]["smartcart"]
+        status = {
+            **FakePinky(profile, "smartcart").observe(),
+            "binding_id": cart["binding_id"],
+            "boot_id": "cart-boot",
+        }
+        journal.data["statuses"][cart["robot_id"]] = deepcopy(status)
+        control.heard[cart["robot_id"]] = time.monotonic()
+        control.poll(0)
+        if problem == "node":
+            journal.data["statuses"][cart["robot_id"]]["node_id"] = "N16"
+        elif problem == "stale":
+            control.heard[cart["robot_id"]] -= 4
+        else:
+            journal.data["statuses"][cart["robot_id"]]["fault"] = (
+                "drive_guard_unavailable"
+            )
+        with pytest.raises(ValueError):
+            control.start()
+        journal.data["statuses"][cart["robot_id"]] = status
+        control.heard[cart["robot_id"]] = time.monotonic()
+        control.start()
+        assert control.state["phase"] == "cart_to_delivery"
+        assert control.state["transfers"] == []
+        assert {cmd["target"] for _, cmd in transport.sent} == {cart["robot_id"]}
+        with pytest.raises(ValueError, match="role selection changed"):
+            TrialControl(profile, transport, journal)
+
+
+def test_smartcart_only_requires_two_role_config(single_profile, tmp_path):
+    with (
+        closing(Journal(tmp_path / "cart.json")) as journal,
+        pytest.raises(ValueError, match="two_pinky"),
+    ):
+        TrialControl(single_profile, MemoryTransport(), journal, smartcart_only=True)
