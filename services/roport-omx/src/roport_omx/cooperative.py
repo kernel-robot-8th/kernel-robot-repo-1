@@ -81,7 +81,10 @@ class Executor(Protocol):
         """
 
     def observe(self) -> dict:
-        """{"state": "running"|"finished"|"failed", "step": str, "error": str|None, "arms": ...}"""
+        """{"state": "running"|"finished"|"failed", "step": str, "error": str|None, "arms": ...}
+
+        A finished observation may name its completion "evidence" (default "arm_return_only").
+        """
 
 
 def _now() -> str:
@@ -308,7 +311,9 @@ class CooperativeHost:
                 "grasp_released": True,
                 "arms": arms,
                 "departure_ready": True,
-                "evidence": "arm_return_only",
+                "evidence": seen.get("evidence")
+                if isinstance(seen.get("evidence"), str)
+                else "arm_return_only",
             }
             return self._push(
                 record, self._event(record, "completed", "COMPLETE", payload)

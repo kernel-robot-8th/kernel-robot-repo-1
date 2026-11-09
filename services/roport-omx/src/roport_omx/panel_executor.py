@@ -5,6 +5,8 @@ a route table picks the trained model for each (operation, slot) because each sl
 policy; tasks without a route are rejected before anything moves. A start needs the panel's
 armed switch (turned on by a person on the panel screen) and is sent with "source": "mqtt".
 Completion facts come from /api/status last_result of the started run; unknown values stay None.
+From panel 3.9 a shelf alignment may follow the evaluation in a separate job: the run is judged
+only when last_result is final, and when alignment ran, arm return comes from its rest check.
 """
 
 import json
@@ -28,6 +30,38 @@ RESULT_GRACE_S = (
     20.0  # run gone from the job without a matching last_result → unknown result
 )
 MODELS_TTL_S = 30.0
+
+
+def _by_side(raw) -> dict[str, dict]:
+    """Panel arm entries ({"OMX 1": {"side": "left", ...}}) keyed by omx1/omx2."""
+    arms = {}
+    for arm in (raw if isinstance(raw, dict) else {}).values():
+        name = ARM_SIDES.get((arm or {}).get("side"))
+        if name in ARMS:
+            arms[name] = arm
+    return arms
+
+
+def _hold_code(result: dict) -> str:
+    """stage "hold" stays until a person acts: emergency stop, or release found no path back."""
+    align = result.get("align") if isinstance(result.get("align"), dict) else {}
+    if "비상 정지" in (align.get("stopped_by"), result.get("stopped_by")):
+        return "PANEL_EMERGENCY_STOP"
+    if align.get("released") is False:
+        return "PANEL_ALIGN_RELEASE_FAILED"
+    return "PANEL_HOLD"
+
+
+def _align_error(align: dict) -> str | None:
+    if align.get("ran") is not True:
+        return "PANEL_ALIGN_SKIPPED"
+    if align.get("stopped_by"):
+        if align["stopped_by"] == "비상 정지":
+            return "PANEL_EMERGENCY_STOP"
+        return "PANEL_ALIGN_STOPPED"
+    if align.get("ok") is not True:
+        return "PANEL_ALIGN_FAILED"
+    return None
 
 
 @dataclass(frozen=True)
@@ -159,6 +193,18 @@ class PanelExecutor:
             }
         result = status.get("last_result")
         if isinstance(result, dict) and result.get("repo_id") == self.repo_id:
+            self._missing_since = None
+            if result.get("stage") == "hold":  # waits for a person; report it now
+                return {"state": "failed", "error": _hold_code(result), "arms": {}}
+            if result.get("final", True) is not True:  # absent before panel 3.9
+                running = (
+                    job.get("running") and info.get("eval_repo_id") == self.repo_id
+                )
+                step = info.get("phase") if running else result.get("stage")
+                return {
+                    "state": "running",
+                    "step": step if isinstance(step, str) else None,
+                }
             return self._result(result)
         # Between the job ending and last_result appearing; give up only after a grace period.
         now = time.monotonic()
@@ -171,20 +217,38 @@ class PanelExecutor:
     def _result(result: dict) -> dict:
         exit_ok = result.get("exit_ok") is True
         safe = True if exit_ok else (False if result.get("exit_ok") is False else None)
+        align = result.get("align")
+        align = align if isinstance(align, dict) else None
+        if align is not None:
+            # Alignment ends at the evaluation start pose with grippers closed: at_home does not
+            # apply, so return is the rest check; gripper_open is still read at evaluation end.
+            rest = align.get("rest") if isinstance(align.get("rest"), dict) else {}
+            rest_arms = _by_side(rest.get("arms"))
         arms = {}
-        for arm in (result.get("arms") or {}).values():
-            name = ARM_SIDES.get((arm or {}).get("side"))
-            if name not in ARMS:
-                continue
+        for name, arm in _by_side(result.get("arms")).items():
             opened, home = arm.get("gripper_open"), arm.get("at_home")
+            if align is not None:
+                far = (rest_arms.get(name) or {}).get("far_joints")
+                known = rest.get("check") in {"ok", "far"} and isinstance(far, list)
+                home = rest.get("check") == "ok" and not far if known else None
             arms[name] = {
                 "connected": True if arm.get("joints") else None,
                 "grasping": (not opened) if isinstance(opened, bool) else None,
                 "returned": home if isinstance(home, bool) else None,
                 "safe": safe,
             }
-        if exit_ok:
+        if exit_ok and align is None:
             return {"state": "finished", "step": "home", "arms": arms}
+        if exit_ok:
+            error = _align_error(align)
+            if error is None:
+                return {
+                    "state": "finished",
+                    "step": "rest",
+                    "arms": arms,
+                    "evidence": "shelf_align",
+                }
+            return {"state": "failed", "error": error, "arms": arms}
         err = result.get("err") or {}
         code = err.get("code") or err.get("name")
         error = (

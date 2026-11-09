@@ -33,6 +33,31 @@ def arm(side, *, home=True, gripper_open=True):
     }
 
 
+def align(*, far=(), check="ok", **change):
+    """last_result.align of panel 3.9 after a successful shelf alignment."""
+    rest_arm = {"joints": {"shoulder_pan": 1.0}, "gripper_state": "closed"}
+    return {
+        "ran": True,
+        "ok": True,
+        "box": 16,
+        "slot": "2B",
+        "returncode": 0,
+        "stopped_by": None,
+        "shelf": "ok",
+        "align": "aligned",
+        "released": True,
+        "skipped": None,
+        "rest": {
+            "check": check,
+            "tolerance": 5.0,
+            "arms": {
+                "OMX 1": rest_arm | {"side": "left", "far_joints": list(far)},
+                "OMX 2": rest_arm | {"side": "right", "far_joints": []},
+            },
+        },
+    } | change
+
+
 class FakePanel:
     def __init__(self):
         self.status = {"armed": True, "job": {"running": False}, "last_result": None}
@@ -252,6 +277,93 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertEqual(events[1]["payload"]["error_code"], "EXECUTOR_START_FAILED")
         self.assertIn("카메라", events[1]["payload"]["detail"])
         self.assertIsNotNone(self.host.hold)
+
+    def test_alignment_is_awaited_and_judged_by_its_rest_check(self):
+        self.send(self.inbound())
+        self.host.poll()
+        # Policy left the arms away from home; alignment then ends at its rest pose.
+        arms = {"OMX 1": arm("left", home=False), "OMX 2": arm("right", home=False)}
+        self.panel.finish(arms=arms, align=align(), stage="align", final=False)
+        (waiting,) = self.host.poll()
+        self.assertEqual(waiting["payload"]["step"], "align")
+        repo = self.panel.status["last_result"]["repo_id"]
+        self.panel.status["job"] = {
+            "running": True,
+            "kind": "align",
+            "info": {"eval_repo_id": repo, "phase": "선반 확인 중"},
+        }
+        (aligning,) = self.host.poll()
+        self.assertEqual(aligning["payload"]["step"], "선반 확인 중")
+        self.panel.status["job"] = {"running": False}
+        self.panel.status["last_result"] |= {"stage": "done", "final": True}
+        (done,) = self.host.poll()
+        p = done["payload"]
+        self.assertEqual(done["type"], "shelf_inbound.completed")
+        self.assertEqual(p["evidence"], "shelf_align")
+        self.assertIs(p["arms"]["omx1"]["returned"], True)
+
+    def test_alignment_failures(self):
+        stopped = {"ok": False, "returncode": 2, "shelf": None, "align": None}
+        cases = [
+            (
+                "PANEL_ERR_CODE_7",
+                {
+                    "exit_ok": False,
+                    "err": {"code": "err_code_7"},
+                    "align": align(ran=False, ok=False, skipped="평가 오류", rest=None),
+                },
+            ),
+            ("PANEL_ALIGN_SKIPPED", {"align": align(ran=False, ok=False, rest=None)}),
+            (
+                "PANEL_ALIGN_STOPPED",
+                {"align": align(stopped_by="즉시 중단", **stopped)},
+            ),
+            (
+                "PANEL_EMERGENCY_STOP",
+                {"align": align(stopped_by="비상 정지", **stopped)},
+            ),
+            ("PANEL_ALIGN_FAILED", {"align": align(ok=False, shelf="not_found")}),
+            ("ARM_NOT_RETURNED", {"align": align(far=["elbow_flex"], check="far")}),
+            ("ARM_NOT_RETURNED", {"align": align(check="unknown")}),
+            (
+                "ARM_NOT_RETURNED",
+                {
+                    "arms": {
+                        "OMX 1": arm("left", gripper_open=False),
+                        "OMX 2": arm("right"),
+                    },
+                    "align": align(),
+                },
+            ),
+        ]
+        for code, change in cases:
+            with self.subTest(code=code, change=change):
+                self.host.clear_hold()
+                self.send(self.inbound())
+                self.panel.finish(stage="done", final=True, **change)
+                events = self.host.poll()
+                self.assertEqual(events[-1]["type"], "shelf_inbound.failed")
+                self.assertEqual(events[-1]["payload"]["error_code"], code)
+                self.assertIsNotNone(self.host.hold)
+
+    def test_hold_waiting_for_a_person_fails_at_once(self):
+        stopped = {"ok": False, "returncode": 2, "released": None, "rest": None}
+        cases = [
+            ("PANEL_EMERGENCY_STOP", align(stopped_by="비상 정지", **stopped)),
+            (
+                "PANEL_ALIGN_RELEASE_FAILED",
+                align(stopped_by="즉시 중단", **stopped | {"released": False}),
+            ),
+            ("PANEL_HOLD", align(**stopped)),
+        ]
+        for code, change in cases:
+            with self.subTest(code):
+                self.host.clear_hold()
+                self.send(self.inbound())
+                self.panel.finish(align=change, stage="hold", final=False)
+                (failed,) = self.host.poll()
+                self.assertEqual(failed["payload"]["error_code"], code)
+                self.assertIsNotNone(self.host.hold)
 
     def test_lost_result_becomes_unavailable_after_grace(self):
         self.send(self.inbound())
