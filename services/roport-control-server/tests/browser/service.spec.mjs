@@ -25,7 +25,7 @@ test('service: inbound then outbound through the same MQTT owner and PR45 Host',
       await page.locator('#service-apply').click();
       await expect(page.locator('#service-feedback')).toContainText('서비스 요청 접수');
       await expect(page.locator('[data-action="start"]')).toBeEnabled();
-      await expect(page.locator('#scenario-fields')).toBeDisabled();
+      await expect(page.locator('#scenario-fields')).toHaveJSProperty('disabled', true);
       await page.locator('[data-action="start"]').click();
       if (operation === 'inbound') {
         await expect(page.locator('#trial-phase')).toHaveText('창고 상차 완료 대기');

@@ -288,6 +288,6 @@ test('hardware UI blocks key entry over remote HTTP', async ({ page, baseURL }) 
   await expect(page.locator('[data-action="start"]')).toBeDisabled();
   await expect(page.locator('#scenario-fields')).toHaveJSProperty('disabled', true);
   await expect(page.locator('#scenario-fields input').first()).toBeDisabled();
-  await expect(page.locator('#service-fields')).toBeDisabled();
+  await expect(page.locator('#service-fields')).toHaveJSProperty('disabled', true);
   expect(errors).toEqual([]);
 });
