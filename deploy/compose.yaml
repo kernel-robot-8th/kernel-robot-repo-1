@@ -1,0 +1,26 @@
+# 팀 Wi-Fi(LAN) 전용 배포. 포트는 LAN_IP에만 게시하며 0.0.0.0·인터넷에는 열지 않는다.
+# 서버에 인증이 아직 없으므로 인터넷 공개 금지. 사용법은 deploy/README.md.
+x-hardened: &hardened
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  control:
+    <<: *hardened
+    build: ../services/roport-control-server
+    ports: ["${LAN_IP:?deploy/.env에 LAN_IP를 설정하세요}:${CONTROL_PORT:-8000}:8000"]
+  ai:
+    <<: *hardened
+    build: ../services/roport-ai-server
+    ports: ["${LAN_IP:?deploy/.env에 LAN_IP를 설정하세요}:${AI_PORT:-8001}:8000"]
+  service:
+    <<: *hardened
+    build: ../services/roport-service-server
+    ports: ["${LAN_IP:?deploy/.env에 LAN_IP를 설정하세요}:${SERVICE_PORT:-8080}:8080"]
+  web:
+    <<: *hardened
+    build: ../services/roport-web
+    ports:
+      - "${LAN_IP:?deploy/.env에 LAN_IP를 설정하세요}:${WEB_SERVICE_PORT:-8090}:8080"
+      - "${LAN_IP:?deploy/.env에 LAN_IP를 설정하세요}:${WEB_ADMIN_PORT:-8091}:8081"

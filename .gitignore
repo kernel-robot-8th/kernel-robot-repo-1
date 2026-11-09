@@ -254,3 +254,4 @@ raw-data/
 *.safetensors
 *.onnx
 gitleaks-report.*
+deploy/.env
