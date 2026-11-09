@@ -4,7 +4,7 @@ RO:PORT · GATE CREW — 회원·주문·예약·수령 처리 API
 
 ## 기술 스택
 
-Java 21 / Spring Boot 4.1.2 / Maven. 업무 데이터는 PostgreSQL 기준이며 DB 연결·마이그레이션·인증은 후속 구현입니다.
+Java 21 / Spring Boot 4.1.2 / Gradle(wrapper). 업무 데이터는 PostgreSQL 기준이며 DB 연결·마이그레이션·인증은 후속 구현입니다.
 
 ## 현재 범위
 
@@ -25,11 +25,11 @@ PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기�
 
 ## 개발 방법
 
-Java 21과 Maven 3.9 이상을 사용합니다.
+Java 21을 사용하며 Gradle은 저장소의 wrapper(`./gradlew`)로 실행합니다.
 
 ```bash
-mvn verify
-mvn spring-boot:run
+./gradlew build
+./gradlew bootRun
 ```
 
 상태 확인: `http://127.0.0.1:8080/actuator/health`. 현재 업무 API·인증·DB는 없습니다.

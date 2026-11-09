@@ -15,6 +15,9 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>roport_pinky_line</exec_depend>
+  <!-- status_indicator: set_led/set_lamp 서비스 타입. LCD 는 실행 시 pinky_emotion(로봇)을 불러옴 -->
+  <exec_depend>pinky_interfaces</exec_depend>
+  <exec_depend>python3-pil</exec_depend>
   <!-- 노드 그래프는 roport_gz_world/layout/roport_airport.yaml 을 읽는다(layout_file 로 바꿀 수 있음).
        roport_gz_world 는 Gazebo 실행 의존이 있어 의존으로 적지 않는다. pinky_sensor_adc 도 같은 이유 -->
   <test_depend>python3-pytest</test_depend>

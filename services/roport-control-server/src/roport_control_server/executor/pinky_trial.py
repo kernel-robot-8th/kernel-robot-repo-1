@@ -1,17 +1,25 @@
 """One trial owner: warehouse cycle, dummy transfers, smartcart and Nav2.
 
-Run with --config FILE --journal FILE. Nothing moves until stdin 'start'.
-This isolated CLI does not register real robots in the development web registry.
+Run with --config FILE --journal FILE and optional --socket for the web UI.
+Nothing moves until an explicit start; the journal is isolated from operational storage.
 """
 
 import argparse
+import fcntl
+import hashlib
 import itertools
 import json
 import math
+import os
 import selectors
+import signal
+import socket
 import sys
+from contextlib import ExitStack
 from copy import deepcopy
 from datetime import UTC, datetime
+from ipaddress import ip_address
+from pathlib import Path
 from queue import Empty
 from time import monotonic
 from uuid import uuid4
@@ -28,6 +36,15 @@ from roport_control_server.adapters.mqtt.trial_wire import (
     reply,
     validate_trial,
 )
+from roport_control_server.executor.plans import (
+    MOTION,
+    delivery_plan,
+    legacy_plan,
+    shortest_route,
+    stop_nodes,
+    validate_plan,
+)
+from roport_control_server.executor.trial_socket import TrialSocket
 
 ROUTES = (
     "to_loading",
@@ -36,20 +53,9 @@ ROUTES = (
     "cart_to_delivery",
     "cart_to_switch",
 )
-WAITS = {
-    "to_loading": "WAIT_LOAD",
-    "to_delivery": "WAIT_INBOUND",
-    "return_warehouse": "WAIT_REQUEST",
-    "cart_to_delivery": "WAIT_CART_LOAD",
-}
-DUMMIES = {
-    "WAIT_LOAD": "to_delivery",
-    "WAIT_INBOUND": "return_warehouse",
-    "WAIT_CART_LOAD": "cart_to_switch",
-}
 
 
-def validate_config(config):
+def validate_config(config, *, require_field_verification=True):
     if config["profile"] != PROFILE or config["mode"] not in {"simulation", "hardware"}:
         raise ValueError("trial profile/mode required")
     scenario = config.get("scenario", "two_pinky")
@@ -67,6 +73,17 @@ def validate_config(config):
     for r in robots.values():
         if r["robot_id"] not in {"pinky1", "pinky2", "pinky3"}:
             raise ValueError("unknown Pinky slot")
+        command(
+            site=config["site_id"],
+            control=config["control_id"],
+            robot=r["robot_id"],
+            task="validation",
+            step="status",
+            kind="status",
+            payload={"binding_id": r["binding_id"]},
+        )
+    if not isinstance(config["package_id"], str) or not config["package_id"].strip():
+        raise ValueError("trial package_id required")
     nodes = config["nodes"]
     for node, links in nodes.items():
         if any(
@@ -137,23 +154,59 @@ def validate_config(config):
         or not 1 <= config["command_timeout_s"] <= 600
     ):
         raise ValueError("command timeout must be 1..600 seconds")
-    if config["mode"] == "hardware" and config.get("field_verified") is not True:
+    if (
+        require_field_verification
+        and config["mode"] == "hardware"
+        and config.get("field_verified") is not True
+    ):
         raise ValueError(
             "verify starts, manoeuvres, goal and local watchdog before hardware"
         )
 
 
 class TrialControl:
-    def __init__(self, config, transport, journal):
+    def __init__(
+        self, config, transport, journal, *, scope="nav2", smartcart_only=False
+    ):
+        if scope not in {"line-only", "nav2"}:
+            raise ValueError("unknown trial scope")
+        if journal.data and journal.data.get("scope", "nav2") != scope:
+            raise ValueError("journal scope changed; use a new trial journal")
+        if smartcart_only and config.get("scenario") != "two_pinky":
+            raise ValueError("smartcart-only requires a two_pinky configuration")
+        if journal.data and journal.data.get("smartcart_only", False) != smartcart_only:
+            raise ValueError("journal role selection changed; use a new trial journal")
+        self.scope = scope
         validate_config(config)
         self.config, self.transport, self.journal = deepcopy(config), transport, journal
         self.single_robot = config.get("scenario") == "single_pinky"
+        self.smartcart_only = smartcart_only
+        self.robots = {
+            role: robot
+            for role, robot in self.config["robots"].items()
+            if not smartcart_only or role == "smartcart"
+        }
+        self.allowed_robots = deepcopy(self.robots)
+        self.plan = validate_plan(
+            config,
+            journal.data.get("plan") or legacy_plan(config, scope, smartcart_only),
+            allowed_roles=self.allowed_robots,
+        )
+        self.robots = self._plan_robots(self.plan)
+        self.start_step = self.plan["steps"][0]["id"]
         if journal.data and journal.data.get("config") != config:
             raise ValueError("journal configuration changed; reconcile old trial first")
         if not journal.data:
             journal.save(
                 {
                     "config": config,
+                    "plan": self.plan,
+                    "plan_index": 0,
+                    "custom_plan": False,
+                    "plan_revision": str(uuid4()),
+                    "plan_requests": {},
+                    "scope": scope,
+                    "smartcart_only": smartcart_only,
                     "task_id": str(uuid4()),
                     "phase": "READY",
                     "active": None,
@@ -177,20 +230,128 @@ class TrialControl:
     def state(self):
         return self.journal.data
 
+    def _plan_robots(self, plan):
+        roles = {s["role"] for s in plan["steps"]}
+        return {r: deepcopy(v) for r, v in self.allowed_robots.items() if r in roles}
+
     def hold(self, reason):
+        if self.state["phase"] in {"HOLD", "COMPLETE"}:
+            return  # Preserve the first failure or completed result during shutdown.
         state = deepcopy(self.state)
         state.update(phase="HOLD", fault=reason)
         self.journal.save(state)
         # Stop renewing the active robot's lease. Its local controller must stop.
 
+    def _step(self, step=None):
+        if step is None:
+            return self.plan["steps"][self.state.get("plan_index", 0)]
+        return next(s for s in self.plan["steps"] if s["id"] == step)
+
     def _robot(self, step):
-        if self.single_robot:
-            return self.config["robots"]["logistics"]
-        return self.config["robots"][
-            "smartcart"
-            if step.startswith("cart_") or step in {"mode_switch", "navigate"}
-            else "logistics"
-        ]
+        return self.robots[self._step(step)["role"]]
+
+    def saved_plans(self):
+        path = self.journal.path.parent / "scenario-plans.json"
+        if not path.exists():
+            return []
+        with path.open() as file:
+            if path.stat().st_size > 262144:
+                raise ValueError("scenario library too large")
+            data = json.load(file)
+        return data.get("plans", [])
+
+    def save_plan(self, plan):
+        # Journal provides the same exclusive lock, fsync and atomic replacement as runs.
+        library = Journal(self.journal.path.parent / "scenario-plans.json")
+        try:
+            plans = library.data.get("plans", [])
+            plans = [p for p in plans if p["name"] != plan["name"]]
+            if len(plans) >= 16:
+                raise ValueError("scenario library limit: 16 plans")
+            library.save({"plans": [*plans, plan]})
+        finally:
+            library.close()
+
+    def validate_plan(self, plan):
+        plan = validate_plan(self.config, plan, allowed_roles=self.allowed_robots)
+        if self.scope == "line-only" and any(
+            s["kind"] in {"mode_switch", "navigate"} for s in plan["steps"]
+        ):
+            raise ValueError(
+                "line-only owner cannot execute Nav2; restart with --scope nav2"
+            )
+        return plan
+
+    def configure(self, plan, field_confirmed=False, request=None):
+        if self.state["phase"] not in {"READY", "COMPLETE"}:
+            raise ValueError(
+                "plan is frozen after start or HOLD; reconcile before restarting"
+            )
+        plan = self.validate_plan(plan)
+        if self.config["mode"] == "hardware" and field_confirmed is not True:
+            raise ValueError(
+                "confirm this plan's starts, headings, workspace and watchdog"
+            )
+        state = deepcopy(self.state)
+        if request:
+            previous = state.setdefault("plan_requests", {}).get(request["request_id"])
+            if previous is not None:
+                if previous != request or self.state.get("plan") != plan:
+                    raise ValueError("conflicting request_id")
+                return
+            if len(state["plan_requests"]) >= 32:
+                raise ValueError("request history full; use a new journal")
+            state["plan_requests"][request["request_id"]] = deepcopy(request)
+        if state["phase"] == "COMPLETE":
+            for robot in self.robots.values():
+                self._status(robot)
+            archive = Journal(
+                self.journal.path.parent / ("run-" + state["task_id"] + ".json")
+            )
+            try:
+                archive.save(state)
+            finally:
+                archive.close()
+            state.update(
+                task_id=str(uuid4()),
+                phase="READY",
+                active=None,
+                completed={},
+                events={},
+                transfers=[],
+                gate=None,
+                request=None,
+                fault=None,
+            )
+            self.pending_status.clear()
+        state.update(
+            plan=plan,
+            plan_index=0,
+            custom_plan=True,
+            plan_revision=str(uuid4()),
+            field_confirmation={
+                "confirmed": field_confirmed is True,
+                "at": datetime.now(UTC).isoformat(),
+            },
+        )
+        self.journal.save(state)
+        self.plan = plan
+        self.robots = self._plan_robots(plan)
+        self.pending_status.clear()
+        self.last_poll = 0.0
+        self.start_step = plan["steps"][0]["id"]
+
+    def plan_delivery(self, request):
+        statuses = {r["robot_id"]: self._status(r) for r in self.robots.values()}
+        config = {**self.config, "robots": self.robots}
+        return delivery_plan(config, request, statuses)
+
+    def find_route(self, start, goal):
+        if goal not in stop_nodes(self.config):
+            raise ValueError(
+                "goal must be a stop-bar node; intersections are via nodes only"
+            )
+        return shortest_route(self.config["nodes"], start, goal)
 
     def _status(self, robot):
         device = robot["robot_id"]
@@ -205,26 +366,41 @@ class TrialControl:
             raise ValueError("robot is not safely waiting")
         return status
 
-    def _send(self, step):
-        robot = self._robot(step)
+    def _step_status(self, step):
+        robot = self._robot(step["id"])
         status = self._status(robot)
-        if step in ROUTES:
-            kind, payload = "route", self.config["routes"][step]
-            if status["node_id"] != payload["start_node"] or status["mode"] != "line":
+        kind, p = step["kind"], step["payload"]
+        if kind == "route":
+            if status["node_id"] != p["start_node"] or status["mode"] != "line":
                 raise ValueError("unexpected route start")
-        elif step == "mode_switch":
-            kind, payload = (
-                "mode_switch",
-                {
-                    "node_id": "N12",
-                    "from_mode": "line",
-                    "to_mode": "nav2",
-                    "map_id": self.config["map_id"],
-                    "map_version": self.config["map_version"],
-                },
-            )
-        else:
-            kind, payload = "navigate", self.config["nav_goal"]
+            angle = status["heading_rad"] - p["start_heading_rad"]
+            if abs(math.atan2(math.sin(angle), math.cos(angle))) > 0.35:
+                raise ValueError("route start heading mismatch")
+            for other in self.robots.values():
+                if other == robot:
+                    continue
+                node = self._status(other)["node_id"]
+                if node not in self.config["nodes"]:
+                    raise ValueError("other trial robot position unknown")
+                if node in p["route"]:
+                    raise ValueError("route occupied by another trial robot")
+        elif kind in {"gate", "request", "mode_switch"}:
+            if status["node_id"] != p["node_id"] or status["mode"] != "line":
+                raise ValueError("step requires its configured line stop")
+        elif (
+            status["mode"] != "nav2"
+            or not status["nav2_ready"]
+            or not status["localization_ready"]
+            or status["drive_owner"] != "nav2"
+        ):
+            raise ValueError("nav2_not_ready")
+        return status
+
+    def _send(self, step):
+        definition = self._step(step)
+        robot = self._robot(step)
+        status = self._step_status(definition)
+        kind, payload = definition["kind"], definition["payload"]
         cmd = command(
             site=self.config["site_id"],
             control=self.config["control_id"],
@@ -246,23 +422,73 @@ class TrialControl:
             topic(self.config["site_id"], "robot", robot["robot_id"], "cmd"), cmd
         )
 
-    def start(self):
+    def start_error(self):
         if self.state["phase"] != "READY":
-            raise ValueError("trial already started")
-        for robot in self.config["robots"].values():
+            return "trial already started"
+        if not self.transport.ready:
+            return "MQTT subscriptions not ready"
+        try:
+            for role, robot in self.robots.items():
+                self._status(robot)
+                first = next((s for s in self.plan["steps"] if s["role"] == role), None)
+                if first is not None:
+                    self._step_status(first)
+        except ValueError as exc:
+            return str(exc)
+        return None
+
+    def _enter_step(self, index, arrival=None):
+        state = deepcopy(self.state)
+        state.update(plan_index=index, active=None, gate=None)
+        if index == len(self.plan["steps"]):
+            state["phase"] = "COMPLETE"
+            self.journal.save(state)
+            return
+        step = self.plan["steps"][index]
+        self._step_status(step)
+        state["phase"] = step["id"]
+        if step["kind"] == "gate":
+            state["gate"] = {
+                **step["payload"],
+                "task_id": state["task_id"],
+                "step_id": step["id"],
+                "stop_session_id": str(uuid4()),
+                "arrival_execution_id": arrival,
+                "robot_id": self._robot(step["id"])["robot_id"],
+            }
+        self.journal.save(state)
+        if step["kind"] in MOTION:
+            self._send(step["id"])
+
+    def start(self):
+        error = self.start_error()
+        if error:
+            raise ValueError(error)
+        self._enter_step(0)
+
+    def _gate_error(self, kind):
+        if self.state["phase"] in {"COMPLETE", "HOLD", "READY"}:
+            raise ValueError("no approval pending")
+        step = self._step()
+        if (
+            self.state["phase"] != step["id"]
+            or step["kind"] != kind
+            or (kind == "gate" and not self.state["gate"])
+        ):
+            raise ValueError("approval does not match current step")
+        for robot in self.robots.values():
             self._status(robot)
-        self._send("to_delivery" if self.single_robot else "to_loading")
+        self._step_status(step)
+        # Check the next departure BEFORE consuming an operator approval.
+        index = self.state.get("plan_index", 0) + 1
+        if index < len(self.plan["steps"]):
+            self._step_status(self.plan["steps"][index])
 
     def dummy(self, token):
-        phase = self.state["phase"]
         gate = self.state["gate"]
-        if phase not in DUMMIES or not gate or token != gate["stop_session_id"]:
+        if not gate or token != gate["stop_session_id"]:
             raise ValueError("dummy does not match current stop session")
-        status = self._status(self._robot(DUMMIES[phase]))
-        if self.single_robot and (
-            status["node_id"] != "N11" or status["mode"] != "line"
-        ):
-            raise ValueError("single Pinky dummy requires a stop at N11")
+        self._gate_error("gate")
         state = deepcopy(self.state)
         state["transfers"].append(
             {
@@ -272,32 +498,34 @@ class TrialControl:
                 "observed_at": datetime.now(UTC).isoformat(),
             }
         )
-        if self.single_robot and phase == "WAIT_INBOUND":
-            state["phase"] = "WAIT_CART_LOAD"
-            state["gate"] = {
-                **gate,
-                "step_id": "cart_load_assumed",
-                "arrival_execution_id": gate["stop_session_id"],
-                "stop_session_id": str(uuid4()),
-                "assumed_role": "smartcart",
-            }
-            self.journal.save(state)
-        else:
-            self.journal.save(state)
-            self._send(DUMMIES[phase])
+        self.journal.save(state)
+        self._enter_step(state.get("plan_index", 0) + 1, gate["stop_session_id"])
+
+    def request_error(self):
+        if not self.transport.ready:
+            return "MQTT subscriptions not ready"
+        try:
+            self._gate_error("request")
+        except (ValueError, IndexError) as exc:
+            return str(exc)
+        return None
 
     def request(self, items):
-        if self.state["phase"] != "WAIT_REQUEST" or items != [
-            {"package_id": self.config["package_id"], "quantity": 1}
-        ]:
+        error = self.request_error()
+        if error:
+            raise ValueError(error)
+        p = self._step()["payload"]
+        if (
+            items != [{"package_id": p["package_id"], "quantity": 1}]
+            or type(items[0]["quantity"]) is not int
+        ):
             raise ValueError(
                 "trial accepts its one stored package after logistics return"
             )
-        self._status(self.config["robots"]["smartcart"])
         state = deepcopy(self.state)
         state["request"] = {"request_id": str(uuid4()), "items": items}
         self.journal.save(state)
-        self._send("cart_to_delivery")
+        self._enter_step(state.get("plan_index", 0) + 1)
 
     def _ack(self, event):
         ack = reply(
@@ -323,7 +551,7 @@ class TrialControl:
         robot = next(
             (
                 r
-                for r in self.config["robots"].values()
+                for r in self.allowed_robots.values()
                 if r["robot_id"] == event["source"]
             ),
             None,
@@ -336,10 +564,20 @@ class TrialControl:
             != topic(self.config["site_id"], "robot", event["source"], "event")
             or event["target"] != self.config["control_id"]
             or event["site_id"] != self.config["site_id"]
-            or event["task_id"] != self.state["task_id"]
             or event["payload"].get("binding_id") != robot["binding_id"]
         ):
             raise ValueError("untrusted/unrelated trial event")
+        if event["task_id"] != self.state["task_id"]:
+            archive = self.journal.path.parent / ("run-" + event["task_id"] + ".json")
+            if archive.exists() and archive.stat().st_size <= 4 * 1024 * 1024:
+                old = json.loads(archive.read_text())
+                if old.get("events", {}).get(event["message_id"]) == event:
+                    self._ack(
+                        event
+                    )  # Release old robot outbox only for durably stored events.
+            return
+        if robot not in self.robots.values():
+            return  # Late replies from a deselected robot cannot affect this plan.
         if event["message_id"] in self.state["events"]:
             if self.state["events"][event["message_id"]] != event:
                 raise ValueError("conflicting event ID")
@@ -412,23 +650,11 @@ class TrialControl:
             state["completed"][step] = event
             state["active"] = None
             self.deadline = None
-            if step in WAITS:
-                state["phase"] = WAITS[step]
-                if state["phase"] in DUMMIES:
-                    state["gate"] = {
-                        "task_id": state["task_id"],
-                        "step_id": step,
-                        "stop_session_id": cmd["execution_id"],
-                        "node_id": p["node_id"],
-                        "robot_id": device,
-                        "package_id": self.config["package_id"],
-                        "quantity": 1,
-                    }
-            elif step == "navigate":
-                state["phase"] = "COMPLETE"
             self.journal.save(state)
-            if step in {"cart_to_switch", "mode_switch"}:
-                self._send("mode_switch" if step == "cart_to_switch" else "navigate")
+            try:
+                self._enter_step(state.get("plan_index", 0) + 1, cmd["execution_id"])
+            except ValueError:
+                self.hold("next_step_not_ready")
 
     def poll(self, timeout=0.1):
         try:
@@ -441,13 +667,10 @@ class TrialControl:
                 self.deadline = None
             if self.state["phase"] not in {"READY", "COMPLETE", "HOLD"} and any(
                 now - self.heard.get(r["robot_id"], -math.inf) > 3
-                for r in self.config["robots"].values()
+                for r in self.robots.values()
             ):
                 self.hold("robot_status_timeout")
-            if now - self.last_poll >= 1 and self.state["phase"] not in {
-                "HOLD",
-                "COMPLETE",
-            }:
+            if now - self.last_poll >= 1 and self.state["phase"] != "HOLD":
                 # A fresh response can arrive after the next 1 Hz request.
                 utc_now = datetime.now(UTC)
                 self.pending_status = {
@@ -455,7 +678,7 @@ class TrialControl:
                     for key, cmd in self.pending_status.items()
                     if timestamp(cmd["expires_at"]) > utc_now
                 }
-                for robot in self.config["robots"].values():
+                for robot in self.robots.values():
                     cmd = command(
                         site=self.config["site_id"],
                         control=self.config["control_id"],
@@ -490,34 +713,108 @@ class TrialControl:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
-    parser.add_argument("--journal", required=True)
+    parser.add_argument("--journal")
+    parser.add_argument(
+        "--check", action="store_true", help="static config check; no MQTT or journal"
+    )
     parser.add_argument("--hardware-authorized", action="store_true")
+    parser.add_argument(
+        "--smartcart-only",
+        action="store_true",
+        help="two_pinky config: only smartcart H1 to N11, dummy load, N12 and optional Nav2",
+    )
+    parser.add_argument(
+        "--scope",
+        choices=("line-only", "nav2"),
+        default="nav2",
+        help="line-only completes stopped at N12; nav2 also verifies the public goal",
+    )
+    parser.add_argument(
+        "--socket", help="Unix socket for the trial web UI; disables stdin"
+    )
     args = parser.parse_args()
     with open(args.config) as file:
         config = json.load(file)
-    validate_config(config)
+    validate_config(config, require_field_verification=not args.check)
+    if args.smartcart_only and config.get("scenario") != "two_pinky":
+        parser.error("--smartcart-only requires a two_pinky configuration")
     connection = mqtt_config(config["control_id"])
-    if config["mode"] == "hardware" and not args.hardware_authorized:
-        parser.error("hardware trial requires field checks and --hardware-authorized")
     if config["mode"] == "simulation" and connection.host not in {
         "localhost",
         "127.0.0.1",
         "::1",
     }:
         parser.error("simulation profile is loopback-only")
+    if args.check:
+        print(
+            f"Static config valid: {config['scenario']} / {args.scope}; "
+            f"field_verified={config.get('field_verified')}; "
+            f"smartcart_only={args.smartcart_only}; "
+            "broker, driver and physical readiness NOT checked"
+        )
+        return
+    if not args.journal:
+        parser.error("--journal required for execution")
+    if config["mode"] == "hardware" and not args.hardware_authorized:
+        parser.error("hardware trial requires field checks and --hardware-authorized")
     journal = Journal(args.journal)
     transport = MqttTransport(
         connection,
         [
             topic(config["site_id"], "robot", r["robot_id"], "event")
-            for r in config["robots"].values()
+            for role, r in config["robots"].items()
+            if not args.smartcart_only or role == "smartcart"
         ],
     )
-    control = TrialControl(config, transport, journal)
+    control = TrialControl(
+        config, transport, journal, scope=args.scope, smartcart_only=args.smartcart_only
+    )
     selector = selectors.DefaultSelector()
-    selector.register(sys.stdin, selectors.EVENT_READ)
+    if not args.socket:
+        selector.register(sys.stdin, selectors.EVENT_READ)
+    web = None
+    owner = ExitStack()
+    started = False
+
+    def terminate(_signal, _frame):
+        raise KeyboardInterrupt
+
+    previous_sigterm = signal.signal(signal.SIGTERM, terminate)
     try:
+        # Different journals must not let CLI and web owners evict each other in MQTT.
+        lock_dir = (
+            Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+            / "roport/trial-owners"
+        )
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        addresses = {connection.host}
+        for *_, address in socket.getaddrinfo(
+            connection.host, connection.port, type=socket.SOCK_STREAM
+        ):
+            ip = ip_address(address[0])
+            ip = getattr(ip, "ipv4_mapped", None) or ip
+            addresses.add(str(ip))
+            if ip.is_loopback:
+                addresses.update({"localhost", "127.0.0.1", "::1"})
+        # Lock each resolved endpoint so aliases cannot create a second owner.
+        for address in sorted(addresses):
+            identity = hashlib.sha256(
+                json.dumps([address, connection.port, config["control_id"]]).encode()
+            ).hexdigest()
+            lock = owner.enter_context((lock_dir / (identity + ".lock")).open("a"))
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.socket:
+            web = TrialSocket(args.socket, control)
         transport.start()
+        started = True
+        if web:
+            print(
+                "Trial web owner ready; waiting for explicit operator commands.",
+                flush=True,
+            )
+            while True:
+                control.poll(0.05)
+                web.poll()
         print(
             "Inputs: start | dummy <stop_session_id> | request <package_id> | status | stop",
             flush=True,
@@ -562,11 +859,17 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        if control.state["phase"] != "COMPLETE":
-            control.hold("operator_stopped")
-        transport.stop()
-        journal.close()
-        selector.close()
+        try:
+            if started and control.state["phase"] != "COMPLETE":
+                control.hold("operator_stopped")
+        finally:
+            transport.stop()
+            if web:
+                web.close()
+            owner.close()
+            journal.close()
+            selector.close()
+            signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

@@ -24,8 +24,8 @@ CONTROLLER_OVERRIDES = {
 
 def _nodes(context):
     line_speed = float(LaunchConfiguration('line_speed').perform(context))
-    if not math.isfinite(line_speed) or not .02 <= line_speed <= .06:
-        raise ValueError('line_speed must be finite and in [0.02, 0.06] m/s')
+    if not math.isfinite(line_speed) or not .02 <= line_speed <= .08:
+        raise ValueError('line_speed must be finite and in [0.02, 0.08] m/s')
     max_linear = float(LaunchConfiguration('max_linear').perform(context))
     # Retain the existing Nav2 trial speed range.
     if not math.isfinite(max_linear) or not .02 <= max_linear <= .15:

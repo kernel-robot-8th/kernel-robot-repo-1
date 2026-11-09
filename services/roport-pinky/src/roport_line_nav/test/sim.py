@@ -5,9 +5,13 @@ Gazebo 에는 IR 센서가 없어서 경로 주행 상태 기계를 이 모델�
 테이프 = 연결 구간(폭 line_width) + 정차 가로선(bar_length x line_width).
 IR 값 = 카펫 - 덮인 비율 * (카펫 - 테이프), 센서 자국은 반지름 0.4 cm 9점.
 명령이 None 이면 마지막 명령을 유지한다(pinky_bringup 에 cmd_vel 타임아웃이 없는 것과 같게).
+cmd_delay_s: 명령이 바퀴에 반영되기까지 걸리는 시간(구동 지연 흉내, 기본 0 = 바로 반영).
+  실로봇 d660 0.06 m/s 기록(2026-11-06)에서 전진 → 회전 전환 뒤 0.9 cm 더 간 것(0.03 m/s 는 0.5 cm)에 맞춰
+  0.15~0.2 s 로 시험한다. odom 은 실제 움직임을 그대로 따른다(odom 지연은 흉내 내지 않음).
 """
 
 import math
+from collections import deque
 
 from roport_pinky_line.line_sensor import Calibration, LineSensor
 
@@ -39,8 +43,11 @@ def tape_rects(graph, skip=()):
 
 class Sim:
     def __init__(self, graph, cal=D660, ir_ahead=3.0, ir_spacing=2.0, skip=(), dt=0.05,
-                 tape_graph=None, odom_scale=1.0, odom_yaw_scale=1.0):
-        """tape_graph: 실제 테이프 위치(없으면 graph). odom_*_scale: 엔코더 오차 흉내."""
+                 tape_graph=None, odom_scale=1.0, odom_yaw_scale=1.0, cmd_delay_s=0.0):
+        """tape_graph: 실제 테이프 위치(없으면 graph). odom_*_scale: 엔코더 오차 흉내.
+        cmd_delay_s: 구동 지연(s). 0 이면 받은 명령을 같은 tick 에 반영(기존 동작)."""
+        if cmd_delay_s < 0:
+            raise ValueError('cmd_delay_s must be >= 0')
         self.graph = graph
         self.cal = cal
         self.rects = tape_rects(tape_graph or graph, skip)
@@ -53,7 +60,9 @@ class Sim:
         self.sensor = LineSensor(cal)
         self.x = self.y = self.yaw = 0.0
         self.t = 0.0
-        self.cmd = (0.0, 0.0)
+        self.cmd = (0.0, 0.0)          # 지금 바퀴에 걸린 명령
+        self.cmd_delay_s = cmd_delay_s
+        self._pending = deque()         # (반영 시각, 명령)
         self.trace = []
 
     def place(self, node_id, heading, sensor_offset=0.0):
@@ -94,7 +103,12 @@ class Sim:
         reading = self.sensor.update(self.raw())
         cmd = executor.step(reading, self.pose(), self.t)
         if cmd is not None:
-            self.cmd = (cmd.linear, cmd.angular)
+            if self.cmd_delay_s <= 0:
+                self.cmd = (cmd.linear, cmd.angular)
+            else:
+                self._pending.append((self.t + self.cmd_delay_s, (cmd.linear, cmd.angular)))
+        while self._pending and self._pending[0][0] <= self.t + 1e-9:
+            self.cmd = self._pending.popleft()[1]
         v, w = self.cmd
         v_cm = v * 100.0
         mid = self.yaw + w * self.dt / 2

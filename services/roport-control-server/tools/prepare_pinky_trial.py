@@ -120,7 +120,7 @@ def prepare(map_path, layout_path, *, simulation=False, single_robot=False):
             "start_maneuver": "none" if simulation else "REPLACE_ME",
             "route": list(path),
             "goal": {"node_id": path[-1], "location_id": None, "on_arrival": "hold"},
-            "speed_limit_mps": 0.1,
+            "speed_limit_mps": 0.06,
         }
         for name, path in paths.items()
     }
@@ -132,19 +132,34 @@ def prepare(map_path, layout_path, *, simulation=False, single_robot=False):
                 "candidate route does not match current map; edit PATHS first"
             )
     if single_robot:
-        # Pinky team confirmed the N16 start pose and tested line speed.
+        # Pinky team confirmed the N16 start pose; control selects the speed cap.
         routes["to_delivery"].update(
             start_heading_rad=-1.5690,
             start_maneuver="none",
-            speed_limit_mps=0.03,
+            speed_limit_mps=0.06,
         )
     frame = layout["frame"]
     yaw = math.radians(frame["yaw_deg"])
     if single_robot:
         # N11 loading faces east after the driver's arrival turn; validate on site.
         routes["cart_to_switch"].update(
-            start_heading_rad=yaw, start_maneuver="none", speed_limit_mps=0.03
+            start_heading_rad=yaw, start_maneuver="none", speed_limit_mps=0.06
         )
+    else:
+        # N01/N11 report the loading pose BEFORE load_done's second turn.
+        headings = {
+            "to_loading": -1.5690,
+            "to_delivery": yaw,
+            "return_warehouse": yaw,
+            "cart_to_delivery": math.pi / 2 + yaw,
+            "cart_to_switch": yaw,
+        }
+        for step, route in routes.items():
+            route.update(
+                start_heading_rad=headings[step],
+                start_maneuver="none",
+                speed_limit_mps=0.06,
+            )
     # Both trials use this v14 candidate; field verification remains mandatory.
     x, y = 4.10, 1.90
     goal_pose = {
@@ -212,7 +227,7 @@ def prepare_bundle(output, map_path, layout_path):
         (folder / "broker.env.example").write_text(
             "# Copy to broker.env and fill it once; use matching broker settings on all PCs.\n"
             f"export ROPORT_MQTT_HOST={'127.0.0.1' if simulation else 'REPLACE_WITH_BROKER_LAN_HOST'}\n"
-            f"export ROPORT_MQTT_PORT={'18883' if simulation else '1883'}\n"
+            "export ROPORT_MQTT_PORT=18883\n"
             "export ROPORT_MQTT_TLS=0\n"
             "# Credentials stay outside this bundle; password authentication requires TLS.\n"
         )
@@ -263,7 +278,7 @@ def main():
     print(
         "Created simulation profile"
         if args.simulation
-        else "Created incomplete hardware template: verify and fill headings, manoeuvres, goal pose and field_verified"
+        else "Created hardware candidates: field_verified=false; verify headings, manoeuvres, goal and watchdog on site"
     )
 
 

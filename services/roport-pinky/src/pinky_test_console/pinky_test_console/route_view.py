@@ -17,13 +17,20 @@ SPEED_CAPS = {'base_speed': 0.15, 'rotate_speed': 1.5}   # 형식 검사용(실�
 
 # 테스트 관제의 출발 위치(대기·충전 칸). 운영 위치 → 노드
 START_PLACES = ('P1', 'P2', 'P5', 'P6')
+# 로봇 화면 「복귀」 버튼의 목적지(2026-11-07 사용자: P5 기준)
+HOME_PLACE = 'P5'
 
 # Map 페이지(Confluence 9338886) 경로 예시. 화면의 빠른 선택용
 PRESETS = [
     {'name': '물류 대기 P5 → 창고 상차 P4', 'route': ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']},
+    {'name': 'P5 → P4 상차 → P5 왕복',
+     'route': ['N16', 'N14', 'N02', 'N10', 'N18', 'N01', 'N18', 'N10', 'N02', 'N14', 'N16']},
     {'name': 'P5 → P4 상차 → P7 상차 (한 번에)',
      'route': ['N16', 'N14', 'N02', 'N10', 'N18', 'N01', 'N18', 'N07', 'N23', 'N19', 'N11']},
     {'name': 'P5 → P7 바로 (P4 안 거침)', 'route': ['N16', 'N14', 'N15', 'N05', 'N07', 'N23', 'N19', 'N11']},
+    {'name': 'P5 → P7 상차 → P5 왕복',
+     'route': ['N16', 'N14', 'N15', 'N05', 'N07', 'N23', 'N19', 'N11',
+               'N19', 'N23', 'N07', 'N05', 'N15', 'N14', 'N16']},
     {'name': '창고 상차 P4 → 인도장 P7', 'route': ['N01', 'N18', 'N07', 'N23', 'N19', 'N11']},
     {'name': 'P5 → 02 인도장 왼쪽 N21', 'route': ['N16', 'N14', 'N15', 'N05', 'N07', 'N23', 'N21']},
     {'name': 'P5 → 02 인도장 오른쪽 N22',
@@ -31,6 +38,8 @@ PRESETS = [
     {'name': '인도장 P7 → 물류 대기 P6', 'route': ['N11', 'N19', 'N23', 'N07', 'N05', 'N15', 'N17']},
     {'name': '스마트카트 P1 → 인도장 P7', 'route': ['H1', 'N09', 'N24', 'N19', 'N11']},
     {'name': '인도장 P7 → N12 (Nav2 전환)', 'route': ['N11', 'N19', 'N24', 'N09', 'N08', 'N12']},
+    {'name': '짧은 시험: P5 → P6 (N14 T자·N15)', 'route': ['N16', 'N14', 'N15', 'N17']},
+    {'name': '짧은 시험: P6 → P5 (N15 T자·N14)', 'route': ['N17', 'N15', 'N14', 'N16']},
     {'name': '짧은 시험: N14 → P5', 'route': ['N14', 'N16']},
     {'name': '짧은 시험: N18 → P4 상차', 'route': ['N18', 'N01']},
 ]
@@ -213,3 +222,42 @@ def plan_to(graph, start, goal):
     if any(nodes[r]['bar'] for r in route[1:-1]):
         raise RouteCommandError('route passes through a stop node')
     return route
+
+
+def plan_return(graph, state, goal=None, start=None):
+    """「복귀」 계획. state = line_nav/state(as_dict). → {'route', 'load_done_first', 'msg'}.
+
+    위치는 끝난 경로의 도착 노드(arrived·handoff), 경로 끝 상차 대기(loading → 상차 완료 뒤 출발),
+    또는 위치를 모를 때(idle·stopped·error) 사용자가 지정한 start 노드만 믿는다. 주행 중·경유 상차
+    중에는 거부한다(RouteCommandError). goal 기본 = HOME_PLACE(P5) 노드.
+    """
+    nodes = {n['id']: n for n in graph['nodes']}
+    if goal is None:
+        goal = next((n['id'] for n in graph['nodes'] if n.get('place') == HOME_PLACE), None)
+        if goal is None:
+            raise RouteCommandError(f'{HOME_PLACE} not in the node graph')
+    st = (state or {}).get('state')
+    route = [str(r) for r in (state or {}).get('route') or []]
+    leg = (state or {}).get('leg') or {}
+    load_first = False
+    if st in ('arrived', 'handoff') and route:
+        cur = route[-1]
+    elif st == 'loading':
+        if not route or leg.get('to') != route[-1] or (state or {}).get('index') != len(route) - 2:
+            raise RouteCommandError('경유 상차 중 — 「상차 완료」로 경로를 마치거나, 정지 후 지금 노드를 지정')
+        cur, load_first = route[-1], True
+    elif st in (None, 'idle', 'stopped', 'error'):
+        if not start:
+            raise RouteCommandError(f'위치 모름({st or "상태 없음"}) — 지도에서 지금 서 있는 노드를 눌러 지정')
+        if start not in nodes:
+            raise RouteCommandError(f'unknown node {start!r}')
+        cur = start
+    else:
+        raise RouteCommandError(f'주행 중({st}) — 정지한 뒤 다시')
+    if cur == goal:
+        return {'route': [], 'load_done_first': load_first, 'msg': f'이미 {HOME_PLACE}({goal})'}
+    path = plan_to(graph, cur, goal)
+    msg = f'{HOME_PLACE}({goal})로 복귀: ' + ' → '.join(path)
+    if load_first:
+        msg = '상차 완료 처리 뒤 ' + msg
+    return {'route': path, 'load_done_first': load_first, 'msg': msg}

@@ -89,6 +89,14 @@ body {
   background: rgba(15, 23, 42, 0.7);
 }
 
+/* 배터리 칩(경로 화면·테스트 관제): 20% 미만 빨강, 40% 미만 노랑, 오래된 값 흐리게 */
+.chip.batt-low { color: var(--err); border-color: var(--err); }
+.chip.batt-mid { color: var(--warn); border-color: var(--warn); }
+.chip.batt-stale, td.batt-stale { opacity: 0.55; }
+td.batt-low { color: var(--err); font-weight: 600; }
+td.batt-mid { color: var(--warn); }
+td.batt-ok { color: var(--ok); }
+
 .chip-dot {
   width: 8px;
   height: 8px;

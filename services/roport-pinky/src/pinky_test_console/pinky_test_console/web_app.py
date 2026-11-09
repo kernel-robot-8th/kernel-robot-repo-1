@@ -21,7 +21,7 @@ from .fleet import FleetError
 from .ir_record import IrRecordError
 from .map_store import MapNameError
 from .marker_detect import MarkerError
-from .route_view import RouteCommandError, parse_route_command, plan_via
+from .route_view import NODE_ID, RouteCommandError, parse_route_command, plan_via
 
 # web/ 폴더에서 이 파일들만 서빙 (원본은 스크립트 폴더 전체를 static 으로 노출했음)
 STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js',
@@ -412,6 +412,16 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
     def api_route_command():
         cmd = parse_route_command(_json_body())
         return jsonify({'success': node.route_command(cmd), 'sent': cmd})
+
+    @app.route('/api/route/return', methods=['POST'])
+    def api_route_return():
+        """{goal?, start?} → 지금 노드에서 goal(기본 P5)로 복귀 경로 시작."""
+        body = _json_body()
+        goal, start = body.get('goal') or None, body.get('start') or None
+        for v in (goal, start):
+            if v is not None and (not isinstance(v, str) or not NODE_ID.match(v)):
+                raise BadRequest('goal/start must be node ids')
+        return jsonify(node.route_return(goal=goal, start=start))
 
     # ---------------- Pinky 설정·테스트 관제 (mode:=fleet, 노트북) ----------------
     def _fleet():

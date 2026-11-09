@@ -27,7 +27,7 @@ def context(limit, linear=.03, line_speed=.03, line_rotate_speed=.15):
 
 @pytest.mark.parametrize('limit', [.15, .4, 1.5])
 @pytest.mark.parametrize('linear', [.02, .03, .12, .15])
-@pytest.mark.parametrize('line_speed', [.03, .06])
+@pytest.mark.parametrize('line_speed', [.02, .03, .06, .08])
 def test_all_trial_velocity_sources_respect_requested_cap(trial_launch, limit, linear, line_speed):
     nodes = {node['executable']: node for node in trial_launch._nodes(context(limit, linear, line_speed))}
     line = nodes['line_nav']['parameters'][0]
@@ -67,7 +67,7 @@ def test_invalid_linear_caps_fail_before_any_nodes_are_created(trial_launch, lin
     assert created == []
 
 
-@pytest.mark.parametrize('line_speed', [0., .019, .061, .08, .151, 'nan', 'inf', 'invalid'])
+@pytest.mark.parametrize('line_speed', [0., .019, .0801, .1, .151, 'nan', 'inf', 'invalid'])
 def test_invalid_line_speeds_fail_before_any_nodes_are_created(trial_launch, line_speed, monkeypatch):
     created = []
     monkeypatch.setattr(trial_launch, 'Node', lambda **kwargs: created.append(kwargs))
