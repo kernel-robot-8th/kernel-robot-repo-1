@@ -20,7 +20,7 @@ CREATE TABLE control_robot_bindings (
     binding_id uuid PRIMARY KEY,
     robot_id text NOT NULL REFERENCES control_robot_slots(robot_id) CHECK (robot_id IN ('pinky1','pinky2','pinky3')),
     device_id text NOT NULL CHECK (length(device_id) BETWEEN 1 AND 64),
-    ip inet NOT NULL CHECK (family(ip) = 4),
+    ip inet NOT NULL CHECK (family(ip) = 4 AND masklen(ip) = 32),
     role text NOT NULL CHECK (role IN ('logistics','smartcart')),
     ros_domain_id integer NOT NULL CHECK (ros_domain_id BETWEEN 0 AND 101),
     calibration text NOT NULL,

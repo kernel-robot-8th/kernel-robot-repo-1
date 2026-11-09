@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from uuid import uuid4
 
+import psycopg
 import pytest
 from registry_helpers import mutation, registration
 
@@ -252,3 +253,33 @@ def test_history_limit_and_invalid_mutation(registry_db):
             "unregister",
             {"request_id": str(uuid4()), "expected_revision": 1, "binding_id": "bad"},
         )
+
+
+def test_binding_ip_must_be_a_host_address(registry_db):
+    store, dsn = registry_db
+    store.change("pinky1", "registration", registration(1), development=True)
+    with (
+        psycopg.connect(dsn) as conn,
+        pytest.raises(psycopg.errors.CheckViolation),
+    ):
+        conn.execute(
+            """INSERT INTO control_robot_bindings
+                (binding_id, robot_id, device_id, ip, role, ros_domain_id, calibration)
+                VALUES (%s, 'pinky2', 'dev-mask', '192.0.2.99/24', 'logistics', 90, 'c')""",
+            (uuid4(),),
+        )
+
+
+def test_history_orders_by_registry_revision_not_wall_clock(registry_db):
+    store, dsn = registry_db
+    first = store.change("pinky1", "registration", registration(1), development=True)
+    store.change("pinky1", "exclude", mutation(first, excluded=True), development=True)
+    # now() is the transaction start time, so a slower transaction can carry an
+    # older created_at while committing later. Simulate that inversion.
+    with psycopg.connect(dsn) as conn:
+        conn.execute(
+            "UPDATE control_registry_changes SET created_at = now() - interval '1 day'"
+            " WHERE action = 'exclude'"
+        )
+    actions = [row["action"] for row in store.history("pinky1")]
+    assert actions == ["exclude", "registration"]

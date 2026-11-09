@@ -231,7 +231,7 @@ class RegistryStore:
         with self.connection() as conn:
             rows = conn.execute(
                 """SELECT request_id, action, result, created_at, actor FROM control_registry_changes
-                WHERE robot_id=%s ORDER BY created_at DESC, request_id LIMIT %s""",
+                WHERE robot_id=%s ORDER BY (result->>'registry_revision')::bigint DESC, request_id LIMIT %s""",
                 (robot_id, limit),
             ).fetchall()
             return [
