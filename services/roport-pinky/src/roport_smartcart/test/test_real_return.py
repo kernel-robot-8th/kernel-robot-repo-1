@@ -156,10 +156,15 @@ def test_hardware_stack_has_adc_guard_and_nav2_without_other_line_controller():
     assert 'main_node' in executables and 'line_nav' not in executables
     assert ctx.launch_configurations['ir_node'] == 'true'
     assert 'real_return' not in executables  # stack launch sends no mission goal
+    from launch_ros.utilities import evaluate_parameters
+    controller = next(a for a in nodes if isinstance(a, Node) and a.node_executable == 'controller_server')
+    dictionaries = [p for p in controller._Node__parameters if isinstance(p, dict)]
+    assert evaluate_parameters(ctx, dictionaries)[0]['general_goal_checker.xy_goal_tolerance'] == .01
 
 
 @pytest.mark.parametrize('lose_ir', [False, True])
-def test_return_coordinator_orders_nav_stop_ir_and_line(monkeypatch, lose_ir):
+@pytest.mark.parametrize('from_n12,bad_pose', [(False, False), (True, False), (True, True)])
+def test_return_coordinator_orders_nav_stop_ir_and_line(monkeypatch, lose_ir, from_n12, bad_pose):
     """Exercise the coordinator with peers; never create a physical ROS node."""
     from roport_smartcart.real_return import HardwareReturn
     from roport_gz_world.layout import Layout
@@ -167,7 +172,7 @@ def test_return_coordinator_orders_nav_stop_ir_and_line(monkeypatch, lose_ir):
     path = Path(__file__).parents[1].parent/'roport_gz_world/layout/roport_airport.yaml'
     layout, graph = Layout.load(path), Graph.load(path)
     runner = HardwareReturn.__new__(HardwareReturn)
-    runner.options = SimpleNamespace(bay='H2', layout=str(path))
+    runner.options = SimpleNamespace(bay='H2', layout=str(path), from_n12=from_n12)
     runner.target = n12_target(layout, graph)
     clock, events = [10.], []
     monkeypatch.setattr('roport_smartcart.real_return.time.monotonic', lambda: clock[0])
@@ -178,6 +183,9 @@ def test_return_coordinator_orders_nav_stop_ir_and_line(monkeypatch, lose_ir):
     public = layout.frame.to_world(200., 150.)
     state = dict(nav2_ready=True, localization_ready=True, stopped=True,
                  pose=dict(x=public[0], y=public[1], yaw=0.))
+    if from_n12:
+        state['pose'] = dict(x=runner.target.x+(.06 if bad_pose else 0.),
+                             y=runner.target.y, yaw=runner.target.yaw)
     runner.node = SimpleNamespace(get_name=lambda: 'fixture',
         get_publishers_info_by_topic=lambda topic: [SimpleNamespace(
             node_name='trial_guard' if topic == 'cmd_vel' else 'fixture')],
@@ -207,7 +215,10 @@ def test_return_coordinator_orders_nav_stop_ir_and_line(monkeypatch, lose_ir):
     runner.spin = spin
     runner.lease = lambda owner: events.append('lease:'+owner)
     def start(route, **kwargs):
-        assert events[:2] == ['return_entry', 'return_n12']
+        if from_n12:
+            assert 'return_entry' not in events and 'return_n12' not in events
+        else:
+            assert events[:2] == ['return_entry', 'return_n12']
         assert runner.owner == 'none' and runner.phase == 'ACQUIRE_IR'
         runner.line.route, runner.line.state = route, 'follow'
         events.append('line_start')
@@ -220,7 +231,11 @@ def test_return_coordinator_orders_nav_stop_ir_and_line(monkeypatch, lose_ir):
     runner.line.start, runner.line.step = start, step
     runner.Twist = lambda: SimpleNamespace(linear=SimpleNamespace(x=0.), angular=SimpleNamespace(z=0.))
     runner.velocity = SimpleNamespace(publish=lambda m: events.append('line_velocity'))
-    if lose_ir:
+    if bad_pose:
+        with pytest.raises(RuntimeError, match='N12 physical tape not acquired'):
+            runner.run()
+        assert 'line_start' not in events and 'line_velocity' not in events
+    elif lose_ir:
         with pytest.raises(RuntimeError, match='Physical IR unavailable'):
             runner.run()
         assert 'line_velocity' not in events
@@ -242,3 +257,49 @@ def test_nav2_approach_cannot_be_a_bay_or_the_wrong_side(entry):
 def test_nav2_approach_accepts_public_space_side():
     from roport_smartcart.real_return import validate_entry
     validate_entry(Destination(.25, .03, math.pi), Destination(0., 0., math.pi))
+
+
+@pytest.mark.parametrize('destination,terminal,phase', [('N12', 'handoff', 'AT_N12'),
+                                                      ('H2', 'arrived', 'ARRIVED')])
+def test_shared_line_runner_distinguishes_n12_handoff_from_parking(destination, terminal, phase):
+    import time
+    from roport_smartcart.real_return import HardwareReturn
+    r = HardwareReturn.__new__(HardwareReturn)
+    r.owner, r.ir_seq, r.ir_at, r.reading = 'none', 0, time.monotonic(), reading()
+    events = []
+    r.require_guard = lambda: None
+    r.stop_confirmed = lambda: events.append('actual_stop')
+    r.line = SimpleNamespace(state='idle', reason='')
+    r.line.start = lambda route, **kwargs: events.append(route)
+    def step(*args):
+        r.line.state = terminal
+    r.line.step = step
+    stamp = SimpleNamespace(sec=int(time.time()), nanosec=0)
+    pose = SimpleNamespace(position=SimpleNamespace(x=0., y=0.),
+                           orientation=SimpleNamespace(x=0., y=0., z=0., w=1.))
+    r.bridge = SimpleNamespace(odom=SimpleNamespace(header=SimpleNamespace(stamp=stamp),
+                                                   pose=SimpleNamespace(pose=pose)))
+    r.node = SimpleNamespace(get_clock=lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(nanoseconds=time.time_ns())))
+    def spin():
+        r.ir_seq += 1
+        r.ir_at = time.monotonic()
+    r.spin = spin
+    r.lease = lambda owner: events.append(owner)
+    route = ['H2', 'N08', 'N12'] if destination == 'N12' else ['N12', 'N08', 'H2']
+    r.follow_line(route)
+    assert r.phase == phase and r.owner == 'none'
+    assert events == ['actual_stop', route, 'none', 'actual_stop']
+
+
+@pytest.mark.parametrize('offset,angle,valid', [(.036, .025, True), (.051, 0., False),
+                                              (0., .101, False)])
+def test_physical_handoff_calibration_keeps_original_acquisition_envelope(offset, angle, valid):
+    from roport_smartcart.real_return import measured_handoff
+    nominal = Destination(0., 0., 0.)
+    measured = Destination(offset, 0., angle)
+    if valid:
+        assert measured_handoff(measured, nominal) == measured
+    else:
+        with pytest.raises(ValueError):
+            measured_handoff(measured, nominal)

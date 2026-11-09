@@ -38,6 +38,15 @@ def n12_target(layout, graph, ir_ahead_cm=3.):
     return Destination(x, y, math.atan2(math.sin(heading), math.cos(heading)))
 
 
+def measured_handoff(goal, nominal):
+    # Accept a field correction within the existing acquisition envelope;
+    # physical IR, pose and standstill remain mandatory during the handoff.
+    if (math.hypot(goal.x-nominal.x, goal.y-nominal.y) > .05
+            or angle_error(goal.yaw, nominal.yaw) > .1):
+        raise ValueError('Measured N12 handoff is inconsistent with the surveyed graph')
+    return goal
+
+
 def validate_entry(entry, target):
     dx, dy = entry.x-target.x, entry.y-target.y
     # Enter from the public-space side of N12, never navigate to a parking bay.
@@ -214,11 +223,14 @@ class HardwareReturn:
         p = state['pose']
         x, y = layout.frame.to_measured(p['x'], p['y'])
         walls = {w['name']: w for w in layout.raw['walls']}
-        if x < walls['zone03_left']['from'][0] or y < walls['zone03_bottom']['from'][1]:
+        from_n12 = getattr(self.options, 'from_n12', False)
+        if not from_n12 and (x < walls['zone03_left']['from'][0]
+                             or y < walls['zone03_bottom']['from'][1]):
             raise RuntimeError('Return must start in public space; do not Nav2 out of H1/H2')
         self.stop_confirmed()
-        self.navigate('return_entry')
-        self.navigate('return_n12')
+        if not from_n12:
+            self.navigate('return_entry')
+            self.navigate('return_n12')
         self.phase = 'ACQUIRE_IR'
         acquire = Acquisition()
         end = time.monotonic()+10
@@ -233,7 +245,12 @@ class HardwareReturn:
                 break
         else:
             raise RuntimeError('N12 physical tape not acquired; staying stopped')
-        self.line.start(line_route(self.options.bay), start_offset_cm=0.)
+        self.follow_line(line_route(self.options.bay))
+
+    def follow_line(self, route):
+        self.require_guard()
+        self.stop_confirmed()
+        self.line.start(route, start_offset_cm=0.)
         self.phase = 'LINE'
         previous = self.ir_seq
         end = time.monotonic()+150
@@ -255,11 +272,12 @@ class HardwareReturn:
             p = odom.pose.pose
             command = self.line.step(self.reading,
                 (p.position.x*100., p.position.y*100., yaw(p.orientation)), now)
-            if self.line.state == 'arrived':
+            terminal = 'handoff' if route[-1] == 'N12' else 'arrived'
+            if self.line.state == terminal:
                 self.owner = 'none'
                 self.lease('none')
                 self.stop_confirmed()
-                self.phase = 'ARRIVED'
+                self.phase = 'AT_N12' if terminal == 'handoff' else 'ARRIVED'
                 self.spin()
                 return
             if self.line.state in ('error', 'stopped'):
@@ -289,6 +307,8 @@ class HardwareReturn:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--drive', action='store_true', help='Explicitly authorize physical motion')
+    parser.add_argument('--from-n12', action='store_true',
+                        help='Test N12 handoff and line parking only; retain real pose/IR checks')
     for flag in ('places', 'map', 'layout', 'robot', 'calibration'):
         parser.add_argument('--'+flag, required=True)
     parser.add_argument('--bay', choices=('H1', 'H2'), required=True,
@@ -304,14 +324,13 @@ def main(argv=None):
     graph = Graph.load(options.layout)
     plan_route(graph, line_route(options.bay))
     calibration = load_calibration(options.calibration, options.robot)
-    target = n12_target(layout, graph)
-    for place in ('return_entry', 'return_n12'):
+    nominal = n12_target(layout, graph)
+    target = measured_handoff(load_destination(options.places, options.map, 'return_n12',
+                                               environment='real'), nominal)
+    for place in (('return_n12',) if options.from_n12 else ('return_entry', 'return_n12')):
         goal = load_destination(options.places, options.map, place, environment='real')
         if place == 'return_entry':
             validate_entry(goal, target)
-        if place == 'return_n12' and (math.hypot(goal.x-target.x, goal.y-target.y) > .02
-                                      or angle_error(goal.yaw, target.yaw) > .05):
-            parser.error('return_n12 must place the real centre IR at N12, facing N08')
     if not options.drive:
         print('Hardware return configuration validated; no ROS node or motion initialized')
         return 0
