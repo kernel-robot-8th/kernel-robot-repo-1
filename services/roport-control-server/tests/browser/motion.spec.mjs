@@ -59,6 +59,15 @@ test('virtual driver motion reaches original UI; Nav2 and stale samples remain v
     await expect(label).toBeVisible();
     await expect(label).toContainText('마지막 위치');
     await expect(page.locator('#telemetry')).toContainText('4.0초 · 갱신 지연');
+    frame.revision += 1;
+    frame.trial.motion_diagnostics = {rejected: 3, reasons: {clock_skew_or_expired: 3}};
+    stream.send(JSON.stringify(frame));
+    await expect(page.locator('#trial-motion-diagnostics')).toContainText('위치 수신 거부 누적 3건');
+    await expect(page.locator('#trial-motion-diagnostics')).toContainText('시계 동기화 확인');
+    frame.revision += 1;
+    frame.trial.motion_diagnostics = {rejected: 0, reasons: {}};
+    stream.send(JSON.stringify(frame));
+    await expect(page.locator('#trial-motion-diagnostics')).toBeHidden();
     await page.screenshot({path:testInfo.outputPath('nav2-last-position.png'), fullPage:true});
     expect(errors).toEqual([]);
   } finally {

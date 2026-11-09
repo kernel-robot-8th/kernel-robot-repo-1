@@ -109,6 +109,9 @@ class TrialSocket:
             },
             "mqtt_ready": c.transport.ready,
             "motion": c.motion.snapshot(state["statuses"]) if c.motion else {},
+            "motion_diagnostics": c.motion.diagnostics()
+            if c.motion
+            else {"rejected": 0, "reasons": {}},
             "events": [
                 {k: e[k] for k in ("message_id", "type", "source", "sent_at")}
                 for e in list(state["events"].values())[-12:]

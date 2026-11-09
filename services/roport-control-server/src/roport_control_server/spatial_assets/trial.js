@@ -51,6 +51,15 @@ export function renderTrial(data) {
   document.getElementById("trial-phase").textContent = state?.label ?? "실행부 미연결";
   document.getElementById("trial-connection").textContent =
     !state ? "실행부 미연결" : `${state?.mode === "hardware" ? "실물 시험" : "가상 시험"} · MQTT ${state?.mqtt_ready ? "연결" : "미연결"}`;
+  const diagnostics = state?.motion_diagnostics;
+  const motionStatus = document.getElementById("trial-motion-diagnostics");
+  const rejectionLabels = {
+    clock_skew_or_expired: "관측 시각 지연/시계 차이 · PC와 로봇 시계 동기화 확인",
+    out_of_order: "중복·역순", identity_mismatch: "기체 식별 불일치", invalid_sample: "잘못된 위치 메시지",
+  };
+  motionStatus.hidden = !diagnostics?.rejected;
+  motionStatus.textContent = diagnostics?.rejected
+    ? `위치 수신 거부 누적 ${diagnostics.rejected}건 · ${Object.entries(diagnostics.reasons).map(([reason, count]) => `${rejectionLabels[reason] ?? reason} ${count}건`).join(" / ")}` : "";
   document.getElementById("trial-dummy").textContent = state?.phase === "WAIT_CART_LOAD"
     ? "OMX 카트 적재 완료 (더미)" : state?.phase === "WAIT_LOAD"
     ? "OMX 창고 상차 완료 (더미)" : "OMX 입고 완료 (더미)";

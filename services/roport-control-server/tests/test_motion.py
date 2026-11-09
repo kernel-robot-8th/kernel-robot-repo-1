@@ -168,7 +168,7 @@ def test_nonfinite_and_duplicate_json_keys_are_rejected(receiver):
 
 
 def test_publisher_is_optional_rate_limited_and_never_breaks_task_client(
-    tmp_path, request
+    tmp_path, request, caplog
 ):
     from mock_pinky_trial import FakePinky
 
@@ -200,6 +200,42 @@ def test_publisher_is_optional_rate_limited_and_never_breaks_task_client(
         assert client.motion_sequence == 1 and client.motion_errors == 1
         client.publish_motion()
         assert client.motion_sequence == 1
+        for error in (AttributeError, RuntimeError, OSError):
+
+            def broken_provider(error=error):
+                raise error("display-provider-only")
+
+            client.observe_motion = broken_provider
+            client.motion_sent = 0
+            client.publish_motion()
+        assert client.motion_errors == 4
+        assert len(caplog.records) == 1  # Avoid a 5 Hz warning flood.
+
+        def interrupted_provider():
+            raise KeyboardInterrupt
+
+        client.observe_motion = interrupted_provider
+        client.motion_sent = 0
+        with pytest.raises(KeyboardInterrupt):
+            client.publish_motion()
         assert client.journal.data == before and client.halted is None
     finally:
         client.close()
+
+
+def test_motion_rejections_report_bounded_reasons_without_changing_pose(receiver):
+    receiver, statuses = receiver
+    m = sample(receiver.config, statuses["pinky1"]["boot_id"])
+    receiver.consume(delivery(m), statuses)
+    future = deepcopy(m)
+    future["payload"]["observed_at"] = (
+        datetime.now(UTC) + timedelta(seconds=2)
+    ).isoformat()
+    for item in (delivery(future), delivery(m), delivery(m, payload=b"{")):
+        receiver.transport.incoming.put(item)
+    receiver.poll(statuses)
+    assert receiver.diagnostics() == {
+        "rejected": 3,
+        "reasons": {"clock_skew_or_expired": 1, "out_of_order": 1, "invalid_sample": 1},
+    }
+    assert receiver.snapshot(statuses)["pinky1"]["sequence"] == 1

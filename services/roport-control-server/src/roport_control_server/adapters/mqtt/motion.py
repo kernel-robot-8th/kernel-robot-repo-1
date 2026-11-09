@@ -110,6 +110,7 @@ class MotionReceiver:
         }
         self.samples, self.sequences = {}, {}
         self.rejected = 0
+        self.rejection_reasons = {}
 
     def consume(self, delivery, statuses):
         m = decode_motion(delivery)
@@ -166,8 +167,19 @@ class MotionReceiver:
                 break
             try:
                 self.consume(delivery, statuses)
-            except ValueError:
+            except ValueError as exc:
                 self.rejected += 1
+                reason = {
+                    "expired motion sample": "clock_skew_or_expired",
+                    "out-of-order motion sample": "out_of_order",
+                    "unconfirmed motion identity": "identity_mismatch",
+                }.get(str(exc), "invalid_sample")
+                self.rejection_reasons[reason] = (
+                    self.rejection_reasons.get(reason, 0) + 1
+                )
+
+    def diagnostics(self):
+        return {"rejected": self.rejected, "reasons": dict(self.rejection_reasons)}
 
     def snapshot(self, statuses):
         result = {}

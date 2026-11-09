@@ -379,6 +379,9 @@ class TrialView:
                 ).get("source"),
                 "mode": config["mode"],
                 "mqtt_ready": data["mqtt_ready"] and available,
+                "motion_diagnostics": deepcopy(
+                    data.get("motion_diagnostics", {"rejected": 0, "reasons": {}})
+                ),
                 "gate": state["gate"],
                 "fault": state["fault"],
                 "events": data["events"],

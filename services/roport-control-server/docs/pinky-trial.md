@@ -647,7 +647,7 @@ Nav2 장애물 회피·실제 Wi-Fi 손실/지연·기체별 센서 편차·마�
 | Envelope | `schema_version=1.1`, `profile=roport-state-dev-v1`, `type=motion`, `message_id`, `site_id`, `source=기체 ID`, `target=control`, `sent_at` |
 | Payload 식별 | 같은 시험의 `binding_id`, runner와 같은 `boot_id`, 증가하는 `sequence`, 실제 관측의 `observed_at` |
 | Payload 위치 | `map_id`, `map_version`, `frame_id=map`, `pose_source`, `pose={x,y,z,yaw}`(m/rad) 또는 null, `velocity=null`, `joints={}` |
-| 출처 | `tf`: 로봇의 유효한 지도 TF; `line_estimate`: 실측 layout + 라인 주행기의 표시용 pose_est; `simulation`: 가상 센서 위치 |
+| 출처 | `tf`: 로봇의 유효한 지도 TF(계산 시각이 아닌 TF 근거의 경과 시간 반영); `line_estimate`: 실측 원점 + 상태 heading과 같은 frame_yaw의 표시용 pose_est; `simulation`: 가상 센서 위치 |
 | 주기/전달 | 5 Hz, 정지 중에도 유효 관측 발행. QoS0, retain=false, MQTT expiry 1초. 작업 ACK/재전송/고빈도 journal 저장 없음 |
 | 수신 검증 | 현재 시험 site/binding, 상태 응답으로 확인된 boot, 순번/측정 시각, map/frame 검증. 1초 초과 표본·역순·중복·retained는 폐기 |
 | 화면 | 상태 스트림 약 10 Hz. 수신 좌표 사이만 최대 0.2초 보간하며 외삽하지 않음. 모드 전환·무효 위치·수신 단절 시 마지막 위치/경과 시간 표시. 다른 boot/지도 위치 재사용 금지 |
@@ -655,5 +655,7 @@ Nav2 장애물 회피·실제 Wi-Fi 손실/지연·기체별 센서 편차·마�
 이 motion 표본은 준비·도착·정지·자원 점유·다음 단계 승인에 사용하지 않는다. 위치 수신 연결과 작업 명령 연결의 큐를 분리해 표시 입력의 오류·적체가 작업 이벤트를 소비하지 않게 한다. 관제 프로세스가 재시작되면 메모리 위치는 새 표본을 기다리며, 운영 DB/보류된 registry 기능은 필요하지 않다.
 
 **실물 배포:** 관제 코드와 Pinky의 `roport_pinky/trial_driver.py` 및 MQTT 모듈(`motion.py`, `mqtt.py`, `pinky_trial.py`, `trial_runner.py`)을 함께 갱신한다. 재생성한 이식 키트에도 `motion.py`를 포함한다. 기존 실행 명령/브로커/기체 ID/binding/trial.json은 유지한다. ACL을 사용하는 현장은 기체의 자기 motion 토픽 발행과 관제의 해당 토픽 구독을 허용한다. 기존 드라이버에는 선택 hook이 없으므로 작업 시험은 계속 가능하지만 연속 위치는 표시되지 않는다. 실물 주행은 업데이트 후 별도 재검증해야 한다.
+
+위치 시각 보정에는 Pinky의 `trial_nav2.py`도 함께 갱신한다. 라인 추정은 현재 노드를 알며 STOPPED·ERROR가 아닐 때만 사용하고, HOLD·safe_stop 뒤에는 null을 발행해 이전 좌표를 마지막 확인 위치로 표시한다. 유효한 지도 TF는 정지 중에도 사용할 수 있다. 표시 hook의 예외는 작업 루프로 전파하지 않고 집계하며 첫 오류와 50건마다 예외 종류를 로그에 남긴다. 웹 시험 패널의 `위치 수신 거부 누적`에는 시각 지연/시계 차이·중복/역순·기체 식별 불일치·잘못된 표본의 건수를 표시한다. 시각 사유가 있으면 PC와 로봇 시계를 동기화하며 허용 시간 기준을 완화하지 않는다. 이 진단은 관제 실행부 재시작 시 초기화되고 주행 승인에는 사용하지 않는다.
 
 TF는 기존 `trial/localization_state`의 유효성 검사를 그대로 사용한다. Nav2/AMCL/TF가 준비되지 않은 라인 모드는 `pose_est`를 실측 frame의 cm→m, 회전/이동 변환으로 표시한다. 이 추정은 바퀴 축 위치의 근사이며 정밀 localization을 대체하지 않는다. 가상 Nav2도 실제 ROS Nav2의 장애물 회피 검증을 대체하지 않는다.
