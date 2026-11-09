@@ -85,10 +85,7 @@ class TrialView:
             and {k: sorted(v) for k, v in config["nodes"].items()} == self.graph
         )
 
-    def command(self, request, *, secure_transport=False):
-        if not isinstance(request, dict) or "expires_at" in request:
-            raise ValueError("invalid trial request")
-        plan = request.get("plan")
+    def check_plan_bounds(self, plan):
         if isinstance(plan, dict) and isinstance(plan.get("steps"), list):
             for step in plan["steps"]:
                 if isinstance(step, dict) and step.get("kind") == "navigate":
@@ -107,6 +104,11 @@ class TrialView:
                             + self.grid[size] * self.grid["resolution"]
                         ):
                             raise ValueError("Nav2 goal outside the configured map")
+
+    def command(self, request, *, secure_transport=False):
+        if not isinstance(request, dict) or "expires_at" in request:
+            raise ValueError("invalid trial request")
+        self.check_plan_bounds(request.get("plan"))
         with self._snapshot_lock:
             try:
                 snapshot = self.rpc({"action": "snapshot"})
@@ -142,6 +144,20 @@ class TrialView:
                     and request.get("action") != "stop"
                 ):
                     raise ValueError("trial map/graph mismatch; commands disabled")
+                if (
+                    request.get("action") in {"service_preview", "service_submit"}
+                    and snapshot["scope"] == "nav2"
+                ):
+                    self.check_plan_bounds(
+                        {
+                            "steps": [
+                                {
+                                    "kind": "navigate",
+                                    "payload": snapshot["config"]["nav_goal"],
+                                }
+                            ]
+                        }
+                    )
                 return self.rpc({**request, "expires_at": time.time() + 0.8})
             finally:
                 self._next_snapshot = 0.0
@@ -202,6 +218,12 @@ class TrialView:
             )
             if custom and current and phase == current["id"]:
                 label = current["label"]
+            if phase == "COMPLETE" and data.get("service_request"):
+                label = (
+                    "입고·복귀 시험 완료"
+                    if data["service_request"]["operation"] == "inbound"
+                    else "인도 준비 시험 완료"
+                )
             for role, device in config["robots"].items():
                 robot = device["robot_id"]
                 status = state["statuses"].get(robot, {})
@@ -370,6 +392,9 @@ class TrialView:
                 "smartcart_only": data.get("smartcart_only", False),
                 "package_id": config["package_id"],
                 "request": state["request"],
+                "service_request": data.get("service_request"),
+                "transfers": state["transfers"],
+                "omx": data.get("omx", {"enabled": False}),
                 "active_robot": (state["active"] or {}).get("target")
                 or (state["gate"] or {}).get("robot_id")
                 or (
@@ -388,7 +413,8 @@ class TrialView:
                 "can_dummy": safe_wait
                 and current is not None
                 and current["kind"] == "gate"
-                and phase == current["id"],
+                and phase == current["id"]
+                and not data.get("omx", {}).get("manual_error"),
                 "can_request": safe_wait
                 and current is not None
                 and current["kind"] == "request"

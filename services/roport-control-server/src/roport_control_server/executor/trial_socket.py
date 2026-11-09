@@ -9,7 +9,11 @@ from copy import deepcopy
 from pathlib import Path
 from uuid import uuid4
 
-from roport_control_server.executor.plans import stop_nodes, trial_presets
+from roport_control_server.executor.plans import (
+    service_catalogue,
+    stop_nodes,
+    trial_presets,
+)
 
 
 class TrialSocket:
@@ -72,6 +76,7 @@ class TrialSocket:
             "custom_plan": c.state.get("custom_plan", False),
             "plan_index": c.state.get("plan_index", 0),
             "catalogue": {
+                "service": service_catalogue(c.config, c.scope, c.allowed_robots),
                 "robots": c.allowed_robots,
                 "routes": c.config["routes"],
                 "nav_goal": c.config["nav_goal"],
@@ -101,6 +106,10 @@ class TrialSocket:
                     "request",
                 )
             },
+            "service_request": deepcopy(state.get("service_request")),
+            "omx": c.omx.snapshot()
+            if c.omx
+            else {"enabled": False, "manual_error": None},
             "ages": {
                 r["robot_id"]: max(0, now - c.heard[r["robot_id"]])
                 if r["robot_id"] in c.heard
@@ -131,9 +140,15 @@ class TrialSocket:
             "route_plan",
             "save_plan",
             "load_plan",
+            "service_preview",
+            "service_submit",
         }:
             raise ValueError("unknown trial action")
-        if request["action"] == "load_plan":
+        if request["action"] == "service_preview":
+            required.add("request")
+        elif request["action"] == "service_submit":
+            required.update({"request", "preview_id", "field_confirmed"})
+        elif request["action"] == "load_plan":
             required.add("name")
         elif request["action"] in {"validate_plan", "save_plan"}:
             required.add("plan")
@@ -158,6 +173,10 @@ class TrialSocket:
         ):
             raise ValueError("expired trial command; refresh status")
         state = self.control.state
+        if request["action"] == "service_submit":
+            receipt = self.control.service_receipt(request["request"])
+            if receipt:
+                return {"service_receipt": receipt}
         if (
             request["session_id"] != self.session_id
             or request["task_id"] != state["task_id"]
@@ -165,6 +184,16 @@ class TrialSocket:
         ):
             raise ValueError("trial changed; refresh status before acting")
         action = request["action"]
+        if action in {"service_preview", "service_submit"}:
+            if state["phase"] not in {"READY", "COMPLETE"}:
+                raise ValueError("service busy; current task is frozen")
+            if action == "service_preview":
+                return self.control.preview_service(request["request"])
+            receipt = self.control.submit_service(
+                request["request"], request["preview_id"], request["field_confirmed"]
+            )
+            self.session_id = str(uuid4())
+            return {**self.snapshot(), "service_receipt": receipt}
         if action in {
             "validate_plan",
             "save_plan",

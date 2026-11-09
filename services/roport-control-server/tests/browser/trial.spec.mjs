@@ -177,7 +177,7 @@ test(`composer/${source}: edit, validate, persist and execute through shared MQT
     await page.screenshot({path:testInfo.outputPath('composer-ready.png'), fullPage:true});
     await page.locator('[data-action=start]').click();
     if (source === 'delivery') {
-      await expect(page.locator('#trial-phase')).toHaveText('적재 완료 승인 (더미)');
+      await expect(page.locator('#trial-phase')).toHaveText('적재 완료 수동 확인');
       await expect(page.locator('#scenario-apply')).toBeDisabled();
       await page.locator('#trial-dummy').click();
     }
@@ -266,10 +266,10 @@ test(`common owner/${selected}: select preset and edit nodes without scenario CL
 });
 }
 
-test('hardware UI blocks key entry over remote HTTP', async ({ page }) => {
+test('hardware UI blocks key entry over remote HTTP', async ({ page, baseURL }) => {
   await page.route('http://control.example/**', async (route) => {
     const url = new URL(route.request().url());
-    url.host = '127.0.0.1:18765';
+    url.host = new URL(baseURL).host;
     await route.fulfill({ response: await route.fetch({ url: url.href }) });
   });
   await page.goto('http://control.example/ui/?mode=offline');

@@ -17,3 +17,6 @@
 - UI 시나리오 선택은 공통 `two_pinky` 설정과 기존 binding을 유지한 채 1대/2대/스마트카트 계획을 적용한다. `allowed_robots`는 선택 가능 범위, `robots`는 현재 계획 참여 기체다. 참여 기체만 폴링/준비/timeout/점유 검사하며 비참여 기체는 현장에서 통로 밖에 둔다. 선택/노드 편집은 구동하지 않고 READY/COMPLETE에서 검증·적용 후 별도 출발한다. HOLD는 UI로 해제하지 않는다.
 
 - 실물 코드 기반 가상 환경은 `tools/run_virtual_trial.py` → `scripts/virtual_pinky.py`다. 현재 checkout의 Pinky TrialDriver/TrialLogic/RouteExecutor와 팀 2D Sim을 재사용한다. Nav2·lease는 모사이며 물리 검증으로 표현하지 않는다. loopback·새 binding·이력 보존과 가상 전용 초기화 경계를 유지한다.
+
+- 서비스 작업 시험은 `executor/plans.py`의 `service_plan`으로 기존 입고/출고 단계를 생성하고, UI는 서버 미리보기 ID로 적용한 뒤 별도로 출발한다. 후보 기체 상태 조회는 읽기 전용이며 적용 전에는 참여 기체/구동을 바꾸지 않는다. 운영 주문·재고·WSS 계약으로 설명하지 않는다.
+- `executor/omx_trial.py`는 PR45 `roport-omx-task-v1` COOPERATIVE 시험 연동이다. 단일 owner가 처리하며 UI/MQTT 완료를 정차 세션별 한 번만 반영한다. 팔 복귀 근거를 재고/수령 확정으로 바꾸지 않는다. OMX3는 수동이며 `--omx mock`만 가상 실행기에서 모의 Host를 띄운다. 테스트가 OMX 소스를 직접 재사용하므로 양쪽 계약 변경 시 관제 CI도 실행한다.

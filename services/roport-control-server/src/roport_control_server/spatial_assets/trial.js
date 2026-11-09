@@ -1,4 +1,5 @@
 import { renderComposer, hasUnappliedChanges } from "./scenario.js";
+import { renderService, hasServiceDraft } from "./service.js";
 // Trial actions use the server-owned state machine; this page never publishes MQTT.
 const panel = document.getElementById("trial-panel");
 const key = document.getElementById("trial-key");
@@ -16,7 +17,7 @@ function enable() {
   if (blocked) key.value = '';
   for (const button of buttons) {
     button.disabled = blocked || !connected || pending || state?.reset_pending || !key.value ||
-      (button.dataset.action === 'start' && hasUnappliedChanges()) ||
+      (button.dataset.action === 'start' && (hasUnappliedChanges() || hasServiceDraft())) ||
       !state?.[`can_${button.dataset.action}`];
   }
   const reasons = {
@@ -29,18 +30,19 @@ function enable() {
   const error = state?.start_error ?? state?.request_error;
   document.getElementById("trial-readiness").textContent = blocked ? "실물 조작은 로컬 주소 또는 HTTPS에서만 가능합니다."
     : !connected ? "실행부 연결 대기 · 조작 비활성"
-    : state?.phase === 'READY' && hasUnappliedChanges() ? "편집한 시나리오를 먼저 실행 계획에 적용하세요."
+    : state?.phase === 'READY' && (hasUnappliedChanges() || hasServiceDraft()) ? "편집한 시나리오를 먼저 실행 계획에 적용하세요."
     : error ? reasons[error] ?? error
     : !key.value ? "조작 키를 입력하면 현재 단계에서 가능한 버튼이 활성화됩니다."
-    : state?.can_start ? "출발 가능 · 시나리오 출발 버튼을 누르세요."
+    : state?.can_start ? (state.service_request ? "출발 가능 · 작업 실행 버튼을 누르세요." : "출발 가능 · 시나리오 출발 버튼을 누르세요.")
     : "현재 단계에서 가능한 버튼만 활성화됩니다.";
 }
-key.addEventListener("input", () => { enable(); renderComposer(state, connected && !state?.reset_pending, key.value); });
+key.addEventListener("input", () => { enable(); renderComposer(state, connected && !state?.reset_pending, key.value); renderService(state, connected && !state?.reset_pending, key.value); });
 document.addEventListener('scenario-draft-change', enable);
+document.addEventListener('service-draft-change', enable);
 
 export function trialDisconnected() {
   connected = false;
-  renderComposer(state, false, key.value);
+  renderComposer(state, false, key.value); renderService(state, false, key.value);
   enable();
 }
 
@@ -52,8 +54,8 @@ export function renderTrial(data) {
   document.getElementById("trial-connection").textContent =
     !state ? "실행부 미연결" : `${state?.mode === "hardware" ? "실물 시험" : "가상 시험"} · MQTT ${state?.mqtt_ready ? "연결" : "미연결"}`;
   document.getElementById("trial-dummy").textContent = state?.phase === "WAIT_CART_LOAD"
-    ? "OMX 카트 적재 완료 (더미)" : state?.phase === "WAIT_LOAD"
-    ? "OMX 창고 상차 완료 (더미)" : "OMX 입고 완료 (더미)";
+    ? "OMX 카트 적재 완료 수동 확인" : state?.phase === "WAIT_LOAD"
+    ? "OMX 창고 상차 완료 수동 확인" : "OMX 입고 완료 수동 확인";
   document.getElementById("trial-scenario").textContent = !state ? "시나리오 응답 대기"
     : state.custom_plan ? state.plan.name
     : state.smartcart_only ? "스마트카트 단독 시험 · 창고 작업·입고 완료 가정"
@@ -66,7 +68,7 @@ export function renderTrial(data) {
     ? "시험 범위: N12 정차까지 · Nav2 전환/골 전송 제외" : "시험 범위: N12 → Nav2 전환 → 공용공간 목표";
   if (state?.custom_plan) {
     document.getElementById("trial-scope").textContent = `선택 계획 · ${state.plan.steps.length}단계 · ${Math.min(state.plan_index + 1, state.plan.steps.length)}번째 단계`;
-    document.getElementById("trial-dummy").textContent = "현재 작업 완료 승인 (더미)";
+    document.getElementById("trial-dummy").textContent = "현재 작업 완료 수동 확인";
   }
   const selected = data.robots.find((row) => row.robot_id === state?.active_robot)
     ?? data.robots.find((row) => row.status?.mode);
@@ -75,7 +77,7 @@ export function renderTrial(data) {
     ? `${selected.robot_id} · 노드 ${robot.node_id ?? "미확인"} · ${robot.mode} · 정지 ${robot.stopped ? "확인" : "아니오"} · 위치 추정 ${robot.localization_ready ? "준비" : "미준비"} · Nav2 ${robot.nav2_ready ? "준비" : "미준비"}`
     : "핑키 상태 응답 대기";
   document.getElementById("trial-route").textContent = state?.route?.length
-    ? state.route.join(" → ") : "이동 명령 대기 · 단계별 더미 승인은 수동입니다.";
+    ? state.route.join(" → ") : "이동 명령 대기 · OMX 작업 완료 입력 대기";
   document.getElementById("trial-events").replaceChildren(
     ...(state?.events ?? []).slice(-5).reverse().map((event) => {
       const row = document.createElement("li");
@@ -95,8 +97,10 @@ export function renderTrial(data) {
       return card;
     }),
   );
-  enable();
   renderComposer(state, connected && !state?.reset_pending && !transportBlocked(), key.value);
+  renderService(state, connected && !state?.reset_pending && !transportBlocked(), key.value);
+  panel.querySelector('[data-action="start"]').textContent = state?.service_request ? "작업 실행" : "시나리오 출발";
+  enable();
 }
 
 for (const button of buttons) button.addEventListener("click", async () => {

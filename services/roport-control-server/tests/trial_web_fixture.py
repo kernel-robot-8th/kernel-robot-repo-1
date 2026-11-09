@@ -33,6 +33,15 @@ def main():
             single_robot=len(sys.argv) < 3 or sys.argv[2] == "single",
         )
         smartcart_only = len(sys.argv) > 2 and sys.argv[2] == "smartcart"
+        with_omx = len(sys.argv) > 4 and sys.argv[4] == "omx"
+        if with_omx:
+            profile["omx"] = {
+                "binding_id": "browser-omx",
+                "slot_id": "1a",
+                "model_version": "sim-model",
+                "calibration_version": "sim-cal",
+                "execution_mode": "mock",
+            }
         config.write_text(json.dumps(profile))
         with local_broker(root) as (mqtt_port, _, _):
             with socket.socket() as reservation:
@@ -66,6 +75,14 @@ def main():
                 processes.append(process)
 
             try:
+                if with_omx:
+                    start(
+                        [
+                            "tests/omx_web_fixture.py",
+                            str(config),
+                            str(root / "omx.json"),
+                        ]
+                    )
                 for role in profile["robots"]:
                     if smartcart_only and role != "smartcart":
                         continue

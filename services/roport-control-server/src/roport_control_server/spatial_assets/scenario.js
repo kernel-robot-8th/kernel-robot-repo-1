@@ -4,9 +4,9 @@ const copy = (value) => structuredClone(value);
 let current, connected, token, draft, draftSession, templates = [], generatedRequest = null, pending = false, revision;
 let dirty = false;
 export function hasUnappliedChanges() { return dirty; }
-const names = {route: '라인 이동', gate: '작업 완료 승인 (더미)', request: '물품 요청 대기', mode_switch: 'Nav2 전환', navigate: 'Nav2 목표 이동'};
+const names = {route: '라인 이동', gate: '작업 완료 대기', request: '물품 요청 대기', mode_switch: 'Nav2 전환', navigate: 'Nav2 목표 이동'};
 
-async function send(action, extra = {}) {
+export async function send(action, extra = {}) {
   if (!connected || !token || pending) throw new Error('실행부 연결과 조작 키를 확인하세요.');
   pending = true;
   refreshEnabled();
@@ -21,8 +21,12 @@ async function send(action, extra = {}) {
     return data.result;
   } finally { pending = false; refreshEnabled(); }
 }
+export function acceptServicePlan(plan, session) {
+  draft = copy(plan); draftSession = session; dirty = false; generatedRequest = null;
+  renderSteps(); document.dispatchEvent(new Event('scenario-draft-change'));
+}
 function refreshEnabled() {
-  $('scenario-fields').disabled = !connected || !token || pending || !current?.can_configure;
+  $('scenario-fields').disabled = !connected || !token || pending || !current?.can_configure || !!(current?.service_request && current.phase !== 'COMPLETE');
 }
 function changed() {
   dirty = true;
