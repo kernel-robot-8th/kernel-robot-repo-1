@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -171,8 +172,8 @@ def test_plan_return():
         plan_return(g, _ld('stopped', []), start='N99')
 
 
-def test_console_route_return_sends_load_done_then_start():
-    """로봇 콘솔 route_return: 경로 끝 상차 대기 → load_done, 도착(arrived) 뒤 복귀 start."""
+def _console_fake(state):
+    """ConsoleNode 의 route_return·route_command·emergency_stop 을 그대로 쓰는 가짜 노드."""
     import threading
     import time
     ws = pytest.importorskip('pinky_test_console.web_server')
@@ -184,34 +185,115 @@ def test_console_route_return_sends_load_done_then_start():
         def info(self, *_):
             pass
 
+    class Pub:
+        def __init__(self, sent):
+            self.sent = sent
+
+        def publish(self, msg):
+            self.sent.append(json.loads(msg.data))
+
+    class Guard:
+        def stop(self):
+            return False
+
     class Fake:
-        def __init__(self, state):
+        route_command = ws.ConsoleNode.route_command
+        emergency_stop = ws.ConsoleNode.emergency_stop
+        route_return = ws.ConsoleNode.route_return
+
+        def __init__(self):
             self.lock = threading.Lock()
+            self._return_lock = threading.RLock()
+            self._return_gen = 0
             self.route_state = (state, time.monotonic())
             self.sent = []
+            self.route_cmd_pub = Pub(self.sent)
+            self.teleop_guard = Guard()
             self._g = graph_view(LAYOUT)
+
+        def _require_web_drive(self):
+            pass
 
         def route_graph(self):
             return self._g
 
-        def route_command(self, cmd):
-            self.sent.append(cmd)
-            return True
+        def publish_twist(self, *_):
+            pass
+
+        def cancel_goal(self, **_):
+            return False
 
         def get_logger(self):
             return Log()
 
-    route = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']
-    fake = Fake({'state': 'loading', 'route': route, 'index': 4, 'leg': {'to': 'N01'},
-                 'event_seq': 10})
-    res = ws.ConsoleNode.route_return(fake)
-    assert res['success'] and res['route'][0] == 'N01' and fake.sent == [{'cmd': 'load_done'}]
-    with fake.lock:                                            # 상차 완료 → 회전 → 도착
-        fake.route_state = ({'state': 'arrived', 'route': route, 'event_seq': 13}, time.monotonic())
-    t_end = time.monotonic() + 3
-    while len(fake.sent) < 2 and time.monotonic() < t_end:
+        def set_state(self, st):
+            with self.lock:
+                self.route_state = (st, time.monotonic())
+
+    return Fake()
+
+
+ROUTE_P4 = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']
+LOADING_P4 = {'state': 'loading', 'route': ROUTE_P4, 'index': 4, 'leg': {'to': 'N01'}, 'event_seq': 10}
+
+
+def _wait(cond, sec=3.0):
+    import time
+    t_end = time.monotonic() + sec
+    while not cond() and time.monotonic() < t_end:
         time.sleep(0.05)
+
+
+def test_console_route_return_sends_load_done_then_start():
+    """로봇 콘솔 route_return: 경로 끝 상차 대기 → load_done, 도착(arrived) 뒤 복귀 start."""
+    fake = _console_fake(LOADING_P4)
+    res = fake.route_return()
+    assert res['success'] and res['route'][0] == 'N01' and fake.sent == [{'cmd': 'load_done'}]
+    fake.set_state({'state': 'arrived', 'route': ROUTE_P4, 'event_seq': 13})   # 상차 완료 → 회전 → 도착
+    _wait(lambda: len(fake.sent) >= 2)
     assert fake.sent[1] == {'cmd': 'start', 'route': res['route']}
-    fake2 = Fake({'state': 'arrived', 'route': ['N11', 'N19', 'N24', 'N09', 'N08', 'N12']})
-    res = ws.ConsoleNode.route_return(fake2)
+    fake2 = _console_fake({'state': 'arrived', 'route': ['N11', 'N19', 'N24', 'N09', 'N08', 'N12']})
+    res = fake2.route_return()
     assert fake2.sent == [{'cmd': 'start', 'route': res['route']}] and res['route'][-1] == 'N16'
+
+
+@pytest.mark.parametrize('how', ['route_stop', 'estop', 'other_command'])
+def test_console_return_cancelled_by_stop(how):
+    """PR #43 리뷰 P1: 상차 완료를 보낸 뒤 도착 전에 정지(경로 정지·비상 정지·다른 명령)하면
+    RouteExecutor.stop() 이 arrived 를 그대로 둬도 복귀 start 가 나가지 않는다(load_done → stop 뒤 끝)."""
+    import time
+    fake = _console_fake(LOADING_P4)
+    fake.route_return()
+    if how == 'route_stop':
+        fake.route_command({'cmd': 'stop'})
+    elif how == 'estop':
+        fake.emergency_stop()
+    else:
+        fake.route_command({'cmd': 'speed', 'base_speed': 0.05})
+    fake.set_state({'state': 'arrived', 'route': ROUTE_P4, 'event_seq': 13})   # 정지해도 arrived 유지
+    time.sleep(0.6)
+    assert fake.sent[0] == {'cmd': 'load_done'}
+    assert {'cmd': 'start', 'route': ['N01', 'N18', 'N10', 'N02', 'N14', 'N16']} not in fake.sent, fake.sent
+    assert all(c['cmd'] != 'start' for c in fake.sent), fake.sent
+
+
+def test_console_return_start_then_stop_keeps_order():
+    """복귀 start 가 먼저 나갔으면 그 뒤 정지는 그대로 나가 로봇이 멈춤(순서 load_done → start → stop)."""
+    fake = _console_fake(LOADING_P4)
+    fake.route_return()
+    fake.set_state({'state': 'arrived', 'route': ROUTE_P4, 'event_seq': 13})
+    _wait(lambda: len(fake.sent) >= 2)
+    fake.route_command({'cmd': 'stop'})
+    assert [c['cmd'] for c in fake.sent] == ['load_done', 'start', 'stop']
+
+
+def test_console_return_newer_return_replaces_older():
+    """복귀를 두 번 누르면 앞의 대기 복귀는 취소되고 마지막 것만 출발."""
+    fake = _console_fake(LOADING_P4)
+    fake.route_return()
+    fake.route_return()
+    fake.set_state({'state': 'arrived', 'route': ROUTE_P4, 'event_seq': 13})
+    _wait(lambda: sum(c['cmd'] == 'start' for c in fake.sent) >= 1)
+    import time
+    time.sleep(0.4)
+    assert sum(c['cmd'] == 'start' for c in fake.sent) == 1, fake.sent

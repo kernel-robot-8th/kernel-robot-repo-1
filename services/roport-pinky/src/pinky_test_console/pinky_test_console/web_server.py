@@ -140,6 +140,9 @@ class ConsoleNode(Node):
             self._start_marker()
 
         self.lock = threading.Lock()
+        # 「복귀」 대기 작업 번호. 사용자 경로 명령·정지가 올리면 대기 중 복귀는 출발하지 않음(PR #43 리뷰 P1)
+        self._return_lock = threading.RLock()
+        self._return_gen = 0
 
         # 레이어별 최신 메시지와 버전 (버전이 바뀐 경우에만 데이터 전송)
         self.layers = {
@@ -320,7 +323,9 @@ class ConsoleNode(Node):
         self._require_web_drive()
         self.teleop_guard.stop()
         if self.route_cmd_pub is not None:
-            self.route_cmd_pub.publish(String(data=json.dumps({'cmd': 'stop'})))
+            with self._return_lock:            # 대기 중 복귀 취소 + 정지를 복귀 start 와 순서 고정
+                self._return_gen += 1
+                self.route_cmd_pub.publish(String(data=json.dumps({'cmd': 'stop'})))
         self.publish_twist(0.0, 0.0)
         nav_cancelled = self.cancel_goal(wait_sec=0.3)
         self.get_logger().warn('[WEB] EMERGENCY STOP: zero velocity published, '
@@ -469,18 +474,25 @@ class ConsoleNode(Node):
         if not plan['load_done_first']:
             self.route_command(start_cmd)
             return {'success': True, 'msg': plan['msg'], 'route': plan['route']}
-        self.route_command({'cmd': 'load_done'})
+        with self._return_lock:                # load_done 과 이 복귀의 번호를 함께 정함
+            self.route_command({'cmd': 'load_done'})
+            gen = self._return_gen
         seq0 = (state or {}).get('event_seq')
 
         def wait_then_start():
             deadline = time.monotonic() + wait_sec
+            s = {}
             while time.monotonic() < deadline:
                 time.sleep(0.1)
+                if self._return_gen != gen:    # 그 사이 정지·다른 명령 → 복귀 취소
+                    self.get_logger().info('[WEB] return: cancelled by a newer command')
+                    return
                 with self.lock:
                     cur = self.route_state
                 s = cur[0] if cur else {}
                 if s.get('state') == 'arrived' and s.get('event_seq') != seq0:
-                    self.route_command(start_cmd)
+                    if not self.route_command(start_cmd, return_gen=gen):
+                        self.get_logger().info('[WEB] return: cancelled by a newer command')
                     return
                 if s.get('state') in ('error', 'stopped'):
                     break
@@ -500,12 +512,22 @@ class ConsoleNode(Node):
             self._route_graph = route_view.graph_view(path)
         return self._route_graph
 
-    def route_command(self, cmd):
-        """cmd = route_view.parse_route_command 결과. line_nav 가 받아 검사·실행한다."""
+    def route_command(self, cmd, return_gen=None):
+        """cmd = route_view.parse_route_command 결과. line_nav 가 받아 검사·실행한다.
+
+        사용자 명령(return_gen=None)은 대기 중인 「복귀」를 취소한다. 복귀 스레드는 자기 번호를 넘기고,
+        그 사이 다른 명령이 있었으면 보내지 않고 False. 확인과 발행을 같은 잠금 안에서 해서
+        정지 뒤에 복귀 start 가 나가지 않는다.
+        """
         self._require_web_drive()
         if self.route_cmd_pub is None:
             raise route_view.RouteCommandError('route commands need mode:=route or mode:=test')
-        self.route_cmd_pub.publish(String(data=json.dumps(cmd)))
+        with self._return_lock:
+            if return_gen is None:
+                self._return_gen += 1
+            elif return_gen != self._return_gen:
+                return False
+            self.route_cmd_pub.publish(String(data=json.dumps(cmd)))
         self.get_logger().info(f'[WEB] line_nav command: {cmd}')
         return True
 

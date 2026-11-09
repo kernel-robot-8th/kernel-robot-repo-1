@@ -46,7 +46,8 @@
         <button id="btnStart" class="btn btn-primary" type="button" disabled>▶ 경로 시작</button>
         <button id="btnLoad" class="btn btn-outline" type="button" disabled>상차 완료</button>
         <button id="btnStop" class="btn btn-danger" type="button">■ 경로 정지</button>
-        <button id="btnHome" class="btn btn-outline" type="button" title="지금 노드 → P5. 위치를 모르면(정지·오류 뒤) 지도에서 지금 노드를 먼저 누름. 상차 대기 중이면 상차 완료 뒤 출발">⌂ P5 복귀</button>
+        <button id="btnHome" class="btn btn-outline" type="button" title="지금 노드 → P5. 도착·상차 대기면 그 위치에서, 정지·오류 뒤에는 「지금 위치」를 골라야 함. 상차 대기 중이면 상차 완료 뒤 출발">⌂ P5 복귀</button>
+        <select id="homeFrom" class="text-input ir-select" title="정지·오류 뒤 복귀할 때 로봇이 지금 서 있는 노드"><option value="">지금 위치(정지·오류 뒤)…</option></select>
       </div>
       <div class="form-line"><label for="spLin">직선 속도</label>
         <span class="row"><input id="spLin" type="range" min="1.5" max="6" step="0.5" value="3"><b id="spLinV">-</b></span></div>

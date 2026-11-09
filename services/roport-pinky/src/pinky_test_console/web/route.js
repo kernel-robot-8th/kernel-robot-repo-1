@@ -5,6 +5,7 @@ const $ = (id) => document.getElementById(id);
 const POLL_MS = 250;
 let routeIds = [];
 let lastState = null;
+let lastStale = true;
 
 const map = new RM.RouteMap($("routeCanvas"), (ids) => {
   routeIds = ids;
@@ -65,8 +66,18 @@ $("btnStart").addEventListener("click", () => {
 $("btnLoad").addEventListener("click", () => command({ cmd: "load_done" }));
 $("btnStop").addEventListener("click", () => command({ cmd: "stop" }));
 $("btnHome").addEventListener("click", async () => {
-  // 위치를 모를 때(정지·오류 뒤)는 지도에서 누른 첫 노드를 지금 위치로 보냄
-  const body = routeIds.length ? { start: routeIds[0] } : {};
+  // 경로 끝(도착·인계·상차 대기)이면 로봇이 아는 위치에서 복귀. 그 밖(대기·정지·오류·상태 오래됨)은
+  // 지금 노드를 「지금 위치」에서 새로 골라야 함. 지난 경로의 출발점은 쓰지 않음(PR #43 리뷰 P2)
+  const st = lastState ? lastState.state : null;
+  const known = !lastStale && ["arrived", "handoff", "loading"].includes(st);
+  const here = $("homeFrom").value;
+  if (!known && !here) {
+    RM.setMsg($("cmdMsg"), "로봇 위치를 모릅니다. 「지금 위치」에서 로봇이 서 있는 노드를 고르세요.", "err");
+    $("homeFrom").focus();
+    return;
+  }
+  const body = known ? {} : { start: here };
+  $("homeFrom").value = "";
   const r = await RM.postJson("api/route/return", body);
   RM.setMsg($("cmdMsg"), r.success ? r.msg : `복귀 실패: ${r.msg || r.httpStatus}`, r.success ? "ok" : "err");
 });
@@ -109,6 +120,7 @@ function render(snap) {
   const s = snap.state;
   syncSpeed(s && s.speed);
   lastState = s;
+  lastStale = !!snap.stale;
   $("robotChip").textContent = "robot " + (snap.robot || "-");
   $("stateChip").textContent = "state " + (s ? s.state : "-");
   $("sStale").hidden = !snap.stale;
@@ -155,6 +167,12 @@ async function init() {
     RM.setMsg($("cmdMsg"), `노드 그래프 없음: ${g.msg || g.httpStatus}`, "err");
   } else {
     map.setGraph(g);
+    for (const n of g.nodes) {
+      const o = document.createElement("option");
+      o.value = n.id;
+      o.textContent = n.place ? `${n.id} (${n.place})` : n.id;
+      $("homeFrom").appendChild(o);
+    }
     for (const p of g.presets) {
       const o = document.createElement("option");
       o.value = p.route.join(",");
