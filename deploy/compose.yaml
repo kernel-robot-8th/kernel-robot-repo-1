@@ -1,7 +1,8 @@
 # 팀 Wi-Fi(LAN) 전용 배포. 포트는 LAN_IP에만 게시하며 0.0.0.0·인터넷에는 열지 않는다.
 # 서버에 인증이 아직 없으므로 인터넷 공개 금지. 사용법은 deploy/README.md.
 x-hardened: &hardened
-  restart: unless-stopped
+  # 자동 재시작 금지: 방화벽 규칙은 재부팅 시 사라지므로, 호스트·Docker 재시작 뒤 규칙 없이 서비스가 먼저 열리면 안 된다.
+  restart: "no"
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
 

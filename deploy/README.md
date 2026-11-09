@@ -34,6 +34,23 @@ docker compose -f deploy/compose.yaml --env-file deploy/.env ps
 set -a; . deploy/.env; set +a; sh deploy/firewall-rules.sh
 ```
 
+## 재부팅 후 절차
+
+컨테이너는 자동으로 다시 뜨지 않습니다(`restart: "no"`). 방화벽 규칙을 영구 저장하지 않아 재부팅하면 사라지는데, 자동으로 올라오면 규칙 없이 인증 없는 API가 열리기 때문입니다. 호스트나 Docker를 재시작한 뒤에는 다음 순서를 지킵니다.
+
+1. 방화벽 규칙을 다시 적용합니다(위 "접속 대역 제한").
+2. `sudo iptables -S DOCKER-USER`로 규칙이 들어갔는지 확인합니다.
+3. `docker compose -f deploy/compose.yaml --env-file deploy/.env up -d`로 기동합니다.
+
+규칙 영속화(부팅 순서 보장)는 이 호스트에서 검증할 수 없어 하지 않았습니다. 자동 재시작이 필요해지면 영속화와 부팅 순서를 따로 설계하고 검증합니다.
+
+## 수용 기준(실제 호스트에서 확인)
+
+- 호스트 재부팅 뒤 `docker compose ps`에 컨테이너가 떠 있지 않다.
+- 방화벽 규칙 적용 전에는 서비스가 게시되지 않고, 적용 후 기동하면 허용 대역의 PC에서 5개 포트에 접속된다.
+- 허용 대역 밖의 PC(예: 휴대전화 핫스팟)에서는 같은 포트가 응답하지 않는다.
+- `up -d` 후 `docker compose ps`에서 네 컨테이너가 healthy다.
+
 ## 웹을 Vercel에 올릴 때
 
 Vercel 프로젝트의 Firewall 사용자 규칙으로 허용 IP 외 요청을 거절할 수 있습니다. 다만 웹이 이 LAN 서버를 호출하게 되면 https 페이지에서 `http://<사설 IP>` 호출이 브라우저에서 차단되므로(혼합 콘텐츠) LAN 서버에 신뢰되는 HTTPS가 필요합니다. 현재 웹은 서버를 호출하지 않는 정적 뼈대라 지금은 문제가 없습니다.
