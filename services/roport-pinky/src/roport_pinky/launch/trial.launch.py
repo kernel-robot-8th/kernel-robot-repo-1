@@ -37,6 +37,9 @@ def _nodes(context):
     line_rotate_speed = float(LaunchConfiguration('line_rotate_speed').perform(context))
     if not math.isfinite(line_rotate_speed) or not .15 <= line_rotate_speed <= .4:
         raise ValueError('line_rotate_speed must be finite and in [0.15, 0.4] rad/s')
+    goal_xy_tolerance = float(LaunchConfiguration('goal_xy_tolerance').perform(context))
+    if not math.isfinite(goal_xy_tolerance) or not .01 <= goal_xy_tolerance <= .1:
+        raise ValueError('goal_xy_tolerance must be finite and in [0.01, 0.1] m')
     config = LaunchConfiguration('params_file')
     nodes = [
         Node(package='roport_pinky', executable='trial_guard', output='screen'),
@@ -61,11 +64,14 @@ def _nodes(context):
         if name == 'bt_navigator':
             # Goal acknowledgements must survive short scheduling delays on the Pi.
             overrides['default_server_timeout'] = 500  # milliseconds
+            overrides['default_nav_to_pose_bt_xml'] = PathJoinSubstitution([
+                FindPackageShare('roport_pinky'), 'behavior_trees', 'bounded_recovery.xml'])
         if name == 'planner_server':
             # The public-space goal is near the map edge; a .5 m search crosses it.
             overrides['GridBased.tolerance'] = 0.1  # meters
         if name == 'controller_server':
             overrides.update(CONTROLLER_OVERRIDES)
+            overrides['general_goal_checker.xy_goal_tolerance'] = goal_xy_tolerance
             overrides['FollowPath.desired_linear_vel'] = max_linear
             overrides['FollowPath.rotate_to_heading_angular_vel'] = max_angular
         if name in ('controller_server', 'behavior_server', 'velocity_smoother'):
@@ -98,6 +104,8 @@ def generate_launch_description():
                                   description='Nav2 controller/smoother cap in m/s'),
             DeclareLaunchArgument('max_angular', default_value='0.4',
                                   description='Nav2 rotation cap in rad/s; use field-verified value'),
+            DeclareLaunchArgument('goal_xy_tolerance', default_value='0.08',
+                                  description='Map pose XY tolerance in m; not measured wall clearance'),
             DeclareLaunchArgument('params_file', default_value=PathJoinSubstitution([
                 FindPackageShare('pinky_navigation'), 'params', 'nav2_params.yaml']))]
     return LaunchDescription(args + [OpaqueFunction(function=_nodes)])

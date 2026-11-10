@@ -30,6 +30,7 @@ class SimulatedNav:
         self.pose = pose
         self.ready = ready
         self.goal = self.result = None
+        self.navigation = None
         self.stopped = True
         self.observed_at = time.time()
 
@@ -42,7 +43,23 @@ class SimulatedNav:
             "observed_at": datetime.fromtimestamp(self.observed_at, UTC).isoformat(),
         }
 
+    def diagnostic(self):
+        return dict(self.navigation) if self.navigation else None
+
     def start(self, payload):
+        self.navigation = {
+            "phase": "navigating",
+            "goal_id": payload["goal_id"],
+            "target_pose": dict(payload["pose"]),
+            "current_pose": dict(self.pose),
+            "recoveries": 0,
+            "max_recoveries": 2,
+            "recovery_elapsed_s": 0.0,
+            "recovery_timeout_s": 30.0,
+            "nav2_error_code": 0,
+            "action_status": 0,
+            "error_code": None,
+        }
         self.goal = payload["pose"]
         self.result = None
         self.stopped = False
@@ -53,6 +70,8 @@ class SimulatedNav:
 
     def tick(self, dt):
         self.observed_at = time.time()
+        if self.navigation is not None:
+            self.navigation["current_pose"] = dict(self.pose)
         if self.goal is None:
             return
         dx, dy = (self.goal[k] - self.pose[k] for k in ("x", "y"))

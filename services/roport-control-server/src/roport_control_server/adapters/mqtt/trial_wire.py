@@ -116,6 +116,25 @@ SCHEMAS["navigate.completed"] = obj(
 )
 
 
+# Optional diagnostics require an updated consumer; legacy reports remain valid.
+NAVIGATION = obj(
+    phase=enum("navigating", "recovering", "completed", "failed"),
+    goal_id=ID,
+    target_pose=POSE,
+    current_pose={**POSE, "type": ["object", "null"]},
+    recoveries=UINT,
+    max_recoveries=UINT,
+    recovery_elapsed_s={"type": "number", "minimum": 0, "maximum": 1000000},
+    recovery_timeout_s={"type": "number", "minimum": 0, "maximum": 1000000},
+    nav2_error_code=UINT,
+    action_status=UINT,
+    error_code=STATE["fault"],
+)
+for _kind, _schema in SCHEMAS.items():
+    if _kind != "event.ack" and not _kind.endswith(".requested"):
+        _schema["properties"]["navigation"] = NAVIGATION
+
+
 def _check(value, schema, path="payload"):
     if "enum" in schema and value not in schema["enum"]:
         raise ValueError(f"{path}: invalid choice")
@@ -150,7 +169,9 @@ def _check(value, schema, path="payload"):
     ):
         raise ValueError(f"{path}: invalid identifier")
     if type(value) is dict:
-        if set(value) != set(schema["properties"]):
+        if not set(schema["required"]).issubset(value) or not set(value).issubset(
+            schema["properties"]
+        ):
             raise ValueError(f"{path}: missing or unexpected fields")
         for key, item in value.items():
             _check(item, schema["properties"][key], f"{path}.{key}")
