@@ -32,6 +32,18 @@
   a ≠ 0 이면 시계 r° → −a 이동(기본 정지 자세로) → 반시계 90 + turn_min ~ 90 + turn_max 로 진입선 찾기 → 끝·경유.
   도킹 이동은 odom 이 멈춘 뒤(구동 지연으로 남은 움직임을 먼저 흘려보냄) 시작 자세에서 부호 있는 거리로 재고,
   approach_speed 이하·끝으로 갈수록 감속(min_speed 까지)·방향 유지. 거리 초과·시간 초과·멈추지 않음은 오류 정지.
+라인 유실 복구(FFT1-163): 추종 중 IR 3개가 모두 선을 놓치고 아직 다음 노드 감지 창(min_ok) 전이면
+  GAP = 놓치기 전 gap_heading_window_cm 동안의 odom 방향(평균)을 유지해 approach_speed 이하로 직진(최대 gap_max_cm),
+  IR 하나라도 gap_confirm 샘플 연속 선 위면 추종으로 돌아감(PD 이전 오차 지움, 옆 IR 이면 추종 PD 가 조향 —
+  GAP 기능 전에도 IR 하나라도 선 위면 추종했으므로 판정 완화가 아님). 상태 이름은 follow 그대로(recovery 필드).
+  GAP 시간 상한 = 2 + 2·gap_max_cm / min_speed(s), odom 이동 0.1 cm 미만이 lost_timeout 동안 이어지면 정지(진행 없음).
+  gap_max_cm 안에 못 찾으면 기본(search_deg 0)은 바로 정지 'line_lost: gap N cm exceeded'. search_deg > 0 이면
+  SEARCH(구간마다 한 번) = 멈춤 확인 → 놓친 지점까지 후진 → 제자리 좌 search_deg → 우 2·search_deg → 원래 방향으로
+  돌며 가운데 IR 정렬(align_error)을 찾음 → 찾으면 그 자리에서 추종, 못 찾으면 'line_lost: gap/search failed'
+  (2D 시뮬에서 재획득 0건 — 놓친 지점 회전이라 가운데 IR 옆 이동이 약 ±1 cm 뿐, 그래서 기본 끔). 감지 창 안(놓친 곳이 이미 창 안이거나 GAP 이 창에 들어감)에서는
+  같은 방향·속도로 직진하며 그 노드의 기존 판정(가로선 = IR 3개, 옆선·T자 규칙, node_confirm)으로만 노드를 찾고,
+  max_ok·gap_max_cm 를 넘으면 정지('line_lost: gap into <노드> window, node not found'). 창 안에서는 SEARCH 안 함.
+  창 전 GAP·SEARCH 중에는 노드 판정 안 함. 구간 시작 suppress_cm 안, 통과·전진·회전·후진·도킹 이동 중 유실은 예전 그대로.
 교차선 출발(start_cross): IR 3개가 route[0](가로선 노드 아님)을 지나는 선 위, 로봇은 start_facing 을 봄
   → ir_ahead_cm 전진(축을 노드 중심으로) → 첫 구간 방향이 다르면 선 찾기 회전 → 첫 구간(s0 = ir_ahead, gate_early 적용).
 """
@@ -65,6 +77,8 @@ SETTLE_DEG = 0.2          # 회전이 이보다 작은 새 odom 샘플 비교가
 SETTLE_TIMEOUT_S = 1.5    # 0 명령 뒤 이 시간 안에 멈추지 않으면 오류
 MOVE_GAIN = 0.01          # m/s per 남은 cm (3 cm 남으면 0.03)
 MOVE_OVERRUN_CM = 2.0     # 목표보다 이만큼 더 가면(부호 있는 거리) 오류
+GAP_CHORD_MIN_CM = 2.0    # 선 위치 점으로 방향을 잴 최소 기억 거리
+GAP_PROGRESS_CM = 0.1     # GAP 중 이만큼도 못 가고 lost_timeout 이 지나면 정지(진행 없음)
 
 
 @dataclass(frozen=True)
@@ -112,6 +126,13 @@ class NavConfig:
     # 실로그 16건의 진짜 T자 감지는 모두 양쪽이 켜짐(각 1.0~2.8 cm).
     tee_both: bool = True
     tee_window_cm: float = 1.5
+    # 옆선 켜짐 확인(2026-11-09 사용자 결정): 옆선 노드는 그 옆 IR 이 감지 창 시작(min_ok) 뒤에 꺼짐 → 켜짐으로
+    # 바뀐 run 일 때만 인정. 창 전부터 켜져 있던 run(본선 가장자리 타기)은 무시. 꺼짐은 side_rise_off_samples
+    # 연속이어야 run 이 끝난 것으로 봄(깜빡임). d660 0.08 m/s 11-09 21:54 N02→N14: 회전 직후 오른쪽으로 밀려
+    # 왼쪽 IR 이 8.0 cm 부터 본선 가장자리를 계속 밟다가 창(14.8 cm)이 열리자 15.1 cm 오감지(진짜 약 18 cm).
+    side_rise_only: bool = True
+    side_rise_off_samples: int = 2
+    side_rise_tee: bool = False    # T자(tee_both)에도 같은 규칙 — 실로그 재생으로 판단(README)
     reverse_speed: float = 0.02    # m/s
     reverse_max_cm: float = 12.0
     # 노드 앞 감속(2026-11-06 d660: 0.06 m/s 에서 노드를 지나쳐 멈춤, 0.03 m/s 는 완주).
@@ -122,6 +143,15 @@ class NavConfig:
     approach_lead_cm: float = 5.0
     # 직진 통과 노드(N15·N23 등)는 다가갈 때·지날 때 감속하지 않음(2026-11-07 사용자)
     pass_full_speed: bool = True
+    # 라인 유실 복구(FFT1-163, 시뮬만 확인 — 실로봇 미검증). gap_max_cm 0 = 끔(예전 동작)
+    gap_max_cm: float = 8.0             # 놓친 뒤 방향 유지 직진 최대 거리
+    gap_heading_window_cm: float = 4.0  # 놓치기 전 이 거리 동안의 odom 방향 평균을 유지
+    gap_confirm: int = 2                # IR 하나라도 이 샘플 수 연속 선 위면 추종 복귀(창 안은 노드 판정 먼저)
+    # SEARCH 제자리 회전 폭(좌 → 우 2배 → 원래 방향). 0 = 끔(기본): GAP 이 넘치면 후진·회전 없이 정지.
+    # 2D 시뮬에서 SEARCH 재획득 0건(2026-11-09 검토 M1)이라 기본 끔
+    search_deg: float = 0.0
+    # 가운데 ↔ 옆 IR 간격(GAP 방향용 선 위치 추정). Pinky Pro HW Spec 약 20 mm, 실측 아님
+    ir_spacing_cm: float = 2.0
 
     def __post_init__(self):
         if not 0.0 < self.max_linear <= HARD_MAX_LINEAR:
@@ -157,6 +187,19 @@ class NavConfig:
             raise ValueError('need kp > 0, kd >= 0')
         if not (math.isfinite(self.tee_window_cm) and 0.0 < self.tee_window_cm <= 5.0):
             raise ValueError('need 0 < tee_window_cm <= 5')
+        if not (math.isfinite(self.gap_max_cm) and 0.0 <= self.gap_max_cm <= 15.0):
+            raise ValueError('need 0 <= gap_max_cm <= 15')
+        if not (math.isfinite(self.gap_heading_window_cm)
+                and 0.5 <= self.gap_heading_window_cm <= 20.0):
+            raise ValueError('need 0.5 <= gap_heading_window_cm <= 20')
+        if not (math.isfinite(self.search_deg) and 0.0 <= self.search_deg <= 45.0):
+            raise ValueError('need 0 <= search_deg <= 45')
+        if not 1 <= self.side_rise_off_samples <= 10:
+            raise ValueError('need 1 <= side_rise_off_samples <= 10')
+        if not (math.isfinite(self.ir_spacing_cm) and 0.5 <= self.ir_spacing_cm <= 5.0):
+            raise ValueError('need 0.5 <= ir_spacing_cm <= 5')
+        if self.gap_confirm < 1:
+            raise ValueError('need gap_confirm >= 1')
         if self.node_confirm < 1 or self.reverse_max_cm <= 0 or self.lost_timeout <= 0:
             raise ValueError('node_confirm >= 1, reverse_max_cm > 0, lost_timeout > 0')
 
@@ -182,6 +225,10 @@ class RouteExecutor:
         self.dock = dock if dock is not None else DockTable(graph)
         self._dock_phase = None  # 상차 도착 동작 중 어디인지(표시용): a·r·b·load·-b·unr·-a·back·back_a
         self._dock_disp = (0.0, 0.0)   # 표시용 도킹 이동 (접근 방향 cm, 새 방향 cm)
+        self._gap = None          # GAP 중: {'d', 'yaw', 'pose', 'hits'}
+        self._recovery = None     # SEARCH 중: {'d', 'window', 'yaw'}
+        self._searched = False    # 이 구간에서 SEARCH 를 이미 했는지(구간마다 한 번)
+        self._yaw_hist = deque()  # 추종 중 (이동 거리, odom yaw) — GAP 방향
         self.state = IDLE
         self.reason = ''
         self.route = []
@@ -418,6 +465,7 @@ class RouteExecutor:
             'event_seq': self.event_seq,
             'route_event_seq0': self.route_seq0,
             'dock': self.dock.as_dict(),
+            'recovery': self._recovery_dict(),
             'speed': {'base_speed': self.cfg.base_speed, 'rotate_speed': self.cfg.rotate_speed,
                       'min_speed': self.cfg.min_speed, 'max_linear': self.cfg.max_linear,
                       'rotate_min_speed': self.cfg.rotate_min_speed,
@@ -434,6 +482,16 @@ class RouteExecutor:
         return out
 
     _HEADING_DEG = {'E': 0.0, 'N': 90.0, 'W': 180.0, 'S': -90.0}
+
+    def _recovery_dict(self):
+        if self._gap is not None and self.state == FOLLOW:
+            g = self._gap
+            return {'mode': 'gap', 'lost_at_cm': round(g['d'], 1),
+                    'gap_cm': round(self._odo - self._ref_odo - g['d'], 1),
+                    'in_window': g['window']}
+        if self._recovery is not None and self.active:
+            return {'mode': 'search', 'lost_at_cm': round(self._recovery['d'], 1)}
+        return None
 
     def _estimate(self, leg):
         """화면 표시용 바퀴 축 위치 추정(실측 cm). 그래프 + 이동 거리로 계산, 제어에는 쓰지 않는다."""
@@ -456,6 +514,9 @@ class RouteExecutor:
                                                       'heading_deg': round(heading, 1)}}
         if self.state == FOLLOW:
             axle = self._leg_s0 + (self._odo - self._ref_odo) - self.cfg.ir_ahead_cm
+            self._progress = min(1.0, max(0.0, axle / leg.length)) if leg.length > 0 else 1.0
+        elif self._recovery is not None and self.state in (ADVANCE, ROTATE):   # SEARCH: 놓친 지점
+            axle = self._leg_s0 + self._recovery['d'] - self.cfg.ir_ahead_cm
             self._progress = min(1.0, max(0.0, axle / leg.length)) if leg.length > 0 else 1.0
         elif self.state in (PASS, ADVANCE, ROTATE, LOADING, REVERSE, ARRIVED, HANDOFF_STATE):
             self._progress = 1.0
@@ -522,6 +583,9 @@ class RouteExecutor:
         self._max_ok = 0.0
         self._prim = {}
         self._tee_seen = {0: None, 2: None}   # T자: 왼쪽·오른쪽 센서가 마지막으로 선을 본 이동 거리
+        # 옆 IR run: on = 지금 켜진 run 안, off = 연속 꺼진 샘플 수, valid = 창 시작 뒤 꺼짐→켜짐으로 시작한 run
+        self._side_run = {ch: {'on': False, 'off': 0, 'valid': False, 'start': None, 'noted': False}
+                          for ch in (0, 2)}
 
     def _update_odom(self, pose):
         if self._pose is not None:
@@ -532,6 +596,8 @@ class RouteExecutor:
             self._hold_yaw = pose[2]
 
     def _finish(self, state, reason=''):
+        self._gap = None
+        self._recovery = None
         self.state = state
         self.reason = reason
         self._steps.clear()
@@ -560,6 +626,10 @@ class RouteExecutor:
         leg = self.legs[self.index]
         self.state = FOLLOW
         self._reset_primitive()
+        self._gap = None
+        self._recovery = None
+        self._searched = False
+        self._yaw_hist.clear()
         self._leg_s0 = 0.0 if s0_cm is None else s0_cm
         self._progress = 0.0
         c = self.cfg
@@ -577,6 +647,36 @@ class RouteExecutor:
             self._max_ok = c.gate_max * expected + c.gate_slack_cm
         self._log('leg', f'{leg.frm}→{leg.to} {leg.action}')
 
+    def _track_sides(self, reading, d):
+        """추종(GAP 포함) 샘플마다 옆 IR run 을 갱신. 창 시작 전 run 은 valid 가 아님."""
+        k = self.cfg.side_rise_off_samples
+        for ch in (0, 2):
+            r = self._side_run[ch]
+            if reading.on_line[ch]:
+                if not r['on']:
+                    r.update(on=True, valid=r['off'] >= k and d >= self._min_ok, start=d,
+                             noted=False)
+                r['off'] = 0
+            else:
+                r['off'] += 1
+                if r['off'] >= k:
+                    r['on'] = False
+                    r['valid'] = False
+
+    def _side_ok(self, ch, leg, d, tee=False):
+        """옆 IR ch 를 노드 판정에 써도 되는지(켜짐 확인 규칙)."""
+        c = self.cfg
+        if not c.side_rise_only or (tee and not c.side_rise_tee):
+            return True
+        r = self._side_run[ch]
+        if r['valid']:
+            return True
+        if r['on'] and not r['noted']:      # 창 전부터 켜져 있던 run: 한 번만 기록
+            r['noted'] = True
+            self._log('side_ignored', f'{leg.to} {"left" if ch == 0 else "right"} on since '
+                      f'{r["start"]:.1f} cm (window {self._min_ok:.1f}), at {d:.1f} cm')
+        return False
+
     def _hit(self, reading, leg, d=0.0):
         if leg.detect == 'bar':
             return reading.node
@@ -584,18 +684,30 @@ class RouteExecutor:
         if not on[1]:
             return False
         if self.cfg.tee_both and LEFT in leg.sides and RIGHT in leg.sides:
-            for ch in (0, 2):
-                if on[ch]:
-                    self._tee_seen[ch] = d
+            seen = [ch for ch in (0, 2) if on[ch] and self._side_ok(ch, leg, d, tee=True)]
+            for ch in seen:
+                self._tee_seen[ch] = d
             a, b = self._tee_seen[0], self._tee_seen[2]
-            return (on[0] or on[2]) and a is not None and b is not None \
+            return bool(seen) and a is not None and b is not None \
                 and abs(a - b) <= self.cfg.tee_window_cm
-        return (LEFT in leg.sides and on[0]) or (RIGHT in leg.sides and on[2])
+        return ((LEFT in leg.sides and on[0] and self._side_ok(0, leg, d))
+                or (RIGHT in leg.sides and on[2] and self._side_ok(2, leg, d)))
 
     def _follow(self, reading):
         c = self.cfg
         leg = self.legs[self.index]
         d = self._odo - self._ref_odo
+        self._track_sides(reading, d)
+        if self._gap is not None:
+            cmd = self._gap_step(reading, leg, d)
+            if self._gap is not None or self.state != FOLLOW:
+                return cmd
+            # 선을 다시 잡음: 이 샘플부터 평소 추종(감지 창 전이라 노드 판정은 아직 안 걸림)
+        elif reading.lost and c.gap_max_cm > 0 and d >= c.suppress_cm:
+            if d > self._max_ok:          # 예상 거리를 이미 넘음: 예전처럼 노드 놓침(GAP 하지 않음)
+                self.fail(f'node_missed: {leg.to} not found within {self._max_ok:.1f} cm')
+                return None
+            return self._gap_start(leg, d)
         if d >= c.suppress_cm and d >= self._min_ok and self._hit(reading, leg, d):
             self._hits += 1
         else:
@@ -615,6 +727,7 @@ class RouteExecutor:
             self._prev_error = None
             return Command(0.0, 0.0)
         self._lost_since = None
+        self._remember_yaw(d, reading)
         e = reading.error
         de = 0.0
         if self._prev_error is not None and self._prev_t is not None and self._now > self._prev_t:
@@ -631,6 +744,162 @@ class RouteExecutor:
         linear = speed * (1.0 - c.slow_gain * abs(e))
         linear = min(c.max_linear, max(c.min_speed, linear))
         return Command(linear, angular)
+
+    def _remember_yaw(self, d, reading):
+        """선 위 추종 샘플: odom 방향과 선 위치 추정점을 최근 gap_heading_window_cm 만큼만 기억.
+
+        선 위치 = 가운데 IR 위치 − 왼쪽 법선 × (오차 × IR 간격). 오차 +1 = 선이 오른쪽 IR 아래.
+        """
+        c = self.cfg
+        x, y, yaw = self._pose
+        sx, sy = x + c.ir_ahead_cm * math.cos(yaw), y + c.ir_ahead_cm * math.sin(yaw)
+        off = -reading.error * c.ir_spacing_cm
+        h = self._yaw_hist
+        h.append((d, yaw, sx - off * math.sin(yaw), sy + off * math.cos(yaw)))
+        while h and h[0][0] < d - c.gap_heading_window_cm:
+            h.popleft()
+
+    def _gap_heading(self):
+        """GAP 방향. 기억한 거리가 GAP_CHORD_MIN_CM 이상이면 선 위치 점들의 앞·뒤 절반 평균을 이은 방향
+        (회전 직후처럼 로봇이 선과 비스듬히 추종 중이어도 선 방향), 짧으면 odom 방향 평균."""
+        h = list(self._yaw_hist)
+        if not h:
+            return self._pose[2]
+        if h[-1][0] - h[0][0] >= GAP_CHORD_MIN_CM and len(h) >= 4:
+            k = len(h) // 2
+            ax = sum(p[2] for p in h[:k]) / k
+            ay = sum(p[3] for p in h[:k]) / k
+            bx = sum(p[2] for p in h[k:]) / (len(h) - k)
+            by = sum(p[3] for p in h[k:]) / (len(h) - k)
+            return math.atan2(by - ay, bx - ax)
+        return math.atan2(sum(math.sin(p[1]) for p in h), sum(math.cos(p[1]) for p in h))
+
+    def _gap_start(self, leg, d):
+        yaw = self._gap_heading()
+        self._gap = {'d': d, 'yaw': yaw, 'pose': self._pose[:2], 'hits': 0, 'window': False,
+                     't0': self._now, 'prog_d': d, 'prog_t': self._now}
+        self._prev_error = None
+        self._lost_since = None
+        self._hits = 0
+        self._log('gap', f'{leg.frm}→{leg.to} at {d:.1f} cm, heading {math.degrees(yaw):.1f}°')
+        return self._gap_cmd()
+
+    def _gap_cmd(self):
+        c = self.cfg
+        w = _clamp(c.heading_kp * _wrap(self._gap['yaw'] - self._pose[2]), c.max_angular)
+        return Command(self.approach_speed, w)
+
+    def _gap_guard(self, leg, d):
+        """GAP 시간·진행 감시. 넘으면 정지하고 True.
+
+        시간 상한 = 2 + 2·gap_max_cm / min_speed(s, 도킹 이동 timeout 과 같은 꼴, 기본 약 12.7 s).
+        진행 없음 = odom 이동이 GAP_PROGRESS_CM 미만인 채 lost_timeout 이 지남(odom 은 오는데 값이 그대로 등).
+        """
+        c = self.cfg
+        g = self._gap
+        if d - g['prog_d'] >= GAP_PROGRESS_CM:
+            g['prog_d'], g['prog_t'] = d, self._now
+        elif self._now - g['prog_t'] > c.lost_timeout:
+            self.fail(f'line_lost: gap no progress ({d - g["d"]:.1f} cm) on {leg.frm}→{leg.to}')
+            return True
+        if self._now - g['t0'] > 2.0 + 2.0 * c.gap_max_cm / (c.min_speed * 100.0):
+            self.fail(f'line_lost: gap timeout ({d - g["d"]:.1f} cm) on {leg.frm}→{leg.to}')
+            return True
+        return False
+
+    def _gap_recover(self, reading, leg, d, where=''):
+        """IR 하나라도 gap_confirm 샘플 연속 선 위면 추종으로(옆 IR 이면 추종 PD 가 조향). → 복귀했으면 True."""
+        g = self._gap
+        g['hits'] = g['hits'] + 1 if not reading.lost else 0
+        if g['hits'] < self.cfg.gap_confirm:
+            return False
+        self._log('gap_recovered', f'{d - g["d"]:.1f} cm{where}')
+        self._gap = None
+        self._prev_error = None
+        self._prev_t = None
+        self._lost_since = None
+        self._hits = 0
+        return True
+
+    def _gap_step(self, reading, leg, d):
+        """GAP 한 샘플. self._gap 이 None 이 되고 상태가 follow 면 선을 다시 잡은 것(호출부가 추종을 이어 감)."""
+        c = self.cfg
+        g = self._gap
+        if self._gap_guard(leg, d):
+            return None
+        if d >= self._min_ok:
+            return self._gap_window_step(reading, leg, d)
+        if self._gap_recover(reading, leg, d):
+            return None
+        if d - g['d'] > c.gap_max_cm:
+            if c.search_deg <= 0:
+                self.fail(f'line_lost: gap {d - g["d"]:.1f} cm exceeded {c.gap_max_cm:g} cm '
+                          f'on {leg.frm}→{leg.to}')
+                return None
+            return self._search_start(reading, leg, d)
+        return self._gap_cmd()
+
+    def _gap_window_step(self, reading, leg, d):
+        """감지 창 안 GAP: 같은 방향·속도로 직진하며 그 노드의 기존 판정으로만 노드를 찾음.
+
+        진입로 테이프가 끊겨도 노드 테이프에 닿으면 평소처럼 도착. 창 안에서는 SEARCH(후진·회전)를 하지 않음
+        (노드 근처에서 다른 선을 잡을 수 있어서). 노드 판정(_hit)을 먼저 보고, 노드가 아닌데 IR 이 선을 보면
+        창 전과 같은 규칙으로 추종에 돌아감(추종의 노드 판정은 그대로라 판정 완화가 아님).
+        """
+        c = self.cfg
+        g = self._gap
+        if not g['window']:
+            g['window'] = True
+            self._log('gap_window', f'{leg.to} at {d:.1f} cm')
+        if self._hit(reading, leg, d):
+            self._hits += 1
+        else:
+            self._hits = 0
+        if self._hits >= c.node_confirm:
+            self._log('gap_node', f'{leg.to} after {d - g["d"]:.1f} cm')
+            self._gap = None
+            self._arrive(leg)
+            return self._dispatch(reading)
+        if d > self._max_ok or d - g['d'] > c.gap_max_cm:
+            self.fail(f'line_lost: gap into {leg.to} window, node not found on {leg.frm}→{leg.to}')
+            return None
+        if self._gap_recover(reading, leg, d, f' (in {leg.to} window)'):
+            return None
+        return self._gap_cmd()
+
+    def _search_start(self, reading, leg, d):
+        """GAP 거리 초과: 놓친 지점으로 후진 → 좌·우·원래 방향으로 돌며 선 찾기. 구간마다 한 번."""
+        c = self.cfg
+        g = self._gap
+        self._gap = None
+        if self._searched:
+            self.fail(f'line_lost: gap/search failed on {leg.frm}→{leg.to} (second gap after search)')
+            return None
+        self._searched = True
+        self._recovery = {'d': g['d'], 'window': (self._min_ok, self._max_ok), 'yaw': g['yaw']}
+        self._log('search', f'{leg.frm}→{leg.to} gap {d - g["d"]:.1f} cm > {c.gap_max_cm:g}')
+        s = c.search_deg
+        self._steps.clear()
+        self._steps.extend([(ADVANCE, 0.0, 'search', g['pose']),
+                            (ROTATE, 1.0, 0.0, s, 'search'),
+                            (ROTATE, -1.0, 0.0, 2 * s, 'search'),
+                            (ROTATE, 1.0, 0.0, s, 'search'),
+                            ('search_fail',)])
+        self._next_step()
+        return self._dispatch(reading)
+
+    def _search_found(self, turned):
+        """SEARCH 회전 중 선 정렬: 남은 회전을 버리고 놓친 지점 이동 거리로 추종을 이어 감."""
+        rec = self._recovery
+        leg = self.legs[self.index]
+        self._steps.clear()
+        self._log('search_found', f'{leg.frm}→{leg.to} {math.degrees(turned):.0f}°')
+        self.state = FOLLOW
+        self._reset_primitive()
+        self._min_ok, self._max_ok = rec['window']
+        self._ref_odo = self._odo - rec['d']      # 후진·회전으로 늘어난 누적 거리를 빼고 놓친 지점부터
+        self._recovery = None
+        self._yaw_hist.clear()
 
     def kp_for(self, speed):
         """직선 추종 kp. kp_speed_scale 이면 gain_ref_speed 를 넘는 속도에서 속도에 비례해 키움."""
@@ -724,14 +993,20 @@ class RouteExecutor:
             self._pre = None
             self._begin_leg(st[1])
             return
+        if kind == 'search_fail':
+            leg = self.legs[self.index]
+            self._log('search_failed', f'{leg.frm}→{leg.to}')
+            self.fail(f'line_lost: gap/search failed on {leg.frm}→{leg.to}')
+            return
         self._dock_step_done()
         self.state = kind
         self._reset_primitive()
-        if kind == ADVANCE and len(st) > 2:      # 도킹 이동: 부호 있는 거리, 멈춘 뒤 시작
+        if kind == ADVANCE and len(st) > 2:      # 도킹·SEARCH 이동: 부호 있는 거리, 멈춘 뒤 시작
             self._prim = {'cm': st[1], 'signed': True, 'phase': st[2], 'settled': False,
                           'still': 0, 'last': None, 'last_stamp': None, 't0': self._now,
-                          'proj': 0.0}
-            self._dock_phase = st[2]
+                          'proj': 0.0, 'to': st[3] if len(st) > 3 else None}
+            if st[2] != 'search':
+                self._dock_phase = st[2]
         elif kind in (PASS, ADVANCE):
             self._prim = {'cm': st[1]}
         elif kind == ROTATE:
@@ -748,7 +1023,7 @@ class RouteExecutor:
     def _dock_step_done(self):
         """끝난 도킹 이동을 표시용 누적값에 더한다."""
         p = self._prim
-        if p.get('signed'):
+        if p.get('signed') and p['phase'] != 'search':
             a, b = self._dock_disp
             if p['phase'] in ('a', '-a'):
                 a += p['proj']
@@ -797,8 +1072,14 @@ class RouteExecutor:
             if p['still'] >= c.node_confirm:
                 p.update(settled=True, origin=(x, y), t0=self._now)
                 self._hold_yaw = yaw
+                if p['to'] is not None:      # SEARCH: 멈춘 자리에서 놓친 지점까지(방향 투영, 보통 음수)
+                    tx, ty = p['to']
+                    p['cm'] = (tx - x) * math.cos(yaw) + (ty - y) * math.sin(yaw)
+                    if abs(p['cm']) < 0.05:
+                        self._next_step()
+                        return self._dispatch(reading)
             elif self._now - p['t0'] > SETTLE_TIMEOUT_S:
-                self.fail('dock_move: odom did not settle')
+                self.fail(f'{self._move_label()}: odom did not settle')
                 return None
             return Command(0.0, 0.0)
         ox, oy = p['origin']
@@ -813,13 +1094,16 @@ class RouteExecutor:
         # 반대쪽으로 밀리거나(remaining 이 목표 + 여유보다 큼) 경로 길이가 넘치면 정지
         if remaining > abs(target) + MOVE_OVERRUN_CM or \
                 self._odo - self._ref_odo > abs(target) + 2 * MOVE_OVERRUN_CM:
-            self.fail(f'dock_move overrun ({proj:.1f} of {target:.1f} cm)')
+            self.fail(f'{self._move_label()} overrun ({proj:.1f} of {target:.1f} cm)')
             return None
         if self._now - p['t0'] > 2.0 + 2.0 * abs(target) / (c.min_speed * 100.0):
-            self.fail(f'dock_move timeout ({proj:.1f} of {target:.1f} cm)')
+            self.fail(f'{self._move_label()} timeout ({proj:.1f} of {target:.1f} cm)')
             return None
         speed = min(self.approach_speed, max(c.min_speed, MOVE_GAIN * remaining))
         return Command(sign * speed, self._hold())
+
+    def _move_label(self):
+        return 'gap_search back' if self._prim.get('phase') == 'search' else 'dock_move'
 
     def _rotate(self, reading):
         c = self.cfg
@@ -832,10 +1116,16 @@ class RouteExecutor:
             else:
                 self._hits = 0
             if self._hits >= c.node_confirm:
+                if p['acquire'] == 'search':
+                    self._search_found(turned)
+                    return Command(0.0, 0.0)
                 self._log('line_found', f'{math.degrees(turned):.0f}°')
                 self._next_step()
                 return self._dispatch(reading)
             if turned > p['max']:
+                if p['acquire'] == 'search':     # 이 방향에 없음 → 다음 SEARCH 회전
+                    self._next_step()
+                    return self._dispatch(reading)
                 self.fail(f'line_not_found after {math.degrees(turned):.0f}°')
                 return None
             if turned < p['min']:

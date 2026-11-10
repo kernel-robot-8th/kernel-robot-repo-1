@@ -65,7 +65,47 @@ Gazebo에는 IR 센서가 없다. 시뮬레이터 결과는 실로봇 주행 검
 `ir_ahead_cm` 전진(축을 노드 중심으로) → 첫 구간 방향이 다르면 선 찾기 회전(좌·우 `turn_min_deg`~`turn_max_deg`, 반대 `back_min_deg`~`back_max_deg`) → 첫 구간. 출발 위치를 아는 구간이라 센서 위치 = `ir_ahead_cm`, 감지 창 시작 = 예상 − `gate_early_cm`.
 출발 노드가 가로선 노드이거나, 보는 방향을 가로지르는 선이 없거나, `start_offset_cm`과 같이 주면 거부. `start_facing`은 `start_cross`와만 쓴다.
 
-오류(`error`)로 멈추는 경우: 예상 거리를 지나도 노드 없음(`node_missed`), 라인 놓침 1초 이상, 회전 중 선을 못 찾음,
+## 옆선 켜짐 확인(FFT1-163 이어서, 실로봇 미검증)
+
+옆선 노드(모서리·분기·직진 통과의 옆선)는 그 옆 IR이 **감지 창 시작(`min_ok`) 뒤에 꺼짐 → 켜짐으로 바뀐 run**일 때만 노드로 본다(`side_rise_only`, 기본 켬). 창 시작 전부터 켜져 있던 run(본선 가장자리 타기)은 무시하고 이벤트 `side_ignored`(run 시작 거리·창 시작)를 남긴다. `side_rise_off_samples`(2) 샘플 연속으로 꺼지면 run이 끝난 것으로 본다(1샘플 꺼짐은 깜빡임으로 보고 같은 run). 가로선(IR 3개)·감지 창·`node_confirm`은 그대로이고 조건을 하나 더한 것이라 판정 강화다.
+
+- 근거(실로봇 d660 0.08 m/s, 2026-11-09 21:54 N02→N14): 회전 직후 오른쪽으로 밀려 왼쪽 IR이 8.0 cm부터 본선 가장자리를 밟음(raw 650~1300, 임계 근처) → 창(14.8 cm)이 열리자 15.1 cm에서 오감지 → 3 cm 이른 회전 → `line_not_found after 120°`. 진짜 옆선은 18.3 cm에서 꺼짐 → 켜짐(raw 1005 → 238). 같은 구간 0.03 m/s는 5/5 정상(18.3~18.5 cm).
+- 실로그 개루프 재생(11-04~11-09, 33파일·173구간, 기록된 IR 판정·odom을 그대로 넣고 판정만 비교): 170구간은 예전·새 규칙 결과가 같다(감지 위치는 기록과 최대 0.3 cm 차이). 다른 3구간은 모두 실제 오감지였다.
+  - 11-09 21:54 N02→N14: 예전 15.4 cm → 새 규칙 18.5 cm(진짜 옆선).
+  - 11-07 17:55 N14→N02, 16:57 N14→N15: 가장자리 run(raw 약 1000~1200)이 꺼지지 않은 채 진짜 옆선(raw 300~500)으로 이어짐 → 새 규칙은 오감지하지 않지만 **진짜 노드도 감지하지 못한다** → 노드를 지나 `node_missed`나 `gap into … window`로 정지한다(오감지 뒤 회전 실패 대신 안전 정지).
+  - 진짜 감지 중 새 규칙에서 놓친 것 0건. 진짜 옆선 run은 창 시작보다 0.5 cm 이상 뒤(98구간, 최소 0.5 cm: 11-05 N19→N09).
+  - 재생의 한계: 명령이 기록과 달라지면 이후 궤적도 달라지므로 기록된 직진 구간(추종 + 회전 전 전진)까지만 판정을 비교한다. 그 뒤의 결말(위 두 건의 정지)은 추론이다. 11-04~11-05 기록은 당시 그래프(v13), 그 뒤는 v14로 재생했고, 감지 창은 지금 코드(gate_early·tee_both 포함)로 계산했다.
+- T자(`tee_both`)에는 기본으로 쓰지 않는다(`side_rise_tee` 꺼짐). T자는 반대쪽 IR이 `tee_window_cm` 안에 함께 켜져야 해서 한쪽 가장자리 타기는 이미 가로선에서 맞게 감지되고, 켜짐 확인을 더하면 그 경우가 놓침이 된다. 실로그의 진짜 T자 37건은 run이 창 시작보다 4.3 cm 이상 뒤라 켜도 결과는 같았다.
+- 감지 창 안 GAP(라인 유실 복구)에서도 같은 run 추적을 쓴다. 유실 동안 옆 IR이 꺼져 있으므로, 재획득한 옆선이 창 안이면 켜짐으로 인정된다.
+- 약점: 노드가 odom으로 예상보다 5 cm 넘게 일찍 오면(엔코더 과소) 진짜 옆선 run이 창 시작 전에 시작해 놓칠 수 있다 → `node_missed` 정지. 2D 시뮬 엔코더 −7%(N02→N10 88.9 cm)에서 일어남. 실로그의 진짜 감지는 예상 −3.4 cm 안이었다.
+- 2D 시뮬은 PD가 실로봇보다 빨리 선에 맞춰져 가장자리 타기가 재현되지 않는다. 그래서 실행부가 받는 왼쪽 IR 판정만 8~16 cm 동안 켜짐으로 덮어써(결함 주입) 시험했다. 결과: 0.03·0.06·0.08 m/s × 지연 0·0.15·0.2 s에서 예전 규칙은 9/9 오감지 → `line_not_found`(실로봇과 같음), 새 규칙은 9/9 완주(주입 없을 때와 같은 위치에서 감지).
+- 파라미터(노드): `side_rise_only`(true), `side_rise_off_samples`(2), `side_rise_tee`(false).
+
+## 라인 유실 복구(FFT1-163, 실로봇 미검증)
+
+테이프가 3~5 cm 끊기거나 벗겨진 곳을 건너기 위한 동작이다. 추종 중에만 쓴다. 노드 근처에서는 직진만 하며 그 노드의 평소 판정으로만 노드를 찾고, 못 찾으면 정지한다.
+
+| 단계 | 내용 |
+| --- | --- |
+| GAP | 직선 추종 중 IR 3개가 모두 선을 놓쳤고 이동 거리가 구간 시작 `suppress_cm`(4 cm) 뒤이면, 놓치기 전 `gap_heading_window_cm`(4 cm) 동안의 선 방향을 유지하며 `approach_speed` 이하로 직진(최대 `gap_max_cm` 8 cm). **IR 하나라도** `gap_confirm`(2) 샘플 연속 선 위면 추종으로 돌아감(이전 오차 지움, 옆 IR이면 추종 PD가 그쪽으로 조향). 이 기능 전에도 IR 하나라도 선 위면 추종했고 추종의 노드 판정은 그대로라 판정 완화가 아니다. 넘으면 정지 `line_lost: gap N cm exceeded 8 cm`. 시간 상한 = 2 + 2·`gap_max_cm`/`min_speed`(기본 약 12.7 s, 도킹 이동 timeout과 같은 꼴) → `line_lost: gap timeout`. odom 이동이 0.1 cm 미만인 채 `lost_timeout`(1 s)이 지나면(odom은 오는데 값이 그대로 등) → `line_lost: gap no progress`. 이벤트 `gap`·`gap_recovered` |
+| 선 방향 | 선 위 추종 샘플마다 선 위치(가운데 IR 위치 − 오차 × `ir_spacing_cm`, 옆 방향)를 기억해 앞·뒤 절반 평균을 이은 방향. 회전 직후처럼 로봇이 선과 10~16° 비스듬히 추종 중이어도 선 방향을 쓴다(로봇 yaw 평균은 2D 시뮬 N02→N10 앞쪽 5 cm 끊김에서 9번 중 2번 실패). 기억이 2 cm 미만이면 odom 방향 평균 |
+| SEARCH(**기본 끔**, `search_deg` 0) | `search_deg` > 0일 때만. `gap_max_cm` 안에 못 찾으면 멈춤 확인(정밀 도킹 이동과 같은 규칙) → 놓친 지점까지 후진 → 제자리 좌 `search_deg`(예: 20°) → 우 2배 → 좌(원래 방향) 순서로 돌며 가운데 IR이 선 위·`align_error` 안이면 그 자리에서 추종(놓친 지점 이동 거리부터). 못 찾으면 `line_lost: gap/search failed on A→B`. 구간마다 한 번만(두 번째 GAP이 넘치면 바로 같은 오류). 이벤트 `search`·`search_found`·`search_failed`. 2D 시뮬에서 SEARCH로 선을 다시 잡아 끊김을 넘은 경우가 0건이다(놓친 지점에서 돌아서 가운데 IR이 옆으로 약 ±1 cm만 움직임 — 대부분 끊기기 전 선 끝을 잡고 두 번째 GAP에서 정지). 그래서 기본 끔이고, 켜도 안전 정지 위주다 |
+| 노드 근처(감지 창 안) | 놓친 곳이 이미 감지 창 안이거나 GAP이 창에 들어가면, 같은 방향·속도로 직진하며 **그 노드의 평소 판정**(가로선 = IR 3개, 옆선 = 가운데 + 옆, T자 = `tee_both`·`tee_window_cm`, `node_confirm` 연속)으로만 노드를 찾는다. 노드 테이프에 닿아야만 감지(판정 완화 없음) → 평소처럼 도착 동작. 노드가 아닌데 IR이 선을 보면 창 밖과 같은 규칙으로 추종에 돌아간다(추종의 노드 판정 그대로). 감지 없이 `max_ok`나 놓친 곳부터 `gap_max_cm`를 넘으면 `line_lost: gap into <노드> window, node not found`로 정지. 창 안에서는 SEARCH(후진·회전)를 하지 않는다(노드 근처에서 다른 선을 잡을 수 있음). 이벤트 `gap_window`·`gap_node` |
+| 그대로인 곳 | 구간 시작 `suppress_cm` 안 유실 → 예전 동작(0 명령으로 `lost_timeout` 1 s 뒤 `line_lost on A→B`). 통과·회전 전 전진·회전·후진·도킹 이동은 예전처럼 유실을 보지 않고 거리·각도로 끝냄(바뀐 것 없음). 예상 거리(`max_ok`)를 넘은 뒤 처음 유실 → 예전처럼 `node_missed`. 출발 위치를 몰라 감지 창이 0부터인 첫 구간은 처음부터 「창 안」 규칙 |
+
+- 남은 위험(실로봇 미검증):
+  - 창 전 GAP 중에는 노드 판정을 하지 않고 IR이 선을 보면 복귀하므로, 그래프에 없는 가로지르는 테이프(다른 시험용 테이프 등)가 있으면 그 선을 「다시 잡은 선」으로 보고 추종할 수 있다. 시연 바닥에 그래프 밖 테이프가 없게 한다.
+  - 옆으로 밀려 선을 놓쳤으면 GAP은 선과 나란히 가므로 옆 IR이 다시 보지 못할 수 있다 → 최대 8 cm 직진 뒤 정지(예전은 그 자리 0 명령 뒤 1 s에 정지).
+  - GAP은 odom 거리로 끝을 정하므로 시간 상한과 진행 없음 검사를 둔다(위). 강제 종료(`kill -9`)에는 0을 못 보내는 것은 그대로.
+- 상차·대기 칸 노드 진입로가 노드 앞 약 6.5 cm까지 끊기면 가로선은 감지하지만, 도착 뒤 진입선 찾기 회전(상차 2번째 회전·대기 칸 180°)이 노드에서 약 7 cm 지점 테이프를 봐야 해서 `line_not_found`로 정지할 수 있다. 정차 노드 앞 8 cm 안 테이프는 끊기지 않게 관리한다.
+- 상태(`state`)는 GAP 중 `follow` 그대로, SEARCH 중 `advance`(후진)·`rotate`(찾기)다. 테스트 콘솔·관제 trial_driver의 「주행 중」 목록을 바꾸지 않으려는 것. 무엇을 하는지는 `line_nav/state`의 `recovery`(`{"mode":"gap","lost_at_cm","gap_cm","in_window"}`·`{"mode":"search","lost_at_cm"}`, 평소 `null`)와 이벤트로 본다. 화면 추정(`pose_est`)은 GAP 중 직진, SEARCH 중 놓친 지점.
+- 파라미터(노드·launch): `gap_max_cm`(8, 0 = 끔 = 예전 동작), `gap_heading_window_cm`(4), `gap_confirm`(2, 노드 파라미터만), `search_deg`(0 = 끔, 기본), `ir_spacing_cm`(2.0, Pinky Pro HW Spec 약 20 mm, **실측 아님**).
+- 끊김이 없으면 예전과 같다(복구 켬·끔 궤적 비교 테스트).
+- 2D 시뮬(0.03·0.06·0.08 m/s × 구동 지연 0·0.15·0.2 s, 위치 3곳 N05→N07 가운데·N16→N14·N02→N10 회전 직후): 2·3·5 cm 끊김 81번 모두 완주. 8 cm는 긴 직선 9/9 복구, 회전 직후 8/9 복구(1번 GAP 초과 정지), 짧은 구간 N16→N14는 6/9 창 안 복구·3/9 정지. 10 cm 이상은 모두 정지(GAP 초과 또는 창 안 노드 없음). 끊긴 곳에서 실제 방향 ±3~5° 틀어짐(odom은 모름)도 3·5 cm 완주.
+- 노드 진입로 끊김(노드 중심 앞 1.5 cm까지, 노드 테이프 유지, 9가지 속도·지연): 3 cm는 N11·N01(상차)·N16(대기 칸)·N10(모서리)·N14(T자)·N15(통과) 모두 9/9 노드 감지·완주. 5 cm는 N10·N14 9/9, N15 8/9(1번은 통과 뒤 짧은 다음 구간 끝 N05 회전에서 정지), N11·N01·N16은 노드 감지 9/9·완주 3/9(6/9는 도착 뒤 진입선 찾기 회전에서 정지, 위 항목). N10 모서리·N14 T자 테이프를 없애면 노드를 건너뛰거나 돌지 않고 정지.
+- 실로봇 시험(제안): 바퀴 띄움 → 바닥 저속(0.03 m/s) 순서, 정지는 `stop` 명령·Ctrl+C. 카펫과 같은 색 종이로 테이프를 가린다. 예: N05→N07 직선 가운데(N05에서 40 cm)를 3 cm → 5 cm, N16→N14(P5 출발 6 cm 뒤) 3 cm. 노드 진입로(노드 앞 1.5~4.5 cm) 3 cm도 시험하되, 상차·대기 칸 노드 앞 8 cm 안은 5 cm 이상 가리지 않는다. route CSV에서 `gap`·`gap_recovered` 이벤트와 복구 거리를 확인한다.
+
+오류(`error`)로 멈추는 경우: 예상 거리를 지나도 노드 없음(`node_missed`), 직선 추종 중 라인 놓침 1초 이상(복구를 켜면 구간 시작 `suppress_cm` 안에서만, `gap_max_cm` 0이면 어디서나), 라인 유실 복구 실패(`line_lost: gap … exceeded`·`gap into <노드> window, node not found`·`gap timeout`·`gap no progress`, SEARCH를 켰으면 `gap/search failed`), 회전 중 선을 못 찾음,
 후진 초과, IR 끊김 0.3초(`no_ir`), odom 끊김 0.5초(`no_odom`). 정지·오류 때 0 속도를 한 번 발행하고 그 뒤로는 발행하지 않는다.
 
 경로가 끝나면 로봇은 다음 출발 방향을 보고 선다. 상차 노드는 진입선 쪽, 대기·충전 칸은 칸 바깥쪽이다.
@@ -118,7 +158,7 @@ ros2 topic pub --once /line_nav/command std_msgs/msg/String "{data: '{\"cmd\": \
 
 경로 상세 기록: 경로 하나마다 `~/roport_logs/route_<YYYYmmdd_HHMMSS>_<출발>-<도착>.csv`(IR 20 Hz 한 줄씩: state·구간·이동 거리·회전·IR 원시값·on_line·오차·cmd_vel·odom·이벤트)를 쓰고 최근 50개만 남긴다. 노드 파라미터 `log_dir`(빈 값이면 기록 안 함)·`log_keep`. 쓰기 오류가 나면 기록만 끄고 주행은 계속한다.
 
-조정 인자(launch): `base_speed`, `approach_speed`, `approach_lead_cm`, `kp`·`kd`·`gain_ref_speed`, `gate_min`·`gate_max`·`gate_early_cm`, `pass_full_speed`·`tee_both`·`tee_window_cm`·`kp_speed_scale`(노드 파라미터), `max_linear`, `max_angular`, `rotate_speed`, `reverse_speed`, `ir_ahead_cm`(실측 3), `turn_advance_cm`(4.2), `layout_file`, `dock_file`.
+조정 인자(launch): `base_speed`, `approach_speed`, `approach_lead_cm`, `kp`·`kd`·`gain_ref_speed`, `gate_min`·`gate_max`·`gate_early_cm`, `pass_full_speed`·`tee_both`·`tee_window_cm`·`kp_speed_scale`(노드 파라미터), `max_linear`, `max_angular`, `rotate_speed`, `reverse_speed`, `ir_ahead_cm`(실측 3), `turn_advance_cm`(4.2), `layout_file`, `dock_file`, `gap_max_cm`·`gap_heading_window_cm`·`search_deg`·`ir_spacing_cm`(라인 유실 복구), `gap_confirm`(노드 파라미터).
 
 ### 상태 표시 (LCD·LED, `status_indicator`)
 
@@ -162,7 +202,7 @@ python3 -m pytest src/roport_line_nav/test -q
 `test_executor.py`는 시뮬레이터로 Map 페이지 경로 예시 5개를 끝까지 달린다. 엔코더 ±7%와 테이프 위치 차이 최대 3.6 cm를 넣은 경우도 확인한다.
 `Sim(cmd_delay_s=…)`로 구동 지연을 흉내 낸다(기본 0). 0.06 m/s + 지연 0.2 s에서 감속이 없으면 회전 중 선을 못 찾아
 정지하고, 기본 감속이면 주요 경로 6개(P5→P4, P4→P7, P7→P5, H1→P7, P7→N12, 경유)를 완주하는 것을 확인한다.
-노드 놓침·정지 명령·odom 없음도 확인한다. `test_dock.py`는 정밀 도킹 값(목표 자세·경유·범위·파일)과 교차선 출발을 같은 시뮬로 확인한다. `test_node_ros.py`는 `ROS_DOMAIN_ID` 197과 전용 namespace를 써서 실제 로봇 `/cmd_vel`에 닿지 않는다.
+노드 놓침·정지 명령·odom 없음도 확인한다. `test_side_rise.py`는 옆선 켜짐 확인(실로그 11-09 21:54 N02→N14 구간 재생 `test/data/`, 결함 주입 시뮬)을 확인한다. `test_gap.py`는 테이프 끊김(`Sim(gaps=…)`)에서 GAP·SEARCH·노드 근처 정지를 확인한다. `test_dock.py`는 정밀 도킹 값(목표 자세·경유·범위·파일)과 교차선 출발을 같은 시뮬로 확인한다. `test_node_ros.py`는 `ROS_DOMAIN_ID` 197과 전용 namespace를 써서 실제 로봇 `/cmd_vel`에 닿지 않는다.
 
 ## 한계
 

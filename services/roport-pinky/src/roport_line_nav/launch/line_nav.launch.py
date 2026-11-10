@@ -27,6 +27,10 @@ FLOAT_ARGS = {
     'reverse_speed': ('0.02', 'm/s reverse into P1/P2/P5/P6'),
     'ir_ahead_cm': ('3.0', 'center IR to wheel axle (measured 2026-11-03)'),
     'turn_advance_cm': ('4.2', 'drive after side line seen before rotating'),
+    'gap_max_cm': ('8.0', 'line-gap recovery: max straight drive after losing the line (0 = off)'),
+    'gap_heading_window_cm': ('4.0', 'line-gap recovery: heading from the last N cm on the line'),
+    'search_deg': ('0.0', 'line-gap recovery: in-place search width (0 = off, default)'),
+    'ir_spacing_cm': ('2.0', 'center to side IR (HW spec ~20 mm, not measured)'),
 }
 
 

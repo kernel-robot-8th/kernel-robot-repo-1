@@ -186,14 +186,26 @@ def _shifted(graph, shifts):
 
 @pytest.mark.parametrize('odom_scale, yaw_scale', [(1.0, 1.0), (0.93, 1.06), (1.07, 0.94)])
 def test_robust_to_odom_error_and_tape_offset(graph, odom_scale, yaw_scale):
-    """엔코더 ±7%, 테이프 위치 지도와 최대 4 cm 차이(11-03 재측정에서 본 정도)에서도 완주."""
+    """엔코더 ±7%, 테이프 위치 지도와 최대 4 cm 차이(11-03 재측정에서 본 정도)에서도 완주.
+
+    옆선 켜짐 확인(side_rise_only, 2026-11-09)을 켜면 엔코더 −7%(0.93)에서는 88.9 cm 구간 N02→N10 의 진짜 모서리
+    옆선이 odom 으로 창 시작 0.6 cm 전에 켜져(예상보다 약 6 cm 일찍) 노드로 보지 않고, 예상 거리를 넘어 정지한다
+    (안전 정지, 돌지 않음). 실로그 173구간의 진짜 옆선 run 은 창 시작보다 0.5 cm 이상 뒤(README).
+    """
     # N01 가로선(상차)이 지도보다 3 cm 짧게, N18 분기가 x 로 2 cm 어긋나게 붙은 경우
     tape = _shifted(graph, {'N01': (2.0, 3.0), 'N18': (2.0, 0.0)})
-    sim, ex = run_route(graph, ['N16', 'N14', 'N02', 'N10', 'N18', 'N01'], 'S', 0.0,
-                        sim_kw={'tape_graph': tape, 'odom_scale': odom_scale,
-                                'odom_yaw_scale': yaw_scale})
-    assert ex.state == ARRIVED, ex.as_dict()
+    route = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']
+    kw = {'tape_graph': tape, 'odom_scale': odom_scale, 'odom_yaw_scale': yaw_scale}
+    sim, ex = run_route(graph, route, 'S', 0.0, sim_kw=kw, side_rise_only=False)
+    assert ex.state == ARRIVED, ex.as_dict()               # 켜짐 확인 없이: 예전과 같이 완주
     assert sim.sensor.update(sim.raw()).on_line[1]      # 끝나고 진입선 위
+    sim, ex = run_route(graph, route, 'S', 0.0, sim_kw=kw)
+    if odom_scale >= 1.0:
+        assert ex.state == ARRIVED, ex.as_dict()
+        return
+    assert ex.state == ERROR and ex.legs[ex.index].to == 'N10', ex.as_dict()
+    assert any(e['event'] == 'side_ignored' and 'N10' in e['detail'] for e in ex.events)
+    assert not [e for e in ex.events if e['event'] == 'node' and e['detail'].startswith('N10')]
 
 
 def test_pose_estimate_follows_route(graph):
@@ -442,7 +454,7 @@ def test_early_side_pattern_before_window_ignored(graph):
     """회전 직후 구간에서 창 시작 전에 옆선 패턴(on=110)이 와도 노드로 보지 않고, 창 안에서는 감지."""
     sim = Sim(graph)
     sim.place('N16', 'S', 0.0)
-    ex = RouteExecutor(graph)
+    ex = RouteExecutor(graph, NavConfig(side_rise_only=False))   # 감지 창만 확인(켜짐 확인은 test_side_rise)
     ex.start(['N16', 'N14', 'N02', 'N10', 'N18', 'N01'])
     assert sim.run(ex, lambda e: e.index == 1 and e.state == 'follow')
     lo = ex.as_dict()['window_cm'][0]
@@ -763,7 +775,7 @@ def test_corner_early_side_inside_ratio_window_rejected(graph, early_cm, detecte
     (실로그 18.4 / 19.8 과 같은 차이)에서 감지. 0(예전 비율 창만)이면 이른 옆선을 노드로 오판."""
     sim = Sim(graph)
     sim.place('N16', 'S', 0.0)
-    ex = RouteExecutor(graph, NavConfig(gate_early_cm=early_cm))
+    ex = RouteExecutor(graph, NavConfig(gate_early_cm=early_cm, side_rise_only=False))
     ex.start(['N16', 'N14', 'N02', 'N10', 'N18', 'N01'])
     assert sim.run(ex, lambda e: e.index == 1 and e.state == 'follow')
     c = ex.cfg

@@ -323,3 +323,21 @@ def test_start_cross_command(ros):
     ros.command({'cmd': 'start', 'route': ROUTE, 'start_cross': True, 'start_facing': 'S'})
     last = _last(ros, 'start')
     assert last['ok'] is False and 'bar' in last['detail']
+
+
+# ---------------------------------------------------------------- 라인 유실 복구(FFT1-163)
+def test_gap_parameters_and_state(tmp_path):
+    h = Harness(tmp_path / 'logs', extra=[Parameter('gap_max_cm', value=5.0),
+                                          Parameter('gap_confirm', value=3),
+                                          Parameter('search_deg', value=15.0),
+                                          Parameter('side_rise_only', value=False),
+                                          Parameter('side_rise_off_samples', value=3)])
+    try:
+        c = h.node.ex.cfg
+        assert (c.gap_max_cm, c.gap_confirm, c.search_deg) == (5.0, 3, 15.0)
+        assert (c.side_rise_only, c.side_rise_off_samples, c.side_rise_tee) == (False, 3, False)
+        h.feed(2)
+        h.wait(lambda: h.states and 'recovery' in h.states[-1])
+        assert h.states[-1]['recovery'] is None
+    finally:
+        h.close()
