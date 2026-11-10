@@ -77,6 +77,7 @@ kernel-robot-repo-1/
 
 ## 문서와 협업
 
+- [Pinky·OMX 공통 시험 버전과 PC별 설치·실행 순서](docs/pinky-omx-baseline.md): 코드/키트 버전 검사부터 시작·종료·복구까지의 배포 기준. 실물 OMX 실행부는 별도 인수 전입니다.
 - [디렉토리·기술 스택·CI 안내](docs/repositories.md)
 - [설계·요구사항·검증 문서 안내](docs/README.md)
 - [현재 Git-flow 및 PR 운영 규칙](.agents/rules/git-flow.md): `develop` 없이 `main`과 선택적 `task/**`를 사용합니다.
