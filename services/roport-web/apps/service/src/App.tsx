@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { api, ApiError, fmt, loadErrorText as errText, loginErrorText, nextRequestId, reserveErrorText, statusLabel } from './api';
+import { api, ApiError, fmt, loadErrorText as errText, loginErrorText, newRequestId, nextRequestId, reserveErrorText, shouldReloadTimes, statusLabel, timesErrorText, upcomingFlights } from './api';
 import type { Flight, Location, Member, Order, Pickup } from './api';
 
 type View = { name: 'orders' } | { name: 'reserve'; order: Order } | { name: 'pickups'; justCreated?: string };
@@ -40,7 +40,7 @@ export function App() {
         <nav aria-label="메뉴">
           <button type="button" onClick={() => setView({ name: 'orders' })}>주문 목록</button>{' '}
           <button type="button" onClick={() => setView({ name: 'pickups' })}>예약 조회</button>{' '}
-          <button type="button" onClick={() => api.logout().finally(() => setMember(null))}>로그아웃</button>
+          <button type="button" onClick={() => api.logout().catch(() => {}).then(() => setMember(null))}>로그아웃</button>
         </nav>
       </header>
       {view.name === 'orders' && <Orders onError={onError} onReserve={(order) => setView({ name: 'reserve', order })} />}
@@ -128,19 +128,20 @@ function Orders({ onError, onReserve }: { onError: (e: unknown) => boolean; onRe
 
 function Reserve({ order, onError, onCancel, onDone }: { order: Order; onError: (e: unknown) => boolean; onCancel: () => void; onDone: (p: Pickup) => void }) {
   const [opts, reloadOpts] = useLoad<{ locations: Location[]; flights: Flight[] }>(
-    () => Promise.all([api.locations(), api.flights()]).then(([locations, flights]) => ({ locations, flights })),
+    () => Promise.all([api.locations(), api.flights()]).then(([locations, flights]) => ({ locations, flights: upcomingFlights(flights) })),
     onError,
   );
   const [locationId, setLocationId] = useState('');
   const [flightId, setFlightId] = useState('');
   const [pickupAt, setPickupAt] = useState('');
   const [times, setTimes] = useState<Load<string[]> | null>(null);
-  const [requestId, setRequestId] = useState<string>(() => crypto.randomUUID());
+  const [requestId, setRequestId] = useState<string>(newRequestId);
+  const [timesN, setTimesN] = useState(0); // 시간 목록 재조회 카운터
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
   // 선택이 바뀌면 새 요청이므로 requestId를 새로 발급. 같은 선택의 재시도는 같은 requestId.
-  const change = (fn: () => void) => { fn(); setRequestId((r) => nextRequestId(r, { type: 'selection' }, () => crypto.randomUUID())); setErr(''); };
+  const change = (fn: () => void) => { fn(); setRequestId((r) => nextRequestId(r, { type: 'selection' }, newRequestId)); setErr(''); };
 
   useEffect(() => {
     setPickupAt('');
@@ -149,10 +150,10 @@ function Reserve({ order, onError, onCancel, onDone }: { order: Order; onError: 
     setTimes({ s: 'loading' });
     api.times(order.orderId, flightId, locationId).then(
       (r) => { if (live) setTimes({ s: 'ok', data: r.times }); },
-      (e) => { if (live && !onError(e)) setTimes({ s: 'error', msg: errText(e) }); },
+      (e) => { if (live && !onError(e)) setTimes({ s: 'error', msg: timesErrorText(e) }); },
     );
     return () => { live = false; };
-  }, [order.orderId, flightId, locationId, onError]);
+  }, [order.orderId, flightId, locationId, onError, timesN]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -163,8 +164,9 @@ function Reserve({ order, onError, onCancel, onDone }: { order: Order; onError: 
       onDone(await api.reserve({ requestId, orderId: order.orderId, locationId, flightId, pickupAt }));
     } catch (x) {
       if (!onError(x)) setErr(reserveErrorText(x));
+      if (shouldReloadTimes(x)) setTimesN((n) => n + 1);
       // 같은 번호로는 같은 충돌이 반복되므로 새로 발급. 네트워크·결과 불명 오류는 같은 requestId 유지.
-      setRequestId((r) => nextRequestId(r, { type: 'error', error: x }, () => crypto.randomUUID()));
+      setRequestId((r) => nextRequestId(r, { type: 'error', error: x }, newRequestId));
       setBusy(false);
     }
   }

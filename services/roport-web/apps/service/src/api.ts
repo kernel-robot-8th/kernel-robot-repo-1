@@ -70,7 +70,13 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     }
     throw new ApiError(res.status, code, `HTTP ${res.status}`);
   }
-  return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
+  if (res.status === 204) return undefined as T;
+  try {
+    return (await res.json()) as T;
+  } catch {
+    // 200인데 JSON이 아님(예: 프록시 오설정으로 index.html 반환)
+    throw new ApiError(res.status, 'BAD_RESPONSE', '서버 응답을 해석하지 못했습니다.');
+  }
 }
 
 export const api = {
@@ -94,6 +100,8 @@ export function statusLabel(status: string): string {
   return status === 'REQUESTED' ? '예약 접수됨 – 현장 배정 전' : `알 수 없는 상태 (${status})`;
 }
 
+const BAD_RESPONSE_TEXT = '서버 응답 형식이 올바르지 않습니다. 서버 주소·프록시 설정을 확인해 주세요.';
+
 const RESERVE_ERRORS: Record<string, string> = {
   VALIDATION_FAILED: '입력값이 올바르지 않습니다. 선택 내용을 확인해 주세요.',
   ORDER_NOT_FOUND: '주문을 찾을 수 없습니다.',
@@ -104,6 +112,7 @@ const RESERVE_ERRORS: Record<string, string> = {
   IDEMPOTENCY_CONFLICT: '같은 요청 번호로 다른 내용이 접수되어 있습니다. 새 요청 번호를 발급했으니 내용을 확인하고 다시 예약해 주세요.',
   PICKUP_TIME_NOT_AVAILABLE: '선택한 시간은 더 이상 예약할 수 없습니다. 시간을 다시 선택해 주세요.',
   NETWORK: '서버에 연결하지 못했습니다. 같은 요청으로 다시 시도할 수 있습니다.',
+  BAD_RESPONSE: BAD_RESPONSE_TEXT,
 };
 
 export function reserveErrorText(e: unknown): string {
@@ -117,8 +126,32 @@ export function reserveErrorText(e: unknown): string {
 export const fmt = (iso: string) =>
   new Date(iso).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', dateStyle: 'short', timeStyle: 'short' }) + ' KST';
 
-export const loadErrorText = (e: unknown) =>
-  e instanceof ApiError && e.code === 'NETWORK' ? '서버에 연결하지 못했습니다.' : '불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+export function loadErrorText(e: unknown): string {
+  const code = e instanceof ApiError ? e.code : null;
+  if (code === 'NETWORK') return '서버에 연결하지 못했습니다.';
+  if (code === 'BAD_RESPONSE') return BAD_RESPONSE_TEXT;
+  return '불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';
+}
+
+// 시간 목록 조회 오류: 예약과 같은 code 문구가 있으면 그것을, 없으면 불러오기 실패 문구.
+export const timesErrorText = (e: unknown) =>
+  e instanceof ApiError && e.code && e.code in RESERVE_ERRORS ? reserveErrorText(e) : loadErrorText(e);
+
+// 선택한 시간이 사라졌다는 오류 뒤에는 시간 목록을 다시 조회해야 같은 422가 반복되지 않는다.
+export const shouldReloadTimes = (e: unknown) => e instanceof ApiError && e.code === 'PICKUP_TIME_NOT_AVAILABLE';
+
+// 탑승 시작이 이미 지난 항공편은 숨긴다(같은 시각은 유지).
+export const upcomingFlights = (flights: Flight[], now: Date = new Date()) =>
+  flights.filter((f) => new Date(f.boardingStart).getTime() >= now.getTime());
+
+// crypto.randomUUID는 secure context(HTTPS·localhost)에서만 있어 LAN IP HTTP에서는 getRandomValues로 v4 UUID를 만든다.
+export function newRequestId(c: Crypto = globalThis.crypto): string {
+  const b = c.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
 
 export function loginErrorText(e: unknown): string {
   const code = e instanceof ApiError ? e.code : null;

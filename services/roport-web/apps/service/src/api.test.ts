@@ -1,8 +1,9 @@
-// 실행: services/roport-web/apps/service 에서 `node --test src/` (Node 24 type stripping, 의존성 없음)
+// 실행(CI와 동일): services/roport-web 에서 `node --test 'apps/service/src/**/*.test.ts'` (Node type stripping, 의존성 없음)
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   api, ApiError, fmt, statusLabel, reserveErrorText, loginErrorText, loadErrorText, nextRequestId,
+  newRequestId, shouldReloadTimes, timesErrorText, upcomingFlights,
 } from './api.ts';
 
 const realFetch = globalThis.fetch;
@@ -101,4 +102,54 @@ test('call: 성공 JSON 반환, body는 JSON으로 전송', async () => {
   assert.equal(seen?.url, '/api/session');
   assert.equal(seen?.init?.method, 'POST');
   assert.equal(seen?.init?.body, '{"loginId":"u1"}');
+});
+
+// 6. 성공 응답이 JSON이 아닐 때(예: nginx가 /api를 index.html로 돌려줌)
+test('call: 200 text/html은 ApiError(200, BAD_RESPONSE)', async () => {
+  stub(() => new Response('<!doctype html>', { status: 200, headers: { 'Content-Type': 'text/html' } }));
+  await assert.rejects(api.orders(), (e: unknown) => e instanceof ApiError && e.status === 200 && e.code === 'BAD_RESPONSE');
+});
+test('BAD_RESPONSE는 고정 문구로 원인을 보여준다', () => {
+  const e = new ApiError(200, 'BAD_RESPONSE', 'x');
+  assert.match(loadErrorText(e), /서버 응답 형식이 올바르지 않습니다/);
+  assert.match(reserveErrorText(e), /서버 응답 형식이 올바르지 않습니다/);
+  assert.match(loginErrorText(e), /서버 응답 형식이 올바르지 않습니다/);
+});
+
+// 7. requestId 생성: secure context가 아니면 crypto.randomUUID가 없다
+const fakeCrypto = (byte: number) => ({
+  getRandomValues: <T extends ArrayBufferView>(a: T) => { new Uint8Array(a.buffer).fill(byte); return a; },
+}) as unknown as Crypto;
+const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+test('newRequestId: randomUUID 없는 crypto에서도 v4 형식(버전·variant 비트)', () => {
+  assert.match(newRequestId(fakeCrypto(0x00)), V4);
+  assert.match(newRequestId(fakeCrypto(0xff)), V4);
+});
+test('newRequestId: 기본 crypto에서 호출마다 다른 값', () => {
+  const a = newRequestId(); const b = newRequestId();
+  assert.match(a, V4);
+  assert.notEqual(a, b);
+});
+
+// 8. 시간 목록 재조회·오류 문구
+test('shouldReloadTimes: PICKUP_TIME_NOT_AVAILABLE만 true', () => {
+  assert.equal(shouldReloadTimes(new ApiError(422, 'PICKUP_TIME_NOT_AVAILABLE', 'x')), true);
+  for (const e of [new ApiError(409, 'ACTIVE_PICKUP_EXISTS', 'x'), new ApiError(0, 'NETWORK', 'x'), new Error('x')]) {
+    assert.equal(shouldReloadTimes(e), false);
+  }
+});
+test('timesErrorText: 알려진 code는 reserveErrorText, 그 외는 불러오기 실패 문구', () => {
+  const known = new ApiError(404, 'ORDER_NOT_FOUND', 'x');
+  assert.equal(timesErrorText(known), reserveErrorText(known));
+  assert.match(timesErrorText(new ApiError(500, 'BOOM', 'x')), /불러오지 못했습니다/);
+  assert.match(timesErrorText(new ApiError(0, 'NETWORK', 'x')), /연결하지 못했습니다/);
+});
+
+// 9. 지난 항공편 숨김
+test('upcomingFlights: 탑승 시작이 지난 항공편은 제외, 정확히 같은 시각은 유지', () => {
+  const f = (flightId: string, boardingStart: string) =>
+    ({ flightId, flightNo: flightId, serviceDate: '', boardingStart, boardingEnd: '', departureAt: '', gateCode: '' });
+  const now = new Date('2026-01-01T10:00:00Z');
+  const r = upcomingFlights([f('past', '2026-01-01T09:59:59Z'), f('same', '2026-01-01T10:00:00Z'), f('later', '2026-01-01T11:00:00Z')], now);
+  assert.deepEqual(r.map((x) => x.flightId), ['same', 'later']);
 });
