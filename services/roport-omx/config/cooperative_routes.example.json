@@ -6,7 +6,9 @@
       "model_path": "REPLACE_WITH_MODEL_PATH_FROM_PANEL_MODEL_LIST",
       "task": "INBOUND tray->shelf 2B | marker {box}",
       "episode_s": 40,
-      "reset_s": 15
+      "reset_s": 15,
+      "output_filter": "중",
+      "filter_gripper": false
     }
   ]
 }

@@ -84,6 +84,8 @@ class Executor(Protocol):
         """{"state": "running"|"finished"|"failed", "step": str, "error": str|None, "arms": ...}
 
         A finished observation may name its completion "evidence" (default "arm_return_only").
+        A failed one may set "operator_stop": True when a person stopped the run and the executor
+        completed that stop; the Host then reports the failure without holding.
         """
 
 
@@ -319,13 +321,24 @@ class CooperativeHost:
                 record, self._event(record, "completed", "COMPLETE", payload)
             )
         code = seen.get("error") if state == "failed" else "ARM_NOT_RETURNED"
-        return self._finish(record, code or "EXECUTION_FAILED", arms)
+        # A person's stop that the executor finished safely is reported but does not hold:
+        # the executor's own interlock (e.g. the panel's armed switch) gates the next start.
+        operator_stop = state == "failed" and seen.get("operator_stop") is True
+        return self._finish(
+            record, code or "EXECUTION_FAILED", arms, hold=not operator_stop
+        )
 
     def _finish(
-        self, record: dict, code: str, arms: dict, detail: str | None = None
+        self,
+        record: dict,
+        code: str,
+        arms: dict,
+        detail: str | None = None,
+        *,
+        hold: bool = True,
     ) -> list[dict]:
         self._data["active"] = None
-        self._data["hold"] = record["ids"]["command_id"]
+        self._data["hold"] = record["ids"]["command_id"] if hold else None
         arms = _arms(arms)
         payload = {
             **self._echo(record["task"]),
