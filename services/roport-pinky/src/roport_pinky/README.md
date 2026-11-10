@@ -91,3 +91,5 @@ Pi에서 경로 재계산 중 `follow_path` 목표 수락 응답이 기본 20ms�
 ## 검증 범위
 
 `bash ci/test.sh`: ROS 빌드, 라인 시뮬레이터, 별도 ROS domain의 가상 map/TF/AMCL/ActionServer, owner 프로세스 강제 종료 시험. 실제 controller/progress plugin의 회전·10초 이상 저속 주행·막힘 판정도 합성 odom/TF로 검사합니다. 실제 모터·LiDAR·Nav2 경로 계획의 현장 검증은 별도다. 테스트는 loopback으로 격리하며 bringup을 실행하지 않는다.
+
+Nav2 제한 복구·관제 실패 처리·G2 후보 전송은 [관제 참고 가이드](../../../../docs/pinky-nav2-recovery.md)를 따른다.
