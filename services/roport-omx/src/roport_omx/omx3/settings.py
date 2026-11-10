@@ -35,6 +35,13 @@ class Omx3Settings:
     # 도킹 반복 오차(약 1 cm·1°)만큼 픽셀 여유를 둔다.
     tray_region: tuple[int, int, int, int] = (399, 0, 567, 140)
 
+    # 실행 상태기계
+    fps: int = 30  # 학습 데이터·정책 주기
+    timeout_s: float = 40.0  # 정책 루프 최대 시간(동작 1회 약 25~30초)
+    done_hold_frames: int = 15  # 완료 조건이 연속으로 유지돼야 하는 프레임 수(0.5초)
+    home_step: float = 1.0  # init 이동 때 한 주기당 관절 최대 변화량(정규화 단위)
+    home_timeout_s: float = 20.0
+
     def __post_init__(self) -> None:
         if len(self.init_pose) != len(JOINTS):
             raise ValueError(
