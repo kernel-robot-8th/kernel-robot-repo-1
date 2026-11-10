@@ -659,3 +659,92 @@ Nav2 장애물 회피·실제 Wi-Fi 손실/지연·기체별 센서 편차·마�
 위치 시각 보정에는 Pinky의 `trial_nav2.py`도 함께 갱신한다. 라인 추정은 현재 노드를 알며 STOPPED·ERROR가 아닐 때만 사용하고, HOLD·safe_stop 뒤에는 null을 발행해 이전 좌표를 마지막 확인 위치로 표시한다. 유효한 지도 TF는 정지 중에도 사용할 수 있다. 표시 hook의 예외는 작업 루프로 전파하지 않고 집계하며 첫 오류와 50건마다 예외 종류를 로그에 남긴다. 웹 시험 패널의 `위치 수신 거부 누적`에는 시각 지연/시계 차이·중복/역순·기체 식별 불일치·잘못된 표본의 건수를 표시한다. 시각 사유가 있으면 PC와 로봇 시계를 동기화하며 허용 시간 기준을 완화하지 않는다. 이 진단은 관제 실행부 재시작 시 초기화되고 주행 승인에는 사용하지 않는다.
 
 TF는 기존 `trial/localization_state`의 유효성 검사를 그대로 사용한다. Nav2/AMCL/TF가 준비되지 않은 라인 모드는 `pose_est`를 실측 frame의 cm→m, 회전/이동 변환으로 표시한다. 이 추정은 바퀴 축 위치의 근사이며 정밀 localization을 대체하지 않는다. 가상 Nav2도 실제 ROS Nav2의 장애물 회피 검증을 대체하지 않는다.
+
+## 12. 기존 Pinky 브로커에 OMX1·2 연결
+
+관제 owner 한 개가 같은 `ROPORT_MQTT_*` 연결로 Pinky 주행과 `shelf-01` 작업을 보낸다.
+OMX PC에서 별도 브로커를 열거나 Pinky runner를 OMX용으로 복제하지 않는다.
+서비스 입고의 `WAIT_INBOUND` → `shelf_inbound.requested`, 출고의 `WAIT_CART_LOAD` →
+`shelf_outbound.requested`다. OMX3 창고 상차는 아직 수동 완료다.
+
+### 1. 사용 중인 설정에 OMX만 추가
+
+작업을 종료하고 관제 owner를 내린 뒤, 관제 서비스 디렉터리에서 실행한다.
+`TRIAL_DIR`은 현재 사용하는 trial.json 디렉터리다. 기존 파일을 직접 덮어쓰지 않는다.
+
+```bash
+uv run python tools/configure_omx_trial.py \
+  --config "$TRIAL_DIR/trial.json" --output "$TRIAL_DIR/trial-omx.json" \
+  --execution-mode mock --slot 2b \
+  --model-version test-model --calibration-version test-cal
+```
+
+이 명령은 연결하거나 구동하지 않는다. 기존 site/control/Pinky binding·경로·속도·현장 확인 값을
+보존하고 `omx` 설정만 추가한다. 이미 OMX 설정이 있으면 binding도 보존한다. 출력 파일이 있으면
+거부한다. 기존 관제 실행 명령의 `--config`만 `trial-omx.json`으로 바꾸고 **새 journal**을 사용한다.
+Pinky에는 기존 trial.json을 유지할 수 있다(기체가 사용하는 값은 동일). 이전 owner와 함께 실행하지 않는다.
+
+`mock`은 OMX 팔이 움직이지 않아도 시간 경과로 완료를 보내므로 **무구동 통신 시험용**이다.
+실물 Pinky 작업에 이 완료를 물리 상하차 증거로 사용하지 않는다. 기존 `mode=simulation` 설정과
+가상 Pinky로 먼저 검증하며, simulation owner는 기존 규칙대로 loopback broker만 허용한다.
+서로 다른 PC의 수신 확인은 아래 status 조회를 사용하고 관제 출발을 누르지 않는다.
+
+### 2. OMX PC에서 같은 브로커에 접속
+
+관제·Pinky와 동일한 실제 `ROPORT_MQTT_HOST`, `ROPORT_MQTT_PORT`, TLS/인증 설정을 적용한다.
+예제의 포트가 18883이어도 실제 브로커가 1883이면 모든 PC에서 1883을 사용한다.
+`localhost`는 각 PC 자신을 가리킨다. 인증값은 JSON·명령 기록·저장소에 넣지 않는다.
+
+```bash
+cd /path/to/kernel-robot-repo-1/services/roport-omx
+uv sync --locked
+# 기존에 배포한 공통 broker.env를 사용한다. 새 브로커를 시작하지 않는다.
+source /path/to/broker.env
+```
+
+설정 도구가 출력한 `uv run python scripts/cooperative_host.py ...` 명령을 OMX PC에서 실행한다.
+`REPLACE_WITH_PERSISTENT_OMX_JOURNAL_PATH`는 사용자 홈 아래 새 영속 파일로 바꾼다.
+출력 명령은 site/control/OMX binding을 trial-omx.json과 일치시킨다. Host client ID는 다른
+MQTT client와 중복되면 안 된다. 모의 Host의 정상 로그는 `SIMULATED executor`와 `subscribed`다.
+
+| 항목 | 관제와 OMX Host의 일치 조건 |
+| --- | --- |
+| site | `trial-omx.json.site_id` ↔ `--site` |
+| 관제 ID | `control_id` ↔ `--control` |
+| OMX 등록 | `omx.binding_id` ↔ `--binding`; Pinky binding과 별개 |
+| 브로커 | host·port·TLS·CA·사용자 권한이 같은 접속 구성 |
+| 작업 | slot·모델 버전·보정 버전이 현장 실행부의 실제 설정과 일치 |
+
+ACL은 `roport/v1/{site}/workcell/shelf-01/{cmd,event,ack}`를 추가한다.
+관제는 cmd/ack 발행·event 구독, OMX Host는 cmd/ack 구독·event 발행이다. 모두 QoS1,
+retain=false. MQTT 연결 성공만으로 팔 준비가 확인되는 것은 아니다.
+
+무구동 상태 확인은 도구가 함께 출력하는 `cooperative_control_sim.py status` 명령을 사용한다.
+같은 broker.env를 읽고 `REPLACE_WITH_STATUS_LOG_PATH`를 로컬 기록 경로로 바꾼다.
+이 기존 조회 스크립트는 TLS/인증 환경변수를 읽지 않으므로 무인증 시험 브로커에서만 사용한다.
+실제 관제 owner를 함께 실행하지 않는다. 정상은 `status.completed` 왕복이며 작업은 시작하지 않는다.
+
+### 3. 실물 실행부에 연결할 때 필요한 조건
+
+main의 PR45 Host는 mock만 제공한다. 실물 제어판 어댑터는 FFT1-158의
+`feature/taegyeong/omx-cooperative-panel`에 별도로 있으며 main 병합/현장 검증과 구분한다.
+현재 확인본 `d398ba5`의 `PanelExecutor.readiness()`는 `arms={}`를 반환하므로 관제의 준비 검사에
+통과하지 않는다. 이 상태에서 검사를 완화하거나 모의 완료로 우회하지 않는다.
+
+실행부 담당자가 연결해야 할 경계는 기존 `roport_omx.cooperative.Executor`다.
+
+- `readiness()`: 실제 armed·busy·error와 omx1/omx2 각각의 connected/returned/safe/grasping.
+  작업 전송에는 최신 양팔 `(True, True, True, False)`가 필요하다. 과거 last_result를 현재 상태로 재사용하지 않는다.
+- `start(task)`: operation·slot·package·model/calibration을 확인하고 한 작업을 시작한다.
+  빠르게 반환해야 하며, 제어판이 모터와 카메라를 단독 소유한다.
+- `observe()`: 같은 execution의 running/finished/failed와 실제 양팔 상태를 반환한다.
+  정상 종료와 양팔 복귀·그리퍼 열림이 확인되어야 완료한다. 실패·결과 유실은 HOLD한다.
+
+이 경계가 충족된 뒤 설정 도구에 `--execution-mode hardware`와 현장 모델/보정 버전을 지정한다.
+도구가 출력하는 panel 명령에는 `--executor panel --routes ... --box-marker ...`가 추가된다.
+`--routes`에는 `(INBOUND 또는 OUTBOUND, slot_id)`별 실제 모델 경로·작업 문장·episode_s·reset_s를
+등록하고, 상자 마커는 실물 물품과 확인한다. package_id→마커 자동 매핑은 아직 없다.
+제어판 v3.8+의 실제 실행 명령·시리얼/카메라·모델·보정 파일은 현장 담당자가 제공해야 한다.
+
+UI 수동 완료와 MQTT 완료는 같은 정차 세션에서 한 번만 처리된다. 이미 작업을 보냈다면 수동 완료에도
+접수 이후의 최신 Host 대기·양팔 복귀 정보가 필요하다. `arm_return_only`는 선반 안착·재고 확정이 아니다.
