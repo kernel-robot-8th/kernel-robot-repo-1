@@ -1,0 +1,9 @@
+{
+  "repo": "~/roport-baseline/repo/services/roport-omx",
+  "link_config": "~/roport-baseline/run/trial-omx-link.hardware.json",
+  "broker_env": "~/roport-baseline/run/broker.env",
+  "routes": "~/.config/roport/shelf-01-routes.json",
+  "box_marker": 16,
+  "journal": "~/roport-baseline/run/omx-hardware.json",
+  "client_id": "roport-shelf-01-host"
+}
