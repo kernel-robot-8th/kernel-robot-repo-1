@@ -464,7 +464,7 @@ class PanelExecutorTest(unittest.TestCase):
         self.panel.finish(arms=arms, last_episode=last)
         events = self.host.poll()
         self.assertEqual(events[-1]["type"], "shelf_inbound.completed")
-        self.assertEqual(events[-1]["payload"]["evidence"], "arm_return_detected")
+        self.assertEqual(events[-1]["payload"]["evidence"], "arm_return_only")
         # a gripper still on the box edge above 54.6 is not released even after a detected return
         self.send(self.inbound())
         arms = {"OMX 1": arm("left", gripper_open=False), "OMX 2": arm("right")}
