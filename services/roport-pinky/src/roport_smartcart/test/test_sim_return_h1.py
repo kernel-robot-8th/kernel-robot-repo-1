@@ -114,3 +114,11 @@ print('stopped and cleaned up')
                             env=os.environ.copy(), capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == 'stopped and cleaned up'
+
+
+def test_sim_truth_and_localization_must_agree_before_or_during_navigation():
+    from roport_smartcart.sim_return_h1 import require_pose_consistency
+    require_pose_consistency((1., 2., math.pi), (1.02, 2.03, -math.pi))
+    for pose in [(2., 2., math.pi), (1., 2., 0.), (float('nan'), 2., math.pi)]:
+        with pytest.raises(RuntimeError, match='sim_localization_mismatch'):
+            require_pose_consistency((1., 2., math.pi), pose)

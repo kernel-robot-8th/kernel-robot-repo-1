@@ -49,6 +49,13 @@ def return_waypoints(position, n12, *, public_space):
     return ['return_entry']
 
 
+def require_pose_consistency(actual, estimated):
+    if (not all(math.isfinite(v) for v in (*actual, *estimated))
+            or math.hypot(actual[0]-estimated[0], actual[1]-estimated[1]) > .15
+            or abs(wrap(actual[2]-estimated[2])) > .35):
+        raise RuntimeError('sim_localization_mismatch: Gazebo and map pose disagree')
+
+
 def line_return_route(bay):
     if bay == 'H1':
         return ['N12', 'N08', 'N09', 'H1']
@@ -123,6 +130,8 @@ def main():
     from sensor_msgs.msg import LaserScan, Range
     from std_msgs.msg import String
     from tf2_msgs.msg import TFMessage
+    from tf2_ros import Buffer, TransformListener, TransformException
+    from rclpy.time import Time
 
     smart = Path(get_package_share_directory('roport_smartcart'))
     world = Path(get_package_share_directory('roport_gz_world'))
@@ -135,6 +144,8 @@ def main():
     rclpy.init(domain_id=198, signal_handler_options=SignalHandlerOptions.NO)
     node = rclpy.create_node('sim_return_h1', parameter_overrides=[
         Parameter('use_sim_time', value=True)])
+    tf_buffer = Buffer()
+    tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
     executor = SingleThreadedExecutor()
     executor.add_node(node)
     samples, received = {}, {}
@@ -199,6 +210,14 @@ def main():
             stamp = msg.header.stamp.sec + msg.header.stamp.nanosec/1e9
             if not -.1 <= ros-stamp <= .5:
                 raise RuntimeError(f'{name} ROS timestamp stale')
+        try:
+            transform = tf_buffer.lookup_transform('map', 'base_footprint', Time()).transform
+        except TransformException as exc:
+            raise RuntimeError('simulation map transform unavailable') from exc
+        q = transform.rotation
+        estimate = (transform.translation.x, transform.translation.y,
+                    math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z)))
+        require_pose_consistency(pose(), estimate)
 
     def pose():
         p = samples['ground_truth'].transform
@@ -259,6 +278,7 @@ def main():
                 start_new_session=True)
             while child.poll() is None:
                 spin(.1)
+                fresh()
                 control_ready()
             if child.returncode:
                 raise RuntimeError(f'Nav2 {target} failed ({child.returncode})')
