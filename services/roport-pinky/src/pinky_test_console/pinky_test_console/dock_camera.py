@@ -162,10 +162,15 @@ def classify_failure(code, stderr):
     return DockError(f'카메라 읽기 실패(code {code}): {tail}', 502)
 
 
+def chunk_reader(stream):
+    """있는 만큼 돌려주는 read(n). Popen(bufsize=0) 의 stdout 은 FileIO 라 read1 이 없고 read(n) 이 그 역할."""
+    return getattr(stream, 'read1', None) or stream.read
+
+
 def iter_mpjpeg(read, max_frame=MAX_FRAME):
     """ffmpeg -f mpjpeg 출력(--경계, 헤더, Content-length, JPEG)에서 JPEG 를 하나씩 낸다.
 
-    read(n) = 있는 만큼 돌려주는 함수(BufferedReader.read1). EOF 면 끝. 형식이 틀리면 ValueError.
+    read(n) = 있는 만큼 돌려주는 함수(chunk_reader: FileIO.read 또는 BufferedReader.read1). EOF 면 끝. 형식이 틀리면 ValueError.
     """
     buf = b''
     while True:
@@ -310,7 +315,7 @@ class _Relay:
     def _read(self, proc, gen, err_buf):
         bad = None
         try:
-            for jpeg in iter_mpjpeg(proc.stdout.read1):
+            for jpeg in iter_mpjpeg(chunk_reader(proc.stdout)):
                 with self.cond:
                     if gen != self._gen:
                         break

@@ -126,7 +126,8 @@ def test_iter_mpjpeg_real_ffmpeg_format():
 
 # ---------------- 가짜 프로세스 ----------------
 class FakeStdout:
-    """실시간 ffmpeg 출력 흉내: put() 한 만큼 read1 이 돌려주고, close 면 EOF."""
+    """실시간 ffmpeg 출력 흉내: put() 한 만큼 read 가 돌려주고, close 면 EOF.
+    실제 Popen(bufsize=0) stdout(FileIO)처럼 read1 은 없다(2026-11-09 실사용 AttributeError)."""
 
     def __init__(self):
         self.q = queue.Queue()
@@ -134,7 +135,7 @@ class FakeStdout:
     def put(self, data):
         self.q.put(data)
 
-    def read1(self, n):
+    def read(self, n=-1):
         return self.q.get()
 
 
@@ -356,3 +357,20 @@ def test_result_rejects(tmp_path, patch):
     with pytest.raises(dc.DockError):
         dc.DockResults(str(tmp_path / 'd'), home=str(tmp_path)).save(data)
     assert not (tmp_path / 'd').exists() or not os.listdir(tmp_path / 'd')
+
+
+def test_stream_reader_works_with_unbuffered_popen():
+    """Popen(bufsize=0) 의 stdout 은 FileIO(read1 없음) — chunk_reader 로 실제 mpjpeg 프레임을 읽는다."""
+    import shutil
+    if shutil.which('ffmpeg') is None:
+        pytest.skip('ffmpeg 없음')
+    proc = subprocess.Popen(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
+                             'testsrc=size=160x120:rate=10', '-frames:v', '3', '-c:v', 'mjpeg',
+                             '-f', 'mpjpeg', '-'], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    try:
+        assert not hasattr(proc.stdout, 'read1')
+        frames = list(dc.iter_mpjpeg(dc.chunk_reader(proc.stdout)))
+    finally:
+        proc.wait(timeout=10)
+    assert len(frames) == 3 and all(f[:2] == b'\xff\xd8' for f in frames)
