@@ -96,9 +96,24 @@
             <p id="trial-route" class="note"></p>
             <label>시험 조작 키 <input id="trial-key" type="password" autocomplete="off" placeholder="서버에서 설정한 키" aria-describedby="trial-key-help" /></label>
             <p id="trial-key-help" class="note">키를 입력한 뒤 아래 버튼을 누르세요. Enter만으로 출발하지 않습니다.</p>
+            <section aria-label="서비스 작업 시험">
+              <h3>서비스 작업 시험</h3>
+              <fieldset id="service-fields" disabled>
+                <label>작업 <select id="service-operation"><option value="outbound">출고·인도 준비</option></select></label>
+                <p id="service-input-summary"></p>
+                <label><input id="service-source-confirm" type="checkbox" /> 시험 물품의 준비 상태와 보관 장소를 확인함</label>
+                <button type="button" id="service-preview-button">계획 확인</button>
+                <ol id="service-preview-steps" aria-label="서비스 계획"></ol>
+                <label><input id="service-field-confirm" type="checkbox" /> 출발 위치·방향·통로·watchdog을 현장에서 확인함 (실물 시험)</label>
+                <button type="button" id="service-apply" disabled>서비스 계획 적용</button>
+              </fieldset>
+              <p id="service-feedback" role="status">작업 선택 → 계획 확인 → 적용 → 작업 실행</p>
+              <ol id="service-progress" aria-label="서비스 진행"></ol>
+              <p id="service-completion" role="status"></p>
+            </section>
             <details id="scenario-editor">
-              <summary>시나리오 선택 · 노드 편집 / 구간 / 작업 / 출고 요청</summary>
-              <p class="note">설정 적용 후 별도로 출발합니다. OMX 작업은 더미 승인입니다. HOLD 복구는 현장 확인 후 실행부를 새 journal로 시작하세요.</p>
+              <summary>고급 주행 시험 · 시나리오 선택 / 노드 편집 / 구간 / 출고 요청</summary>
+              <p class="note">설정 적용 후 별도로 출발합니다. OMX 작업은 수동 확인 또는 연결된 MQTT 완료로 진행합니다. HOLD 복구는 현장 확인 후 실행부를 새 journal로 시작하세요.</p>
               <fieldset id="scenario-fields">
                 <div class="actions"><label>기본 시나리오 <select id="scenario-preset"><option value="">실행부 연결 대기</option></select></label><label><input id="scenario-nav2" type="checkbox" checked /> N12 이후 Nav2 목표까지</label><button type="button" id="scenario-preset-load">기본안 불러오기</button></div>
                 <p class="note">기본안 선택 → 단계별 노드 목록 편집 → 설정 검증 → 실행 계획 적용 → 시나리오 출발. 1대는 물류 핑키가 카트 역할까지 수행합니다. 비참여 기체는 통로 밖에 두세요.</p>
@@ -129,7 +144,7 @@
             <p id="trial-readiness" role="status"></p>
             <div class="actions">
               <button data-action="start" disabled>시나리오 출발</button>
-              <button id="trial-dummy" data-action="dummy" disabled>OMX 입고 완료 (더미)</button>
+              <button id="trial-dummy" data-action="dummy" disabled>OMX 입고 완료 수동 확인</button>
               <button id="trial-request" data-action="request" hidden disabled>물품 요청 · 스마트카트 호출</button>
               <button data-action="stop" disabled>시험 중단 (보류)</button>
               <button id="trial-reset" data-action="reset" disabled hidden>가상 시험 초기화</button>
