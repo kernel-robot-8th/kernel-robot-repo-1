@@ -129,7 +129,7 @@ nodes:
     - {id: N12, at: [375.55, 73.2], role: 간선 끝·Nav2 전환, bar: y, nav2_switch: true,
        links: [N08]}
 
-# ArUco 마커 부착 제안 위치(ArUco v1.3: 벽 100 mm, P4·P7 바닥 20 mm). 충돌 없음.
+# ArUco 마커 부착 제안 위치(ArUco v1.5: 벽 100 mm, Gate·ARR 60 mm, P4·P7 바닥 20 mm). 충돌 없음.
 # 벽 마커는 정차 노드 정면 벽, 바닥 마커는 가로선 앞(진행 방향) 빈 바닥 가운데.
 # 실제 부착 제안: 벽 마커는 종이(116 mm) 아래 끝을 바닥에 맞춤 → 중심 약 6 cm(카메라 렌즈 6.3 cm와
 # 같은 높이, ArUco v1.3 "바닥에 최대한 가깝게"). 부착 후 위치를 재서 이 값을 고친다.
@@ -139,10 +139,10 @@ nodes:
 markers:
   defaults: {size: 10, center_height: 5, provisional: true}
   items:
-    - {name: G1, center: [138.5, 120.9], facing_deg: 0}
-    - {name: G2, center: [138.5, 158.8], facing_deg: 0}
-    - {name: G3, center: [138.5, 204.8], facing_deg: 0}
-    - {name: ARR, center: [444.0, 200.0], facing_deg: 180}
+    - {name: G1, center: [138.5, 120.9], facing_deg: 0, size: 6}
+    - {name: G2, center: [138.5, 158.8], facing_deg: 0, size: 6}
+    - {name: G3, center: [138.5, 204.8], facing_deg: 0, size: 6}
+    - {name: ARR, center: [444.0, 200.0], facing_deg: 180, size: 6}
     - {name: P1, center: [306.45, 0.5], facing_deg: 90}
     - {name: P2, center: [339.45, 0.5], facing_deg: 90}
     - {name: P5, center: [45.7, 220.5], facing_deg: -90}
