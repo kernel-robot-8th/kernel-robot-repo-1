@@ -813,3 +813,61 @@ def test_gate_early_validation():
         with pytest.raises(ValueError, match='gate_early_cm'):
             NavConfig(gate_early_cm=bad)
     assert NavConfig().gate_early_cm == 5.0
+
+
+def _record_follow(ex):
+    """ex.step 을 감싸 follow 명령을 (구간 번호, 구간 이동 거리, 회전 직후 감속 거리, 직선 속도)로 기록."""
+    rec, step = [], ex.step
+
+    def wrapped(reading, pose, now, *a, **kw):
+        cmd = step(reading, pose, now, *a, **kw)
+        if ex.state == 'follow' and cmd is not None and cmd.linear > 0 and ex._gap is None:
+            rec.append((ex.index, ex._odo - ex._ref_odo, ex._slow_until, cmd.linear))
+        return cmd
+    ex.step = wrapped
+    return rec
+
+
+def test_post_turn_slow_first_10cm_after_node_turn(graph):
+    """회전 직후 구간은 처음 post_turn_slow_cm(10)까지 approach_speed(2026-11-10 사용자 결정).
+    회전 없이 시작한 첫 구간·회전 뒤 10 cm 지난 곳은 base_speed."""
+    route = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']
+    sim = Sim(graph)
+    sim.place(route[0], 'S', 0.0)
+    ex = RouteExecutor(graph, NavConfig(base_speed=0.06, max_linear=0.08))
+    rec = _record_follow(ex)
+    ex.start(route)
+    assert sim.run(ex, _done, on_loading=lambda s: True)
+    assert ex.state == ARRIVED, ex.reason
+    first = [v for i, d, s, v in rec if i == 0]
+    assert all(s == 0.0 for i, d, s, v in rec if i == 0)              # 첫 구간: 회전 없이 출발
+    turned = [(i, d, s, v) for i, d, s, v in rec if i > 0]
+    assert turned and all(s == pytest.approx(10.0) for *_, s, _v in turned)   # N14·N02·N10·N18 모두 회전 뒤
+    assert all(v <= 0.03 + 1e-9 for i, d, s, v in turned if d < 10.0)
+    assert any(v > 0.05 for i, d, s, v in turned if d >= 10.0)        # 10 cm 뒤 긴 구간(N02→N10)은 다시 빠르게
+    assert max(first) > 0.05
+
+
+def test_post_turn_slow_not_after_straight_pass_and_off_switch(graph):
+    """직진 통과(PASS) 뒤 구간은 감속 안 함. post_turn_slow_cm=0 이면 회전 뒤에도 감속 안 함."""
+    route = ['N11', 'N19', 'N23', 'N07', 'N05', 'N15', 'N17']
+    for slow_cm in (10.0, 0.0):
+        sim = Sim(graph)
+        sim.place(route[0], 'N', 7.0)
+        ex = RouteExecutor(graph, NavConfig(base_speed=0.06, max_linear=0.08,
+                                            post_turn_slow_cm=slow_cm))
+        rec = _record_follow(ex)
+        ex.start(route)
+        assert sim.run(ex, _done)
+        assert ex.state == ARRIVED, ex.reason
+        legs = {i: ex.legs[i] for i, *_ in rec}
+        after_pass = [i for i in legs if i > 0 and ex.legs[i - 1].action == 'straight']
+        assert after_pass and all(s == 0.0 for i, d, s, v in rec if i in after_pass)
+        if slow_cm == 0.0:
+            assert all(s == 0.0 for *_, s, _v in rec)
+
+
+@pytest.mark.parametrize('bad', [-1.0, 50.1, float('nan'), float('inf')])
+def test_post_turn_slow_config_limits(bad):
+    with pytest.raises(ValueError):
+        NavConfig(post_turn_slow_cm=bad)

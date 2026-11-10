@@ -21,6 +21,7 @@
 경유 정차: 경로 중간의 가로선 노드(예: P5 → P4 상차 → P7)에서는 그 노드의 도착 동작(상차 대기 등)을 한 뒤
   같은 규칙(이어서 출발)으로 다음 구간을 이어 간다. 경로는 가로선 노드마다 구간 묶음으로 나눠 검사한다.
 속도: set_speed 로 직선·회전 속도를 바꾼다(주행 중에도 다음 샘플부터). 상한은 설정의 max_linear·max_angular.
+회전 직후 감속: 노드에서 회전한 뒤 이어지는 구간은 처음 post_turn_slow_cm(기본 10 cm)까지 approach_speed 이하.
 노드 앞 감속: 직선 추종 중 이동 거리가 예상 노드 위치 - approach_lead_cm(기본 5 cm)를 넘으면, 그리고 노드
   감지 뒤 회전 전 전진·후진은 approach_speed(base_speed 보다 크면 base_speed) 이하로 간다. 출발 위치를 몰라
   예상 위치가 없는 구간은 처음부터 approach_speed. 직진 통과 노드(pass_full_speed)는 감속하지 않는다. 실로봇 d660 0.06 m/s(2026-11-06)에서 노드를
@@ -141,6 +142,10 @@ class NavConfig:
     # 예상 노드 위치 몇 cm 전부터 감속(2026-11-07 사용자: 노드 3~5 cm 전). 실로그 61건의 진짜 감지는 예상 위치
     # -3.4 ~ +2.9 cm → 5 cm 면 모두 감속 뒤 감지, 3 cm 면 일찍 오는 노드(-3.1·-3.4)를 빠른 속도로 만남
     approach_lead_cm: float = 5.0
+    # 노드에서 회전한 직후 구간 처음 이 거리(cm)는 approach_speed 이하. 0 = 끔.
+    # 근거(2026-11-10 결정): 회전 뒤 선 옆으로 0.5~1 cm 밀린 채 0.06~0.08로 가면 옆 IR이 본선 가장자리를
+    # 11.5~15.9 cm까지 밟아 감지 창과 겹침(오감지). 0.03 기록은 가장자리 타기가 8.5 cm 전에 끝남.
+    post_turn_slow_cm: float = 10.0
     # 직진 통과 노드(N15·N23 등)는 다가갈 때·지날 때 감속하지 않음(2026-11-07 사용자)
     pass_full_speed: bool = True
     # 라인 유실 복구(FFT1-163, 시뮬만 확인 — 실로봇 미검증). gap_max_cm 0 = 끔(예전 동작)
@@ -169,6 +174,8 @@ class NavConfig:
             raise ValueError(f'need min_speed <= approach_speed <= {HARD_MAX_LINEAR}')
         if not (math.isfinite(self.approach_lead_cm) and 0.0 <= self.approach_lead_cm <= 50.0):
             raise ValueError('need 0 <= approach_lead_cm <= 50')
+        if not (math.isfinite(self.post_turn_slow_cm) and 0.0 <= self.post_turn_slow_cm <= 50.0):
+            raise ValueError('need 0 <= post_turn_slow_cm <= 50')
         if not 0.0 < self.rotate_min_speed <= self.rotate_speed <= self.max_angular:
             raise ValueError('need 0 < rotate_min_speed <= rotate_speed <= max_angular')
         if not (math.isfinite(self.gate_early_cm) and 0.0 <= self.gate_early_cm <= 50.0):
@@ -250,6 +257,7 @@ class RouteExecutor:
         self._seg_ends = set()   # 경유 정차 구간 묶음의 끝 Leg 번호
         self._end = None         # 직전 경로가 끝난 곳 {'node', 'facing', 's0'} (이어서 출발용)
         self._expected = None    # 지금 구간의 예상 노드 위치(센서 이동 거리 cm). 모르면 None
+        self._slow_until = 0.0   # 이 구간에서 이 이동 거리(cm)까지 감속(회전 직후)
         self._pre = None         # 출발 전 제자리 회전의 시작 방향(도, 표시용)
         self._reset_primitive()
 
@@ -472,6 +480,7 @@ class RouteExecutor:
                       'max_angular': self.cfg.max_angular,
                       'approach_speed': self.approach_speed,
                       'approach_lead_cm': self.cfg.approach_lead_cm,
+                      'post_turn_slow_cm': self.cfg.post_turn_slow_cm,
                       'pass_full_speed': self.cfg.pass_full_speed,
                       'kp': self.cfg.kp, 'kd': self.cfg.kd,
                       'kp_at_base': round(self.kp_for(self.cfg.base_speed), 3),
@@ -624,6 +633,9 @@ class RouteExecutor:
         guess: s0 가 가정값(사람이 놓은 출발 위치)이면 True → 비율 창만 쓰고 gate_early 는 안 씀.
         """
         leg = self.legs[self.index]
+        c = self.cfg
+        # 노드 회전(ROTATE)이 끝나 바로 이 구간을 시작하면 처음 post_turn_slow_cm 은 감속
+        self._slow_until = c.post_turn_slow_cm if self.state == ROTATE else 0.0
         self.state = FOLLOW
         self._reset_primitive()
         self._gap = None
@@ -740,6 +752,8 @@ class RouteExecutor:
             speed = self.approach_speed
         else:
             speed = self.approach_speed if d >= self._expected - c.approach_lead_cm else c.base_speed
+        if d < self._slow_until:         # 회전 직후: 선 가운데로 돌아올 때까지 감속(가장자리 타기 방지)
+            speed = min(speed, self.approach_speed)
         angular = _clamp(-(self.kp_for(speed) * e + c.kd * de), c.max_angular)
         linear = speed * (1.0 - c.slow_gain * abs(e))
         linear = min(c.max_linear, max(c.min_speed, linear))

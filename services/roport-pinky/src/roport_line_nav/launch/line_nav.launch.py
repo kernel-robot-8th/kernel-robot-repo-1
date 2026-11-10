@@ -18,6 +18,7 @@ FLOAT_ARGS = {
     'base_speed': ('0.03', 'm/s line following'),
     'approach_speed': ('0.03', 'm/s near nodes, pass/advance (capped by base_speed)'),
     'approach_lead_cm': ('5.0', 'slow down this many cm before the expected node position'),
+    'post_turn_slow_cm': ('10.0', 'after a node turn, approach_speed for this many cm (0 = off)'),
     'kp': ('1.0', 'rad/s per line error (x speed/gain_ref_speed above gain_ref_speed)'),
     'kd': ('0.05', 'line error rate gain'),
     'gain_ref_speed': ('0.06', 'm/s; kp grows with speed only above this'),

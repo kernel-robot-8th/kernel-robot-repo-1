@@ -29,6 +29,8 @@ Gazebo에는 IR 센서가 없다. 시뮬레이터 결과는 실로봇 주행 검
 90° 회전이 107~117°에서 끝나고(0.03 m/s는 70~93°) 다음 구간을 약 20° 비스듬히 출발했다. N14→N02(24 cm)에서 왼쪽 센서가
 직선 테이프 가장자리를 밟아 10.9 cm(창 10.9~28.7 cm 안)에서 모서리로 잘못 보고, 회전 120° 안에 선이 없어 정지했다.
 0.03 m/s는 같은 구간을 18.4 cm에서 맞게 감지하고 완주했다. 그래서 노드 근처만 0.03 m/s로 가고 거리 창(±30%)은 그대로 둔다.
+`post_turn_slow_cm` 10 cm(2026-11-10 사용자 결정): 노드에서 회전한 직후 구간은 처음 10 cm를 `approach_speed`(0.03) 이하로 간다. 회전 뒤 선 옆으로 0.5~1 cm 밀린 채 0.06~0.08로 가면 옆 IR이 본선 가장자리를 11.5~15.9 cm까지 밟아 감지 창(노드 5 cm 앞)과 겹쳐 옆선으로 오감지했다(11-07 17:55·11-09 21:54). 0.03 실로그 5회는 가장자리 타기가 있어도 8.5 cm 전에 끝났다. 직진 통과(PASS) 뒤에는 감속하지 않는다. 0이면 끈다.
+
 `approach_lead_cm` 5 cm(2026-11-07 사용자 요청 3~5 cm 중 큰 값): 실로그 61건의 진짜 노드 감지 위치는 예상 위치의 −3.4~+2.9 cm였다. 5 cm면 모두 감속한 뒤 노드를 만나고, 3 cm면 일찍 오는 노드(−3.1·−3.4 cm)를 0.06 m/s로 만난다. 처음 기준(감지 창 시작 − 5 cm)은 긴 구간(N05→N07)에서 노드 약 30 cm 전부터 감속해 바꿨다.
 감속 뒤 0.06 m/s 실로봇 완주는 아직 확인하지 않았다.
 
@@ -158,7 +160,7 @@ ros2 topic pub --once /line_nav/command std_msgs/msg/String "{data: '{\"cmd\": \
 
 경로 상세 기록: 경로 하나마다 `~/roport_logs/route_<YYYYmmdd_HHMMSS>_<출발>-<도착>.csv`(IR 20 Hz 한 줄씩: state·구간·이동 거리·회전·IR 원시값·on_line·오차·cmd_vel·odom·이벤트)를 쓰고 최근 50개만 남긴다. 노드 파라미터 `log_dir`(빈 값이면 기록 안 함)·`log_keep`. 쓰기 오류가 나면 기록만 끄고 주행은 계속한다.
 
-조정 인자(launch): `base_speed`, `approach_speed`, `approach_lead_cm`, `kp`·`kd`·`gain_ref_speed`, `gate_min`·`gate_max`·`gate_early_cm`, `pass_full_speed`·`tee_both`·`tee_window_cm`·`kp_speed_scale`(노드 파라미터), `max_linear`, `max_angular`, `rotate_speed`, `reverse_speed`, `ir_ahead_cm`(실측 3), `turn_advance_cm`(4.2), `layout_file`, `dock_file`, `gap_max_cm`·`gap_heading_window_cm`·`search_deg`·`ir_spacing_cm`(라인 유실 복구), `gap_confirm`(노드 파라미터).
+조정 인자(launch): `base_speed`, `approach_speed`, `approach_lead_cm`, `post_turn_slow_cm`, `kp`·`kd`·`gain_ref_speed`, `gate_min`·`gate_max`·`gate_early_cm`, `pass_full_speed`·`tee_both`·`tee_window_cm`·`kp_speed_scale`(노드 파라미터), `max_linear`, `max_angular`, `rotate_speed`, `reverse_speed`, `ir_ahead_cm`(실측 3), `turn_advance_cm`(4.2), `layout_file`, `dock_file`, `gap_max_cm`·`gap_heading_window_cm`·`search_deg`·`ir_spacing_cm`(라인 유실 복구), `gap_confirm`(노드 파라미터).
 
 ### 상태 표시 (LCD·LED, `status_indicator`)
 
