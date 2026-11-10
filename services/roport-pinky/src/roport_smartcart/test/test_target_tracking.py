@@ -1,13 +1,14 @@
 """Preview selection failures must never silently switch to another target."""
 
 import math
+import sys
 import threading
 from types import SimpleNamespace
 
 import pytest
 
 from roport_smartcart.target_tracking import Detection, TargetSelection
-from roport_smartcart.target_preview import VideoWorker, main
+from roport_smartcart.target_preview import VideoWorker, main, parse_args
 
 
 def detection(track_id=1, box=(0, 0, 100, 100), class_id=0):
@@ -119,3 +120,69 @@ def test_missing_model_rejected_before_optional_dependencies(tmp_path):
     with pytest.raises(SystemExit) as error:
         main(['--source', '0', '--model', str(tmp_path / 'missing.pt')])
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize('value,expected', [('0', 0), ('2', 2),
+    ('/outside-repository/test.mp4', '/outside-repository/test.mp4'),
+    ('rtsp://example.com/stream', 'rtsp://example.com/stream')])
+def test_environment_source_resolves_without_printing_value(tmp_path, monkeypatch, capsys, value, expected):
+    model = tmp_path / 'test.pt'
+    model.touch()
+    monkeypatch.setenv('PINKY_VIDEO_SOURCE', value)
+    _, args = parse_args(['--source-env', 'PINKY_VIDEO_SOURCE', '--model', str(model)])
+    assert args.source == expected
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ''
+
+
+@pytest.mark.parametrize('value', [None, '', '   '])
+def test_missing_or_blank_environment_source_is_rejected(tmp_path, monkeypatch, capsys, value):
+    model = tmp_path / 'test.pt'
+    model.touch()
+    monkeypatch.delenv('PINKY_VIDEO_SOURCE', raising=False)
+    if value is not None:
+        monkeypatch.setenv('PINKY_VIDEO_SOURCE', value)
+    with pytest.raises(SystemExit) as error:
+        parse_args(['--source-env', 'PINKY_VIDEO_SOURCE', '--model', str(model)])
+    assert error.value.code == 2
+    assert 'populated environment variable' in capsys.readouterr().err
+
+
+def test_source_options_are_mutually_exclusive(tmp_path, monkeypatch, capsys):
+    model = tmp_path / 'test.pt'
+    model.touch()
+    monkeypatch.setenv('PINKY_VIDEO_SOURCE', 'rtsp://example.com/private-stream')
+    with pytest.raises(SystemExit) as error:
+        parse_args(['--source', '0', '--source-env', 'PINKY_VIDEO_SOURCE', '--model', str(model)])
+    assert error.value.code == 2
+    assert 'private-stream' not in capsys.readouterr().err
+
+
+def test_source_value_is_not_echoed_when_other_validation_fails(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('PINKY_VIDEO_SOURCE', 'rtsp://example.com/private-stream')
+    with pytest.raises(SystemExit):
+        parse_args(['--source-env', 'PINKY_VIDEO_SOURCE', '--model', str(tmp_path / 'missing.pt')])
+    assert 'private-stream' not in capsys.readouterr().err
+
+
+def test_missing_optional_dependency_exits_cleanly(tmp_path, monkeypatch, capsys):
+    model = tmp_path / 'test.pt'
+    model.touch()
+    monkeypatch.setitem(sys.modules, 'ultralytics', None)
+    with pytest.raises(SystemExit) as error:
+        main(['--source', '0', '--model', str(model)])
+    assert error.value.code == 2
+    assert 'optional preview dependencies' in capsys.readouterr().err
+
+
+def test_unknown_model_class_exits_before_starting_video(tmp_path, monkeypatch, capsys):
+    model = tmp_path / 'test.pt'
+    model.touch()
+    monkeypatch.setitem(sys.modules, 'cv2', SimpleNamespace())
+    monkeypatch.setitem(sys.modules, 'numpy', SimpleNamespace())
+    monkeypatch.setitem(sys.modules, 'ultralytics', SimpleNamespace(
+        YOLO=lambda *a, **k: SimpleNamespace(names={1: 'doll'})))
+    with pytest.raises(SystemExit) as error:
+        main(['--source', '0', '--model', str(model)])
+    assert error.value.code == 2
+    assert 'class ID is absent' in capsys.readouterr().err

@@ -2,6 +2,7 @@
 
 import argparse
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import threading
 import time
@@ -72,18 +73,30 @@ class VideoWorker:
                 capture.release()
 
 
-def main(argv=None):
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source', required=True, help='camera index, video path or stream URL')
+    sources = parser.add_mutually_exclusive_group(required=True)
+    sources.add_argument('--source', help='camera index, video path or non-secret stream URL')
+    sources.add_argument('--source-env', metavar='NAME',
+                         help='environment variable containing the source; value is not logged')
     parser.add_argument('--model', required=True, type=Path, help='existing local YOLO .pt weights')
     parser.add_argument('--class-id', type=int, default=0, help='COCO person=0; custom model class ID')
     parser.add_argument('--confidence', type=float, default=0.35)
     parser.add_argument('--max-age', type=float, default=0.5, help='maximum capture age in seconds')
     args = parser.parse_args(argv)
+    source = os.environ.get(args.source_env) if args.source_env is not None else args.source
+    if source is None or not source.strip():
+        parser.error('source must be nonempty; --source-env must name a populated environment variable')
     if (not args.model.is_file() or args.model.suffix != '.pt'
             or args.class_id < 0 or not 0 < args.confidence <= 1
             or not 0 < args.max_age <= 2):
         parser.error('existing .pt model, nonnegative class, confidence (0,1], max-age (0,2] required')
+    args.source = int(source) if source.isdecimal() else source
+    return parser, args
+
+
+def main(argv=None):
+    parser, args = parse_args(argv)
     try:
         import cv2
         import numpy as np
@@ -93,8 +106,7 @@ def main(argv=None):
     model = YOLO(str(args.model), task='detect')
     if args.class_id not in model.names:
         parser.error('class ID is absent from this model')
-    source = int(args.source) if args.source.isdecimal() else args.source
-    worker = VideoWorker(cv2, model, source, [args.class_id], args.confidence)
+    worker = VideoWorker(cv2, model, args.source, [args.class_id], args.confidence)
     selection = TargetSelection(args.max_age)
     window = 'Pinky target preview - NO ROBOT OUTPUT'
     cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
