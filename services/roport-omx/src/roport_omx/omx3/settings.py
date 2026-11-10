@@ -30,5 +30,13 @@ class Omx3Settings:
     # 아래 셋은 실측 전 기본값(HANDOFF_marker_act.md·MODEL_USAGE.md 기준). 현장에서 다시 정한다.
     init_tolerance: float = 5.0  # 관절 5개 각각 허용 오차
     gripper_open_min: float = 56.0
-    # 정면 영상(640x480)에서 정차한 Pinky 트레이 영역 (x0, y0, x1, y1) px, 경계 포함
+    # 정면 영상(640x480)에서 정차한 Pinky 트레이(12.5 x 15.2 cm) 영역 (x0, y0, x1, y1) px, 경계 포함.
+    # Pinky N01(P4) 정밀 도킹 자세(PR #59)에 따라 바뀐다. 도킹 값이 바뀌면 다시 재고,
+    # 도킹 반복 오차(약 1 cm·1°)만큼 픽셀 여유를 둔다.
     tray_region: tuple[int, int, int, int] = (399, 0, 567, 140)
+
+    def __post_init__(self) -> None:
+        if len(self.init_pose) != len(JOINTS):
+            raise ValueError(
+                f"init_pose는 {len(JOINTS)}개여야 합니다: {len(self.init_pose)}"
+            )

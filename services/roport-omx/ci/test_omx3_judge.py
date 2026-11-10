@@ -77,6 +77,11 @@ class IsDone(unittest.TestCase):
         self.assertEqual(len(S.init_pose), len(JOINTS))
         self.assertEqual(JOINTS[-1], "gripper")
 
+    def test_settings_reject_wrong_init_pose_length(self):
+        for pose in (tuple(INIT[:5]), (*INIT, 0.0)):
+            with self.subTest(n=len(pose)), self.assertRaises(ValueError):
+                Omx3Settings(init_pose=pose)
+
 
 if __name__ == "__main__":
     unittest.main()
