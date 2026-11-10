@@ -82,7 +82,8 @@ def test_no_drive_flag_never_initializes_ros(monkeypatch):
                         lambda *a: Calibration((2000,)*3, (300,)*3, (1000,)*3))
     monkeypatch.setattr('rclpy.init', lambda *a, **k: pytest.fail('No-drive must not initialize ROS'))
     assert module.main(['--places', 'unused', '--map', 'unused', '--layout', str(path),
-                        '--robot', 'fixture', '--calibration', 'unused', '--bay', 'H2']) == 0
+                        '--robot', 'fixture', '--calibration', 'unused', '--bay', 'H2',
+                        '--domain-id', '13']) == 0
 
 
 def test_invalid_adc_does_not_refresh_valid_ir_watchdog():
@@ -115,9 +116,11 @@ def test_guard_loss_revokes_owner_before_error(monkeypatch, blocked, boot, age):
     assert runner.owner == 'none' and sent == ['none']
 
 
-def test_shutdown_releases_line_before_cancel_and_independent_stop():
+@pytest.mark.parametrize('saved_tolerance', [None, .08])
+def test_shutdown_releases_line_before_cancel_and_independent_stop(saved_tolerance):
     from roport_smartcart.real_return import HardwareReturn
     runner = HardwareReturn.__new__(HardwareReturn)
+    runner.saved_goal_tolerance = saved_tolerance
     events = []
     runner.owner = 'line'
     runner.lease = lambda x: events.append(('lease', x))
@@ -127,10 +130,13 @@ def test_shutdown_releases_line_before_cancel_and_independent_stop():
     runner.nav = SimpleNamespace(cancel=lambda: events.append(('cancel', None)),
                                  lifecycle=SimpleNamespace(busy=False))
     runner.stop_confirmed = lambda: events.append(('actual_stop_confirmed', None))
+    runner.set_goal_tolerance = lambda value: events.append(('restored_tolerance', value))
     runner.spin = lambda: None
     runner.close()
     assert runner.owner == 'none'
-    assert [x[0] for x in events] == ['lease', 'line_stop', 'velocity', 'cancel', 'actual_stop_confirmed']
+    expected = ['lease', 'line_stop', 'velocity', 'cancel', 'actual_stop_confirmed']
+    assert [x[0] for x in events] == expected + (['restored_tolerance'] if saved_tolerance else [])
+    assert runner.saved_goal_tolerance is None
 
 
 def test_hardware_stack_has_adc_guard_and_nav2_without_other_line_controller():
@@ -159,7 +165,7 @@ def test_hardware_stack_has_adc_guard_and_nav2_without_other_line_controller():
     from launch_ros.utilities import evaluate_parameters
     controller = next(a for a in nodes if isinstance(a, Node) and a.node_executable == 'controller_server')
     dictionaries = [p for p in controller._Node__parameters if isinstance(p, dict)]
-    assert evaluate_parameters(ctx, dictionaries)[0]['general_goal_checker.xy_goal_tolerance'] == .01
+    assert evaluate_parameters(ctx, dictionaries)[0]['general_goal_checker.xy_goal_tolerance'] == .08
 
 
 @pytest.mark.parametrize('lose_ir', [False, True])
@@ -274,7 +280,8 @@ def test_shared_line_runner_distinguishes_n12_handoff_from_parking(destination, 
     def step(*args):
         r.line.state = terminal
     r.line.step = step
-    stamp = SimpleNamespace(sec=int(time.time()), nanosec=0)
+    nanoseconds = time.time_ns()
+    stamp = SimpleNamespace(sec=nanoseconds // 10**9, nanosec=nanoseconds % 10**9)
     pose = SimpleNamespace(position=SimpleNamespace(x=0., y=0.),
                            orientation=SimpleNamespace(x=0., y=0., z=0., w=1.))
     r.bridge = SimpleNamespace(odom=SimpleNamespace(header=SimpleNamespace(stamp=stamp),
@@ -290,6 +297,51 @@ def test_shared_line_runner_distinguishes_n12_handoff_from_parking(destination, 
     r.follow_line(route)
     assert r.phase == phase and r.owner == 'none'
     assert events == ['actual_stop', route, 'none', 'actual_stop']
+
+
+@pytest.mark.parametrize('place,expected', [('return_entry', []), ('return_n12', [.01, .08])])
+def test_only_n12_changes_goal_tolerance_and_restores_after_actual_stop(monkeypatch, place, expected):
+    import roport_smartcart.real_return as module
+    runner = module.HardwareReturn.__new__(module.HardwareReturn)
+    runner.saved_goal_tolerance = None
+    runner.options = SimpleNamespace(places='field', map='map')
+    runner.require_guard = lambda: None
+    runner.parameter_result = lambda result: result
+    runner.goal_parameters = SimpleNamespace(get_parameters=lambda names: SimpleNamespace(
+        values=[SimpleNamespace(type=3, double_value=.08)]))
+    events = []
+    runner.set_goal_tolerance = lambda value: events.append(value)
+    runner.nav = SimpleNamespace(start=lambda *args: None,
+        lifecycle=SimpleNamespace(busy=False, outcome='succeeded'))
+    runner.lease = lambda owner: None
+    runner.stop_confirmed = lambda: (events.append('stopped') or
+        {'localization_ready': True, 'pose': {'x': 1., 'y': 2., 'yaw': 0.}})
+    monkeypatch.setattr(module, 'load_destination', lambda *a, **k: Destination(1., 2., 0.))
+    runner.navigate(place)
+    assert [event for event in events if isinstance(event, float)] == expected
+    if expected:
+        assert events == [.01, 'stopped', .08]
+    assert runner.saved_goal_tolerance is None
+
+
+@pytest.mark.parametrize('results', [[], [SimpleNamespace(successful=False)]])
+def test_goal_tolerance_update_rejection_is_not_ignored(results):
+    from roport_smartcart.real_return import HardwareReturn
+    runner = HardwareReturn.__new__(HardwareReturn)
+    runner.parameter_result = lambda response: response
+    runner.goal_parameters = SimpleNamespace(set_parameters=lambda parameters: SimpleNamespace(results=results))
+    with pytest.raises(RuntimeError, match='update rejected'):
+        runner.set_goal_tolerance(.01)
+
+
+@pytest.mark.parametrize('domain,environment', [(13,'16'), (16,'13'), (233,'233'), (-1,'-1')])
+def test_hardware_domain_must_be_explicit_valid_and_match_environment(monkeypatch, domain, environment):
+    from roport_smartcart.real_return import main
+    monkeypatch.setenv('ROS_DOMAIN_ID', environment)
+    with pytest.raises(SystemExit) as exc:
+        main(['--domain-id', str(domain), '--places','unused','--map','unused',
+              '--layout','unused','--robot','fixture','--calibration','unused','--bay','H2'])
+    assert exc.value.code == 2
 
 
 @pytest.mark.parametrize('offset,angle,valid', [(.036, .025, True), (.051, 0., False),

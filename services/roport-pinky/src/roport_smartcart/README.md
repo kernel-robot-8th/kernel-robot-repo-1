@@ -488,6 +488,7 @@ Contact 센서 경로는 성공 시험 뒤 별도 접촉 probe를 상자와 겹�
 ```bash
 # bringup은 별도로 실행. 기존 관제/라인 구동 실행부와 중복 실행하지 않는다.
 export ROS_DOMAIN_ID=13
+# 도메인은 예시다. 현장 기체에 배정한 값과 아래 --domain-id를 함께 맞춘다.
 ros2 launch roport_smartcart real_return_stack.launch.py \
   robot:=ROBOT_NAME map:=/path/airport_map.yaml \
   layout_file:=/path/roport_airport.yaml params_file:=/path/nav2.yaml \
@@ -495,6 +496,7 @@ ros2 launch roport_smartcart real_return_stack.launch.py \
 
 # 기본은 설정 확인만 수행한다. 실제 이동은 현장 확인 후 --drive를 명시한다.
 ros2 run roport_smartcart real_return \
+  --domain-id "$ROS_DOMAIN_ID" \
   --robot ROBOT_NAME --calibration /path/robots.yaml --bay H2 \
   --map /path/airport_map.yaml --layout /path/roport_airport.yaml \
   --places /path/field-places.yaml
@@ -506,13 +508,19 @@ ros2 run roport_smartcart real_return \
 바퀴 축 자세다(기본 IR 전방 거리 3cm). 출발 방향의 `handoff_n12`와 구별한다.
 시뮬레이션 장소 파일의 `environment`만 변경해 사용하지 않는다.
 
-전용 stack은 중앙 IR이 N12에 닿기 전에 정차하는 일을 줄이도록 Nav2 위치 허용 오차를 1cm로 설정한다.
+전용 stack의 일반 Nav2 허용 오차는 기존 8cm를 유지한다. 실행부는 `return_n12` 목표에만
+controller의 위치 허용 오차를 1cm로 일시 변경하고, 성공 후 실제 정지를 확인한 뒤 원래 값으로 복원한다.
+실패·취소 때는 action 종료와 실제 정지 확인 후 정리 단계에서 복원한다. 파라미터 조회·변경·복원 실패는 오류로 종료한다.
+2026-11-09 실물에서는 N12 실측 보정 후 1cm 설정으로 IR 획득과 H2 주차를 재시도 1회 성공했다.
+반복 성공률과 모든 장소의 1cm 정차를 검증한 것은 아니므로 다른 목표에 이 설정을 일괄 적용하지 않는다.
 Nav2 성공 결과·실제 연속 정지 0.5초·N12 자세(5cm/0.1rad 이내)와 실제 중앙 IR 정렬을
 새 센서 샘플로 연속 0.5초 확인한 뒤에만 lease를 `none`에서 `line`으로 전환한다.
 정렬 실패 시 10초 안에 정지 상태로 종료하며, 선을 찾겠다고 추정 좌표만으로 움직이지 않는다.
 IR 0.3초/odom 0.5초 초과 지연, 센서 오류, 구동권 충돌, guard 재시작, 취소는 주행을 중단한다.
 주차 완료는 기존 라인 실행부의 180도 회전·후진·실제 IR 가로선 감지와 실제 정지로 판정한다.
 라인 속도는 기본 0.03m/s(`--line-speed 0.06` 선택 가능), 회전 상한은 0.15rad/s다.
+N12·N08은 물류 Pinky와 공유하는 구간이다. 감독 시험에서는 다른 기체를 해당 구간 밖에 정지시키고,
+관제 통합 시에는 구간 점유·예약을 별도로 연결해야 한다.
 `trial_guard`만 최종 `cmd_vel`을 발행하며, lease 단절 1초/속도 단절 0.3초 감시를 유지한다.
 `smartcart/return_state`에 단계·선택 칸·라인 상태 및 위치 정보 출처를 발행한다.
 

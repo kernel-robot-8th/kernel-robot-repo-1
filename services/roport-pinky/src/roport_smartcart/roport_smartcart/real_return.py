@@ -91,11 +91,14 @@ class HardwareReturn:
         from geometry_msgs.msg import Twist
         from std_msgs.msg import String, UInt16MultiArray
         from rclpy.qos import qos_profile_sensor_data
+        from rclpy.parameter_client import AsyncParameterClient
         from roport_pinky.trial_nav2 import Nav2Bridge
         from roport_pinky_line.line_sensor import LineSensor
         from roport_line_nav.executor import NavConfig, RouteExecutor
         from .nav_client import NavClient
         self.node, self.options, self.target = node, options, target
+        self.goal_parameters = AsyncParameterClient(node, 'controller_server')
+        self.saved_goal_tolerance = None
         self.bridge = Nav2Bridge(node, profile, options.map, threading.RLock())
         self.nav = NavClient(node, action_name='navigate_to_pose',
                              timeout_seconds=300, environment='real')
@@ -175,8 +178,44 @@ class HardwareReturn:
                 return state
         raise RuntimeError('Actual odometry stop not confirmed')
 
+    def parameter_result(self, future):
+        end = time.monotonic()+5
+        while not future.done():
+            self.spin()
+            self.require_guard()
+            if time.monotonic() >= end:
+                raise RuntimeError('Goal tolerance parameter service timeout')
+        try:
+            result = future.result()
+        except Exception as exc:
+            raise RuntimeError('Goal tolerance parameter service failed') from exc
+        if result is None:
+            raise RuntimeError('Goal tolerance parameter service returned no result')
+        return result
+
+    def set_goal_tolerance(self, value):
+        from rclpy.parameter import Parameter
+        result = self.parameter_result(self.goal_parameters.set_parameters([
+            Parameter('general_goal_checker.xy_goal_tolerance', value=value)]))
+        if len(result.results) != 1 or not result.results[0].successful:
+            raise RuntimeError('Goal tolerance parameter update rejected')
+
+    def restore_goal_tolerance(self):
+        if self.saved_goal_tolerance is not None:
+            self.set_goal_tolerance(self.saved_goal_tolerance)
+            self.saved_goal_tolerance = None
+
     def navigate(self, place):
         self.require_guard()
+        if place == 'return_n12':
+            result = self.parameter_result(self.goal_parameters.get_parameters([
+                'general_goal_checker.xy_goal_tolerance']))
+            if (len(result.values) != 1 or result.values[0].type != 3
+                    or not math.isfinite(result.values[0].double_value)
+                    or result.values[0].double_value <= 0):
+                raise RuntimeError('Invalid original goal tolerance')
+            self.saved_goal_tolerance = result.values[0].double_value
+            self.set_goal_tolerance(.01)
         self.phase = 'NAV2_'+place.upper()
         self.nav.start(self.options.places, self.options.map, place)
         while self.nav.lifecycle.busy:
@@ -196,6 +235,7 @@ class HardwareReturn:
                 or math.hypot(p['x']-goal.x, p['y']-goal.y) > .08
                 or angle_error(p['yaw'], goal.yaw) > .1):
             raise RuntimeError('Nav2 terminal pose outside tolerance')
+        self.restore_goal_tolerance()
 
     def run(self):
         self.phase = 'READY'
@@ -300,6 +340,7 @@ class HardwareReturn:
         while self.nav.lifecycle.busy:
             self.spin()
         self.stop_confirmed()
+        self.restore_goal_tolerance()
         for _ in range(10):
             self.spin()
 
@@ -314,9 +355,11 @@ def main(argv=None):
     parser.add_argument('--bay', choices=('H1', 'H2'), required=True,
                         help='Bay already reserved by the caller/control server')
     parser.add_argument('--line-speed', type=float, choices=(.03, .06), default=.03)
+    parser.add_argument('--domain-id', type=int, required=True,
+                        help='Hardware ROS domain; must match ROS_DOMAIN_ID')
     options = parser.parse_args(argv)
-    if os.environ.get('ROS_DOMAIN_ID') != '13':
-        parser.error('Hardware trial requires explicit ROS_DOMAIN_ID=13')
+    if not 0 <= options.domain_id <= 232 or os.environ.get('ROS_DOMAIN_ID') != str(options.domain_id):
+        parser.error('--domain-id must be in 0..232 and match ROS_DOMAIN_ID')
     from roport_gz_world.layout import Layout
     from roport_line_nav.graph import Graph, plan_route
     from roport_pinky_line.calibration import load_calibration

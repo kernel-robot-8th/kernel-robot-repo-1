@@ -17,9 +17,6 @@ def generate_launch_description():
     spec = importlib.util.spec_from_file_location('return_trial_stack', path)
     trial = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(trial)
-    # An 8 cm approach stop can leave the centre IR beyond N12 tape.
-    trial.CONTROLLER_OVERRIDES = {**trial.CONTROLLER_OVERRIDES,
-                                  'general_goal_checker.xy_goal_tolerance': .01}
 
     def nodes(context):
         return [action for action in trial._nodes(context)
