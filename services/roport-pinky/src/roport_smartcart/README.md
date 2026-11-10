@@ -546,3 +546,61 @@ H1의 라인 상자는 분기 진입 뒤3초 후 이동시키는 초기 fixture�
 두 성공 실행은 중간 위치 재배치·명령 재시도 없이 공용공간에서 출발했다. 영구 차단 시험만 별도로 N12에 배치한 실패 경로 검증이다.
 Contact 센서 경로는 성공 시험 뒤 별도 접촉 probe를 상자와 겹쳐 실제 이벤트가 수신되는 것도 확인했다(로봇과의 접촉 시험이 아님).
 각 결과는 반복 신뢰성·충전 접점·실물 검증을 대체하지 않는다.
+
+
+## 실물 N12 → H1/H2 복귀 · FFT1-81
+
+`real_return`은 관제와 분리한 감독 시험 명령이다. 게이트 등 공용공간에서 시작해
+`return_entry` → `return_n12`까지 Nav2로 이동한 뒤, 실제 `ir_sensor/range`와 wheel odom을
+사용하는 공용 `RouteExecutor`로 `N12 → N08 → H2`를 주행한다.
+`--bay H1`이면 `N12 → N08 → N09 → H1`이며, 대기칸 예약·고객 수령 확인은 호출자/관제 책임이다.
+이 실행부는 MQTT 계약이나 관제의 mode switch를 자동 변경하지 않는다.
+
+```bash
+# bringup은 별도로 실행. 기존 관제/라인 구동 실행부와 중복 실행하지 않는다.
+export ROS_DOMAIN_ID=13
+# 도메인은 예시다. 현장 기체에 배정한 값과 아래 --domain-id를 함께 맞춘다.
+ros2 launch roport_smartcart real_return_stack.launch.py \
+  robot:=ROBOT_NAME map:=/path/airport_map.yaml \
+  layout_file:=/path/roport_airport.yaml params_file:=/path/nav2.yaml \
+  max_linear:=0.03 max_angular:=0.15
+
+# 기본은 설정 확인만 수행한다. 실제 이동은 현장 확인 후 --drive를 명시한다.
+ros2 run roport_smartcart real_return \
+  --domain-id "$ROS_DOMAIN_ID" \
+  --robot ROBOT_NAME --calibration /path/robots.yaml --bay H2 \
+  --map /path/airport_map.yaml --layout /path/roport_airport.yaml \
+  --places /path/field-places.yaml
+```
+
+실기 장소 파일은 map YAML/이미지 해시와 `environment: real`이 맞아야 하며,
+`return_entry`·`return_n12`는 현장 확인 후에만 `measured: true`로 등록한다.
+`return_n12`는 복귀 방향(N08 방향)을 바라보고 실제 중앙 IR이 N12 테이프 위에 오는
+바퀴 축 자세다(기본 IR 전방 거리 3cm). 출발 방향의 `handoff_n12`와 구별한다.
+시뮬레이션 장소 파일의 `environment`만 변경해 사용하지 않는다.
+
+전용 stack의 일반 Nav2 허용 오차는 기존 8cm를 유지한다. 실행부는 `return_n12` 목표에만
+controller의 위치 허용 오차를 1cm로 일시 변경하고, 성공 후 실제 정지를 확인한 뒤 원래 값으로 복원한다.
+실패·취소 때는 action 종료와 실제 정지 확인 후 정리 단계에서 복원한다. 파라미터 조회·변경·복원 실패는 오류로 종료한다.
+2026-11-09 실물에서는 N12 실측 보정 후 1cm 설정으로 IR 획득과 H2 주차를 재시도 1회 성공했다.
+반복 성공률과 모든 장소의 1cm 정차를 검증한 것은 아니므로 다른 목표에 이 설정을 일괄 적용하지 않는다.
+Nav2 성공 결과·실제 연속 정지 0.5초·N12 자세(5cm/0.1rad 이내)와 실제 중앙 IR 정렬을
+새 센서 샘플로 연속 0.5초 확인한 뒤에만 lease를 `none`에서 `line`으로 전환한다.
+정렬 실패 시 10초 안에 정지 상태로 종료하며, 선을 찾겠다고 추정 좌표만으로 움직이지 않는다.
+IR 0.3초/odom 0.5초 초과 지연, 센서 오류, 구동권 충돌, guard 재시작, 취소는 주행을 중단한다.
+주차 완료는 기존 라인 실행부의 180도 회전·후진·실제 IR 가로선 감지와 실제 정지로 판정한다.
+라인 속도는 기본 0.03m/s(`--line-speed 0.06` 선택 가능), 회전 상한은 0.15rad/s다.
+N12·N08은 물류 Pinky와 공유하는 구간이다. 감독 시험에서는 다른 기체를 해당 구간 밖에 정지시키고,
+관제 통합 시에는 구간 점유·예약을 별도로 연결해야 한다.
+`trial_guard`만 최종 `cmd_vel`을 발행하며, lease 단절 1초/속도 단절 0.3초 감시를 유지한다.
+`smartcart/return_state`에 단계·선택 칸·라인 상태 및 위치 정보 출처를 발행한다.
+
+실행부와 모의 검증은 실기 주행 검증 완료를 뜻하지 않는다. 실제 N12 선 획득·전환·주차는
+현장에서 별도로 확인하며, 앞선 Nav2 단독 H2 왕복 결과와 구분한다.
+
+단계별 실기 검증에서 N12에 직접 놓은 경우에는 `--from-n12`를 추가한다. Nav2 이동만 생략하며,
+실기 `return_n12` 장소 등록·지도 일치·실제 자세·연속 정지·새 IR 선 감지·구동권 확인은 동일하게 적용한다.
+
+실측 N12 가로선에서 확인한 정지 자세와 IR 전방 거리로 복귀 정차점을 보정할 수 있다.
+등록점은 명목 그래프와 5cm/0.1rad 이내인지 검사하고, 주행 때는 그 실측 등록점을 기준으로
+기존 자세·연속 정지·실제 IR 획득 조건을 다시 확인한다.

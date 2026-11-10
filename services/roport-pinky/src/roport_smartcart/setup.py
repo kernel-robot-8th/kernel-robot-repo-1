@@ -31,5 +31,6 @@ setup(
                                      'sim_sonar = roport_smartcart.sim_sonar:main',
                                      'sim_obstacles = roport_smartcart.sim_obstacles:main',
                                      'sim_control = roport_smartcart.sim_control:main',
-                                     'sim_return_h1 = roport_smartcart.sim_return_h1:main']},
+                                     'sim_return_h1 = roport_smartcart.sim_return_h1:main',
+                                     'real_return = roport_smartcart.real_return:main']},
 )
