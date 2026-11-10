@@ -2,7 +2,78 @@
 
 스마트카트 담당 강지원. [구현 계획·강사 설정 복구 기록](IMPLEMENTATION_PLAN.md), [FFT1-83](https://fp-team1.atlassian.net/browse/FFT1-83).
 업무 범위는 **라인 상차 → 적재 후 대기 복귀 → 관제 호출 → Nav2 배송 → 하차 확인 → 복귀**다.
-QR·고객 추종은 현재 구현 범위에 넣지 않는다.
+QR·고객 추종 주행은 미구현이다. 마커 없는 대상 검출·선택·추적의 PC 시험 화면은 아래 절차로 준비했다.
+
+## 마커 없는 대상 추적 준비 · FFT1-86
+
+`target_preview`는 **관찰 전용**이다. ROS·MQTT·Nav2·`cmd_vel`을 연결하거나 로봇을 기동하지 않는다.
+PC의 카메라 번호, 영상 파일, OpenCV에서 지원하는 스트림 URL을 입력받아 YOLO + ByteTrack 결과를 표시한다.
+검출 상자를 클릭하면 한 ID를 선택한다. 대상 누락, 다른 상자와 겹침, 급격한 위치 변화,
+영상 지연·종료·오류가 있으면 선택을 해제하고 **직접 재선택**해야 한다. 자동 재획득은 하지 않는다.
+클릭 위치가 여러 상자에 걸쳐도 선택하지 않는다. `R`은 선택 해제, `Q`/Esc는 종료다.
+
+저장소 루트에서 PC 전용 가상환경으로 설치한다. ROS 기본 설치와 CI에는 AI 의존성을 추가하지 않는다.
+
+```bash
+python3 -m venv .venv-target-preview
+.venv-target-preview/bin/python -m pip install -e 'services/roport-pinky/src/roport_smartcart[preview]'
+.venv-target-preview/bin/target_preview --source 0 --model /absolute/path/to/yolo11n.pt
+# 녹화 영상: --source /absolute/path/to/test.mp4
+# 인형용 추가 학습 모델: --model /absolute/path/to/doll.pt --class-id 0
+```
+
+가상환경 `.venv-*/`는 Git 제외 대상이다. 녹화 영상(`.mp4` 등)·캡처·모델은 **저장소 밖**에 보관한다.
+`git add -A` 전에 `git status --short`로 확인한다. 일반 `.mp4` 확장자 전체를 무시하지 않으므로
+저장소 안 임의 경로에 영상을 두면 추적 대상이 될 수 있다.
+
+인증정보가 포함된 스트림 주소는 `--source`에 직접 쓰지 않고 `--source-env`로 전달한다.
+다음은 Bash에서 셸 기록·명령 인자에 주소를 직접 남기지 않는 입력 예시다.
+
+```bash
+read -r -s -p 'Stream URL: ' PINKY_VIDEO_SOURCE; echo
+export PINKY_VIDEO_SOURCE
+.venv-target-preview/bin/target_preview --source-env PINKY_VIDEO_SOURCE --model /absolute/path/to/yolo11n.pt
+unset PINKY_VIDEO_SOURCE
+```
+
+두 입력 옵션은 동시 지정할 수 없으며, 없는 변수·빈 값은 실행 전에 거부한다.
+환경변수도 접근 권한이 있는 프로세스에서 읽힐 수 있고 OpenCV 등 외부 라이브러리의 진단 출력은 별도다.
+앱은 환경변수 값을 상태 표시나 오류 메시지에 출력하지 않는다.
+
+사용자가 확보한 **신뢰할 수 있는 로컬 검출 모델 `.pt`**를 지정한다. 가중치·현장 원본 영상은 커밋하지 않는다.
+기본 class ID `0`은 COCO person 기준이며, 사용자 모델은 해당 모델의 인형 클래스 ID를 지정한다.
+가중치를 자동으로 다운로드하지 않는다. 기본 CPU 추론이며 첫 추론이 느리면 선택 불가 상태로 기다린다.
+Ultralytics 설치가 GUI를 지원하는 OpenCV를 함께 설치한다. 화면이 있는 PC에서 실행한다.
+선택 의존성은 [Ultralytics 설치 문서](https://docs.ultralytics.com/quickstart/)와
+[추적 API](https://docs.ultralytics.com/modes/track/)를 사용한다. Ultralytics 코드·모델의
+[라이선스](https://www.ultralytics.com/license)는 이 패키지와 별도로 적용된다.
+Ultralytics는 AGPL-3.0/Enterprise 조건을 안내한다. 선택 설치나 교육용 시연이라는 이유만으로
+조건 충족을 가정하지 않는다. 현재 범위는 PC 관찰용 평가 코드이며 **팀의 시연·배포 사용 조건은 미확정**이다.
+이 패키지의 `LicenseRef-Proprietary` 선언을 바꾸거나 전체 프로젝트의 AGPL 적합성을 확정하지 않았다.
+시연·배포 범위, 해당 코드·모델의 조건, 대응 소스 공개 범위 또는 Enterprise 사용 여부를
+팀이 FFT1-86에 기록한 뒤 배포 방식을 정한다. 충족하기 어려우면 검출기 대체를 검토한다.
+모델·AI 포함 실행 환경을 기본 ROS 설치나 배포 산출물에 포함하지 않는다.
+
+`--max-age` 기본 0.5초(최대 2초)는 **로컬 프레임 읽기 시작부터 추론 결과 표시까지**의 허용 시간이다.
+캡처/추론은 별도 worker가 담당하여 읽기가 멈춰도 화면이 이전 프레임을 만료 처리한다.
+카메라 자체·네트워크 버퍼의 지연이나 원본 촬영 시각을 보증하지 않으므로,
+이 값은 실물 제어용 센서 timestamp/watchdog를 대신하지 않는다. 영상 파일은 원래 FPS 이하로 재생한다.
+
+**추적 ID는 신원 확인이 아니다.** 현재 appearance Re-ID·얼굴인식은 없고,
+부드러운 ID 뒤바뀜·검출 누락된 다른 대상은 이 검사만으로 판별할 수 없다.
+일반 person 모델이 작은 종이 인형을 검출하는지도 미검증이다. 검출 실패 시 현장 영상으로 추가 학습을 검토한다.
+거리 추정, 카메라 보정·TF, 지도 좌표 변환, 추종 Nav2 목표·구역 제한,
+실제 모터 정지 및 기존 trial_guard 소유권 연결은 후속 작업이다.
+이 화면의 선택 해제는 **로봇 정지 명령이 아니다**.
+
+실물 확인 순서: 로봇 정지 상태에서 인형 2~3개를 비추고 선택 → 좌우 이동 → 서로 교차 → 가림/재등장
+→ 영상 연결 해제. 검출·ID 전환·지연을 확인한 뒤 거리 추정과 저속 추종을 연결한다.
+작은 인형(리뷰 기준 높이 7.8~11.8 cm)은 거리별 검출률도 기록한다.
+예를 들어 20/40/60/80 cm에서 앞·뒤·옆 방향별로 10초씩 촬영하고,
+화면에 보이는 평가 프레임 수·올바른 검출 수·오검출 수·ID 전환 수·처리 지연을 적는다.
+검출률은 `올바르게 검출한 프레임 / 대상이 보이는 평가 프레임`으로 계산하며,
+모델·confidence·해상도·조명을 함께 남긴다. 중복된 한 영상으로 학습·평가하지 않고,
+거리별 결과를 보고 사용 거리와 추가 학습 필요 여부를 정한다.
 
 ## 운행 흐름 · 2026-11-05 사용자 확인
 
