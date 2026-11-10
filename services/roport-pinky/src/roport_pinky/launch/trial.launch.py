@@ -1,6 +1,8 @@
 """Trial-only stack. Bringup and calibration remain explicit operator actions."""
 import math
 
+from roport_pinky.navigation_policy import RPP_TRACKING
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
@@ -14,13 +16,7 @@ CONTROLLER_OVERRIDES = {
     'FollowPath.desired_linear_vel': 0.03,
     'FollowPath.min_approach_linear_velocity': 0.01,
     'FollowPath.rotate_to_heading_angular_vel': 0.4,
-    # The upstream 0.30 m minimum cuts across tight obstacle detours on this small map.
-    'FollowPath.lookahead_dist': 0.15,
-    'FollowPath.min_lookahead_dist': 0.08,
-    'FollowPath.max_lookahead_dist': 0.20,
-    'FollowPath.lookahead_time': 1.0,
-    'FollowPath.curvature_lookahead_dist': 0.15,
-    'FollowPath.use_collision_detection': True,
+    **{f'FollowPath.{key}': value for key, value in RPP_TRACKING.items()},
     'progress_checker_plugins': ['progress_checker'],
     'progress_checker.plugin': 'nav2_controller::PoseProgressChecker',
     'progress_checker.required_movement_radius': 0.05,

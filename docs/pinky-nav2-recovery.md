@@ -111,3 +111,15 @@ nominal 0.15 m / min 0.08 m / max 0.20 m, lookahead_time 1.0 s로 좁은 우회 
 초음파가 연결된 Gazebo 경로와 동일하게 동작한다고 설명하지 않는다.
 종이 인형 앞에서 초음파가 약 0.94 m를 보고했으므로 인형의 위치·각도·감지 범위를 확인해야 한다.
 이번 추종 설정 변경은 초음파 costmap/정지 연결을 추가하지 않는다. 센서에 잡히지 않는 장애물까지 회피한다고 보장할 수 없다.
+
+
+## 시뮬레이션에서 이어서 검증하기
+
+`roport_pinky.navigation_policy.RPP_TRACKING`을 trial launch와 standalone/Gazebo 프로필이 함께 사용한다.
+기본 추종 거리는 공통화하되, 명시적 사용자 overrides 파일은 기존처럼 나중에 병합한다.
+Gazebo navigation launch도 같은 bounded_recovery.xml을 기본 NavigateToPose BT로 사용한다.
+Jazzy Wait 노드에는 error_code_id 포트가 없어 해당 인자를 제거했으며, 설치된 Nav2 노드 모델과 XML 포트를 대조한다.
+
+시뮬레이션은 ROS domain198/LOCALHOST 전용이다. 실물 MQTT·브링업을 사용하지 않는다.
+초음파는 기존 모의 광선/거리 경로이며 실물 반사·흡수나 종이 인형의 재질을 검증하지 않는다.
+N12 라인 획득에는 Gazebo ground truth 정렬 fixture가 포함된다. 실물 IR/마커 인계 검증으로 간주하지 않는다.

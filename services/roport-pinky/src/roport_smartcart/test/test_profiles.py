@@ -163,3 +163,11 @@ def test_range_layers_are_sim_only_and_before_inflation():
                 assert source['marking'] and source['clearing'] and source['inf_is_valid']
                 assert source['expected_update_rate'] == .5
                 assert source['obstacle_max_range'] < source['raytrace_max_range'] == .95
+
+
+def test_standalone_nav2_uses_the_trial_tracking_policy():
+    from roport_pinky.navigation_policy import RPP_TRACKING
+    args = dict(footprint=FOOTPRINT, max_linear=.08, max_angular=.4)
+    for mode in ('sim', 'real'):
+        follower = profile(mode, **args)['controller_server']['ros__parameters']['FollowPath']
+        assert {key: follower[key] for key in RPP_TRACKING} == RPP_TRACKING

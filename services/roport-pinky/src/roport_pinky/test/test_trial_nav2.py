@@ -126,3 +126,18 @@ def test_bounded_tree_limits_recovery_without_blind_motion():
     assert tree.find('.//Timeout').attrib['msec'] == '10000'
     assert tree.find('.//Wait').attrib['wait_duration'] == '3.0'
     assert tree.find('.//Spin') is tree.find('.//BackUp') is None
+
+
+def test_recovery_tree_ports_match_installed_nav2_jazzy_nodes():
+    import xml.etree.ElementTree as ET
+    from pathlib import Path
+    from ament_index_python.packages import get_package_share_directory
+    models = ET.parse(Path(get_package_share_directory('nav2_behavior_tree')) / 'nav2_tree_nodes.xml')
+    ports = {m.attrib['ID']: {p.attrib['name'] for p in m if 'name' in p.attrib}
+             for m in models.findall('.//TreeNodesModel/*')}
+    tree = ET.parse(PINKY / 'src/roport_pinky/behavior_trees/bounded_recovery.xml')
+    assert 'Wait' in ports
+    for node in tree.iter():
+        if node.tag in ports:
+            supplied = set(node.attrib) - {'name'}
+            assert supplied <= ports[node.tag], (node.tag, supplied - ports[node.tag])

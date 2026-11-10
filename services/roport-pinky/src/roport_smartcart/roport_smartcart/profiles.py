@@ -3,6 +3,8 @@
 import json
 import math
 
+from roport_pinky.navigation_policy import RPP_TRACKING
+
 from .goals import _read_yaml
 
 
@@ -77,6 +79,7 @@ def build_params(base_params_file, overrides_file, mode, *, footprint=None,
         raise ValueError('speed limits must be finite positive numbers')
 
     params = _read_yaml(base_params_file)
+    params['controller_server']['ros__parameters']['FollowPath'].update(RPP_TRACKING)
     _merge(params, _read_yaml(overrides_file))
     simulated = mode == 'sim'
     params.setdefault('map_server', {'ros__parameters': {}})

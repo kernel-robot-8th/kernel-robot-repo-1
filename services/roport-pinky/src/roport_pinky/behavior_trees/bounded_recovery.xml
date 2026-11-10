@@ -14,7 +14,7 @@
             <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
             <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
           </Fallback>
-          <Wait wait_duration="3.0" error_code_id="{wait_error_code}"/>
+          <Wait wait_duration="3.0"/>
           <ClearEntireCostmap service_name="local_costmap/clear_entirely_local_costmap"/>
           <ClearEntireCostmap service_name="global_costmap/clear_entirely_global_costmap"/>
         </Sequence>
