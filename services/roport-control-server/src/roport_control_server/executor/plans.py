@@ -54,6 +54,15 @@ def legacy_plan(config, scope="nav2", smartcart_only=False):
                     "node_id": node,
                     "package_id": config["package_id"],
                     "quantity": 1,
+                    **(
+                        {
+                            "omx_operation": "INBOUND"
+                            if step == "WAIT_INBOUND"
+                            else "OUTBOUND"
+                        }
+                        if step in {"WAIT_INBOUND", "WAIT_CART_LOAD"}
+                        else {}
+                    ),
                 },
             }
         )
@@ -130,7 +139,7 @@ def trial_presets(config, scope="nav2", *, smartcart_only=False):
     for name, plan in choices.items():
         plan["name"] = labels[name]
         plan["assumptions"] = [
-            "비참여 기체는 시험 통로 밖에 정지; OMX 작업은 더미 승인",
+            "비참여 기체는 시험 통로 밖에 정지; OMX 완료는 수동 확인 또는 설정된 MQTT 입력",
             "동일 핑키가 물류·스마트카트 역할 수행"
             if name == "single"
             else "창고 입고 완료 가정"
@@ -254,7 +263,7 @@ def validate_plan(config, value, *, allowed_roles=None):
             positions[role], modes[role] = None, "nav2"
         else:
             if (
-                set(p) != {"node_id", "package_id", "quantity"}
+                set(p) - {"omx_operation"} != {"node_id", "package_id", "quantity"}
                 or p["node_id"] not in stop_nodes(config)
                 or p["package_id"] != config["package_id"]
                 or type(p["quantity"]) is not int
@@ -262,6 +271,14 @@ def validate_plan(config, value, *, allowed_roles=None):
             ):
                 raise ValueError(
                     f"{sid}: gate requires known node and configured one-item package"
+                )
+            if "omx_operation" in p and (
+                kind != "gate"
+                or p["omx_operation"] not in {"INBOUND", "OUTBOUND"}
+                or p["node_id"] != config["routes"]["cart_to_switch"]["start_node"]
+            ):
+                raise ValueError(
+                    f"{sid}: OMX operation requires its configured shelf stop"
                 )
             if (
                 positions.get(role, p["node_id"]) != p["node_id"]
@@ -381,7 +398,7 @@ def delivery_plan(config, request, statuses):
             "id": "pickup_load",
             "kind": "gate",
             "role": role,
-            "label": "적재 완료 승인 (더미)",
+            "label": "적재 완료 수동 확인",
             "payload": {
                 "node_id": request["pickup"],
                 "package_id": request["package_id"],
@@ -422,8 +439,103 @@ def delivery_plan(config, request, statuses):
             "version": 1,
             "name": f"출고 요청 {request['request_id']}",
             "assumptions": [
-                "물품 위치·준비 상태는 시험 입력; OMX 완료는 운영자 더미 승인"
+                "물품 위치·준비 상태는 시험 입력; 작업 완료는 운영자 수동 확인"
             ],
             "steps": steps,
         },
     )
+
+
+def service_catalogue(config, scope, allowed_roles):
+    """Business destinations backed by the existing, field-checked trial routes."""
+    return {
+        "operations": {
+            **(
+                {"inbound": "물품 입고"}
+                if "to_loading" in config["routes"] and "logistics" in allowed_roles
+                else {}
+            ),
+            "outbound": "출고·인도 준비",
+        },
+        "destinations": {"shelf": "인도장 선반", "handover": "인도 위치"},
+        "handover_scope": "공용공간 목표" if scope == "nav2" else "라인 인도 정차점",
+    }
+
+
+def service_plan(config, request, statuses, scope, allowed_roles):
+    """Trial business intent, not the remote service's order/receipt contract."""
+    if not isinstance(request, dict) or set(request) != {
+        "request_id",
+        "operation",
+        "package_id",
+        "quantity",
+        "destination",
+        "source_confirmed",
+    }:
+        raise ValueError("invalid service request fields")
+    if not isinstance(request["request_id"], str) or not re.fullmatch(
+        r"[A-Za-z0-9_.-]{1,64}", request["request_id"]
+    ):
+        raise ValueError("request_id required")
+    catalogue = service_catalogue(config, scope, allowed_roles)
+    operation = request["operation"]
+    if not isinstance(operation, str) or operation not in catalogue["operations"]:
+        raise ValueError("unsupported service operation")
+    if (
+        request["package_id"] != config["package_id"]
+        or type(request["quantity"]) is not int
+        or request["quantity"] != 1
+    ):
+        raise ValueError("service trial requires configured package, quantity 1")
+    if request["source_confirmed"] is not True:
+        raise ValueError("시험 물품의 준비 상태와 출발 장소를 확인하세요.")
+    if request["destination"] != ("shelf" if operation == "inbound" else "handover"):
+        raise ValueError("destination does not match service operation")
+    if operation == "inbound":
+        plan = legacy_plan(config, scope)
+        plan["steps"] = plan["steps"][
+            : next(i for i, s in enumerate(plan["steps"]) if s["id"] == "WAIT_REQUEST")
+        ]
+        labels = {
+            "to_loading": "창고 상차장으로 이동",
+            "WAIT_LOAD": "창고 상차 완료 대기",
+            "to_delivery": "인도장으로 운송",
+            "WAIT_INBOUND": "OMX 선반 입고 완료 대기",
+            "return_warehouse": "물류 핑키 복귀",
+        }
+        for step in plan["steps"]:
+            step["label"] = labels[step["id"]]
+    else:
+        role = "smartcart" if "smartcart" in allowed_roles else "logistics"
+        route = config["routes"]["cart_to_switch"]
+        plan = delivery_plan(
+            config,
+            {
+                "request_id": request["request_id"],
+                "package_id": request["package_id"],
+                "quantity": 1,
+                "role": role,
+                "pickup": route["start_node"],
+                "destination": route["goal"]["node_id"],
+                "pickup_heading_rad": route["start_heading_rad"],
+                "nav2": scope == "nav2",
+            },
+            statuses,
+        )
+        labels = {
+            "pickup_route": "물품 보관 장소로 이동",
+            "pickup_load": "OMX 반출·카트 상차 완료 대기",
+            "delivery_route": "인도 위치로 이동",
+            "mode_switch": "공용공간 주행 준비",
+            "navigate": "인도 위치로 이동",
+        }
+        for step in plan["steps"]:
+            step["label"] = labels[step["id"]]
+            if step["id"] == "pickup_load":
+                step["payload"]["omx_operation"] = "OUTBOUND"
+    plan["name"] = catalogue["operations"][operation]
+    plan["assumptions"] = [
+        "시험 물품 1개·위치는 운영자 확인; 재고 및 고객 수령 확정 아님",
+        "비참여 기체는 통로 밖에 정지",
+    ]
+    return validate_plan(config, plan, allowed_roles=allowed_roles)

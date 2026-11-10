@@ -38,10 +38,16 @@ from roport_control_server.adapters.mqtt.trial_wire import (
     reply,
     validate_trial,
 )
+from roport_control_server.executor.omx_trial import (
+    WORKCELL,
+    OmxTrial,
+    validate_settings,
+)
 from roport_control_server.executor.plans import (
     MOTION,
     delivery_plan,
     legacy_plan,
+    service_plan,
     shortest_route,
     stop_nodes,
     validate_plan,
@@ -58,6 +64,10 @@ ROUTES = (
 
 
 def validate_config(config, *, require_field_verification=True):
+    if "omx" in config:
+        validate_settings(config["omx"])
+        if config["mode"] == "simulation" and config["omx"]["execution_mode"] != "mock":
+            raise ValueError("simulation requires a mock OMX executor")
     if config["profile"] != PROFILE or config["mode"] not in {"simulation", "hardware"}:
         raise ValueError("trial profile/mode required")
     scenario = config.get("scenario", "two_pinky")
@@ -223,9 +233,12 @@ class TrialControl:
                 }
             )
         self.pending_status, self.heard = {}, {}
+        self.discovery_robots = {}
+        self.service_preview = None
         self.motion = None
         self.last_poll = 0.0
         self.deadline = None
+        self.omx = OmxTrial(self) if "omx" in config else None
         if self.state["phase"] not in {"READY", "COMPLETE", "HOLD"}:
             self.hold("control_restarted")
 
@@ -285,12 +298,18 @@ class TrialControl:
             )
         return plan
 
-    def configure(self, plan, field_confirmed=False, request=None):
+    def configure(
+        self, plan, field_confirmed=False, request=None, *, service_request=None
+    ):
         if self.state["phase"] not in {"READY", "COMPLETE"}:
             raise ValueError(
                 "plan is frozen after start or HOLD; reconcile before restarting"
             )
         plan = self.validate_plan(plan)
+        if self.state.get("service_request") and self.state["phase"] != "COMPLETE":
+            raise ValueError(
+                "service request already applied; finish or reconcile before replacing"
+            )
         if self.config["mode"] == "hardware" and field_confirmed is not True:
             raise ValueError(
                 "confirm this plan's starts, headings, workspace and watchdog"
@@ -336,13 +355,110 @@ class TrialControl:
                 "confirmed": field_confirmed is True,
                 "at": datetime.now(UTC).isoformat(),
             },
+            service_request=deepcopy(service_request),
         )
+        if service_request:
+            records = state.setdefault("service_requests", {})
+            if len(records) >= 32:
+                raise ValueError(
+                    "service request history full; reconcile before new journal"
+                )
+            records[service_request["request_id"]] = {
+                "request": deepcopy(service_request),
+                "task_id": state["task_id"],
+            }
         self.journal.save(state)
         self.plan = plan
         self.robots = self._plan_robots(plan)
         self.pending_status.clear()
         self.last_poll = 0.0
         self.start_step = plan["steps"][0]["id"]
+        self.discovery_robots = {}
+        self.service_preview = None
+
+    def service_receipt(self, request):
+        if not isinstance(request, dict) or not isinstance(
+            request.get("request_id"), str
+        ):
+            raise TypeError("invalid service request")
+        record = self.state.get("service_requests", {}).get(request["request_id"])
+        if record is None:
+            return None
+        if record["request"] != request:
+            raise ValueError("conflicting service request_id")
+        return {
+            "task_id": record["task_id"],
+            "phase": self.state["phase"]
+            if record["task_id"] == self.state["task_id"]
+            else "COMPLETE",
+        }
+
+    def plan_service(self, request):
+        # Validate intent before enabling read-only status discovery of another role.
+        operation = request.get("operation") if isinstance(request, dict) else None
+        if operation not in ("inbound", "outbound"):
+            raise ValueError("unsupported service operation")
+        role = (
+            "logistics"
+            if operation == "inbound" or "smartcart" not in self.allowed_robots
+            else "smartcart"
+        )
+        if role not in self.allowed_robots:
+            raise ValueError("service role unavailable")
+        self.discovery_robots = {**self.robots, role: self.allowed_robots[role]}
+        try:
+            statuses = {
+                r["robot_id"]: self._status(r) for r in self.discovery_robots.values()
+            }
+        except ValueError as exc:
+            if str(exc) == "robot status unavailable/stale":
+                return None
+            raise
+        config = {**self.config, "robots": self.allowed_robots}
+        plan = service_plan(config, request, statuses, self.scope, self.allowed_robots)
+        first = plan["steps"][0]
+        if (
+            first["kind"] == "route"
+            and statuses[self.allowed_robots[first["role"]]["robot_id"]]["node_id"]
+            != first["payload"]["start_node"]
+        ):
+            raise ValueError(
+                "서비스 시작 장소에 기체가 없습니다. 고급 시험에서 위치를 확인하세요."
+            )
+        return plan
+
+    def preview_service(self, request):
+        if self.state["phase"] not in {"READY", "COMPLETE"}:
+            raise ValueError("service busy; current task is frozen")
+        if self.service_receipt(request):
+            raise ValueError("이미 접수한 요청입니다. 현재 작업 결과를 확인하세요.")
+        plan = self.plan_service(request)
+        if plan is None:
+            self.service_preview = None
+            return {"pending": True}
+        self.service_preview = {
+            "preview_id": str(uuid4()),
+            "request": deepcopy(request),
+            "plan": plan,
+        }
+        return deepcopy(self.service_preview)
+
+    def submit_service(self, request, preview_id, field_confirmed):
+        receipt = self.service_receipt(request)
+        if receipt:
+            return receipt
+        preview = self.service_preview
+        if (
+            not preview
+            or preview_id != preview["preview_id"]
+            or request != preview["request"]
+        ):
+            raise ValueError("서비스 계획을 다시 확인하세요.")
+        if self.plan_service(request) != preview["plan"]:
+            self.service_preview = None
+            raise ValueError("기체 상태가 변경되었습니다. 계획을 다시 확인하세요.")
+        self.configure(preview["plan"], field_confirmed, service_request=request)
+        return self.service_receipt(request)
 
     def plan_delivery(self, request):
         statuses = {r["robot_id"]: self._status(r) for r in self.robots.values()}
@@ -488,21 +604,43 @@ class TrialControl:
             self._step_status(self.plan["steps"][index])
 
     def dummy(self, token):
+        if not self.state["gate"] or self.state["gate"]["stop_session_id"] != token:
+            raise ValueError("dummy does not match current stop session")
+        if self.omx and self.omx.manual_error():
+            raise ValueError(self.omx.manual_error())
+        return self.complete_transfer(token, "ui")
+
+    def complete_transfer(self, token, source, event=None):
+        if any(t["stop_session_id"] == token for t in self.state["transfers"]):
+            return False
         gate = self.state["gate"]
         if not gate or token != gate["stop_session_id"]:
             raise ValueError("dummy does not match current stop session")
         self._gate_error("gate")
         state = deepcopy(self.state)
+        execution_mode = (
+            self.config["omx"]["execution_mode"]
+            if self.omx and gate.get("omx_operation")
+            else ("mock" if self.config["mode"] == "simulation" else "hardware")
+        )
         state["transfers"].append(
             {
                 **gate,
-                "simulated": True,
-                "source": "trial-operator",
+                "simulated": execution_mode == "mock",
+                "source": "trial-operator" if source == "ui" else "omx-mqtt",
+                "completion_source": source,
+                "execution_mode": execution_mode,
+                "evidence": "operator_confirmation"
+                if source == "ui"
+                else event["payload"]["evidence"],
+                "placement_confirmed": None,
+                "event_id": event["message_id"] if event else None,
                 "observed_at": datetime.now(UTC).isoformat(),
             }
         )
         self.journal.save(state)
         self._enter_step(state.get("plan_index", 0) + 1, gate["stop_session_id"])
+        return True
 
     def request_error(self):
         if not self.transport.ready:
@@ -542,6 +680,9 @@ class TrialControl:
 
     def handle(self, delivery):
         event = decode(delivery.payload)
+        if self.omx and event["source"] == WORKCELL:
+            self.omx.handle(delivery, event)
+            return
         validate_trial(event)
         if event["type"].split(".")[1] not in {
             "accepted",
@@ -579,7 +720,10 @@ class TrialControl:
                         event
                     )  # Release old robot outbox only for durably stored events.
             return
-        if robot not in self.robots.values():
+        if (
+            robot not in self.robots.values()
+            and robot not in self.discovery_robots.values()
+        ):
             return  # Late replies from a deselected robot cannot affect this plan.
         if event["message_id"] in self.state["events"]:
             if self.state["events"][event["message_id"]] != event:
@@ -666,6 +810,11 @@ class TrialControl:
             if not self.transport.ready:
                 self.hold("mqtt_disconnected")
                 return
+            if self.omx:
+                try:
+                    self.omx.poll()
+                except ValueError:
+                    self.hold("omx_gate_not_ready")
             now = monotonic()
             if self.deadline and now > self.deadline:
                 self.hold("execution_timeout_unknown")
@@ -683,7 +832,7 @@ class TrialControl:
                     for key, cmd in self.pending_status.items()
                     if timestamp(cmd["expires_at"]) > utc_now
                 }
-                for robot in self.robots.values():
+                for robot in {**self.robots, **self.discovery_robots}.values():
                     cmd = command(
                         site=self.config["site_id"],
                         control=self.config["control_id"],
@@ -769,7 +918,12 @@ def main():
             topic(config["site_id"], "robot", r["robot_id"], "event")
             for role, r in config["robots"].items()
             if not args.smartcart_only or role == "smartcart"
-        ],
+        ]
+        + (
+            [topic(config["site_id"], "workcell", WORKCELL, "event")]
+            if "omx" in config
+            else []
+        ),
     )
     control = TrialControl(
         config, transport, journal, scope=args.scope, smartcart_only=args.smartcart_only

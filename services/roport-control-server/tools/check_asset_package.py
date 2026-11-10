@@ -15,7 +15,14 @@ def check(path):
             actual = hashlib.sha256(wheel.read(PREFIX + name)).hexdigest()
             if actual != expected:
                 raise ValueError(f"Packaged asset checksum mismatch: {name}")
-        for name in ("index.html", "scene.js", "style.css"):
+        for name in (
+            "index.html",
+            "scene.js",
+            "style.css",
+            "trial.js",
+            "scenario.js",
+            "service.js",
+        ):
             if not wheel.read(PREFIX + name):
                 raise ValueError(f"Missing web display file: {name}")
         if any("node_modules/" in name for name in wheel.namelist()):

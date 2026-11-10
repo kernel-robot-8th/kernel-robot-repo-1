@@ -112,6 +112,10 @@ def advance(url, token, trial):
         if trial["can_start"]
         else "dummy"
         if trial.get("can_dummy")
+        and not (
+            trial.get("omx", {}).get("enabled")
+            and (trial.get("gate") or {}).get("omx_operation")
+        )
         else "request"
         if trial.get("can_request")
         else None
@@ -152,6 +156,12 @@ def main():
     parser.add_argument("--scope", choices=("line-only", "nav2"), default="nav2")
     parser.add_argument("--nav2", choices=("simulated", "off"), default="simulated")
     parser.add_argument(
+        "--omx",
+        choices=("manual", "mock"),
+        default="manual",
+        help="mock runs the PR45 Host on this isolated broker; OMX3 remains manual",
+    )
+    parser.add_argument(
         "--fault", choices=("none", "line-loss", "odom-stale"), default="none"
     )
     parser.add_argument(
@@ -186,6 +196,14 @@ def main():
     token = secrets.token_urlsafe(24)
 
     def write_inputs():
+        if args.omx == "mock":
+            profile["omx"] = {
+                "binding_id": str(uuid4()),
+                "slot_id": "1a",
+                "model_version": "sim-model",
+                "calibration_version": "sim-cal",
+                "execution_mode": "mock",
+            }
         root.mkdir(mode=0o700, parents=True, exist_ok=False)
         (root / "trial.json").write_text(json.dumps(profile, indent=2) + "\n")
         (root / "ui-key.txt").write_text(token + "\n")
@@ -213,13 +231,13 @@ def main():
     )
     processes, logs = [], []
 
-    def start(name, command):
+    def start(name, command, extra_env=None):
         log = (root / f"{name}.log").open("w")
         logs.append(log)
         process = subprocess.Popen(
             command,
             cwd=SERVICE,
-            env=env,
+            env={**env, **(extra_env or {})},
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=log,
@@ -249,6 +267,7 @@ def main():
         "time_scale": 1,
         "nav2": args.nav2,
         "fault": args.fault,
+        "omx": args.omx,
         "baseline": baseline,
         "source_sha256": {},
     }
@@ -298,6 +317,25 @@ def main():
                     args.fault,
                 ],
             )
+        if args.omx == "mock":
+            start(
+                "omx",
+                [
+                    sys.executable,
+                    str(SERVICE.parent / "roport-omx/scripts/cooperative_host.py"),
+                    "--site",
+                    profile["site_id"],
+                    "--control",
+                    profile["control_id"],
+                    "--binding",
+                    profile["omx"]["binding_id"],
+                    "--client-id",
+                    profile["control_id"] + "-omx",
+                    "--journal",
+                    str(root / "omx.json"),
+                ],
+                {"PYTHONPATH": str(SERVICE.parent / "roport-omx/src")},
+            )
         start(
             "owner",
             [
@@ -341,6 +379,16 @@ def main():
             Path(__file__),
             *SERVICE.glob("src/roport_control_server/executor/*.py"),
             *SERVICE.glob("src/roport_control_server/adapters/mqtt/*.py"),
+            *(
+                (SERVICE.parent / "roport-omx").glob("src/roport_omx/*.py")
+                if args.omx == "mock"
+                else []
+            ),
+            *(
+                (SERVICE.parent / "roport-omx").glob("scripts/cooperative_*.py")
+                if args.omx == "mock"
+                else []
+            ),
         ]:
             info["source_sha256"][str(path.relative_to(SERVICE.parent.parent))] = (
                 hashlib.sha256(path.read_bytes()).hexdigest()
