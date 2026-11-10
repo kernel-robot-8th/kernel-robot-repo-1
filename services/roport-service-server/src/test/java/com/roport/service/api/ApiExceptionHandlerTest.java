@@ -26,7 +26,8 @@ class ApiExceptionHandlerTest {
         assertThat(codeFor(405)).isEqualTo("METHOD_NOT_ALLOWED");
         assertThat(codeFor(406)).isEqualTo("NOT_ACCEPTABLE");
         assertThat(codeFor(415)).isEqualTo("UNSUPPORTED_MEDIA_TYPE");
-        assertThat(codeFor(409)).isEqualTo("BAD_REQUEST");
+        assertThat(codeFor(409)).isEqualTo("CONFLICT");
+        assertThat(codeFor(422)).isEqualTo("BAD_REQUEST");
         assertThat(codeFor(400)).isEqualTo("BAD_REQUEST");
         assertThat(codeFor(500)).isEqualTo("INTERNAL_ERROR");
         assertThat(codeFor(503)).isEqualTo("INTERNAL_ERROR");

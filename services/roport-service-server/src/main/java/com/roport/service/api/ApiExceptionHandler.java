@@ -53,6 +53,7 @@ class ApiExceptionHandler implements ResponseBodyAdvice<Object> {
             case 404 -> "NOT_FOUND";
             case 405 -> "METHOD_NOT_ALLOWED";
             case 406 -> "NOT_ACCEPTABLE";
+            case 409 -> "CONFLICT";
             case 415 -> "UNSUPPORTED_MEDIA_TYPE";
             default -> status >= 500 ? "INTERNAL_ERROR" : "BAD_REQUEST";
         };

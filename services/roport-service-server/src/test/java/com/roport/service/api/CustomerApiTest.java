@@ -31,7 +31,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /** 실제 PostgreSQL(SERVICE_DB_URL)의 격리 테스트 DB에 가짜 데이터를 넣고 HTTP로 검사한다. 행은 실행마다 고유 ID를 쓴다. */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "service.dev-login.enabled=true")
 class CustomerApiTest {
     static final Instant NOW = Instant.parse("2030-01-01T00:10:00Z");
 
@@ -75,10 +75,8 @@ class CustomerApiTest {
 
     @BeforeEach
     void seed() {
-        // 기본 SERVICE_DB_URL은 개발 DB(roport_service)다. 가짜 행을 남기므로 _test DB에서만 돈다.
-        assertThat(db.sql("SELECT current_database()").query(String.class).single())
-                .as("SERVICE_DB_URL은 이름이 _test로 끝나는 격리 DB여야 한다").endsWith("_test");
-        s = UUID.randomUUID().toString().substring(0, 8);
+        // _test DB 확인은 Flyway 전에 TestDatabaseGuard가 한다.
+        s =UUID.randomUUID().toString().substring(0, 8);
         alice = HttpClient.newBuilder().cookieHandler(new CookieManager()).build();
         bob = HttpClient.newBuilder().cookieHandler(new CookieManager()).build();
         db.sql("INSERT INTO members (member_id, login_id, display_name) VALUES (?, ?, 'A'), (?, ?, 'B')")

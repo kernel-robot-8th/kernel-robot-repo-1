@@ -3,6 +3,7 @@ package com.roport.service.api;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import java.util.Map;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -13,8 +14,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/** 개발 전용 로그인(login_id만 확인, 비밀번호 없음). 공개 배포 금지. */
+/** 개발 전용 로그인(login_id만 확인, 비밀번호 없음). service.dev-login.enabled=true 일 때만 등록된다. 공개 배포 금지. */
 @RestController
+@ConditionalOnBooleanProperty("service.dev-login.enabled")
 @RequestMapping("/api/session")
 class SessionController {
     record LoginRequest(String loginId) {}
