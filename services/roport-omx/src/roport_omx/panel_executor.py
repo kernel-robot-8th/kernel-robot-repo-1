@@ -357,7 +357,9 @@ class PanelExecutor:
                     "state": "finished",
                     "step": "returned",
                     "arms": arms,
-                    "evidence": "arm_return_detected",
+                    # control (omx_trial.py) moves the Pinky on only this evidence; the detection
+                    # rests on arm return alone (the panel's last_result.last_episode.returned)
+                    "evidence": "arm_return_only",
                 }
             return {"state": "finished", "step": "home", "arms": arms}
         if exit_ok:
