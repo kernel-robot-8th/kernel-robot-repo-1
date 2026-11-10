@@ -1,4 +1,4 @@
-# RO:PORT ArUco 마커 ID 표 (v1.4, Jira FFT1-74)
+# RO:PORT ArUco 마커 ID 표 (v1.5, Jira FFT1-74)
 #
 # 이 파일이 원본이다. 고친 뒤 인쇄 시트와 이미지를 다시 만든다:
 #   python3 docs/aruco/generate_markers.py
@@ -12,13 +12,18 @@
 # v1.4(2026-11-06): OMX 인도장 선반을 2x3(6칸)으로 다시 만듦(OMX 선반 도면 Rev A, 2026-11-05).
 #   선반 ID를 11~14(2x2)에서 28~33(6칸)으로 옮기고 크기를 20 mm로 바꿈. 30 mm도 함께 인쇄(alt_sizes_mm).
 #   11~14는 예비로 돌림(옛 2x2 선반 인쇄물은 쓰지 않음).
+# v1.5(2026-11-09): Pinky 트레이 모서리(23~26)를 쓰지 않기로 함. 25·26을 물류 Pinky 정밀 도킹 마커로 바꿈
+#   (상차 노드 가로선에서 멈춘 Pinky 카메라가 정면으로 보는 OMX 받침 앞면, 세로선 연장선, 렌즈 높이 근처, 20 mm).
+#   25 = N01(P4, OMX3), 26 = N11(P7, OMX1·2). 23·24는 예비(N21·N22 도킹 후보). P4·P7 바닥 마커(4·7)는 그대로 둠.
+#   Gate(8~10)·입국장(ARR 27)을 100 → 60 mm로 줄임(2026-11-10, 벽에 붙였을 때 너무 큼). 다른 벽 마커(P1~P3·P5·P6)는 100 mm 그대로.
 
-version: "1.4"
+version: "1.5"
 dictionary: DICT_4X4_50
 
 reserved:
   - {ids: [0, 0], use: "인식 거리 시험용(운영 마커로 쓰지 않음)"}
   - {ids: [11, 14], use: "예비(v1.3까지 2x2 선반 S1~S4. 옛 인쇄물은 버림)"}
+  - {ids: [23, 24], use: "예비(v1.4까지 Pinky 트레이 모서리. N21·N22 도킹 마커 후보)"}
   - {ids: [34, 34], use: "예비"}
   - {ids: [35, 49], use: "스마트카트 고객 추종용(FFT1-86 담당이 배정)"}
 
@@ -31,11 +36,11 @@ markers:
   - {id: 5, name: P5, group: place, size_mm: 100, quiet_mm: 8, mount: wall, use: "물류 Pinky 대기·충전"}
   - {id: 6, name: P6, group: place, size_mm: 100, quiet_mm: 8, mount: wall, use: "물류 Pinky 대기·충전"}
   - {id: 7, name: P7, group: floor, size_mm: 20, quiet_mm: 4, mount: floor, use: "인도장 정차 구역(물류 Pinky·스마트카트 공용, 한 번에 한 대, 바닥)"}
-  - {id: 27, name: ARR, group: place, size_mm: 100, quiet_mm: 8, mount: wall, use: "입국장(스마트카트 수령 위치·게이트 안내 출발점)"}
+  - {id: 27, name: ARR, group: place, size_mm: 60, quiet_mm: 6, mount: wall, use: "입국장(스마트카트 수령 위치·게이트 안내 출발점)"}
   # 게이트: 벽, 인식되는 범위에서 바닥에 최대한 가깝게
-  - {id: 8, name: G1, group: gate, size_mm: 100, quiet_mm: 8, mount: wall, use: "Gate 1"}
-  - {id: 9, name: G2, group: gate, size_mm: 100, quiet_mm: 8, mount: wall, use: "Gate 2"}
-  - {id: 10, name: G3, group: gate, size_mm: 100, quiet_mm: 8, mount: wall, use: "Gate 3"}
+  - {id: 8, name: G1, group: gate, size_mm: 60, quiet_mm: 6, mount: wall, use: "Gate 1"}
+  - {id: 9, name: G2, group: gate, size_mm: 60, quiet_mm: 6, mount: wall, use: "Gate 2"}
+  - {id: 10, name: G3, group: gate, size_mm: 60, quiet_mm: 6, mount: wall, use: "Gate 3"}
   # (OMX용 — 부착 위치는 OMX 담당 확인) OMX 인도장 선반 2x3: 칸 이름은 선반 도면 그대로(1 = 아래층, 2 = 위층,
   # A·B·C = 팔 쪽에서 볼 때 왼쪽부터). 칸 안쪽에 부착. 20 mm 기본, 30 mm 도 같이 인쇄(OMX 요청)
   - {id: 28, name: S1A, group: shelf, size_mm: 20, quiet_mm: 4, alt_sizes_mm: [30], mount: shelf_wall, use: "선반 아래층 왼쪽 칸(1A)"}
@@ -53,11 +58,10 @@ markers:
   - {id: 20, name: PKG6, group: package, size_mm: 50, quiet_mm: 6, mount: top, use: "포장물품 6"}
   - {id: 21, name: PKG7, group: package, size_mm: 50, quiet_mm: 6, mount: top, use: "포장물품 7"}
   - {id: 22, name: PKG8, group: package, size_mm: 50, quiet_mm: 6, mount: top, use: "포장물품 8"}
-  # Pinky 트레이(120 x 145 mm) 모서리: 모든 트레이에 같은 ID 4개. 위에서 볼 때 Pinky 앞쪽이 위
-  - {id: 23, name: T_FL, group: tray, size_mm: 20, quiet_mm: 4, mount: top, copies: 3, use: "트레이 앞 왼쪽 모서리"}
-  - {id: 24, name: T_FR, group: tray, size_mm: 20, quiet_mm: 4, mount: top, copies: 3, use: "트레이 앞 오른쪽 모서리"}
-  - {id: 25, name: T_RR, group: tray, size_mm: 20, quiet_mm: 4, mount: top, copies: 3, use: "트레이 뒤 오른쪽 모서리"}
-  - {id: 26, name: T_RL, group: tray, size_mm: 20, quiet_mm: 4, mount: top, copies: 3, use: "트레이 뒤 왼쪽 모서리"}
+  # 물류 Pinky 정밀 도킹: 상차 노드 가로선에서 멈춘 Pinky 카메라(렌즈 높이 6.3 cm)가 정면으로 보는 OMX 받침 앞면,
+  # 세로선 연장선 위에 세로로 부착. 2장씩 인쇄(예비 1장)
+  - {id: 25, name: D_N01, group: dock, size_mm: 20, quiet_mm: 4, mount: dock_front, copies: 2, use: "N01(P4) 정밀 도킹 — OMX3 받침 앞면. 2026-11-09 부착: 마커 위 끝 = 바닥에서 6 cm, 한쪽 변 x = N18↔N01 테이프의 오른쪽(진행 방향 기준) 가장자리(테이프 중앙 아님)"}
+  - {id: 26, name: D_N11, group: dock, size_mm: 20, quiet_mm: 4, mount: dock_front, copies: 2, use: "N11(P7) 정밀 도킹 — OMX1·2 쪽 앞면, N11 세로선 연장선"}
 
 # 인식 거리 시험 시트: ID 0을 운영 마커와 같은 크기로 인쇄
 range_test:
