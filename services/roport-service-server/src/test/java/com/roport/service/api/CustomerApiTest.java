@@ -25,6 +25,8 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -39,6 +41,20 @@ class CustomerApiTest {
         @Primary
         Clock fixedClock() {
             return Clock.fixed(NOW, ZoneOffset.UTC);
+        }
+
+        /** 처리되지 않은 예외(500) 검사용. 이 테스트 컨텍스트에만 있다. */
+        @Bean
+        Boom boom() {
+            return new Boom();
+        }
+    }
+
+    @RestController
+    static class Boom {
+        @GetMapping("/api/test-boom")
+        String boom() {
+            throw new IllegalStateException("secret-internal db=127.0.0.1");
         }
     }
 
@@ -116,7 +132,7 @@ class CustomerApiTest {
         assertThat(r.body().path("code").asString("")).as(String.valueOf(r.body())).isEqualTo(code);
     }
 
-    /** 프레임워크 기본 오류도 problem+json {type,title,status}. code는 계약 미정이라 검사하지 않는다. */
+    /** problem+json {type,title,status}. code는 problem()에서 검사한다. */
     static void frameworkProblem(Res r, int status) {
         assertThat(r.status()).as(String.valueOf(r.body())).isEqualTo(status);
         assertThat(r.contentType()).as(String.valueOf(r.body())).startsWith("application/problem+json");
@@ -174,10 +190,21 @@ class CustomerApiTest {
 
     @Test
     void frameworkErrorsAreProblemJson() throws Exception {
-        frameworkProblem(call(alice, "PUT", "/api/session", "{}"), 405);
-        frameworkProblem(call(alice, "POST", "/api/session", "loginId=x", "text/plain"), 415);
+        problem(call(alice, "PUT", "/api/session", "{}"), 405, "METHOD_NOT_ALLOWED");
+        problem(call(alice, "POST", "/api/session", "loginId=x", "text/plain"), 415, "UNSUPPORTED_MEDIA_TYPE");
         login(alice, "alice" + s);
-        frameworkProblem(call(alice, "GET", "/api/no-such-path", null), 404);
+        problem(call(alice, "GET", "/api/no-such-path", null), 404, "NOT_FOUND");
+        problem(toRes(alice.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/session"))
+                .header("Accept", "text/plain").GET().build(), HttpResponse.BodyHandlers.ofString())),
+                406, "NOT_ACCEPTABLE");
+    }
+
+    @Test
+    void unhandledErrorHidesDetails() throws Exception {
+        login(alice, "alice" + s);
+        Res r = call(alice, "GET", "/api/test-boom", null);
+        problem(r, 500, "INTERNAL_ERROR");
+        assertThat(r.body().toString()).doesNotContain("secret-internal", "IllegalStateException", "at com.");
     }
 
     @Test

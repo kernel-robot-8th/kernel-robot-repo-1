@@ -33,14 +33,29 @@ class ApiExceptionHandler implements ResponseBodyAdvice<Object> {
         return true;
     }
 
-    /** 프레임워크 기본 오류(405·415·404 등)의 ProblemDetail은 type이 비어 직렬화에서 빠진다. 계약 필드라 채운다. */
+    /** 프레임워크 기본 오류(405·415·404 등)의 ProblemDetail은 type·code가 없다. 계약 필드라 상태로 채운다. */
     @Override
     public Object beforeBodyWrite(Object body, MethodParameter returnType, MediaType contentType,
             Class<? extends HttpMessageConverter<?>> converterType, ServerHttpRequest req, ServerHttpResponse res) {
-        if (body instanceof ProblemDetail p && p.getType() == null) {
-            p.setType(ABOUT_BLANK);
+        if (body instanceof ProblemDetail p) {
+            if (p.getType() == null) {
+                p.setType(ABOUT_BLANK);
+            }
+            if (p.getProperties() == null || !p.getProperties().containsKey("code")) {
+                p.setProperty("code", genericCode(p.getStatus()));
+            }
         }
         return body;
+    }
+
+    static String genericCode(int status) {
+        return switch (status) {
+            case 404 -> "NOT_FOUND";
+            case 405 -> "METHOD_NOT_ALLOWED";
+            case 406 -> "NOT_ACCEPTABLE";
+            case 415 -> "UNSUPPORTED_MEDIA_TYPE";
+            default -> status >= 500 ? "INTERNAL_ERROR" : "BAD_REQUEST";
+        };
     }
 
     @ExceptionHandler(ApiException.class)
