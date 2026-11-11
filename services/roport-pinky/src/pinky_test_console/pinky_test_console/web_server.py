@@ -14,6 +14,7 @@
 #   - ArUco marker recognition check (camera preview, ID checklist)
 #   - AMCL map match check (scan vs map score, node initial poses, CSV record)
 #   - node-route driving page (line_nav/state·command), fleet settings/test control (laptop)
+#   - precision docking tab (laptop): top-view camera relay over SSH, calibration, results
 # See LICENSE in this package for the full license text.
 
 import _thread
@@ -55,7 +56,7 @@ from std_msgs.msg import Float32, String, UInt16MultiArray
 from std_srvs.srv import Empty
 from tf2_ros import Buffer, TransformListener
 
-from . import amcl_check, fleet, ir_record, map_store, marker_detect, route_view
+from . import amcl_check, dock_camera, fleet, ir_record, map_store, marker_detect, route_view
 from .smartcart import SmartcartMonitor
 from .sysstats import read_system_stats
 from .teleop import DEADMAN_TIMEOUT, MAX_ANGULAR, MAX_LINEAR, TeleopGuard
@@ -128,6 +129,7 @@ class ConsoleNode(Node):
         self.declare_parameter('robot_port', 8080)
         self.declare_parameter('fleet_log_dir', '~/roport_fleet_logs')
         self.declare_parameter('nav_log_dir', '~/roport_logs')
+        self.declare_parameter('dock_dir', dock_camera.DEFAULT_DOCK_DIR)
 
         self.mode = self.get_parameter('mode').value
         self.teleop_enabled = self.get_parameter('teleop_enabled').value
@@ -544,6 +546,20 @@ class ConsoleNode(Node):
         mgr.start_polling()
         return mgr
 
+    def make_dock(self):
+        """mode:=fleet 정밀 도킹 탭: (카메라 중계, 결과 기록). 다른 모드는 None."""
+        if self.mode != 'fleet':
+            return None
+        cams = dock_camera.DockCameras(str(self.get_parameter('dock_dir').value))
+        if cams.config_error:
+            self.get_logger().warn(f'[DOCK] {cams.config_error} (기본 카메라 2대 사용)')
+        results = dock_camera.DockResults(
+            os.path.join(os.path.expanduser(str(self.get_parameter('fleet_log_dir').value)),
+                         'dock'))
+        if results.error:
+            self.get_logger().warn(f'[DOCK] {results.error}')
+        return cams, results
+
     def get_status(self):
         stats = read_system_stats()
         now = time.monotonic()
@@ -957,6 +973,7 @@ def main(args=None):
     # SSH 접속이 끊기면 SIGHUP: 기본 동작은 정리 없이 종료라 0 속도를 못 보낸다
     signal.signal(signal.SIGHUP, _raise_keyboard_interrupt)
     spin_thread = threading.Thread(target=_spin, args=(executor, node), daemon=True)
+    dock = None
 
     try:
         spin_thread.start()
@@ -964,10 +981,12 @@ def main(args=None):
         ip = str(node.get_parameter('ip').value)
         port = int(node.get_parameter('port').value)
         fleet_mgr = node.make_fleet()
+        dock = node.make_dock()
         allowed = None
         if fleet_mgr is not None and ipaddress.IPv4Address(ip).is_loopback:
             allowed = {f'127.0.0.1:{port}', f'localhost:{port}'}
-        app = create_app(node, default_web_dir(), fleet=fleet_mgr, allowed_hosts=allowed)
+        app = create_app(node, default_web_dir(), fleet=fleet_mgr, allowed_hosts=allowed,
+                         dock=dock)
         # 10 Hz teleop + 2 Hz 상태 요청 로그가 화면을 덮지 않도록
         logging.getLogger('werkzeug').setLevel(logging.WARNING)
         node.get_logger().info(f'Web console: http://{ip}:{port}  (classroom Wi-Fi only)')
@@ -983,6 +1002,8 @@ def main(args=None):
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         node.publish_stop_on_exit()
         node.close_marker()
+        if dock is not None:      # 이 서버가 띄운 카메라 ssh 만 끈다
+            dock[0].close()
         executor.shutdown(timeout_sec=1.0)
         # spin 스레드가 wait 중인 채로 노드를 없애면 C++ terminate(abort)가 난다
         if spin_thread.is_alive() and spin_thread is not threading.current_thread():

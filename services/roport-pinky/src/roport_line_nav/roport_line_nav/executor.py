@@ -26,12 +26,21 @@
   예상 위치가 없는 구간은 처음부터 approach_speed. 직진 통과 노드(pass_full_speed)는 감속하지 않는다. 실로봇 d660 0.06 m/s(2026-11-06)에서 노드를
   지나쳐 멈춰 회전이 107~117° 로 끝나고 비스듬히 출발한 문제 대응(0.03 m/s 는 70~93°).
 정지 명령·오류(라인 놓침 지속, 노드 놓침, 회전 중 선 못 찾음, 후진 초과, odom·IR 없음)는 모두 0 속도.
+정밀 도킹(FFT1-112): 상차 노드별 값 (a, r, b) = (advance_cm, rotate_deg, move_cm), 기본 (0, 90, 0) = 위 load 동작.
+  가로선 정지 → a ≠ 0 이면 a 이동(접근 방향, 음수 = 후진) → 반시계 r° → b ≠ 0 이면 b 이동(새 방향) → 상차 대기 →
+  b ≠ 0 이면 −b 이동 → a = 0 이면 반시계 회전해 진입선 찾기((180 − r)° 기준, 창 = turn_min·turn_max 와 같은 폭),
+  a ≠ 0 이면 시계 r° → −a 이동(기본 정지 자세로) → 반시계 90 + turn_min ~ 90 + turn_max 로 진입선 찾기 → 끝·경유.
+  도킹 이동은 odom 이 멈춘 뒤(구동 지연으로 남은 움직임을 먼저 흘려보냄) 시작 자세에서 부호 있는 거리로 재고,
+  approach_speed 이하·끝으로 갈수록 감속(min_speed 까지)·방향 유지. 거리 초과·시간 초과·멈추지 않음은 오류 정지.
+교차선 출발(start_cross): IR 3개가 route[0](가로선 노드 아님)을 지나는 선 위, 로봇은 start_facing 을 봄
+  → ir_ahead_cm 전진(축을 노드 중심으로) → 첫 구간 방향이 다르면 선 찾기 회전 → 첫 구간(s0 = ir_ahead, gate_early 적용).
 """
 
 import math
 from collections import deque
 from dataclasses import dataclass, replace
 
+from roport_line_nav.dock import DockTable
 from roport_line_nav.graph import (HANDOFF, LEFT, LOAD, PARK, RIGHT, STOP, STRAIGHT, GraphError,
                                    BACK, STRAIGHT as GO_STRAIGHT, plan_route, turn_of)
 from roport_pinky_line.follower import HARD_MAX_ANGULAR, HARD_MAX_LINEAR
@@ -48,6 +57,14 @@ HANDOFF_STATE = 'handoff'
 STOPPED = 'stopped'
 ERROR = 'error'
 TERMINAL = (IDLE, ARRIVED, HANDOFF_STATE, STOPPED, ERROR)
+FACINGS = ('E', 'N', 'W', 'S')
+
+# 도킹 이동(부호 있는 ADVANCE): odom 정지 판정·종료 조건
+SETTLE_CM = 0.02          # 샘플 사이 이동이 이보다 작고
+SETTLE_DEG = 0.2          # 회전이 이보다 작은 새 odom 샘플 비교가 node_confirm 번 이어지면 멈춘 것으로 봄
+SETTLE_TIMEOUT_S = 1.5    # 0 명령 뒤 이 시간 안에 멈추지 않으면 오류
+MOVE_GAIN = 0.01          # m/s per 남은 cm (3 cm 남으면 0.03)
+MOVE_OVERRUN_CM = 2.0     # 목표보다 이만큼 더 가면(부호 있는 거리) 오류
 
 
 @dataclass(frozen=True)
@@ -159,9 +176,12 @@ def _wrap(a):
 
 
 class RouteExecutor:
-    def __init__(self, graph, config=None):
+    def __init__(self, graph, config=None, dock=None):
         self.graph = graph
         self.cfg = config or NavConfig()
+        self.dock = dock if dock is not None else DockTable(graph)
+        self._dock_phase = None  # 상차 도착 동작 중 어디인지(표시용): a·r·b·load·-b·unr·-a·back·back_a
+        self._dock_disp = (0.0, 0.0)   # 표시용 도킹 이동 (접근 방향 cm, 새 방향 cm)
         self.state = IDLE
         self.reason = ''
         self.route = []
@@ -175,8 +195,9 @@ class RouteExecutor:
         self._odo = 0.0          # odom 누적 이동 거리 cm
         self._yaw_acc = 0.0      # odom 누적 회전 rad (감기지 않음)
         self._pose = None
+        self._pose_stamp = None
         self._now = 0.0
-        self._loaded = False     # 상차 완료를 받았는지(두 번째 회전 표시용)
+        self._loaded = False     # 상차 완료를 받았는지
         self._leg_s0 = 0.0       # 구간 시작 때 출발 노드 → 센서 거리(표시용 위치 추정)
         self._progress = 0.0     # 현재 구간 진행률 0~1 (정지·오류 뒤에도 마지막 값 유지)
         self._seg_ends = set()   # 경유 정차 구간 묶음의 끝 Leg 번호
@@ -186,11 +207,18 @@ class RouteExecutor:
         self._reset_primitive()
 
     # ------------------------------------------------------------ 명령
-    def start(self, route, start_offset_cm=None):
-        """경로 시작. 잘못된 경로는 GraphError(현재 상태 유지). 주행 중이면 거부."""
+    def start(self, route, start_offset_cm=None, start_cross=False, start_facing=None):
+        """경로 시작. 잘못된 경로는 GraphError(현재 상태 유지). 주행 중이면 거부.
+
+        start_cross: IR 3개가 route[0] 을 지나는 교차선 위, 로봇은 start_facing(E·N·W·S)을 봄.
+        """
         if self.state not in TERMINAL:
             raise GraphError(f'busy ({self.state}); stop first')
         legs, seg_ends = self._plan_segments([str(r) for r in route])
+        if start_cross:
+            self._check_cross(str(route[0]), start_facing, start_offset_cm)
+        elif start_facing is not None:
+            raise GraphError('start_facing is only for start_cross')
         self.route = [str(r) for r in route]
         self.legs = legs
         self._seg_ends = seg_ends
@@ -201,9 +229,40 @@ class RouteExecutor:
         self._pre = None
         self.route_seq0 = self.event_seq
         self._log('start', ' → '.join(self.route))
+        self._dock_phase = None
         end = self._end
         self._end = None
+        if start_cross:
+            self._depart_cross(legs[0], start_facing)
+            return
         self._depart(legs[0], end, start_offset_cm)
+
+    def _check_cross(self, nid, facing, offset):
+        if facing not in FACINGS:
+            raise GraphError(f'start_facing must be one of {"/".join(FACINGS)}')
+        if offset is not None:
+            raise GraphError('start_cross cannot be combined with start_offset_cm')
+        node = self.graph.nodes[nid]
+        if node.bar:
+            raise GraphError(f'start_cross needs a line node, {nid} is a stop (bar) node')
+        cross = [turn_of(facing, self.graph.heading(nid, o)) for o in node.links]
+        if LEFT not in cross and RIGHT not in cross:
+            raise GraphError(f'{nid} has no line across facing {facing}')
+
+    def _depart_cross(self, leg, facing):
+        """교차선 위 출발: 축을 노드 중심으로 → (필요하면) 선 찾기 회전 → 첫 구간(s0 = ir_ahead)."""
+        c = self.cfg
+        turn = turn_of(facing, leg.heading)
+        self._log('start_cross', f'{leg.frm} facing {facing} → {leg.heading}')
+        self._pre = self._HEADING_DEG[facing]
+        self._steps.append((ADVANCE, c.ir_ahead_cm))
+        if turn == BACK:
+            self._steps.append((ROTATE, 1.0, c.back_min_deg, c.back_max_deg, True))
+        elif turn in (LEFT, RIGHT):
+            self._steps.append((ROTATE, 1.0 if turn == LEFT else -1.0,
+                                c.turn_min_deg, c.turn_max_deg, True))
+        self._steps.append(('begin', c.ir_ahead_cm))
+        self._next_step()
 
     def set_speed(self, base_speed=None, rotate_speed=None):
         """직선(m/s)·회전(rad/s) 속도. 범위 밖이면 ValueError(그대로 유지). → 적용된 (직선, 회전)."""
@@ -218,6 +277,28 @@ class RouteExecutor:
         self.cfg = replace(c, base_speed=base, rotate_speed=rot)
         self._log('speed', f'{base:.3f} m/s, {rot:.2f} rad/s')
         return base, rot
+
+    def set_dock(self, node, advance_cm, rotate_deg, move_cm):
+        """상차 노드 도킹 값 적용. 주행 중·범위 밖·상차 노드 아님이면 ValueError(그대로 유지)."""
+        self._check_idle('dock')
+        v = self.dock.set(node, advance_cm, rotate_deg, move_cm)
+        self._log('dock', f'{node} a={v.advance_cm:g} r={v.rotate_deg:g} b={v.move_cm:g}')
+        return v
+
+    def reset_dock(self, node):
+        self._check_idle('dock')
+        self.dock.reset(node)
+        self._log('dock', f'{node} reset')
+
+    def replace_dock(self, table, detail=''):
+        """검사·저장을 끝낸 표로 바꿈(노드가 파일 저장 뒤 적용할 때). 주행 중이면 ValueError."""
+        self._check_idle('dock')
+        self.dock = table
+        self._log('dock', detail)
+
+    def _check_idle(self, what):
+        if self.state not in TERMINAL:
+            raise ValueError(f'{what} rejected while driving ({self.state}); stop first')
 
     def _plan_segments(self, route):
         """중간 가로선 노드에서 나눠 구간 묶음마다 plan_route. → (전체 Leg 목록, 묶음 끝 Leg 번호)."""
@@ -293,9 +374,14 @@ class RouteExecutor:
         return min(self.cfg.approach_speed, self.cfg.base_speed)
 
     # ------------------------------------------------------------ 한 샘플
-    def step(self, reading, pose, now):
-        """IR 한 샘플마다 호출. pose = (x_cm, y_cm, yaw_rad) 또는 None(odom 없음)."""
+    def step(self, reading, pose, now, pose_stamp=None):
+        """IR 한 샘플마다 호출. pose = (x_cm, y_cm, yaw_rad) 또는 None(odom 없음).
+
+        pose_stamp: 그 pose 의 odom 수신 시각 등(같은 odom 이 다시 들어오면 같은 값). None 이면 샘플마다 새 pose 로 본다.
+        도킹 이동 전 멈춤 확인은 stamp 가 바뀐 샘플끼리만 비교한다(odom 이 IR 보다 늦게 갱신돼도 멈춤으로 세지 않게).
+        """
         self._now = now
+        self._pose_stamp = pose_stamp
         if self.state in TERMINAL:
             if self._zero_once:
                 self._zero_once = False
@@ -331,6 +417,7 @@ class RouteExecutor:
             'events': list(self.events),
             'event_seq': self.event_seq,
             'route_event_seq0': self.route_seq0,
+            'dock': self.dock.as_dict(),
             'speed': {'base_speed': self.cfg.base_speed, 'rotate_speed': self.cfg.rotate_speed,
                       'min_speed': self.cfg.min_speed, 'max_linear': self.cfg.max_linear,
                       'rotate_min_speed': self.cfg.rotate_min_speed,
@@ -352,13 +439,20 @@ class RouteExecutor:
         """화면 표시용 바퀴 축 위치 추정(실측 cm). 그래프 + 이동 거리로 계산, 제어에는 쓰지 않는다."""
         if leg is None:
             return {'leg_progress': None, 'pose_est': None}
-        if self._pre is not None and self.state == ROTATE:   # 출발 전 제자리 회전
+        if self._pre is not None and self.state in (ROTATE, ADVANCE):   # 출발 전 전진·제자리 회전
             n = self.graph.nodes[leg.frm]
-            turned = math.degrees(abs(self._yaw_acc - self._ref_yaw))
-            heading = self._pre + self._prim['dir'] * turned
+            x, y = n.x, n.y
+            if self.state == ROTATE:
+                turned = math.degrees(abs(self._yaw_acc - self._ref_yaw))
+                heading = self._pre + self._prim['dir'] * turned
+            else:   # 교차선 출발: 축이 노드 중심 ir_ahead 뒤에서 앞으로
+                heading = self._pre
+                back = max(0.0, self._prim['cm'] - (self._odo - self._ref_odo))
+                ux, uy = math.cos(math.radians(heading)), math.sin(math.radians(heading))
+                x, y = n.x - ux * back, n.y - uy * back
             heading = (heading + 180.0) % 360.0 - 180.0
             self._progress = 0.0
-            return {'leg_progress': 0.0, 'pose_est': {'x_cm': n.x, 'y_cm': n.y,
+            return {'leg_progress': 0.0, 'pose_est': {'x_cm': round(x, 1), 'y_cm': round(y, 1),
                                                       'heading_deg': round(heading, 1)}}
         if self.state == FOLLOW:
             axle = self._leg_s0 + (self._odo - self._ref_odo) - self.cfg.ir_ahead_cm
@@ -367,18 +461,49 @@ class RouteExecutor:
             self._progress = 1.0
         a, b = self.graph.nodes[leg.frm], self.graph.nodes[leg.to]
         heading = self._HEADING_DEG[leg.heading]
-        if leg.action == LOAD and self.state in (LOADING, ARRIVED):
-            heading += 90.0 if self.state == LOADING else 180.0   # 반시계 90° / 합계 약 180°
+        f = self._progress
+        x, y = a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f
+        if leg.action == LOAD and self._dock_phase is not None and \
+                self.state in (ADVANCE, ROTATE, LOADING, ARRIVED):
+            x, y, heading = self._dock_estimate(leg, x, y, heading)
         elif leg.action == PARK and self.state in (REVERSE, ARRIVED):
             heading += 180.0
         elif self.state == ROTATE and self._prim:
-            base = 90.0 if leg.action == LOAD and self._loaded else 0.0   # 상차 뒤 두 번째 회전
-            heading += base + self._prim['dir'] * math.degrees(abs(self._yaw_acc - self._ref_yaw))
+            heading += self._prim['dir'] * math.degrees(abs(self._yaw_acc - self._ref_yaw))
         heading = (heading + 180.0) % 360.0 - 180.0
-        f = self._progress
         return {'leg_progress': round(f, 3), 'pose_est': {
-            'x_cm': round(a.x + (b.x - a.x) * f, 1), 'y_cm': round(a.y + (b.y - a.y) * f, 1),
-            'heading_deg': round(heading, 1)}}
+            'x_cm': round(x, 1), 'y_cm': round(y, 1), 'heading_deg': round(heading, 1)}}
+
+    def _dock_estimate(self, leg, x, y, approach):
+        """상차 도착 동작 중 표시 자세(바퀴 축): 가로선 정지 위치(노드 중심에서 접근 반대로 half_line + ir_ahead)
+        + a·접근 방향 + b·(접근 + r) 방향, 방향 = 접근 + 회전. 정지 밀림(구동 지연)은 모른다."""
+        r = self.dock.get(leg.to).rotate_deg
+        da, db = self._dock_disp
+        da -= self.cfg.half_line_cm + self.cfg.ir_ahead_cm
+        phase = self._dock_phase
+        p = self._prim
+        moving = self.state == ADVANCE and p.get('signed')
+        turned = math.degrees(abs(self._yaw_acc - self._ref_yaw)) if self.state == ROTATE else 0.0
+        if moving and phase in ('a', '-a'):
+            da += p['proj']
+        elif moving:
+            db += p['proj']
+        if phase in ('a', '-a'):
+            heading = approach
+        elif phase == 'r':
+            heading = approach + (turned if self.state == ROTATE else r)
+        elif phase == 'unr':                  # 시계로 r° 되돌림
+            heading = approach + (r - turned if self.state == ROTATE else 0.0)
+        elif phase == 'back':
+            heading = approach + (r + turned if self.state == ROTATE else 180.0)
+        elif phase == 'back_a':
+            heading = approach + (turned if self.state == ROTATE else 180.0)
+        else:      # b·load·-b
+            heading = approach + r
+        u = math.radians(approach)
+        h = math.radians(approach + r)
+        return (x + da * math.cos(u) + db * math.cos(h),
+                y + da * math.sin(u) + db * math.sin(h), heading)
 
     # ------------------------------------------------------------ 내부
     def _log(self, kind, detail=''):
@@ -421,6 +546,7 @@ class RouteExecutor:
         c = self.cfg
         back = {'E': 'W', 'W': 'E', 'N': 'S', 'S': 'N'}[leg.heading]
         if leg.action == LOAD:    # 가로선 앞에서 멈춘 뒤 축 기준 약 180°: 센서가 노드 바깥쪽으로
+            # 도킹 ①(a)은 상차 뒤 −a 로 되돌아오므로 기본 정지 자세와 같음
             return {'node': leg.to, 'facing': back, 's0': 2 * c.ir_ahead_cm + c.half_line_cm}
         if leg.action == PARK:    # 후진해 가로선 가장자리에서 멈춤
             return {'node': leg.to, 'facing': back, 's0': c.half_line_cm}
@@ -529,10 +655,34 @@ class RouteExecutor:
             steps.append((ROTATE, direction, c.turn_min_deg, c.turn_max_deg, True))
             steps.append(('next', c.ir_ahead_cm))
         elif leg.action == LOAD:
-            # 반시계 90° → 상차 대기 → 반시계로 진입선을 다시 찾음(합계 약 180°)
-            steps.append((ROTATE, 1.0, 90.0, 90.0, False))
+            # (a 이동) → 반시계 r° → (b 이동) → 상차 대기 → (−b 이동) → 반시계로 진입선을 다시 찾음(합계 약 180°)
+            # 기본 (0, 90, 0) 이면 반시계 90° → 상차 대기 → 반시계 turn_min~turn_max(예전과 같음)
+            dv = self.dock.get(leg.to)
+            r = dv.rotate_deg
+            self._dock_disp = (0.0, 0.0)
+            if dv.advance_cm:
+                steps.append((ADVANCE, dv.advance_cm, 'a'))
+            steps.append((ROTATE, 1.0, r, r, False, 'r'))
+            if dv.move_cm:
+                steps.append((ADVANCE, dv.move_cm, 'b'))
             steps.append((LOADING,))
-            steps.append((ROTATE, 1.0, c.turn_min_deg, c.turn_max_deg, True))
+            if dv.move_cm:
+                steps.append((ADVANCE, -dv.move_cm, '-b'))
+            if dv.advance_cm:
+                # a ≠ 0(2026-11-09 사용자 결정 (나)): 시계 r° 로 접근 방향을 다시 보고 −a 만큼 되돌아와 기본 정지
+                # 자세로 → 반시계 90 + turn_min ~ 90 + turn_max(기본값 경로의 합계)로 진입선 찾기.
+                # a > +4.5 cm 그대로 돌아보면 IR 이 가로선 위에 남아 진입선을 구분 못 함(시뮬 a +6 에서 22/24 정지).
+                steps.append((ROTATE, -1.0, r, r, False, 'unr'))
+                steps.append((ADVANCE, -dv.advance_cm, '-a'))
+                lo, hi = 90.0 + c.turn_min_deg, 90.0 + c.turn_max_deg
+                phase = 'back_a'
+            elif r == 90.0:
+                lo, hi = c.turn_min_deg, c.turn_max_deg
+                phase = 'back'
+            else:     # 남은 각 (180 − r) 둘레로 기본과 같은 폭(기본 −30°·+30°)
+                lo, hi = (180.0 - r) + (c.turn_min_deg - 90.0), (180.0 - r) + (c.turn_max_deg - 90.0)
+                phase = 'back'
+            steps.append((ROTATE, 1.0, lo, hi, True, phase))
             steps.append(done + (ARRIVED,))
         elif leg.action == PARK:
             steps.append((ROTATE, 1.0, c.back_min_deg, c.back_max_deg, True))
@@ -564,24 +714,47 @@ class RouteExecutor:
         if kind == 'via':        # 경유 정차 동작이 끝남 → 이어서 출발
             leg = self.legs[self.index]
             self._log('via', leg.to)
+            end = self._end_of_leg(leg)
             self.index += 1
             self._loaded = False
-            self._depart(self.legs[self.index], self._end_of_leg(leg))
+            self._dock_phase = None
+            self._depart(self.legs[self.index], end)
             return
         if kind == 'begin':      # 출발 전 회전이 끝남 → 첫 구간
             self._pre = None
             self._begin_leg(st[1])
             return
+        self._dock_step_done()
         self.state = kind
         self._reset_primitive()
-        if kind in (PASS, ADVANCE):
+        if kind == ADVANCE and len(st) > 2:      # 도킹 이동: 부호 있는 거리, 멈춘 뒤 시작
+            self._prim = {'cm': st[1], 'signed': True, 'phase': st[2], 'settled': False,
+                          'still': 0, 'last': None, 'last_stamp': None, 't0': self._now,
+                          'proj': 0.0}
+            self._dock_phase = st[2]
+        elif kind in (PASS, ADVANCE):
             self._prim = {'cm': st[1]}
         elif kind == ROTATE:
             self._prim = {'dir': st[1], 'min': math.radians(st[2]), 'max': math.radians(st[3]),
                           'acquire': st[4]}
+            if len(st) > 5:
+                self._dock_phase = st[5]
         elif kind == REVERSE:
             self._prim = {'cm': st[1]}
+        elif kind == LOADING and self._dock_phase is not None:
+            self._dock_phase = 'load'
         self._log(kind, '' if kind == LOADING else str(st[1:]))
+
+    def _dock_step_done(self):
+        """끝난 도킹 이동을 표시용 누적값에 더한다."""
+        p = self._prim
+        if p.get('signed'):
+            a, b = self._dock_disp
+            if p['phase'] in ('a', '-a'):
+                a += p['proj']
+            else:
+                b += p['proj']
+            self._dock_disp = (a, b)
 
     def _dispatch(self, reading):
         """상태가 바뀐 같은 샘플에서 새 상태의 명령을 낸다."""
@@ -597,11 +770,56 @@ class RouteExecutor:
                       self.cfg.max_angular)
 
     def _drive(self, reading):
+        if self._prim.get('signed'):
+            return self._dock_move(reading)
         if self._odo - self._ref_odo >= self._prim['cm']:
             self._next_step()
             return self._dispatch(reading)
         fast = self.state == PASS and self.cfg.pass_full_speed     # 직진 통과는 감속 안 함
         return Command(self.cfg.base_speed if fast else self.approach_speed, self._hold())
+
+    def _dock_move(self, reading):
+        """도킹 이동: 0 명령으로 odom 이 멈추길 기다린 뒤, 그 자세에서 부호 있는 거리(방향 유지·감속)."""
+        c = self.cfg
+        p = self._prim
+        x, y, yaw = self._pose
+        if not p['settled']:
+            stamp = self._pose_stamp
+            fresh = stamp is None or stamp != p['last_stamp']
+            if p['last'] is None:            # 첫 샘플은 비교 기준만(같은 pose 로 멈춤을 세지 않음)
+                p['last'], p['last_stamp'] = self._pose, stamp
+            elif fresh:                      # odom 이 새로 들어온 샘플끼리만 비교
+                lx, ly, lyaw = p['last']
+                still = (math.hypot(x - lx, y - ly) < SETTLE_CM
+                         and abs(_wrap(yaw - lyaw)) < math.radians(SETTLE_DEG))
+                p['last'], p['last_stamp'] = self._pose, stamp
+                p['still'] = p['still'] + 1 if still else 0
+            if p['still'] >= c.node_confirm:
+                p.update(settled=True, origin=(x, y), t0=self._now)
+                self._hold_yaw = yaw
+            elif self._now - p['t0'] > SETTLE_TIMEOUT_S:
+                self.fail('dock_move: odom did not settle')
+                return None
+            return Command(0.0, 0.0)
+        ox, oy = p['origin']
+        proj = (x - ox) * math.cos(self._hold_yaw) + (y - oy) * math.sin(self._hold_yaw)
+        p['proj'] = proj
+        target = p['cm']
+        sign = 1.0 if target > 0 else -1.0
+        remaining = (target - proj) * sign
+        if remaining <= 0.0:
+            self._next_step()
+            return self._dispatch(reading)
+        # 반대쪽으로 밀리거나(remaining 이 목표 + 여유보다 큼) 경로 길이가 넘치면 정지
+        if remaining > abs(target) + MOVE_OVERRUN_CM or \
+                self._odo - self._ref_odo > abs(target) + 2 * MOVE_OVERRUN_CM:
+            self.fail(f'dock_move overrun ({proj:.1f} of {target:.1f} cm)')
+            return None
+        if self._now - p['t0'] > 2.0 + 2.0 * abs(target) / (c.min_speed * 100.0):
+            self.fail(f'dock_move timeout ({proj:.1f} of {target:.1f} cm)')
+            return None
+        speed = min(self.approach_speed, max(c.min_speed, MOVE_GAIN * remaining))
+        return Command(sign * speed, self._hold())
 
     def _rotate(self, reading):
         c = self.cfg

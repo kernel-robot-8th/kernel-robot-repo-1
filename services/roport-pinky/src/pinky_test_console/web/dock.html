@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<!-- pinky_test_console 정밀 도킹 탭 (mode:=fleet, 노트북, FFT1-112). 탑뷰 카메라(SSH 중계) 위에 지도·도킹 자세를
+     겹쳐 ①②③ 값을 계산해 로봇 line_nav 에 적용하고, 교차선 출발 시험 주행 뒤 실제 − 목표 오차를 기록한다.
+     계산은 dock_core.js, 화면은 dock.js. 인라인 코드·CDN 없음. 실로봇·실카메라 미검증. -->
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pinky 정밀 도킹</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dk-page">
+
+<header id="topbar">
+  <div class="brand">RO:PORT <span>Pinky 정밀 도킹</span></div>
+  <button id="btnEstop" type="button" title="등록된 모든 로봇에 경로 정지 + 속도 0 (단축키: Space / Esc)">■ 전체 정지</button>
+</header>
+
+<div class="dk-wrap">
+<section>
+  <div class="dk-card">
+    <div class="dk-bar">
+      <label class="tiny-note" for="robot">로봇</label>
+      <select id="robot" class="text-input ir-select"></select>
+      <label class="tiny-note" for="cam">탑뷰 카메라</label>
+      <select id="cam" class="text-input dk-select"></select>
+      <button id="live" class="btn btn-outline btn-small" type="button">▶ 실시간</button>
+      <button id="shot" class="btn btn-outline btn-small" type="button">사진 1장</button>
+      <span id="camChip" class="chip">● 영상 없음</span>
+    </div>
+    <div class="dk-leg tiny-note">
+      <span class="dk-sw dk-sw-pred"></span>지금 코드 예상
+      <span class="dk-sw dk-sw-want"></span>목표
+      <span class="dk-sw dk-sw-applied"></span>로봇에 적용된 값
+      <span class="dk-sw dk-sw-est"></span>주행 중 추정(pose_est)
+      <span class="dk-sw dk-sw-meas"></span>실제(측정)
+    </div>
+    <div class="dk-stage"><canvas id="cv" width="1280" height="720"></canvas><img id="liveImg" class="dk-live" alt=""></div>
+    <div class="dk-bar">
+      <label class="tiny-note"><input type="radio" name="drag" value="want" checked> 목표 박스 옮기기</label>
+      <label class="tiny-note"><input type="radio" name="drag" value="meas"> 실제 위치 표시(시험 뒤)</label>
+      <button id="zoomNode" class="btn btn-outline btn-small" type="button">도킹 노드 확대</button>
+      <button id="zoomAll" class="btn btn-outline btn-small" type="button">전체</button>
+      <button id="snap" class="btn btn-outline btn-small" type="button">도착 사진 찍기</button>
+      <label class="tiny-note"><input type="checkbox" id="showMap" checked> 지도</label>
+    </div>
+    <div class="tiny-note">박스 끌기 · 앞쪽 원 끌기 또는 [ ] 회전(Shift 0.2°) · 방향키 0.5 cm(Shift 0.1) · 휠 확대. 실시간을 보는 동안 OMX 프로그램은 이 카메라를 못 열 수 있으니 다 보면 끄기(10분 뒤 자동으로 끔).</div>
+    <div class="dk-bar">
+      <span class="tiny-note">보정: <span id="calTxt">-</span></span>
+      <label class="tiny-note">보정 JSON 직접 불러오기 <input type="file" id="calibFile" accept=".json,application/json"></label>
+    </div>
+    <div id="camMsg" class="status-msg" role="status"></div>
+  </div>
+</section>
+<aside>
+  <div class="dk-card">
+    <h3>1. 도킹 목표 → 동작 계산</h3>
+    <div class="tiny-note">노드 <b id="nodeTxt">-</b> · 접근 <span id="appTxt">-</span> · 지도 <span id="verTxt">-</span></div>
+    <table class="dk-t">
+      <tr><th></th><th>지금 코드</th><th>목표</th></tr>
+      <tr><td>① 가로선에서 멈춘 뒤 선 따라</td><td>0.0 cm</td><td class="dk-big" id="pA">-</td></tr>
+      <tr><td>② 반시계 회전</td><td>90.0°</td><td class="dk-big" id="pR">-</td></tr>
+      <tr><td>③ 새 방향으로 직진</td><td>0.0 cm</td><td class="dk-big" id="pB">-</td></tr>
+    </table>
+    <div class="tiny-note" id="pWarn"></div>
+    <div class="dk-bar">
+      <button id="apply" class="btn btn-primary btn-small" type="button">로봇에 적용</button>
+      <button id="resetWant" class="btn btn-outline btn-small" type="button">목표 = 지금 코드</button>
+      <button id="resetRobot" class="btn btn-outline btn-small" type="button" title="로봇의 이 노드 도킹 값을 지움(기본 0 · 90° · 0)">로봇 값 지우기</button>
+    </div>
+    <div id="applyMsg" class="status-msg" role="status"></div>
+    <div class="tiny-note">로봇에 적용된 값: <span id="appliedTxt">-</span></div>
+    <div class="tiny-note">마지막 명령 결과: <span id="lastCmd">-</span></div>
+    <div class="tiny-note">허용 범위: ① −6~+6 cm · ② 60~120° · ③ −6~+6 cm (넘으면 적용 거부). 주행 중에는 로봇이 거부.</div>
+    <div class="tiny-note">상차 뒤 ③·①을 되돌린 다음 선을 찾음(③ 되돌림 → 시계 방향 ② 회전 → ① 되돌림 → 선 찾기, line_nav).</div>
+  </div>
+  <div class="dk-card">
+    <h3>2. 시험 주행</h3>
+    <div class="form-line"><span class="tiny-note">출발</span><span>N07 · 남쪽(OMX 쪽)을 보고 IR 3개가 동서 선 위</span></div>
+    <div class="form-line"><span class="tiny-note">목적지</span><span>
+      <label><input type="radio" name="goal" value="N11" checked> N11 (P7, OMX1·2)</label>
+      <label><input type="radio" name="goal" value="N01"> N01 (P4, OMX3)</label></span></div>
+    <div class="form-line"><span class="tiny-note">경로</span><span id="routeTxt" class="tiny-note">-</span></div>
+    <div class="dk-bar">
+      <button id="start" class="btn btn-primary btn-small" type="button">▶ 시작</button>
+      <button id="loadDone" class="btn btn-outline btn-small" type="button">상차 완료</button>
+      <button id="stop" class="btn btn-danger btn-small" type="button">■ 정지</button>
+      <button id="home" class="btn btn-outline btn-small" type="button">⌂ P5 복귀</button>
+      <span id="stateChip" class="chip">state -</span>
+    </div>
+    <div id="runMsg" class="status-msg" role="status"></div>
+    <div id="ev" class="dk-ev"></div>
+  </div>
+  <div class="dk-card">
+    <h3>3. 결과(실제 − 목표)</h3>
+    <div class="tiny-note">도착 뒤 「도착 사진 찍기」 → 「실제 위치 표시」로 빨간 박스를 사진 속 로봇에 맞춤. 목표 = 로봇에 적용된 값(없으면 초록 목표).</div>
+    <table class="dk-t"><tr><td>선 따라(앞 +)</td><td id="rA">-</td></tr><tr><td>옆(접근선 왼쪽 +)</td><td id="rL">-</td></tr><tr><td>방향(반시계 +)</td><td id="rT">-</td></tr></table>
+    <div class="dk-bar">
+      <input id="note" class="text-input" type="text" maxlength="200" placeholder="메모(예: 0.06 m/s, 실로봇 d660)">
+      <button id="save" class="btn btn-outline btn-small" type="button">결과 기록</button>
+    </div>
+    <div id="saveMsg" class="status-msg" role="status"></div>
+    <table class="dk-t" id="hist"><thead><tr><th>시각</th><th>노드</th><th>선</th><th>옆</th><th>각</th></tr></thead><tbody></tbody></table>
+    <div class="tiny-note">저장 위치: <span id="resDir">-</span> (JSON만, 사진은 저장하지 않음)</div>
+  </div>
+</aside>
+</div>
+
+<script src="dock_core.js"></script>
+<script src="dock.js"></script>
+</body>
+</html>

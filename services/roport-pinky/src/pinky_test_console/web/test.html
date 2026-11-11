@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- pinky_test_console 통합 테스트 화면 (mode:=fleet, 노트북). 테스트 관제·Pinky 설정과 로봇별 시험 화면
-     (경로 주행·IR 측정·조종/지도·AMCL)을 탭으로 연다. 로봇 화면은 노트북이 /robot/<이름>/ 으로 중계.
+     (경로 주행·IR 측정·조종/지도·AMCL)과 노트북의 정밀 도킹 화면(dock.html)을 탭으로 연다. 로봇 화면은 노트북이 /robot/<이름>/ 으로 중계.
      마커 테스트 탭은 마커 부착·시험 뒤에 추가. 인라인 코드·CDN 없음. -->
 <html lang="ko">
 <head>
@@ -20,6 +20,7 @@
     <select id="robotSel" class="text-input ir-select" title="로봇 화면을 볼 로봇"></select>
     <button class="btn btn-outline btn-small tt-tab" type="button" data-tab="route" data-robot="route.html">경로 주행</button>
     <button class="btn btn-outline btn-small tt-tab" type="button" data-tab="ir" data-robot="ir.html">IR 측정</button>
+    <button class="btn btn-outline btn-small tt-tab" type="button" data-tab="dock" title="노트북 화면: 탑뷰 카메라로 도킹 값 계산·적용·시험(고른 로봇에 명령)">정밀 도킹</button>
     <button class="btn btn-outline btn-small tt-tab" type="button" data-tab="console" data-robot="index.html">조종·지도</button>
     <button class="btn btn-outline btn-small tt-tab" type="button" data-tab="amcl" data-robot="amcl.html">AMCL</button>
   </nav>

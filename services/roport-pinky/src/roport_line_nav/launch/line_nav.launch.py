@@ -5,6 +5,7 @@
 #   ir_node:=false  pinky_sensor_adc main_node 를 이미 따로 실행 중일 때
 #   layout_file:=<roport_airport.yaml>  roport_gz_world 를 설치하지 않았을 때
 #   cmd_guard:=true(기본)  line_nav → line_nav/cmd_vel → cmd_vel_guard → cmd_vel (0.3 s 끊기면 0)
+#   dock_file:=~/roport_dock.yaml(기본)  상차 노드 정밀 도킹 값(FFT1-112), 빈 값이면 파일 안 씀
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -40,12 +41,15 @@ def generate_launch_description():
                               description='layout yaml (default: roport_gz_world share)'),
         DeclareLaunchArgument('cmd_guard', default_value='true',
                               description='relay via cmd_vel_guard (zero after 0.3 s)'),
+        DeclareLaunchArgument('dock_file', default_value='~/roport_dock.yaml',
+                              description='load-node dock values yaml (empty = memory only)'),
     ]
     args += [DeclareLaunchArgument(k, default_value=v, description=d)
              for k, (v, d) in FLOAT_ARGS.items()]
     params = {
         'robot': LaunchConfiguration('robot'),
         'layout_file': LaunchConfiguration('layout_file'),
+        'dock_file': ParameterValue(LaunchConfiguration('dock_file'), value_type=str),
         'dry_run': ParameterValue(LaunchConfiguration('dry_run'), value_type=bool),
     }
     params.update({k: ParameterValue(LaunchConfiguration(k), value_type=float)
