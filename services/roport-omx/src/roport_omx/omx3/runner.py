@@ -29,20 +29,28 @@ class Runner:
         self.robot, self.policy, self.marker_factory = robot, policy, marker_factory
         self.settings = settings or Omx3Settings()
         self.clock, self.sleep = clock, sleep
+        self._lock = threading.Lock()
 
     def precheck(self, marker_id: int) -> ErrorCode | None:
         """모터를 움직이지 않고 시작 가능 여부만 본다(Host가 접수 전에 부른다)."""
         return self._precheck(self.marker_factory(marker_id))
 
     def _precheck(self, marker: Marker) -> ErrorCode | None:
+        s = self.settings
         if self.robot.ready() is not None:
             return ErrorCode.ROBOT_NOT_READY
         try:
-            front = self.robot.observe().front
+            obs = self.robot.observe()
+            # 앞 명령이 물품을 쥔 채 멈췄을 수 있다. 그 자세에서 HOMING하면 그리퍼가 열려
+            # 물품이 떨어지므로, init·그리퍼 열림이 아니면 거절하고 작업자가 복구한다(#65 리뷰)
+            at_init = judge.near_init(obs.state, s) and judge.gripper_open(obs.state, s)
         except Exception:  # 관측 실패 = 시작할 수 없음
             log.exception("precheck observe failed")
             return ErrorCode.ROBOT_NOT_READY
-        if marker.find(front) is None:
+        if not at_init:
+            log.warning("arm not at init: %s", list(obs.state))
+            return ErrorCode.ROBOT_NOT_READY
+        if marker.find(obs.front) is None:
             return ErrorCode.MARKER_NOT_VISIBLE
         return None
 
@@ -52,8 +60,23 @@ class Runner:
         abort: threading.Event | None = None,
         on_phase: PhaseCallback | None = None,
     ) -> Outcome:
-        s, abort = self.settings, abort or threading.Event()
         emit = on_phase or (lambda phase, info: None)
+        if not self._lock.acquire(blocking=False):  # 한 팔에 명령은 한 번에 하나
+            out = Outcome(Phase.REJECTED, ErrorCode.BUSY, marker_id)
+            emit(out.phase, out.to_dict())
+            return out
+        try:
+            return self._run(marker_id, abort or threading.Event(), emit)
+        except BaseException:  # KeyboardInterrupt 등(Exception은 _run이 결과로 바꾼다)
+            self._safe_hold()
+            raise
+        finally:
+            self._lock.release()
+
+    def _run(
+        self, marker_id: int, abort: threading.Event, emit: PhaseCallback
+    ) -> Outcome:
+        s = self.settings
         t0 = self.clock()
         marker = self.marker_factory(marker_id)  # 명령 1개 = 마커 객체 1개
 
@@ -125,22 +148,24 @@ class Runner:
         return end(Phase.FAILED, ErrorCode.VERIFY_FAILED, **result)
 
     def _go_init(self, abort: threading.Event) -> bool:
-        """init 자세로 천천히 이동한다(주기마다 관절별 최대 home_step). 그리퍼도 학습 시작값으로."""
+        """init 근처(precheck 통과)에서 학습 시작값으로 천천히 맞춘다. 그리퍼는 관절 5개 도착 뒤에만."""
         s, period = self.settings, 1.0 / self.settings.fps
         target = list(s.init_pose)
         deadline = self.clock() + s.home_timeout_s
-        goal = list(self.robot.observe().state)
         while self.clock() < deadline:
             if abort.is_set():
                 return False
-            state = self.robot.observe().state
-            gripper_ok = abs(state[5] - target[5]) <= s.init_tolerance
-            if judge.near_init(state, s) and gripper_ok:
+            state = [float(v) for v in self.robot.observe().state]
+            err = [t - v for v, t in zip(state, target, strict=True)]
+            if all(abs(e) <= s.home_tolerance for e in err):
                 return True
+            # 목표는 매 주기 실제 자세에서 한 걸음만: 팔이 걸려도 목표가 앞서가지 않는다(#65 리뷰)
             goal = [
-                g + max(-s.home_step, min(s.home_step, t - g))
-                for g, t in zip(goal, target, strict=True)
+                v + max(-s.home_step, min(s.home_step, e))
+                for v, e in zip(state, err, strict=True)
             ]
+            if any(abs(e) > s.home_tolerance for e in err[:5]):
+                goal[5] = state[5]
             self.robot.send(goal)
             self.sleep(period)
         return False

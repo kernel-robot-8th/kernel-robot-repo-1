@@ -37,6 +37,7 @@ class FakeRobot:
         self.state = list(start or INIT)
         self.error, self.fail_at = error, fail_at
         self.sent = self.held = 0
+        self.actions = []
 
     def ready(self):
         return self.error
@@ -46,6 +47,7 @@ class FakeRobot:
 
     def send(self, action):
         self.sent += 1
+        self.actions.append(list(action))
         if self.fail_at is not None and self.sent >= self.fail_at:
             raise OSError("serial lost")
         self.state = list(action)
@@ -114,7 +116,13 @@ class Success(unittest.TestCase):
         self.assertTrue(out.departure_ready)
         self.assertEqual(
             phases,
-            [Phase.MARKER_CHECK, Phase.HOMING, Phase.RUNNING, Phase.VERIFY, Phase.COMPLETE],
+            [
+                Phase.MARKER_CHECK,
+                Phase.HOMING,
+                Phase.RUNNING,
+                Phase.VERIFY,
+                Phase.COMPLETE,
+            ],
         )
         self.assertEqual(len(markers), 1)  # 명령 1개 = 마커 1개
         self.assertEqual(markers[0].resets, 1)
@@ -128,38 +136,82 @@ class Success(unittest.TestCase):
         runner, _ = make(robot, ScriptPolicy(away=1), lambda f: next(frames, TRAY))
         out = runner.run(17)
         self.assertEqual(out.phase, Phase.COMPLETE, out)
-        self.assertEqual(robot.sent, 20)  # 깜빡이는 40프레임 중 조건이 깨진 20프레임만 정책 실행
+        self.assertEqual(
+            robot.sent, 20
+        )  # 깜빡이는 40프레임 중 조건이 깨진 20프레임만 정책 실행
 
     def test_no_policy_action_while_confirming_done(self):
         # 조건이 처음 맞은 뒤 확인하는 15프레임 동안 정책 전송 0회(움찔거림 방지)
         robot, policy = FakeRobot(), ScriptPolicy(away=1)
-        frames = iter([TRAY] + [None] * 5)  # 사전 점검 1 + 정책 실행 5프레임, 이후 트레이
+        frames = iter(
+            [TRAY] + [None] * 5
+        )  # 사전 점검 1 + 정책 실행 5프레임, 이후 트레이
         runner, _ = make(robot, policy, lambda f: next(frames, TRAY))
         out = runner.run(17)
         self.assertEqual(out.phase, Phase.COMPLETE, out)
         self.assertEqual(policy.n, 5)
         self.assertEqual(robot.sent, 5)
 
-    def test_homes_slowly_from_away_pose(self):
-        robot = FakeRobot(start=[10.0, *INIT[1:]])
+    def test_homing_moves_gripper_only_after_joints_arrive(self):
+        # init 허용 오차 안(pan 4)에서 학습 시작값까지 한 걸음씩, 그리퍼는 관절 도착 뒤에 맞춘다
+        robot = FakeRobot(start=[4.0, *INIT[1:5], 52.0])
         runner, _ = make(robot, ScriptPolicy(), box_until(robot, 40))
         out = runner.run(17)
         self.assertEqual(out.phase, Phase.COMPLETE, out)
-        self.assertGreaterEqual(robot.sent, 10 / S.home_step)
+        homing = robot.actions[:7]
+        self.assertEqual([a[0] for a in homing[:3]], [3.0, 2.0, 1.0])
+        self.assertEqual([a[5] for a in homing[:3]], [52.0] * 3)
+        self.assertGreater(homing[3][5], 52.0)
+
+    def test_completes_with_gripper_reading_noise(self):
+        # 그리퍼가 init(56.5)보다 조금 낮게 읽혀도 완료된다
+        robot = FakeRobot()
+        observe = robot.observe
+        robot.observe = lambda: Observation([*observe().state[:5], 55.9], {})
+        runner, _ = make(robot, ScriptPolicy(away=1), lambda f: TRAY)
+        out = runner.run(17)
+        self.assertEqual(out.phase, Phase.COMPLETE, out)
 
 
 class Rejected(unittest.TestCase):
-    def test_no_motor_write_when_marker_missing_or_robot_down(self):
-        for robot, where, code in (
-            (FakeRobot(), lambda f: None, ErrorCode.MARKER_NOT_VISIBLE),
-            (FakeRobot(error="not connected"), lambda f: BOX, ErrorCode.ROBOT_NOT_READY),
+    def test_no_motor_write_when_not_startable(self):
+        for name, robot, where, code in (
+            ("marker", FakeRobot(), lambda f: None, ErrorCode.MARKER_NOT_VISIBLE),
+            ("down", FakeRobot(error="x"), lambda f: BOX, ErrorCode.ROBOT_NOT_READY),
+            # 리뷰 재현 자세: 물품을 쥔 채 init 밖에서 멈춤
+            (
+                "away",
+                FakeRobot(start=[30, -20, 10, 0, 0, 40]),
+                lambda f: BOX,
+                ErrorCode.ROBOT_NOT_READY,
+            ),
+            (
+                "closed",
+                FakeRobot(start=[*INIT[:5], 40.0]),
+                lambda f: BOX,
+                ErrorCode.ROBOT_NOT_READY,
+            ),
         ):
-            with self.subTest(code=code):
+            with self.subTest(name):
                 runner, _ = make(robot, ScriptPolicy(), where)
                 self.assertEqual(runner.precheck(17), code)
                 out = runner.run(17)
                 self.assertEqual((out.phase, out.error_code), (Phase.REJECTED, code))
                 self.assertEqual((robot.sent, robot.held), (0, 0))
+
+    def test_busy_while_running(self):
+        robot = FakeRobot()
+        inner = []
+        runner, _ = make(robot, ScriptPolicy(), box_until(robot, 20))
+
+        def again(phase, info):
+            if phase is Phase.HOMING:
+                inner.append(runner.run(17))
+
+        self.assertEqual(runner.run(17, on_phase=again).phase, Phase.COMPLETE)
+        self.assertEqual(
+            (inner[0].phase, inner[0].error_code), (Phase.REJECTED, ErrorCode.BUSY)
+        )
 
 
 class Failed(unittest.TestCase):
@@ -174,15 +226,30 @@ class Failed(unittest.TestCase):
         self.check(FakeRobot(), ScriptPolicy(away=10**6), ErrorCode.TIMEOUT)
 
     def test_inference_unavailable(self):
-        self.check(FakeRobot(), ScriptPolicy(fail_at=5), ErrorCode.INFERENCE_UNAVAILABLE)
+        self.check(
+            FakeRobot(), ScriptPolicy(fail_at=5), ErrorCode.INFERENCE_UNAVAILABLE
+        )
 
     def test_robot_error(self):
         self.check(FakeRobot(fail_at=5), ScriptPolicy(), ErrorCode.ROBOT_ERROR)
 
     def test_homing_failed(self):
-        robot = FakeRobot(start=[90.0, *INIT[1:]])
+        robot = FakeRobot(start=[4.0, *INIT[1:]])
         robot.send = lambda action: None  # 팔이 따라오지 않음
         self.check(robot, ScriptPolicy(), ErrorCode.HOMING_FAILED)
+
+    def test_hold_on_keyboard_interrupt(self):
+        robot, policy = FakeRobot(), ScriptPolicy()
+
+        def interrupt(state, front):
+            raise KeyboardInterrupt
+
+        policy.act = interrupt
+        runner, _ = make(robot, policy, lambda f: BOX)
+        with self.assertRaises(KeyboardInterrupt):
+            runner.run(17)
+        self.assertGreaterEqual(robot.held, 1)
+        self.assertTrue(runner._lock.acquire(blocking=False))  # 잠금이 풀렸다
 
     def test_cancel(self):
         abort, policy = threading.Event(), ScriptPolicy(away=10**6)
@@ -202,7 +269,9 @@ class Failed(unittest.TestCase):
         frames = iter([TRAY] * (1 + S.done_hold_frames))
         runner, _ = make(robot, ScriptPolicy(away=1), lambda f: next(frames, None))
         out = runner.run(17)
-        self.assertEqual((out.phase, out.error_code), (Phase.FAILED, ErrorCode.VERIFY_FAILED))
+        self.assertEqual(
+            (out.phase, out.error_code), (Phase.FAILED, ErrorCode.VERIFY_FAILED)
+        )
         self.assertFalse(out.placement_confirmed)
         self.assertTrue(out.arm_returned)
 
