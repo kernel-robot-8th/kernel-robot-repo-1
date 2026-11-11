@@ -207,11 +207,13 @@ class Rejected(unittest.TestCase):
         def again(phase, info):
             if phase is Phase.HOMING:
                 inner.append(runner.run(17))
+                inner.append(runner.precheck(17))
 
         self.assertEqual(runner.run(17, on_phase=again).phase, Phase.COMPLETE)
         self.assertEqual(
             (inner[0].phase, inner[0].error_code), (Phase.REJECTED, ErrorCode.BUSY)
         )
+        self.assertEqual(inner[1], ErrorCode.BUSY)
 
 
 class Failed(unittest.TestCase):
@@ -237,6 +239,19 @@ class Failed(unittest.TestCase):
         robot = FakeRobot(start=[4.0, *INIT[1:]])
         robot.send = lambda action: None  # 팔이 따라오지 않음
         self.check(robot, ScriptPolicy(), ErrorCode.HOMING_FAILED)
+
+    def test_homing_stops_when_sagging_away_from_init(self):
+        # lift가 명령보다 1.5씩 처지면 매 주기 init에서 멀어진다 → init 영역을 벗어나면 즉시 중단
+        robot = FakeRobot(start=[INIT[0], INIT[1] - 3, *INIT[2:]])
+        send = robot.send
+
+        def sag(action):
+            send(action)
+            robot.state[1] -= 1.5
+
+        robot.send = sag
+        self.check(robot, ScriptPolicy(), ErrorCode.HOMING_FAILED)
+        self.assertLess(robot.sent, 10)  # 20초(600회) 동안 밀지 않는다
 
     def test_hold_on_keyboard_interrupt(self):
         robot, policy = FakeRobot(), ScriptPolicy()

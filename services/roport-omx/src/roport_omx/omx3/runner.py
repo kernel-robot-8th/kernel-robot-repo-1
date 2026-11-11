@@ -33,6 +33,8 @@ class Runner:
 
     def precheck(self, marker_id: int) -> ErrorCode | None:
         """모터를 움직이지 않고 시작 가능 여부만 본다(Host가 접수 전에 부른다)."""
+        if self._lock.locked():  # 실행 중이면 팔이 init이 아니어도 BUSY로 답한다
+            return ErrorCode.BUSY
         return self._precheck(self.marker_factory(marker_id))
 
     def _precheck(self, marker: Marker) -> ErrorCode | None:
@@ -156,6 +158,9 @@ class Runner:
             if abort.is_set():
                 return False
             state = [float(v) for v in self.robot.observe().state]
+            # 중력 처짐 등으로 init 영역을 벗어나면 더 밀지 않고 멈춘다(HOMING_FAILED, #65 2차 리뷰)
+            if not (judge.near_init(state, s) and judge.gripper_open(state, s)):
+                return False
             err = [t - v for v, t in zip(state, target, strict=True)]
             if all(abs(e) <= s.home_tolerance for e in err):
                 return True
