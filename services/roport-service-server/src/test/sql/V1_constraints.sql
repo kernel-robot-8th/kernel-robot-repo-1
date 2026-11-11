@@ -130,6 +130,19 @@ SELECT expect('receipt_packages r1·p2', $q$INSERT INTO receipt_packages VALUES 
 SELECT expect('중복 package 수령', $q$INSERT INTO receipt_packages VALUES ('r1','o1','p2',0)$q$, '23505');
 SELECT expect('receipt_packages 다른 주문 package', $q$INSERT INTO receipt_packages VALUES ('r1','o2','p3',0)$q$, '23503');
 
+-- 재포장: 새 package_id 발급, 이전 포장품은 지우지 않고 inactive_at·replaced_by_package_id로 비활성화
+SELECT expect('재포장 새 package p4(o1)·p5(o2)', $q$INSERT INTO packages (package_id, order_id, package_revision, label_ref)
+    VALUES ('p4','o1',0,'lb4'), ('p5','o2',0,'lb5')$q$, NULL);
+SELECT expect('활성 package에 replaced_by 지정', $q$UPDATE packages SET replaced_by_package_id = 'p4' WHERE package_id = 'p3'$q$, '23514');
+SELECT expect('자기 자신으로 대체', $q$UPDATE packages SET inactive_at = now(), replaced_by_package_id = 'p2' WHERE package_id = 'p2'$q$, '23514');
+SELECT expect('다른 주문 package로 대체(p2->p5)', $q$UPDATE packages SET inactive_at = now(), replaced_by_package_id = 'p5' WHERE package_id = 'p2'$q$, '23503');
+SELECT expect('잠긴 p2 inactive_at 채우기', $q$UPDATE packages SET inactive_at = now() WHERE package_id = 'p2'$q$, NULL);
+SELECT expect('잠긴 p2 replaced_by=p4(같은 주문)', $q$UPDATE packages SET replaced_by_package_id = 'p4' WHERE package_id = 'p2'$q$, NULL);
+SELECT expect('폐기(대체 없음) p3 inactive_at만', $q$UPDATE packages SET inactive_at = now() WHERE package_id = 'p3'$q$, NULL);
+SELECT expect('비활성 잠긴 package DELETE', $q$DELETE FROM packages WHERE package_id = 'p2'$q$, 'P0001');
+SELECT expect('비활성 잠긴 package order_id 변경', $q$UPDATE packages SET order_id = 'o2' WHERE package_id = 'p2'$q$, 'P0001');
+SELECT expect('비활성 잠긴 package 잠금 해제', $q$UPDATE packages SET manifest_locked_at = NULL WHERE package_id = 'p2'$q$, 'P0001');
+
 -- customer_service_requests
 SELECT expect('csr1 REQUESTED', $q$INSERT INTO customer_service_requests (request_id, pickup_id, verification_id, mode, expected_pickup_revision, status, requested_at)
     VALUES ('s1','pk1','v1','test',0,'REQUESTED',now())$q$, NULL);

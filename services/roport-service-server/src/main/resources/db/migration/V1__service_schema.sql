@@ -79,9 +79,14 @@ CREATE TABLE packages (
     package_revision   bigint NOT NULL CHECK (package_revision >= 0),
     label_ref          text NOT NULL,
     manifest_locked_at timestamptz,     -- 잠금은 되돌릴 수 없다. 재포장은 새 package_id
+    inactive_at        timestamptz,     -- 재포장·폐기로 비활성화된 시각. 행은 지우지 않는다(잠긴 package도 채울 수 있음)
+    replaced_by_package_id text,        -- 대체한 같은 주문의 새 package. 폐기(대체 없음)면 NULL
     created_at         timestamptz NOT NULL DEFAULT now(),
     updated_at         timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (order_id, package_id)
+    UNIQUE (order_id, package_id),
+    FOREIGN KEY (order_id, replaced_by_package_id) REFERENCES packages (order_id, package_id),
+    CHECK (replaced_by_package_id <> package_id),
+    CHECK (replaced_by_package_id IS NULL OR inactive_at IS NOT NULL)
 );
 
 CREATE TABLE package_items (
