@@ -3,6 +3,8 @@ package com.roport.service.api;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -23,10 +25,14 @@ class SessionController {
 
     record SessionResponse(String memberId, String displayName) {}
 
+    private static final Logger log = LoggerFactory.getLogger(SessionController.class);
+
     private final JdbcClient db;
 
     SessionController(JdbcClient db) {
         this.db = db;
+        // 켜졌을 때만 이 빈이 만들어지므로 경고도 그때 한 번만 남는다.
+        log.warn("개발 전용 로그인이 켜져 있습니다(비밀번호 없음). 공개 배포 금지");
     }
 
     @PostMapping
