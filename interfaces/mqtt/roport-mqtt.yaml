@@ -9,6 +9,12 @@ info:
     (환경은 토픽 주소의 `{site}`로 구분한다). 상태는 enum 필드로 표현한다.
     시험용 `roport-pinky-driving-trial-v1` 스키마는 포함하지 않는다.
 
+    **이 문서는 설계 초안이며 현재 코드(관제 서버 `messages.py`, OMX `mqtt_link/`)와 일치하지 않는다.
+    코드 적용은 별도 작업이다.**
+    위 ID를 제거하면서 중복 실행 방지와 오래된 명령 방어를 `message_id`·`expires_at`만으로는 보장할 수 없다.
+    중복 처리 이력의 보존 범위·기간, 재시작 후 처리, 새 명령이 대체한 이전 명령의 거부 기준은 아직 정해지지 않았으며
+    코드에 적용하기 전에 먼저 정해야 한다.
+
 servers:
   mosquitto:
     host: localhost:1883
@@ -50,20 +56,24 @@ components:
       type: string
       pattern: '^[A-Za-z0-9_.:-]{1,128}$'
     MessageId:
-      $ref: '#/components/schemas/Id'
       description: 메시지 고유 ID. 재전송은 같은 값을 유지한다.
+      allOf:
+        - $ref: '#/components/schemas/Id'
     RobotId:
       description: 로봇 ID
       enum: [pinky1, pinky2, pinky3, omx1, omx2, omx3]
     UserId:
-      $ref: '#/components/schemas/Id'
       description: 고객(회원) ID. 예약·인도 메시지에서 사용한다.
+      allOf:
+        - $ref: '#/components/schemas/Id'
     ProductId:
-      $ref: '#/components/schemas/Id'
       description: 상품(포장품) ID. 상차·입고·반출 메시지에서 사용한다.
+      allOf:
+        - $ref: '#/components/schemas/Id'
     GateId:
-      $ref: '#/components/schemas/Id'
       description: 수령 위치 ID (Gate 1·2·3, 입국장).
+      allOf:
+        - $ref: '#/components/schemas/Id'
     # ---- ID가 아닌 별도 enum (필수 ID 5개에 포함하지 않음) ----
     Pinky:
       description: 상차·입고·반출 대상 Pinky. 토픽의 robot_id와 다른 의미라 별도 enum으로 둔다.
@@ -78,7 +88,10 @@ components:
       properties:
         schema_version: {const: "1.0"}
         message_id: {$ref: '#/components/schemas/MessageId'}
-        in_reply_to: {description: 응답이 가리키는 명령·이벤트의 message_id. 응답(event·ack)에서 필수., $ref: '#/components/schemas/MessageId'}
+        in_reply_to:
+          description: 응답이 가리키는 명령·이벤트의 message_id. 응답(event·ack)에서 필수.
+          allOf:
+            - $ref: '#/components/schemas/MessageId'
         type: {type: string}
         source: {type: string, description: 발행 주체(논리 이름)}
         target: {type: [string, "null"], description: 수신 주체}
@@ -102,7 +115,11 @@ components:
                   graph_version: {type: string}
                   start_node: {type: string}
                   start_maneuver: {type: string}
-                  route: {type: array, items: {type: string}, description: 출발 노드 포함. 마지막 원소가 목적 노드}
+                  route:
+                    type: array
+                    minItems: 1
+                    items: {type: string}
+                    description: 출발 노드 포함. 마지막 원소가 목적 노드. start_node와 첫 원소의 일치는 스키마로 표현할 수 없어 수신 측이 검증한다.
                   goal:
                     type: object
                     properties:
@@ -132,4 +149,6 @@ components:
                   distance_from_prev_m: {type: number}
                   observed_at: {type: string, format: date-time}
                   phase_revision: {type: integer}
-                  phase: {type: string, description: "진행 단계. NODE_PASSED, ARRIVED, DOCKED 등"}
+                  phase:
+                    type: string
+                    description: "진행 단계. 값 집합이 확정되지 않아 enum으로 선언하지 못했다(상태는 enum 규칙의 예외). 알려진 값: NODE_PASSED, ARRIVED, DOCKED 등. 확정되면 enum으로 바꾼다."

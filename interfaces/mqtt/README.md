@@ -6,6 +6,8 @@
 
 - 현재 `route.requested`, `route.progress` 2개 메시지만 있다. 나머지 메시지(`dock`, `depart`, `navigate`, `stop/resume/cancel`, `notify`, `load`, `shelf`, `ack`, `telemetry`, `motion`, `presence`, `heartbeat`)는 합의되는 대로 추가한다.
 - **현재 코드와 일치하지 않는다.** 이 문서는 필수 ID를 `message_id`, `robot_id`, `user_id`, `product_id`, `gate_id` 5개로 줄이는 설계를 담고 있다. 관제 서버 `adapters/mqtt/messages.py`와 OMX `mqtt_link/`는 아직 `task_id`, `step_id`, `command_id`, `execution_id`, `site_id`를 필수 헤더로 요구하고 `boot_id`·`command_id`를 재시작 방어·중복 실행 방지에 쓴다. 코드 적용은 별도 작업이며 이 문서가 구현을 뜻하지 않는다.
+- **코드 적용 전에 먼저 정해야 할 것(미정):** ID를 제거하면서 `command_id`·`boot_id`가 하던 방어를 `message_id`·`expires_at`만으로는 보장할 수 없다. 중복 처리 이력의 보존 범위·기간, 재시작 후 처리, 새 명령이 대체한 이전 명령의 거부 기준이 정해지지 않았다. 이 방어 설계가 구현의 선행 조건이다. 기존 ID를 모두 복원할 필요는 없다.
+- `route.progress`의 `phase`처럼 값 집합이 확정되지 않은 필드는 enum으로 선언하지 못하고 설명에 알려진 값만 적었다(상태는 enum이라는 규칙의 예외). 확정되면 enum으로 바꾼다.
 - 시험용 스키마 `roport-pinky-driving-trial-v1`은 포함하지 않는다.
 - `follow.requested`(고객 추종)는 시나리오 확정 전이라 넣지 않았다.
 
@@ -26,11 +28,11 @@ Node.js가 필요하다. `@asyncapi/cli@3`은 HTML 템플릿과 버전이 맞지
 npx @asyncapi/cli@latest validate interfaces/mqtt/roport-mqtt.yaml
 # 편집·미리보기 (브라우저)
 npx @asyncapi/cli@latest start studio interfaces/mqtt/roport-mqtt.yaml
-# 단일 HTML 생성 (커밋하지 않는다)
-npx @asyncapi/cli@latest generate fromTemplate interfaces/mqtt/roport-mqtt.yaml @asyncapi/html-template@3 -o out --force-write --param singleFile=true --param outFilename=index.html
+# 단일 HTML 생성 (저장소 밖 폴더에 만든다)
+npx @asyncapi/cli@latest generate fromTemplate interfaces/mqtt/roport-mqtt.yaml @asyncapi/html-template@3 -o /tmp/mqtt-doc --force-write --param singleFile=true --param outFilename=index.html
 ```
 
-생성한 HTML과 `out/`은 저장소에 올리지 않는다. 필요할 때 다시 만든다.
+생성한 HTML은 저장소에 올리지 않는다. `.gitignore`에 `out/`이 없으므로 출력 폴더는 저장소 밖(`/tmp/...`)으로 잡는다. 필요할 때 다시 만든다.
 
 ## 수정 규칙
 
