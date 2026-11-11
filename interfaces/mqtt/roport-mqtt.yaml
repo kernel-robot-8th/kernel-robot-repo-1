@@ -1,0 +1,135 @@
+asyncapi: 3.0.0
+info:
+  title: RO:PORT MQTT 인터페이스
+  version: 1.1.0-draft
+  description: |
+    관제 ↔ Pinky / OMX 작업셀 MQTT 계약. 기준: Confluence "Interface Specification (comm)" 운영 검토안.
+    **필수 ID는 `message_id`, `robot_id`, `user_id`, `product_id`, `gate_id` 5개뿐이다.**
+    `task_id`·`step_id`·`command_id`·`execution_id`·`site_id`는 필요한 정보이지만 메시지에는 싣지 않는다
+    (환경은 토픽 주소의 `{site}`로 구분한다). 상태는 enum 필드로 표현한다.
+    시험용 `roport-pinky-driving-trial-v1` 스키마는 포함하지 않는다.
+
+servers:
+  mosquitto:
+    host: localhost:1883
+    protocol: mqtt
+    description: P0 현장 Mosquitto. 운영 host·TLS·인증은 환경 설정으로 분리.
+
+channels:
+  robotCmd:
+    address: roport/v1/{site}/robot/{robot_id}/cmd
+    parameters:
+      site: {description: "환경. demo | test", enum: [demo, test]}
+      robot_id: {description: "수신 로봇", enum: [pinky1, pinky2, pinky3, omx3]}
+    messages:
+      routeRequested: {$ref: '#/components/messages/routeRequested'}
+  robotEvent:
+    address: roport/v1/{site}/robot/{robot_id}/event
+    parameters:
+      site: {description: "환경. demo | test", enum: [demo, test]}
+      robot_id: {description: "발행 로봇", enum: [pinky1, pinky2, pinky3, omx3]}
+    messages:
+      routeProgress: {$ref: '#/components/messages/routeProgress'}
+
+operations:
+  sendRobotCmd:
+    action: send
+    channel: {$ref: '#/channels/robotCmd'}
+    summary: 관제 → 로봇 명령 (QoS 1, retain=false)
+    bindings: {mqtt: {qos: 1, retain: false}}
+  receiveRobotEvent:
+    action: receive
+    channel: {$ref: '#/channels/robotEvent'}
+    summary: 로봇 → 관제 결과 (QoS 1, retain=false)
+    bindings: {mqtt: {qos: 1, retain: false}}
+
+components:
+  schemas:
+    # ---- 필수 ID 5개 ----
+    Id:
+      type: string
+      pattern: '^[A-Za-z0-9_.:-]{1,128}$'
+    MessageId:
+      $ref: '#/components/schemas/Id'
+      description: 메시지 고유 ID. 재전송은 같은 값을 유지한다.
+    RobotId:
+      description: 로봇 ID
+      enum: [pinky1, pinky2, pinky3, omx1, omx2, omx3]
+    UserId:
+      $ref: '#/components/schemas/Id'
+      description: 고객(회원) ID. 예약·인도 메시지에서 사용한다.
+    ProductId:
+      $ref: '#/components/schemas/Id'
+      description: 상품(포장품) ID. 상차·입고·반출 메시지에서 사용한다.
+    GateId:
+      $ref: '#/components/schemas/Id'
+      description: 수령 위치 ID (Gate 1·2·3, 입국장).
+    # ---- ID가 아닌 별도 enum (필수 ID 5개에 포함하지 않음) ----
+    Pinky:
+      description: 상차·입고·반출 대상 Pinky. 토픽의 robot_id와 다른 의미라 별도 enum으로 둔다.
+      enum: [pinky1, pinky2, pinky3]
+    DockPoint:
+      description: 도킹·대기 지점. gate_id(수령 위치)와 구분한다. 값은 확정 전(P4·P7 외 추가 가능).
+      enum: [P4, P7]
+    # ---- 공통 envelope ----
+    Envelope:
+      type: object
+      required: [schema_version, message_id, type, source, target, sent_at, payload]
+      properties:
+        schema_version: {const: "1.0"}
+        message_id: {$ref: '#/components/schemas/MessageId'}
+        in_reply_to: {description: 응답이 가리키는 명령·이벤트의 message_id. 응답(event·ack)에서 필수., $ref: '#/components/schemas/MessageId'}
+        type: {type: string}
+        source: {type: string, description: 발행 주체(논리 이름)}
+        target: {type: [string, "null"], description: 수신 주체}
+        sent_at: {type: string, format: date-time, description: UTC ISO 8601}
+        expires_at: {type: string, format: date-time, description: cmd의 새 실행 허용 만료. sent_at보다 늦어야 함}
+        payload: {type: object}
+  messages:
+    routeRequested:
+      name: route.requested
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/Envelope'
+          - type: object
+            required: [expires_at]
+            properties:
+              type: {const: route.requested}
+              payload:
+                type: object
+                required: [graph_version, start_node, start_maneuver, route, goal]
+                properties:
+                  graph_version: {type: string}
+                  start_node: {type: string}
+                  start_maneuver: {type: string}
+                  route: {type: array, items: {type: string}, description: 출발 노드 포함. 마지막 원소가 목적 노드}
+                  goal:
+                    type: object
+                    properties:
+                      gate_id: {description: 목적 수령 위치. 없으면 null, oneOf: [{$ref: '#/components/schemas/GateId'}, {type: "null"}]}
+                      on_arrival: {type: string}
+                  speed_limit_mps: {type: number}
+    routeProgress:
+      name: route.progress
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/Envelope'
+          - type: object
+            required: [in_reply_to]
+            properties:
+              type: {const: route.progress}
+              payload:
+                type: object
+                required: [node, seq, total, observed_at, phase_revision, phase]
+                properties:
+                  node: {type: string, description: 현재 통과한 노드 이름}
+                  seq: {type: integer}
+                  total: {type: integer}
+                  prev_node: {type: [string, "null"]}
+                  next_node: {type: [string, "null"]}
+                  maneuver: {type: string}
+                  detected_by: {type: string}
+                  distance_from_prev_m: {type: number}
+                  observed_at: {type: string, format: date-time}
+                  phase_revision: {type: integer}
+                  phase: {type: string, description: "진행 단계. NODE_PASSED, ARRIVED, DOCKED 등"}
