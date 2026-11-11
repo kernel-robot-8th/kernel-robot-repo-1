@@ -4,6 +4,7 @@
 -- 값이 정해지지 않은 enum(상태·방법·결과·채널 등)은 NOT NULL만 두고 CHECK를 넣지 않는다.
 -- 임시 타입: 해시류 text, revision bigint(>=0, 초기값 미정이라 DEFAULT 없음), ID text(길이 상한 미정).
 -- updated_at 갱신은 앱 책임. FK는 기본 RESTRICT(NO ACTION), cascade 없음. seed 없음.
+-- 고객 서비스 요청(customer_service_requests)과 추종 마커 컬럼은 시나리오 확정 후 V2로 추가한다.
 
 CREATE TABLE members (
     member_id     text PRIMARY KEY,
@@ -195,24 +196,10 @@ CREATE TABLE verifications (
     actor_ref               text NOT NULL,
     credential_id           text REFERENCES qr_credentials,
     reason_code             text,
-    marker_id               integer CHECK (marker_id BETWEEN 35 AND 49),  -- 동시 사용 정책 미정이라 UNIQUE 없음
     created_at              timestamptz NOT NULL DEFAULT now(),
     updated_at              timestamptz NOT NULL DEFAULT now(),
     UNIQUE (verification_id, pickup_id)
 );
-
-CREATE FUNCTION verifications_marker_guard() RETURNS trigger
-LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
-BEGIN
-    IF OLD.marker_id IS NOT NULL AND NEW.marker_id IS DISTINCT FROM OLD.marker_id THEN
-        RAISE EXCEPTION 'verification % marker_id is bound: change rejected', OLD.verification_id;
-    END IF;
-    RETURN NEW;
-END $$;
-
-CREATE TRIGGER verifications_marker_guard
-BEFORE UPDATE OF marker_id ON verifications
-FOR EACH ROW EXECUTE FUNCTION verifications_marker_guard();
 
 CREATE TABLE handover_approvals (
     approval_id     text PRIMARY KEY,
@@ -265,30 +252,6 @@ CREATE TABLE receipt_packages (
     FOREIGN KEY (receipt_id, order_id) REFERENCES receipts (receipt_id, order_id),
     FOREIGN KEY (order_id, package_id) REFERENCES packages (order_id, package_id)
 );
-
--- status 이름 미정: README가 활성 집합에 CHANGE_PENDING, 대기 변경에 PENDING_CHANGE를 함께 쓴다.
--- 하나로 정리되기 전까지 status CHECK는 넣지 않고 부분 UNIQUE는 README 표기대로 둔다.
-CREATE TABLE customer_service_requests (
-    request_id               text PRIMARY KEY,
-    pickup_id                text NOT NULL,
-    verification_id          text NOT NULL,
-    mode                     text NOT NULL,  -- 값 미정
-    expected_pickup_revision bigint NOT NULL CHECK (expected_pickup_revision >= 0),
-    supersedes_request_id    text UNIQUE,
-    status                   text NOT NULL,
-    requested_at             timestamptz NOT NULL,
-    created_at               timestamptz NOT NULL DEFAULT now(),
-    updated_at               timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (pickup_id, request_id),
-    FOREIGN KEY (verification_id, pickup_id) REFERENCES verifications (verification_id, pickup_id),
-    FOREIGN KEY (pickup_id, supersedes_request_id) REFERENCES customer_service_requests (pickup_id, request_id),
-    CHECK (supersedes_request_id <> request_id)
-);
-
-CREATE UNIQUE INDEX customer_service_requests_one_active_per_pickup ON customer_service_requests (pickup_id)
-    WHERE status IN ('REQUESTED', 'SELECTED', 'CHANGE_PENDING');
-CREATE UNIQUE INDEX customer_service_requests_one_pending_change_per_pickup ON customer_service_requests (pickup_id)
-    WHERE status = 'PENDING_CHANGE';
 
 CREATE TABLE notifications (
     notification_id text PRIMARY KEY,

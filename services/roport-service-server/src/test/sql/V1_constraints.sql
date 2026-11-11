@@ -86,14 +86,9 @@ SELECT expect('qr: 소유자 0개', $q$INSERT INTO qr_credentials (credential_id
 SELECT expect('qr: 소유자 2개', $q$INSERT INTO qr_credentials (credential_id, token_hash, member_id, pickup_id, issued_at) VALUES ('c9','th9','m1','pk1',now())$q$, '23514');
 SELECT expect('qr: 소유자 1개', $q$INSERT INTO qr_credentials (credential_id, token_hash, pickup_id, issued_at) VALUES ('c1','th1','pk1',now())$q$, NULL);
 
--- marker
-SELECT expect('marker 34', $q$INSERT INTO verifications (verification_id, verification_request_id, pickup_id, method, result, actor_ref, marker_id) VALUES ('v9','vr9','pk1','test','test','actor-test',34)$q$, '23514');
-SELECT expect('marker 50', $q$INSERT INTO verifications (verification_id, verification_request_id, pickup_id, method, result, actor_ref, marker_id) VALUES ('v9','vr9','pk1','test','test','actor-test',50)$q$, '23514');
-SELECT expect('verification v1 marker 35', $q$INSERT INTO verifications (verification_id, verification_request_id, pickup_id, method, result, actor_ref, credential_id, marker_id) VALUES ('v1','vr1','pk1','test','test','actor-test','c1',35)$q$, NULL);
-SELECT expect('verification v2(pk3) marker NULL', $q$INSERT INTO verifications (verification_id, verification_request_id, pickup_id, method, result, actor_ref) VALUES ('v2','vr2','pk3','test','test','actor-test')$q$, NULL);
-SELECT expect('marker 최초 결속(NULL->49)', $q$UPDATE verifications SET marker_id = 49 WHERE verification_id = 'v2'$q$, NULL);
-SELECT expect('marker 결속 후 변경', $q$UPDATE verifications SET marker_id = 40 WHERE verification_id = 'v1'$q$, 'P0001');
-SELECT expect('marker 결속 후 NULL화', $q$UPDATE verifications SET marker_id = NULL WHERE verification_id = 'v1'$q$, 'P0001');
+-- verification (approval 케이스의 선행 데이터)
+SELECT expect('verification v1(pk1)', $q$INSERT INTO verifications (verification_id, verification_request_id, pickup_id, method, result, actor_ref, credential_id) VALUES ('v1','vr1','pk1','test','test','actor-test','c1')$q$, NULL);
+SELECT expect('verification v2(pk3)', $q$INSERT INTO verifications (verification_id, verification_request_id, pickup_id, method, result, actor_ref) VALUES ('v2','vr2','pk3','test','test','actor-test')$q$, NULL);
 
 -- approval pickup·order 불일치
 SELECT expect('approval: pickup·order 불일치(pk1,o2)', $q$INSERT INTO handover_approvals (approval_id, pickup_id, order_id, verification_id, task_ref, cart_ref, order_revision, manifest_hash)
@@ -143,21 +138,14 @@ SELECT expect('비활성 잠긴 package DELETE', $q$DELETE FROM packages WHERE p
 SELECT expect('비활성 잠긴 package order_id 변경', $q$UPDATE packages SET order_id = 'o2' WHERE package_id = 'p2'$q$, 'P0001');
 SELECT expect('비활성 잠긴 package 잠금 해제', $q$UPDATE packages SET manifest_locked_at = NULL WHERE package_id = 'p2'$q$, 'P0001');
 
--- customer_service_requests
-SELECT expect('csr1 REQUESTED', $q$INSERT INTO customer_service_requests (request_id, pickup_id, verification_id, mode, expected_pickup_revision, status, requested_at)
-    VALUES ('s1','pk1','v1','test',0,'REQUESTED',now())$q$, NULL);
-SELECT expect('활성 service request 2건', $q$INSERT INTO customer_service_requests (request_id, pickup_id, verification_id, mode, expected_pickup_revision, status, requested_at)
-    VALUES ('s2','pk1','v1','test',0,'SELECTED',now())$q$, '23505');
-SELECT expect('csr PENDING_CHANGE supersedes s1', $q$INSERT INTO customer_service_requests (request_id, pickup_id, verification_id, mode, expected_pickup_revision, supersedes_request_id, status, requested_at)
-    VALUES ('s3','pk1','v1','test',0,'s1','PENDING_CHANGE',now())$q$, NULL);
-SELECT expect('PENDING_CHANGE 2건', $q$INSERT INTO customer_service_requests (request_id, pickup_id, verification_id, mode, expected_pickup_revision, status, requested_at)
-    VALUES ('s4','pk1','v1','test',0,'PENDING_CHANGE',now())$q$, '23505');
-SELECT expect('같은 요청 두 번 대체', $q$INSERT INTO customer_service_requests (request_id, pickup_id, verification_id, mode, expected_pickup_revision, supersedes_request_id, status, requested_at)
-    VALUES ('s5','pk1','v1','test',0,'s1','DONE',now())$q$, '23505');
-SELECT expect('자기 자신 대체', $q$INSERT INTO customer_service_requests (request_id, pickup_id, verification_id, mode, expected_pickup_revision, supersedes_request_id, status, requested_at)
-    VALUES ('s6','pk1','v1','test',0,'s6','DONE',now())$q$, '23514');
-SELECT expect('다른 pickup 요청 대체', $q$INSERT INTO customer_service_requests (request_id, pickup_id, verification_id, mode, expected_pickup_revision, supersedes_request_id, status, requested_at)
-    VALUES ('s7','pk3','v2','test',0,'s3','DONE',now())$q$, '23503');
+-- 시나리오 확정 전 V1에 없어야 함(V2로 미룸): 고객 서비스 요청, 추종 마커
+SELECT expect('customer_service_requests 없음', $q$SELECT 1 FROM customer_service_requests$q$, '42P01');
+SELECT expect('verifications.marker_id 없음', $q$SELECT marker_id FROM verifications$q$, '42703');
+SELECT expect('verifications_marker_guard 함수 없음', $q$DO $d$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'verifications_marker_guard'
+               AND pronamespace = 's1_v1_constraints'::regnamespace) THEN
+        RAISE EXCEPTION 'verifications_marker_guard present';
+    END IF; END $d$$q$, NULL);
 
 SELECT count(*) = 0 AS s1_ok, count(*) AS s1_fail FROM s1_failures \gset
 TABLE s1_failures;
