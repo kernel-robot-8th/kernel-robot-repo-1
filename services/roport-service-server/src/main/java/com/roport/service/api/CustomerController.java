@@ -1,7 +1,6 @@
 package com.roport.service.api;
 
 import com.roport.service.api.PickupService.CreatePickup;
-import com.roport.service.api.PickupService.Created;
 import com.roport.service.api.PickupService.Flight;
 import com.roport.service.api.PickupService.Location;
 import com.roport.service.api.PickupService.Order;
@@ -27,7 +26,7 @@ import org.springframework.web.bind.annotation.SessionAttribute;
 @RestController
 @RequestMapping("/api")
 class CustomerController {
-    record PickupRequest(String requestId, String orderId, String locationId, String flightId, String pickupAt) {}
+    record PickupRequest(String orderId, String locationId, String flightId, String pickupAt) {}
 
     private final PickupService service;
 
@@ -64,14 +63,14 @@ class CustomerController {
     ResponseEntity<Pickup> create(@SessionAttribute(WebConfig.MEMBER_ID) String memberId,
             @RequestBody PickupRequest body) {
         CreatePickup req = validate(body);
-        Created result;
+        Pickup result;
         try {
             result = service.create(memberId, req);
         } catch (DuplicateKeyException e) {
-            // 동시 요청이 먼저 저장됨(request_id 또는 활성 예약). 새 트랜잭션에서 재조회 경로로 다시 판정한다.
+            // 활성 예약 부분 UNIQUE 충돌(주문 잠금 밖의 저장과 경쟁). 새 트랜잭션에서 다시 판정하면 409 ACTIVE_PICKUP_EXISTS.
             result = service.create(memberId, req);
         }
-        return ResponseEntity.status(result.created() ? HttpStatus.CREATED : HttpStatus.OK).body(result.pickup());
+        return ResponseEntity.status(HttpStatus.CREATED).body(result);
     }
 
     @GetMapping("/pickups")
@@ -85,14 +84,14 @@ class CustomerController {
     }
 
     private static CreatePickup validate(PickupRequest b) {
-        if (b == null || !id(b.requestId()) || !id(b.orderId()) || !id(b.locationId()) || !id(b.flightId())
+        if (b == null || !id(b.orderId()) || !id(b.locationId()) || !id(b.flightId())
                 || b.pickupAt() == null) {
-            throw ApiException.badRequest("requestId·orderId·locationId·flightId·pickupAt이 필요합니다.");
+            throw ApiException.badRequest("orderId·locationId·flightId·pickupAt이 필요합니다.");
         }
         try {
             // offset 없는 시각은 거부한다(계약: offset 있는 RFC3339만).
             Instant at = OffsetDateTime.parse(b.pickupAt()).toInstant();
-            return new CreatePickup(b.requestId(), b.orderId(), b.locationId(), b.flightId(), at);
+            return new CreatePickup(b.orderId(), b.locationId(), b.flightId(), at);
         } catch (DateTimeParseException e) {
             throw ApiException.badRequest("pickupAt은 offset이 있는 RFC3339 시각이어야 합니다.");
         }

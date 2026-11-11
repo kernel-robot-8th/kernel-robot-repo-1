@@ -147,7 +147,6 @@ FOR EACH ROW EXECUTE FUNCTION package_items_manifest_lock_guard();
 
 CREATE TABLE pickups (
     pickup_id          text PRIMARY KEY,
-    request_id         text NOT NULL UNIQUE,
     reservation_no     text NOT NULL UNIQUE,
     order_id           text NOT NULL REFERENCES orders,
     location_id        text NOT NULL REFERENCES pickup_locations,

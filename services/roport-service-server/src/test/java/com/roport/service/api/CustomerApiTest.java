@@ -139,10 +139,10 @@ class CustomerApiTest {
         assertThat(r.body().path("title").asString("")).as(String.valueOf(r.body())).isNotBlank();
     }
 
-    String pickupBody(String requestId, String orderId, String pickupAt) {
+    String pickupBody(String orderId, String pickupAt) {
         return """
-                {"requestId":"%s","orderId":"%s","locationId":"la%s","flightId":"fa%s","pickupAt":"%s","extra":1}"""
-                .formatted(requestId, orderId, s, s, pickupAt);
+                {"orderId":"%s","locationId":"la%s","flightId":"fa%s","pickupAt":"%s","extra":1}"""
+                .formatted(orderId, s, s, pickupAt);
     }
 
     @Test
@@ -151,7 +151,7 @@ class CustomerApiTest {
         problem(call(alice, "GET", "/api/session", null), 401, "UNAUTHENTICATED");
         problem(call(alice, "DELETE", "/api/session", null), 401, "UNAUTHENTICATED");
         // 세션 예외는 POST /api/session 하나뿐이다. 다른 POST는 본문 검증보다 먼저 401.
-        problem(call(alice, "POST", "/api/pickups", pickupBody("rqu" + s, "oa" + s, "2030-01-01T01:30:00Z")),
+        problem(call(alice, "POST", "/api/pickups", pickupBody("oa" + s, "2030-01-01T01:30:00Z")),
                 401, "UNAUTHENTICATED");
         problem(call(alice, "POST", "/api/session", "{\"loginId\":\"\"}"), 400, "VALIDATION_FAILED");
         problem(call(alice, "POST", "/api/session", "not-json"), 400, "VALIDATION_FAILED");
@@ -245,22 +245,21 @@ class CustomerApiTest {
     void createPickup() throws Exception {
         login(alice, "alice" + s);
         login(bob, "bob" + s);
-        String rq = "rq" + s;
 
-        problem(call(alice, "POST", "/api/pickups", pickupBody(rq, "oa" + s, "2030-01-01T01:30:00")), 400, "VALIDATION_FAILED");
-        problem(call(alice, "POST", "/api/pickups", "{\"requestId\":\"x\"}"), 400, "VALIDATION_FAILED");
-        problem(call(alice, "POST", "/api/pickups", pickupBody(rq, "oa" + s, "2030-01-01T01:45:00Z")), 422, "PICKUP_TIME_NOT_AVAILABLE");
-        problem(call(alice, "POST", "/api/pickups", pickupBody(rq, "or" + s, "2030-01-01T01:30:00Z")), 409, "ORDER_NOT_RESERVABLE");
-        problem(call(alice, "POST", "/api/pickups", pickupBody(rq, "ob" + s, "2030-01-01T01:30:00Z")), 404, "ORDER_NOT_FOUND");
-        problem(call(alice, "POST", "/api/pickups", pickupBody(rq, "oa" + s, "2030-01-01T01:30:00Z").replace("la" + s, "lx" + s)),
+        problem(call(alice, "POST", "/api/pickups", pickupBody("oa" + s, "2030-01-01T01:30:00")), 400, "VALIDATION_FAILED");
+        problem(call(alice, "POST", "/api/pickups", "{\"orderId\":\"oa" + s + "\"}"), 400, "VALIDATION_FAILED");
+        problem(call(alice, "POST", "/api/pickups", pickupBody("oa" + s, "2030-01-01T01:45:00Z")), 422, "PICKUP_TIME_NOT_AVAILABLE");
+        problem(call(alice, "POST", "/api/pickups", pickupBody("or" + s, "2030-01-01T01:30:00Z")), 409, "ORDER_NOT_RESERVABLE");
+        problem(call(alice, "POST", "/api/pickups", pickupBody("ob" + s, "2030-01-01T01:30:00Z")), 404, "ORDER_NOT_FOUND");
+        problem(call(alice, "POST", "/api/pickups", pickupBody("oa" + s, "2030-01-01T01:30:00Z").replace("la" + s, "lx" + s)),
                 404, "LOCATION_NOT_FOUND");
-        problem(call(alice, "POST", "/api/pickups", pickupBody(rq, "oa" + s, "2030-01-01T01:30:00Z").replace("la" + s, "lo" + s)),
+        problem(call(alice, "POST", "/api/pickups", pickupBody("oa" + s, "2030-01-01T01:30:00Z").replace("la" + s, "lo" + s)),
                 404, "LOCATION_NOT_FOUND");
-        problem(call(alice, "POST", "/api/pickups", pickupBody(rq, "oa" + s, "2030-01-01T01:30:00Z").replace("fa" + s, "nope" + s)),
+        problem(call(alice, "POST", "/api/pickups", pickupBody("oa" + s, "2030-01-01T01:30:00Z").replace("fa" + s, "nope" + s)),
                 404, "FLIGHT_NOT_FOUND");
 
-        // 실패한 요청은 저장되지 않아 같은 requestId로 성공할 수 있다. offset +09:00 = 01:30Z
-        Res first = call(alice, "POST", "/api/pickups", pickupBody(rq, "oa" + s, "2030-01-01T10:30:00+09:00"));
+        // 요청 ID 없이 예약한다(알 수 없는 필드는 무시). offset +09:00 = 01:30Z
+        Res first = call(alice, "POST", "/api/pickups", pickupBody("oa" + s, "2030-01-01T10:30:00+09:00"));
         assertThat(first.status()).as(String.valueOf(first.body())).isEqualTo(201);
         JsonNode p = first.body();
         assertThat(p.get("status").asString()).isEqualTo("REQUESTED");
@@ -271,22 +270,17 @@ class CustomerApiTest {
         assertThat(p.get("location").get("locationId").asString()).isEqualTo("la" + s);
         assertThat(p.get("flight").get("revision").asLong()).isEqualTo(3);
         assertThat(p.get("flight").get("boardingStart").asString()).isEqualTo("2030-01-01T03:00:00Z");
-        assertThat(db.sql("SELECT channel FROM pickups WHERE request_id = ?").param(rq).query(String.class).single())
+        assertThat(p.has("requestId")).isFalse();
+        assertThat(db.sql("SELECT channel FROM pickups WHERE order_id = ?").param("oa" + s).query(String.class).single())
                 .isEqualTo("WEB");
 
-        Res again = call(alice, "POST", "/api/pickups", pickupBody(rq, "oa" + s, "2030-01-01T01:30:00Z"));
-        assertThat(again.status()).isEqualTo(200);
-        assertThat(again.body()).isEqualTo(p);
-        problem(call(alice, "POST", "/api/pickups", pickupBody(rq, "oa" + s, "2030-01-01T02:00:00Z")), 409, "IDEMPOTENCY_CONFLICT");
-        problem(call(bob, "POST", "/api/pickups", pickupBody(rq, "ob" + s, "2030-01-01T01:30:00Z")), 409, "IDEMPOTENCY_CONFLICT");
-        // 다른 회원이 본문까지 똑같이 보내도 저장본을 돌려주지 않는다.
-        problem(call(bob, "POST", "/api/pickups", pickupBody(rq, "oa" + s, "2030-01-01T01:30:00Z")), 409, "IDEMPOTENCY_CONFLICT");
-        // 필드 하나만 달라도 충돌(검증보다 재전송 판정이 먼저다).
-        problem(call(alice, "POST", "/api/pickups", pickupBody(rq, "oa" + s, "2030-01-01T01:30:00Z").replace("la" + s, "lx" + s)),
-                409, "IDEMPOTENCY_CONFLICT");
-        problem(call(alice, "POST", "/api/pickups", pickupBody(rq, "oa" + s, "2030-01-01T01:30:00Z").replace("fa" + s, "nope" + s)),
-                409, "IDEMPOTENCY_CONFLICT");
-        problem(call(alice, "POST", "/api/pickups", pickupBody("rq2" + s, "oa" + s, "2030-01-01T02:00:00Z")), 409, "ACTIVE_PICKUP_EXISTS");
+        // 재전송(같은 본문)도 다른 시각도 같은 주문의 두 번째 예약이라 409. 저장본을 200으로 돌려주지 않는다.
+        problem(call(alice, "POST", "/api/pickups", pickupBody("oa" + s, "2030-01-01T10:30:00+09:00")), 409, "ACTIVE_PICKUP_EXISTS");
+        problem(call(alice, "POST", "/api/pickups", pickupBody("oa" + s, "2030-01-01T02:00:00Z")), 409, "ACTIVE_PICKUP_EXISTS");
+        // 다른 회원이 같은 본문을 보내면 남의 주문이라 404.
+        problem(call(bob, "POST", "/api/pickups", pickupBody("oa" + s, "2030-01-01T01:30:00Z")), 404, "ORDER_NOT_FOUND");
+        assertThat(db.sql("SELECT count(*) FROM pickups WHERE order_id = ?").param("oa" + s).query(Long.class).single())
+                .isEqualTo(1);
 
         assertThat(call(alice, "GET", "/api/orders", null).body().get(0).get("activePickup").get("pickupId"))
                 .isEqualTo(p.get("pickupId"));
@@ -302,14 +296,17 @@ class CustomerApiTest {
     void reserveAgainAfterInactivePickup() throws Exception {
         // 활성 집합(pickups_one_active_per_order) 밖 상태는 재예약을 막지 않는다.
         db.sql("""
-                INSERT INTO pickups (pickup_id, request_id, reservation_no, order_id, location_id, flight_id,
+                INSERT INTO pickups (pickup_id, reservation_no, order_id, location_id, flight_id,
                     flight_revision, flight_snapshot, pickup_at, channel, status, revision)
-                VALUES (?, ?, ?, ?, ?, ?, 3, '{}', '2030-01-01T01:30Z', 'WEB', 'CANCELLED', 1)""")
-                .param("pc" + s).param("rqx" + s).param("X" + s).param("oa" + s).param("la" + s).param("fa" + s).update();
+                VALUES (?, ?, ?, ?, ?, 3, '{}', '2030-01-01T01:30Z', 'WEB', 'CANCELLED', 1)""")
+                .param("pc" + s).param("X" + s).param("oa" + s).param("la" + s).param("fa" + s).update();
         login(alice, "alice" + s);
         assertThat(call(alice, "GET", "/api/orders", null).body().get(0).get("activePickup").isNull()).isTrue();
-        Res r = call(alice, "POST", "/api/pickups", pickupBody("rqn" + s, "oa" + s, "2030-01-01T02:00:00Z"));
+        // 예전 클라이언트가 requestId를 보내도 알 수 없는 필드로 무시한다.
+        Res r = call(alice, "POST", "/api/pickups",
+                pickupBody("oa" + s, "2030-01-01T02:00:00Z").replace("{", "{\"requestId\":\"legacy" + s + "\","));
         assertThat(r.status()).as(String.valueOf(r.body())).isEqualTo(201);
+        assertThat(r.body().has("requestId")).isFalse();
         assertThat(call(alice, "GET", "/api/pickups", null).body().size()).isEqualTo(2);
     }
 
@@ -339,7 +336,7 @@ class CustomerApiTest {
             CompletableFuture<HttpResponse<String>> sent = alice.sendAsync(
                     HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/pickups"))
                             .header("Content-Type", "application/json")
-                            .POST(HttpRequest.BodyPublishers.ofString(pickupBody("rql" + s, "oa" + s, "2030-01-01T01:30:00Z")))
+                            .POST(HttpRequest.BodyPublishers.ofString(pickupBody("oa" + s, "2030-01-01T01:30:00Z")))
                             .build(),
                     HttpResponse.BodyHandlers.ofString());
             long deadline = System.nanoTime() + java.time.Duration.ofSeconds(5).toNanos();
@@ -357,17 +354,18 @@ class CustomerApiTest {
     }
 
     @Test
-    void concurrentRetryCreatesOnce() throws Exception {
+    void concurrentRequestsCreateOnce() throws Exception {
+        // 같은 주문 동시 4건: orders FOR UPDATE와 부분 UNIQUE로 1건만 201, 나머지는 409.
         login(bob, "bob" + s);
         HttpRequest req = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/pickups"))
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(pickupBody("rqc" + s, "ob" + s, "2030-01-01T02:30:00Z")))
+                .POST(HttpRequest.BodyPublishers.ofString(pickupBody("ob" + s, "2030-01-01T02:30:00Z")))
                 .build();
         List<CompletableFuture<HttpResponse<String>>> sent = java.util.stream.IntStream.range(0, 4)
                 .mapToObj(i -> bob.sendAsync(req, HttpResponse.BodyHandlers.ofString())).toList();
         List<Res> results = sent.stream().map(CompletableFuture::join).map(this::toRes).toList();
-        assertThat(results).extracting(Res::status).containsOnly(201, 200).filteredOn(st -> st == 201).hasSize(1);
-        assertThat(results).extracting(Res::body).containsOnly(results.get(0).body());
+        assertThat(results).filteredOn(r -> r.status() == 201).hasSize(1);
+        results.stream().filter(r -> r.status() != 201).forEach(r -> problem(r, 409, "ACTIVE_PICKUP_EXISTS"));
         assertThat(db.sql("SELECT count(*) FROM pickups WHERE order_id = ?").param("ob" + s).query(Long.class).single())
                 .isEqualTo(1);
     }

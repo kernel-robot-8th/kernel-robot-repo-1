@@ -8,7 +8,7 @@ Java 21 / Spring Boot 4.1.2 / Gradle(wrapper). 업무 데이터는 PostgreSQL(JD
 
 ## 현재 범위
 
-고객 웹 첫 슬라이스: 세션 로그인, 주문·수령 위치·항공편 조회, 예약 가능 시간, 수령 예약 생성(`requestId` 멱등)과 조회(`/api/**`, 오류는 ProblemDetail + `code`).
+고객 웹 첫 슬라이스: 세션 로그인, 주문·수령 위치·항공편 조회, 예약 가능 시간, 수령 예약 생성(요청 ID 없음, 주문당 활성 예약 1개 — 두 번째 요청·재전송은 409 `ACTIVE_PICKUP_EXISTS`)과 조회(`/api/**`, 오류는 ProblemDetail + `code`).
 업무 code가 없는 오류는 상태별 일반 code를 씁니다: 404 `NOT_FOUND`, 405 `METHOD_NOT_ALLOWED`, 406 `NOT_ACCEPTABLE`, 409 `CONFLICT`, 415 `UNSUPPORTED_MEDIA_TYPE`, 그 밖의 4xx `BAD_REQUEST`, 5xx `INTERNAL_ERROR`(내부 정보는 응답에 넣지 않고 서버 로그에만 남깁니다).
 예약은 `REQUESTED`(예약 접수됨 – 현장 배정 전)까지만 만듭니다. 카트 확보·관제 수락·수령 완료가 아닙니다. 관제 WSS 연동은 아직 없습니다.
 

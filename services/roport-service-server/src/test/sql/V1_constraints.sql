@@ -62,24 +62,24 @@ SELECT expect('package_items: 다른 주문 item(order_id=o1)', $q$INSERT INTO p
 SELECT expect('package_items: 다른 주문 item(order_id=o2)', $q$INSERT INTO package_items VALUES ('o2','p1','i2',1)$q$, '23503');
 
 -- 활성 예약 2건
-SELECT expect('pickup pk1 REQUESTED', $q$INSERT INTO pickups (pickup_id, request_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, revision)
-    VALUES ('pk1','rq1','R1','o1','l1','f1',0,'{}',now(),'test','REQUESTED',0)$q$, NULL);
-SELECT expect('활성 예약 2건(o1 CONFIRMED)', $q$INSERT INTO pickups (pickup_id, request_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, revision)
-    VALUES ('pk2','rq2','R2','o1','l1','f1',0,'{}',now(),'test','CONFIRMED',0)$q$, '23505');
-SELECT expect('비활성 예약 추가(o1 CLOSED)', $q$INSERT INTO pickups (pickup_id, request_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, revision)
-    VALUES ('pk3','rq3','R3','o1','l1','f1',0,'{}',now(),'test','CLOSED',0)$q$, NULL);
+SELECT expect('pickup pk1 REQUESTED', $q$INSERT INTO pickups (pickup_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, revision)
+    VALUES ('pk1','R1','o1','l1','f1',0,'{}',now(),'test','REQUESTED',0)$q$, NULL);
+SELECT expect('활성 예약 2건(o1 CONFIRMED)', $q$INSERT INTO pickups (pickup_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, revision)
+    VALUES ('pk2','R2','o1','l1','f1',0,'{}',now(),'test','CONFIRMED',0)$q$, '23505');
+SELECT expect('비활성 예약 추가(o1 CLOSED)', $q$INSERT INTO pickups (pickup_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, revision)
+    VALUES ('pk3','R3','o1','l1','f1',0,'{}',now(),'test','CLOSED',0)$q$, NULL);
 
 -- pending CHECK (o2는 활성 예약이 없어 CHECK만 걸린다)
-SELECT expect('pending: CHANGE_PENDING change NULL', $q$INSERT INTO pickups (pickup_id, request_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, pending_request_id, revision)
-    VALUES ('pk9','rq9','R9','o2','l1','f1',0,'{}',now(),'test','CHANGE_PENDING','pr9',0)$q$, '23514');
-SELECT expect('pending: CANCEL_PENDING change NOT NULL', $q$INSERT INTO pickups (pickup_id, request_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, pending_request_id, pending_change, revision)
-    VALUES ('pk9','rq9','R9','o2','l1','f1',0,'{}',now(),'test','CANCEL_PENDING','pr9','{}',0)$q$, '23514');
-SELECT expect('pending: CANCEL_PENDING request NULL', $q$INSERT INTO pickups (pickup_id, request_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, revision)
-    VALUES ('pk9','rq9','R9','o2','l1','f1',0,'{}',now(),'test','CANCEL_PENDING',0)$q$, '23514');
-SELECT expect('pending: REQUESTED에 pending 값', $q$INSERT INTO pickups (pickup_id, request_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, pending_request_id, revision)
-    VALUES ('pk9','rq9','R9','o2','l1','f1',0,'{}',now(),'test','REQUESTED','pr9',0)$q$, '23514');
-SELECT expect('pending: CHANGE_PENDING 둘 다 NN', $q$INSERT INTO pickups (pickup_id, request_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, pending_request_id, pending_change, revision)
-    VALUES ('pk4','rq4','R4','o2','l1','f1',0,'{}',now(),'test','CHANGE_PENDING','pr4','{}',0)$q$, NULL);
+SELECT expect('pending: CHANGE_PENDING change NULL', $q$INSERT INTO pickups (pickup_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, pending_request_id, revision)
+    VALUES ('pk9','R9','o2','l1','f1',0,'{}',now(),'test','CHANGE_PENDING','pr9',0)$q$, '23514');
+SELECT expect('pending: CANCEL_PENDING change NOT NULL', $q$INSERT INTO pickups (pickup_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, pending_request_id, pending_change, revision)
+    VALUES ('pk9','R9','o2','l1','f1',0,'{}',now(),'test','CANCEL_PENDING','pr9','{}',0)$q$, '23514');
+SELECT expect('pending: CANCEL_PENDING request NULL', $q$INSERT INTO pickups (pickup_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, revision)
+    VALUES ('pk9','R9','o2','l1','f1',0,'{}',now(),'test','CANCEL_PENDING',0)$q$, '23514');
+SELECT expect('pending: REQUESTED에 pending 값', $q$INSERT INTO pickups (pickup_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, pending_request_id, revision)
+    VALUES ('pk9','R9','o2','l1','f1',0,'{}',now(),'test','REQUESTED','pr9',0)$q$, '23514');
+SELECT expect('pending: CHANGE_PENDING 둘 다 NN', $q$INSERT INTO pickups (pickup_id, reservation_no, order_id, location_id, flight_id, flight_revision, flight_snapshot, pickup_at, channel, status, pending_request_id, pending_change, revision)
+    VALUES ('pk4','R4','o2','l1','f1',0,'{}',now(),'test','CHANGE_PENDING','pr4','{}',0)$q$, NULL);
 
 -- num_nonnulls
 SELECT expect('qr: 소유자 0개', $q$INSERT INTO qr_credentials (credential_id, token_hash, issued_at) VALUES ('c9','th9',now())$q$, '23514');
@@ -140,6 +140,7 @@ SELECT expect('비활성 잠긴 package 잠금 해제', $q$UPDATE packages SET m
 
 -- 시나리오 확정 전 V1에 없어야 함(V2로 미룸): 고객 서비스 요청, 추종 마커
 SELECT expect('customer_service_requests 없음', $q$SELECT 1 FROM customer_service_requests$q$, '42P01');
+SELECT expect('pickups.request_id 없음(예약 생성 멱등 키 제거)', $q$SELECT request_id FROM pickups$q$, '42703');
 SELECT expect('verifications.marker_id 없음', $q$SELECT marker_id FROM verifications$q$, '42703');
 SELECT expect('verifications_marker_guard 함수 없음', $q$DO $d$ BEGIN
     IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'verifications_marker_guard'

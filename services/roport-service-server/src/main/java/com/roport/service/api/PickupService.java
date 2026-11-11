@@ -47,9 +47,7 @@ class PickupService {
     record Pickup(String pickupId, String reservationNo, String orderId, String orderNo, Location location,
                   Map<String, Object> flight, Instant pickupAt, String status, long revision, Instant createdAt) {}
 
-    record CreatePickup(String requestId, String orderId, String locationId, String flightId, Instant pickupAt) {}
-
-    record Created(Pickup pickup, boolean created) {}
+    record CreatePickup(String orderId, String locationId, String flightId, Instant pickupAt) {}
 
     private record OrderRow(String siteId, String businessStatus) {}
 
@@ -168,20 +166,12 @@ class PickupService {
     }
 
     /**
-     * 같은 request_id가 있으면 저장본(같은 회원·같은 필드) 또는 409 IDEMPOTENCY_CONFLICT.
-     * 잠금 순서는 orders → pickups. request_id UNIQUE 충돌 시 호출자가 이 메서드를 한 번 더 부른다.
+     * 요청 ID(멱등 키)는 받지 않는다. 같은 주문의 두 번째 예약(재전송 포함)은 409 ACTIVE_PICKUP_EXISTS.
+     * 잠금 순서는 orders → pickups. 주문 잠금 뒤 활성 예약을 확인하고, 부분 UNIQUE(pickups_one_active_per_order)가 최종 방어선이다.
      */
     @Transactional
-    Created create(String memberId, CreatePickup req) {
-        Optional<Pickup> replay = replay(memberId, req);
-        if (replay.isPresent()) {
-            return new Created(replay.get(), false);
-        }
+    Pickup create(String memberId, CreatePickup req) {
         OrderRow order = order(memberId, req.orderId(), true);
-        replay = replay(memberId, req); // 같은 주문의 동시 재전송은 잠금 뒤에 보인다
-        if (replay.isPresent()) {
-            return new Created(replay.get(), false);
-        }
         requireReservable(order);
         requireLocation(req.locationId(), order.siteId());
         FlightRow flight = flightRow(req.flightId());
@@ -199,17 +189,17 @@ class PickupService {
         String pickupId = UUID.randomUUID().toString();
         for (int attempt = 0; ; attempt++) {
             int rows = db.sql("""
-                    INSERT INTO pickups (pickup_id, request_id, reservation_no, order_id, location_id, flight_id,
+                    INSERT INTO pickups (pickup_id, reservation_no, order_id, location_id, flight_id,
                         flight_revision, flight_snapshot, pickup_at, channel, status, revision)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, 'WEB', 'REQUESTED', 0)
+                    VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?, 'WEB', 'REQUESTED', 0)
                     ON CONFLICT (reservation_no) DO NOTHING""")
-                    .param(pickupId).param(req.requestId()).param(reservationNo()).param(req.orderId())
+                    .param(pickupId).param(reservationNo()).param(req.orderId())
                     .param(req.locationId()).param(req.flightId()).param(flight.revision())
                     .param(json.writeValueAsString(snapshot))
                     .param(OffsetDateTime.ofInstant(req.pickupAt(), ZoneOffset.UTC))
                     .update();
             if (rows == 1) {
-                return new Created(pickup(memberId, pickupId).orElseThrow(), true);
+                return pickup(memberId, pickupId).orElseThrow();
             }
             if (attempt >= 10) {
                 throw new IllegalStateException("reservation_no 발급 실패");
@@ -223,25 +213,6 @@ class PickupService {
             sb.append(RESERVATION_ALPHABET.charAt(random.nextInt(RESERVATION_ALPHABET.length())));
         }
         return sb.toString();
-    }
-
-    private Optional<Pickup> replay(String memberId, CreatePickup req) {
-        record Stored(String pickupId, String memberId, CreatePickup fields) {}
-        return db.sql("""
-                        SELECT p.pickup_id, o.member_id, p.request_id, p.order_id, p.location_id, p.flight_id, p.pickup_at
-                        FROM pickups p JOIN orders o USING (order_id) WHERE p.request_id = ?""")
-                .param(req.requestId())
-                .query((rs, n) -> new Stored(rs.getString("pickup_id"), rs.getString("member_id"), new CreatePickup(
-                        rs.getString("request_id"), rs.getString("order_id"), rs.getString("location_id"),
-                        rs.getString("flight_id"), ts(rs, "pickup_at"))))
-                .optional()
-                .map(s -> {
-                    if (!s.memberId().equals(memberId) || !s.fields().equals(req)) {
-                        throw new ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT",
-                                "같은 requestId로 다른 요청이 이미 처리되었습니다.");
-                    }
-                    return pickup(memberId, s.pickupId()).orElseThrow();
-                });
     }
 
     private static final String PICKUP_SQL = """
