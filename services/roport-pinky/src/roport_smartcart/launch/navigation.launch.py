@@ -14,7 +14,8 @@ from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
                             OpaqueFunction, RegisterEventHandler, SetEnvironmentVariable)
 from launch.event_handlers import OnShutdown
 from launch.launch_description_sources import AnyLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import Command, LaunchConfiguration
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.actions import Node
 
 from roport_smartcart.profiles import build_params
@@ -78,7 +79,11 @@ def _launch(context):
             _include('ros_gz_sim', 'gz_sim.launch.py',
                      gz_args='-r -s --headless-rendering ' + shlex.quote(str(world)),
                      on_exit_shutdown='true'),
-            _include('pinky_description', 'upload_robot.launch.py', is_sim='true'),
+            # Gazebo already publishes wheel joints; no self-subscribing joint publisher.
+            Node(package='robot_state_publisher', executable='robot_state_publisher',
+                 parameters=[{'use_sim_time': True, 'robot_description': ParameterValue(
+                     Command(['xacro ', str(share / 'urdf' / 'pinky_sonar_sim.urdf.xacro'),
+                              ' is_sim:=true']), value_type=str)}]),
             Node(package='ros_gz_sim', executable='create', output='screen',
                  arguments=['-name', 'pinky', '-topic', '/robot_description',
                             '-x', str(initial['x']), '-y', str(initial['y']),
@@ -86,7 +91,22 @@ def _launch(context):
                  parameters=[{'use_sim_time': True}]),
             Node(package='ros_gz_bridge', executable='parameter_bridge', output='screen',
                  parameters=[{'config_file': str(gazebo / 'params' / 'pinky_bridge.yaml'),
-                              'use_sim_time': True}]),
+                              'use_sim_time': True}],
+                 remappings=[('cmd_vel', 'cmd_vel_safe')]),
+            Node(package='ros_gz_bridge', executable='parameter_bridge', output='screen',
+                 arguments=['/sim/sonar_scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
+                            '/model/pinky/pose@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V'],
+                 remappings=[('/model/pinky/pose', '/sim/gazebo_poses')],
+                 parameters=[{'use_sim_time': True}]),
+            Node(package='roport_smartcart', executable='sim_sonar', output='screen',
+                 parameters=[{'use_sim_time': True}]),
+            Node(package='nav2_collision_monitor', executable='collision_monitor',
+                 name='collision_monitor', output='screen',
+                 parameters=[str(share / 'config' / 'collision_monitor_sim.yaml')]),
+            Node(package='nav2_lifecycle_manager', executable='lifecycle_manager',
+                 name='sensor_lifecycle_manager', output='screen', parameters=[{
+                     'use_sim_time': True, 'autostart': True,
+                     'node_names': ['collision_monitor']}]),
         ])
         if gui:
             actions.append(_include('ros_gz_sim', 'gz_sim.launch.py',

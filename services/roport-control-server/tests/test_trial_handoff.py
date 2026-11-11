@@ -60,6 +60,10 @@ def test_bundle_keeps_four_distinct_identities_and_does_not_overwrite(handoff):
     assert len(bindings) == len(set(bindings)) == 6
     for name, p in profiles.items():
         assert json.loads((kit / "scenarios" / name / "trial.json").read_text()) == p
+        assert (
+            "ROPORT_MQTT_PORT=18883"
+            in (kit / "scenarios" / name / "broker.env.example").read_text()
+        )
         assert p["nav_goal"]["goal_id"] == "PUBLIC_SPACE_TRIAL"
         if p["mode"] == "hardware":
             assert p["field_verified"] is False
@@ -67,13 +71,15 @@ def test_bundle_keeps_four_distinct_identities_and_does_not_overwrite(handoff):
                 if p["scenario"] == "single_pinky" and step == "to_delivery":
                     assert route["start_heading_rad"] == -1.5690
                     assert route["start_maneuver"] == "none"
-                    assert route["speed_limit_mps"] == 0.03
+                    assert route["speed_limit_mps"] == 0.06
                 elif p["scenario"] == "single_pinky":
                     assert route["start_maneuver"] == "none"
-                    assert route["speed_limit_mps"] == 0.03
+                    assert route["speed_limit_mps"] == 0.06
                     assert abs(route["start_heading_rad"] - 0.001745329) < 1e-8
                 else:
-                    assert route["start_heading_rad"] is None
+                    assert isinstance(route["start_heading_rad"], float)
+                    assert route["start_maneuver"] == "none"
+                    assert route["speed_limit_mps"] == 0.06
         assert p["command_timeout_s"] == 300
     original = (scenarios / "single/simulation/trial.json").read_bytes()
     pinky = SERVICE.parent / "roport-pinky"
@@ -98,6 +104,37 @@ def test_handoff_manifest_matches_exported_files_and_map(handoff):
         + (pinky / "maps/airport_map.pgm").read_bytes()
     ).hexdigest()[:16]
     assert all(p["map_version"] == expected for p in profiles.values())
+
+
+def test_hardware_static_check_has_no_journal_or_broker_side_effects(handoff, tmp_path):
+    scenarios, _, _ = handoff
+    config = scenarios / "two/hardware/trial.json"
+    before = config.read_bytes()
+    journal = tmp_path / "never-created.json"
+    env = {**os.environ, "ROPORT_MQTT_HOST": "192.0.2.1", "ROPORT_MQTT_PORT": "18883"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "roport_control_server.executor.pinky_trial",
+            "--config",
+            str(config),
+            "--journal",
+            str(journal),
+            "--scope",
+            "line-only",
+            "--check",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "field_verified=False" in result.stdout
+    assert "NOT checked" in result.stdout
+    assert not journal.exists() and config.read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -181,13 +218,15 @@ def test_runner_rejects_before_driver_import_or_network(handoff, tmp_path, case)
     assert not (tmp_path / "journal.json").exists()
 
 
-@pytest.mark.parametrize("scenario", ["single", "two"])
+@pytest.mark.parametrize("scenario", ["single", "two", "smartcart"])
 def test_published_runner_with_current_control_over_mqtt(
     handoff, broker, tmp_path, scenario
 ):
     _, profiles, kit = handoff
-    profile = profiles[f"{scenario}/simulation"]
-    config_path = kit / "scenarios" / scenario / "simulation/trial.json"
+    smartcart_only = scenario == "smartcart"
+    config_scenario = "two" if smartcart_only else scenario
+    profile = profiles[f"{config_scenario}/simulation"]
+    config_path = kit / "scenarios" / config_scenario / "simulation/trial.json"
     connection = MqttConfig("127.0.0.1", profile["control_id"], port=broker[0])
     transport = MqttTransport(
         connection,
@@ -197,7 +236,7 @@ def test_published_runner_with_current_control_over_mqtt(
         ],
     )
     journal = Journal(tmp_path / "control.json")
-    control = TrialControl(profile, transport, journal)
+    control = TrialControl(profile, transport, journal, smartcart_only=smartcart_only)
     processes, logs = [], []
     env = {
         **os.environ,
@@ -207,7 +246,7 @@ def test_published_runner_with_current_control_over_mqtt(
     }
     phases = []
     try:
-        for role in profile["robots"]:
+        for role in control.robots:
             log = (tmp_path / f"{role}.log").open("w+")
             logs.append(log)
             processes.append(
@@ -243,13 +282,15 @@ def test_published_runner_with_current_control_over_mqtt(
             elif phase == "COMPLETE":
                 robot_states = [
                     json.loads((tmp_path / f"{role}.json").read_text())
-                    for role in profile["robots"]
+                    for role in control.robots
                 ]
                 if all(not s["active"] and not s["outbox"] for s in robot_states):
                     break
         assert phases[-1] == "COMPLETE"
-        assert len(control.state["completed"]) == (4 if scenario == "single" else 7)
-        assert len(control.state["transfers"]) == (2 if scenario == "single" else 3)
+        assert len(control.state["completed"]) == (7 if scenario == "two" else 4)
+        assert len(control.state["transfers"]) == (
+            1 if smartcart_only else 2 if scenario == "single" else 3
+        )
         assert all(not s["outbox"] and not s["active"] for s in robot_states)
         assert ("WAIT_REQUEST" in phases) == (scenario == "two")
     finally:

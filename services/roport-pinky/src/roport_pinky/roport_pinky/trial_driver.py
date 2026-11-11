@@ -267,6 +267,9 @@ class TrialDriver:
             layout_file = os.path.join(get_package_share_directory('roport_gz_world'),
                                        'layout', 'roport_airport.yaml')
         graph = Graph.load(layout_file)
+        import yaml
+        with open(layout_file, encoding='utf-8') as file:
+            self.frame = yaml.safe_load(file)['frame']
         self._String = String
         rclpy.init()
         self.node = rclpy.create_node('pinky_trial_driver')
@@ -375,6 +378,37 @@ class TrialDriver:
             if self.runner_seen is None or time.monotonic() - self.runner_seen > 1:
                 state['fault'] = state['fault'] or 'runner_heartbeat_missing'
             return state
+
+    def observe_motion(self):
+        """표시용 관측만 제공한다. 기존 상태/완료/구동권 판단에는 쓰지 않는다."""
+        with self.lock, self.logic.lock:
+            nav = self.nav.snapshot()
+            pose, source, observed = None, 'unavailable', self.logic.now()
+            if nav.get('localization_ready') and nav.get('pose') and nav.get('observed_at'):
+                pose, source = dict(nav['pose']), getattr(self, 'pose_source', 'tf')
+                observed = datetime.fromisoformat(
+                    nav.get('pose_observed_at') or nav['observed_at']).timestamp()
+            elif (self.mode == 'line' and self.logic.own and self.logic.node is not None
+                  and self.logic.st is not None
+                  and self.logic.st['state'] not in ('stopped', 'error')):
+                observed = self.logic.st_t
+                estimate = self.logic.st.get('pose_est')
+                if estimate and self.logic.now() - observed <= STATE_MAX_AGE:
+                    x, y = estimate['x_cm'] / 100, estimate['y_cm'] / 100
+                    angle = self.logic.frame_yaw
+                    pose = {
+                        'x': self.frame['x_m'] + math.cos(angle) * x - math.sin(angle) * y,
+                        'y': self.frame['y_m'] + math.sin(angle) * x + math.cos(angle) * y,
+                        'yaw': _wrap(math.radians(estimate['heading_deg']) + angle),
+                    }
+                    source = 'line_estimate'
+            if pose is not None:
+                pose['z'] = 0.0
+            return {
+                'observed_at': _iso(observed), 'map_id': self.logic.map_id,
+                'map_version': self.logic.map_version, 'frame_id': 'map',
+                'pose_source': source, 'pose': pose, 'velocity': None, 'joints': {},
+            }
 
     def validate_action(self, command):
         with self.lock:

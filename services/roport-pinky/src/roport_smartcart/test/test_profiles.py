@@ -146,3 +146,20 @@ def test_precision_trial_is_sim_only():
         assert params['planner_server']['ros__parameters']['GridBased']['tolerance'] == planner
     assert sim['controller_server']['ros__parameters']['FollowPath'][
         'min_approach_linear_velocity'] == .02
+
+
+def test_range_layers_are_sim_only_and_before_inflation():
+    for mode, kwargs in [('sim', {}), ('real', dict(
+            footprint=FOOTPRINT, max_linear=.12, max_angular=.15))]:
+        p = profile(mode, **kwargs)
+        for name in ('local_costmap', 'global_costmap'):
+            c = p[name][name]['ros__parameters']
+            assert ('sonar_layer' in c['plugins']) is (mode == 'sim')
+            if mode == 'sim':
+                assert c['plugins'][-2:] == ['sonar_layer', 'inflation_layer']
+                assert c['sonar_layer']['plugin'] == 'nav2_costmap_2d::ObstacleLayer'
+                source = c['sonar_layer']['sonar_proxy']
+                assert source['topic'] == '/sim/sonar_scan'
+                assert source['marking'] and source['clearing'] and source['inf_is_valid']
+                assert source['expected_update_rate'] == .5
+                assert source['obstacle_max_range'] < source['raytrace_max_range'] == .95

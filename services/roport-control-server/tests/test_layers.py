@@ -26,7 +26,8 @@ RULES = {
     ),
     "adapters.mqtt": ({"paho"}, set()),
     "adapters.udp": (set(), set()),
-    "adapters.api": ({"fastapi", "PIL", "yaml"}, {P + "contracts"}),
+    "adapters.db": ({"psycopg"}, {P + "contracts"}),
+    "adapters.api": ({"fastapi", "PIL", "yaml"}, {P + "contracts", P + "adapters.db"}),
 }
 
 
@@ -85,6 +86,9 @@ def test_layer_imports(module, path, is_package):
     [
         (P + "contracts.snapshot", "import psycopg"),
         (P + "contracts.snapshot", "import fastapi"),
+        (P + "adapters.api.registry", "import psycopg"),
+        (P + "adapters.db.registry", "import fastapi"),
+        (P + "adapters.mqtt.mqtt", f"from {P}adapters.db import registry"),
         (P + "adapters.udp.udp_frame_sender", "from ..mqtt import messages"),
         (P + "adapters.mqtt.mqtt", "import sqlite3"),
         (P + "adapters.ui.window", f"from {P}adapters.mqtt import mqtt"),

@@ -93,7 +93,7 @@ def test_gazebo_spawn_uses_amcl_pose_including_heading(launch_module, monkeypatc
         'amcl': {'ros__parameters': {'initial_pose': initial}}})
     ctx = context(gui='false')
     actions = module._launch(ctx)
-    spawn = next(a for a in actions if isinstance(a, Node))
+    spawn = next(a for a in actions if isinstance(a, Node) and a.node_executable == 'create')
     # Inspect only the ros_gz create user arguments; do not resolve or execute
     # the executable or ROS-generated command suffix.
     arguments = [''.join(part.perform(ctx) for part in argument)
@@ -119,4 +119,20 @@ def test_closing_gazebo_gui_does_not_stop_the_server(launch_module):
     server = next(a for a in includes if '-s ' in a.get('gz_args', ''))
     assert gui['on_exit_shutdown'] == 'false'
     assert server['on_exit_shutdown'] == 'true'
+    Path(next(a['params_file'] for a in includes if 'params_file' in a)).unlink()
+
+
+def test_simulator_only_accepts_filtered_velocity(launch_module, monkeypatch):
+    module, _ = launch_module
+    monkeypatch.setattr(module, 'Node', lambda **kwargs: kwargs)
+    ctx = context(gui='false')
+    actions = module._launch(ctx)
+    nodes = [a for a in actions if isinstance(a, dict)]
+    drive = next(a for a in nodes if a['executable'] == 'parameter_bridge'
+                 and a.get('remappings'))
+    assert drive['remappings'] == [('cmd_vel', 'cmd_vel_safe')]
+    assert any(a['executable'] == 'collision_monitor' for a in nodes)
+    assert any(a['executable'] == 'sim_sonar' for a in nodes)
+    includes = [include_arguments(a, ctx) for a in actions
+                if isinstance(a, IncludeLaunchDescription)]
     Path(next(a['params_file'] for a in includes if 'params_file' in a)).unlink()
