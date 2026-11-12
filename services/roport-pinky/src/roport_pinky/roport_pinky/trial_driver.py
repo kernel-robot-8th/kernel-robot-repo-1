@@ -374,6 +374,11 @@ class TrialDriver:
                     state['heading_rad'] = nav['pose']['yaw']
                 if not nav['nav2_ready'] or not nav['localization_ready']:
                     state['fault'] = 'nav2_not_ready'
+            # Existing trial consumers reject unknown fields; enable only after both sides update.
+            if os.environ.get('ROPORT_NAV_DIAGNOSTICS') == '1':
+                diagnostic = self.nav.diagnostic()
+                if diagnostic is not None:
+                    state['navigation'] = diagnostic
             state['fault'] = self._guard_fault() or state['fault']
             if self.runner_seen is None or time.monotonic() - self.runner_seen > 1:
                 state['fault'] = state['fault'] or 'runner_heartbeat_missing'
@@ -458,6 +463,8 @@ class TrialDriver:
             active = self.nav_command or self.logic.active
             state = self.observe()
             if active and state['fault']:
+                if self.nav.navigation:
+                    self.nav.navigation.update(phase='failed', error_code=state['fault'])
                 self.safe_stop(state['fault'])
                 return [(active, 'failed', {'error_code': state['fault']})]
             results = self.logic.drain_results()
@@ -484,9 +491,13 @@ class TrialDriver:
                 self.nav_command = None
                 self._lease('none')
                 if code != 'SUCCEEDED':
+                    if self.nav.navigation is not None:
+                        self.nav.navigation.update(phase='failed', error_code=code)
                     self.safe_stop(code)
                     results.append((cmd, 'failed', {'error_code': code}))
                 else:
+                    if self.nav.navigation is not None:
+                        self.nav.navigation.update(phase='completed', error_code=None)
                     results.append((cmd, 'completed', {
                         'goal_id': p['goal_id'], 'goal_version': p['goal_version'],
                         'frame_id': 'map', 'pose': pose, 'nav2_result': 'SUCCEEDED',

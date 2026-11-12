@@ -30,6 +30,7 @@ setup(
                                      'target_preview = roport_smartcart.target_preview:main',
                                      'doll_recognition = roport_smartcart.doll_recognition:main',
                                      'sim_sonar = roport_smartcart.sim_sonar:main',
+                                     'range_scan = roport_smartcart.range_scan:main',
                                      'sim_obstacles = roport_smartcart.sim_obstacles:main',
                                      'sim_control = roport_smartcart.sim_control:main',
                                      'sim_return_h1 = roport_smartcart.sim_return_h1:main',

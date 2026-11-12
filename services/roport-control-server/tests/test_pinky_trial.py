@@ -952,3 +952,35 @@ def test_smartcart_only_requires_two_role_config(single_profile, tmp_path):
         pytest.raises(ValueError, match="two_pinky"),
     ):
         TrialControl(single_profile, MemoryTransport(), journal, smartcart_only=True)
+
+
+def test_optional_navigation_diagnostics_are_strict_and_legacy_compatible(pair):
+    client, _fake, _request = pair
+    request = command(
+        site=client.site,
+        control=client.control,
+        robot=client.robot,
+        task="diagnostic-test",
+        step="status",
+        kind="status",
+        payload={"binding_id": client.binding},
+    )
+    event = client._event(request, "completed", 1)
+    validate_trial(event)
+    event["payload"]["navigation"] = {
+        "phase": "recovering",
+        "goal_id": "G2",
+        "target_pose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
+        "current_pose": None,
+        "recoveries": 1,
+        "max_recoveries": 2,
+        "recovery_elapsed_s": 3.0,
+        "recovery_timeout_s": 30.0,
+        "nav2_error_code": 0,
+        "action_status": 0,
+        "error_code": None,
+    }
+    validate_trial(event)
+    event["payload"]["navigation"]["unexpected"] = True
+    with pytest.raises(ValueError, match="unexpected"):
+        validate_trial(event)
