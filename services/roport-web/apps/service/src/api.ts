@@ -32,7 +32,6 @@ export type Pickup = {
   createdAt: string;
 };
 export type PickupRequest = {
-  requestId: string;
   orderId: string;
   locationId: string;
   flightId: string;
@@ -91,7 +90,9 @@ export const api = {
       'GET',
       `/api/orders/${encodeURIComponent(orderId)}/pickup-times?flightId=${encodeURIComponent(flightId)}&locationId=${encodeURIComponent(locationId)}`,
     ),
-  reserve: (r: PickupRequest) => call<Pickup>('POST', '/api/pickups', r),
+  // 서버는 이 4개 필드만 받는다. 호출자가 넘긴 여분 필드는 보내지 않는다.
+  reserve: (r: PickupRequest) =>
+    call<Pickup>('POST', '/api/pickups', { orderId: r.orderId, locationId: r.locationId, flightId: r.flightId, pickupAt: r.pickupAt }),
   pickups: () => call<Pickup[]>('GET', '/api/pickups'),
 };
 
@@ -108,8 +109,7 @@ const RESERVE_ERRORS: Record<string, string> = {
   LOCATION_NOT_FOUND: '수령 위치를 찾을 수 없습니다.',
   FLIGHT_NOT_FOUND: '항공편을 찾을 수 없습니다.',
   ORDER_NOT_RESERVABLE: '이 주문은 현재 예약할 수 없습니다.',
-  ACTIVE_PICKUP_EXISTS: '이미 진행 중인 예약이 있는 주문입니다.',
-  IDEMPOTENCY_CONFLICT: '같은 요청 번호로 다른 내용이 접수되어 있습니다. 새 요청 번호를 발급했으니 내용을 확인하고 다시 예약해 주세요.',
+  ACTIVE_PICKUP_EXISTS: '이 주문에는 이미 접수된 예약이 있습니다. 예약 조회에서 확인해 주세요.',
   PICKUP_TIME_NOT_AVAILABLE: '선택한 시간은 더 이상 예약할 수 없습니다. 시간을 다시 선택해 주세요.',
   NETWORK: '서버에 연결하지 못했습니다. 같은 요청으로 다시 시도할 수 있습니다.',
   BAD_RESPONSE: BAD_RESPONSE_TEXT,
@@ -140,33 +140,16 @@ export const timesErrorText = (e: unknown) =>
 // 선택한 시간이 사라졌다는 오류 뒤에는 시간 목록을 다시 조회해야 같은 422가 반복되지 않는다.
 export const shouldReloadTimes = (e: unknown) => e instanceof ApiError && e.code === 'PICKUP_TIME_NOT_AVAILABLE';
 
+// 재전송·다른 탭·응답 유실 뒤 재시도의 정상 경로: 이미 접수됨 → 예약 조회로 안내.
+export const isActivePickupExists = (e: unknown) => e instanceof ApiError && e.code === 'ACTIVE_PICKUP_EXISTS';
+
 // 탑승 시작이 이미 지난 항공편은 숨긴다(같은 시각은 유지).
 export const upcomingFlights = (flights: Flight[], now: Date = new Date()) =>
   flights.filter((f) => new Date(f.boardingStart).getTime() >= now.getTime());
-
-// crypto.randomUUID는 secure context(HTTPS·localhost)에서만 있어 LAN IP HTTP에서는 getRandomValues로 v4 UUID를 만든다.
-export function newRequestId(c: Crypto = globalThis.crypto): string {
-  const b = c.getRandomValues(new Uint8Array(16));
-  b[6] = (b[6] & 0x0f) | 0x40;
-  b[8] = (b[8] & 0x3f) | 0x80;
-  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
-}
 
 export function loginErrorText(e: unknown): string {
   const code = e instanceof ApiError ? e.code : null;
   if (code === 'LOGIN_FAILED') return '로그인할 수 없습니다. 로그인 ID를 확인해 주세요.';
   if (code === 'VALIDATION_FAILED') return '로그인 ID를 입력해 주세요.';
   return loadErrorText(e);
-}
-
-// 선택이 바뀌면 새 요청이므로 새 requestId. 같은 선택의 재시도(네트워크·결과 불명 오류)는 유지.
-// 같은 번호로는 같은 충돌이 반복되므로 IDEMPOTENCY_CONFLICT만 새로 발급.
-export function nextRequestId(
-  current: string,
-  event: { type: 'selection' } | { type: 'error'; error: unknown },
-  fresh: () => string,
-): string {
-  if (event.type === 'selection') return fresh();
-  return event.error instanceof ApiError && event.error.code === 'IDEMPOTENCY_CONFLICT' ? fresh() : current;
 }

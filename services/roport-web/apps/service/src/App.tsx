@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { api, ApiError, fmt, loadErrorText as errText, loginErrorText, newRequestId, nextRequestId, reserveErrorText, shouldReloadTimes, statusLabel, timesErrorText, upcomingFlights } from './api';
+import { api, ApiError, fmt, loadErrorText as errText, loginErrorText, isActivePickupExists, reserveErrorText, shouldReloadTimes, statusLabel, timesErrorText, upcomingFlights } from './api';
 import type { Flight, Location, Member, Order, Pickup } from './api';
 
 type View = { name: 'orders' } | { name: 'reserve'; order: Order } | { name: 'pickups'; justCreated?: string };
@@ -45,7 +45,7 @@ export function App() {
       </header>
       {view.name === 'orders' && <Orders onError={onError} onReserve={(order) => setView({ name: 'reserve', order })} />}
       {view.name === 'reserve' && (
-        <Reserve order={view.order} onError={onError} onCancel={() => setView({ name: 'orders' })} onDone={(p) => setView({ name: 'pickups', justCreated: p.pickupId })} />
+        <Reserve order={view.order} onError={onError} onCancel={() => setView({ name: 'orders' })} onDone={(p) => setView({ name: 'pickups', justCreated: p.pickupId })} onShowPickups={() => setView({ name: 'pickups' })} />
       )}
       {view.name === 'pickups' && <Pickups onError={onError} highlight={view.justCreated} />}
     </main>
@@ -126,7 +126,7 @@ function Orders({ onError, onReserve }: { onError: (e: unknown) => boolean; onRe
   );
 }
 
-function Reserve({ order, onError, onCancel, onDone }: { order: Order; onError: (e: unknown) => boolean; onCancel: () => void; onDone: (p: Pickup) => void }) {
+function Reserve({ order, onError, onCancel, onDone, onShowPickups }: { order: Order; onError: (e: unknown) => boolean; onCancel: () => void; onDone: (p: Pickup) => void; onShowPickups: () => void }) {
   const [opts, reloadOpts] = useLoad<{ locations: Location[]; flights: Flight[] }>(
     () => Promise.all([api.locations(), api.flights()]).then(([locations, flights]) => ({ locations, flights: upcomingFlights(flights) })),
     onError,
@@ -135,13 +135,12 @@ function Reserve({ order, onError, onCancel, onDone }: { order: Order; onError: 
   const [flightId, setFlightId] = useState('');
   const [pickupAt, setPickupAt] = useState('');
   const [times, setTimes] = useState<Load<string[]> | null>(null);
-  const [requestId, setRequestId] = useState<string>(newRequestId);
   const [timesN, setTimesN] = useState(0); // 시간 목록 재조회 카운터
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [showList, setShowList] = useState(false); // 이미 접수된 예약 → 예약 조회 안내 버튼
 
-  // 선택이 바뀌면 새 요청이므로 requestId를 새로 발급. 같은 선택의 재시도는 같은 requestId.
-  const change = (fn: () => void) => { fn(); setRequestId((r) => nextRequestId(r, { type: 'selection' }, newRequestId)); setErr(''); };
+  const change = (fn: () => void) => { fn(); setErr(''); setShowList(false); };
 
   useEffect(() => {
     setPickupAt('');
@@ -160,13 +159,12 @@ function Reserve({ order, onError, onCancel, onDone }: { order: Order; onError: 
     if (busy || !locationId || !flightId || !pickupAt) return;
     setBusy(true);
     setErr('');
+    setShowList(false);
     try {
-      onDone(await api.reserve({ requestId, orderId: order.orderId, locationId, flightId, pickupAt }));
+      onDone(await api.reserve({ orderId: order.orderId, locationId, flightId, pickupAt }));
     } catch (x) {
-      if (!onError(x)) setErr(reserveErrorText(x));
+      if (!onError(x)) { setErr(reserveErrorText(x)); setShowList(isActivePickupExists(x)); }
       if (shouldReloadTimes(x)) setTimesN((n) => n + 1);
-      // 같은 번호로는 같은 충돌이 반복되므로 새로 발급. 네트워크·결과 불명 오류는 같은 requestId 유지.
-      setRequestId((r) => nextRequestId(r, { type: 'error', error: x }, newRequestId));
       setBusy(false);
     }
   }
@@ -207,7 +205,7 @@ function Reserve({ order, onError, onCancel, onDone }: { order: Order; onError: 
           {times?.s === 'ok' && times.data.length === 0 && <p>선택한 조건에서 예약 가능한 시간이 없습니다.</p>}
           <button type="submit" disabled={busy || !pickupAt}>{busy ? '접수 중…' : '예약하기'}</button>{' '}
           <button type="button" onClick={onCancel} disabled={busy}>취소</button>
-          {err && <p role="alert">{err}</p>}
+          {err && <p role="alert">{err}{showList && <>{' '}<button type="button" onClick={onShowPickups}>예약 조회로 이동</button></>}</p>}
         </form>
       )}
     </section>
