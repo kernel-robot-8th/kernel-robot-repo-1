@@ -604,3 +604,39 @@ N12·N08은 물류 Pinky와 공유하는 구간이다. 감독 시험에서는 �
 실측 N12 가로선에서 확인한 정지 자세와 IR 전방 거리로 복귀 정차점을 보정할 수 있다.
 등록점은 명목 그래프와 5cm/0.1rad 이내인지 검사하고, 주행 때는 그 실측 등록점을 기준으로
 기존 자세·연속 정지·실제 IR 획득 조건을 다시 확인한다.
+
+## 종이인형 외형 인식 · FFT1-86
+
+`doll_recognition`은 **PC의 저장 영상**에서 등록한 그림 A(아이돌), B(소방관), C(축구선수)를
+찾는 비교용 검출기다. YOLO 학습 모델·얼굴인식·사람 Re-ID·로봇 추종은 아니다.
+기존 OpenCV SIFT 특징과 RANSAC 평면 변환을 이용한다.
+[OpenCV 알고리즘 설명](https://docs.opencv.org/4.6.0/d1/de0/tutorial_py_feature_homography.html).
+
+기준 이미지·마스크·원본·결과 영상은 저장소 밖에 둔다. 앞/뒤 그림 각각을 준비하고,
+마스크는 인형 부분만 255, 손·배경은 0으로 칠한다. 기준 JSON 경로를 기준으로 파일을 읽는다.
+
+```json
+[
+  {"label":"A","view":"front","image":"references/a-front.png","mask":"references/a-front-mask.png"},
+  {"label":"A","view":"back","image":"references/a-back.png","mask":"references/a-back-mask.png"}
+]
+```
+
+B/C도 같은 형식으로 추가한다. OpenCV와 NumPy가 설치된 PC에서 실행:
+
+```bash
+python -m roport_smartcart.doll_recognition \
+  --references /absolute/private/references.json \
+  --video /absolute/private/crossing.mp4 \
+  --output /absolute/private/new-result-directory
+```
+
+새 출력 폴더에 `preview.mp4`, 프레임별 `detections.json`, 처리시간·검출 프레임 수
+`summary.json`을 저장한다. 기존 폴더에는 덮어쓰지 않는다. 표시 사각형은 **기준 그림 영역**이며
+전신 박스·거리값이 아니다. 일치점 수는 확률이 아니다. 기준 영상과 평가 영상을 분리해야 하며,
+검출 프레임 수 자체를 정확도/재현율로 해석하면 안 된다.
+
+회전·작은 크기·흐림·가림으로 충분한 특징이 남지 않으면 미검출 처리한다.
+현재 클래스마다 인형 하나를 가정하며 동일 그림 두 개의 개별 추적은 지원하지 않는다.
+프레임 간 ID 유지·선택 UI·주행 출력은 연결하지 않았다. 실물 적용 전 다른 배경/조명에서의
+오검출, 가림과 재등장, CPU 처리속도를 별도로 확인한다.
