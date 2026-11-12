@@ -3,13 +3,17 @@ import json
 
 import pytest
 
-cv2 = pytest.importorskip('cv2')
-np = pytest.importorskip('numpy')
 
-from roport_smartcart.doll_recognition import DollRecognizer
+@pytest.fixture
+def recognition():
+    cv2 = pytest.importorskip('cv2')
+    np = pytest.importorskip('numpy')
+    from roport_smartcart.doll_recognition import DollRecognizer
+    return cv2, np, DollRecognizer
 
 
-def test_transformed_artwork_and_empty_frame(tmp_path):
+def test_transformed_artwork_and_empty_frame(tmp_path, recognition):
+    cv2, np, DollRecognizer = recognition
     rng = np.random.default_rng(7)
     reference = np.full((240, 180), 220, np.uint8)
     for _ in range(150):
@@ -32,14 +36,16 @@ def test_transformed_artwork_and_empty_frame(tmp_path):
     assert detector.detect(noise) == []
 
 
-def test_empty_manifest_rejected(tmp_path):
+def test_empty_manifest_rejected(tmp_path, recognition):
+    _, _, DollRecognizer = recognition
     path = tmp_path / 'empty.json'
     path.write_text('[]')
     with pytest.raises(ValueError, match='empty'):
         DollRecognizer(path)
 
 
-def test_missing_mask_rejected(tmp_path):
+def test_missing_mask_rejected(tmp_path, recognition):
+    _, _, DollRecognizer = recognition
     path = tmp_path / 'refs.json'
     path.write_text(json.dumps([{'label': 'A', 'view': 'front', 'image': 'absent.png', 'mask': 'absent.png'}]))
     with pytest.raises(ValueError, match='equal dimensions'):
