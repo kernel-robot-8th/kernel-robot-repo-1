@@ -39,6 +39,32 @@ def wrap(value):
     return math.atan2(math.sin(value), math.cos(value))
 
 
+def survey_low_obstacles(heading, command, spin, clock=time.monotonic):
+    """Sim-only stationary survey through collision_monitor; fail closed if blocked.
+
+    This observes the current surroundings, not unseen or future side traffic.
+    """
+    deadline = clock() + 90.
+    swept = 0.
+    try:
+        previous = heading()
+        if not math.isfinite(previous):
+            raise RuntimeError('invalid survey heading')
+        while swept < 2 * math.pi - .03:
+            current = heading()  # The caller also checks live sensor freshness.
+            if not math.isfinite(current):
+                raise RuntimeError('invalid survey heading')
+            if clock() >= deadline:
+                raise RuntimeError('sonar survey blocked or timed out')
+            swept += wrap(current - previous)
+            previous = current
+            if swept < 2 * math.pi - .03:
+                command(w=.5)
+                spin(.05)
+    finally:
+        command()
+
+
 def return_waypoints(position, n12, *, public_space):
     # Resume near the handoff without turning back toward the entrance wall.
     if math.hypot(position[0]-n12[0], position[1]-n12[1]) < .4 and abs(position[1]-n12[1]) < .15:
@@ -269,7 +295,18 @@ def main():
         n12_world = layout.frame.to_world(n12.x+IR_AHEAD_M*100., n12.y)
         targets = ([options.gate, 'return_entry'] if options.gate else
                    return_waypoints(pose()[:2], n12_world, public_space=public_space))
+        def survey_heading():
+            fresh()
+            control_ready()
+            # Odometry is available on hardware too; no obstacle truth is used.
+            q = samples['odom'].pose.pose.orientation
+            return math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))
+
         for target in targets:
+            if in_public_space(layout, pose()[:2]):
+                node.get_logger().info('Surveying low obstacles before Nav2 departure')
+                survey_low_obstacles(survey_heading, command, spin)
+                spin(.6)
             node.get_logger().info(f'Nav2 -> {target}')
             child = subprocess.Popen(['ros2', 'run', 'roport_smartcart', 'navigate',
                 '--mode', 'sim', '--domain-id', '198', '--places',

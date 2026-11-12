@@ -106,13 +106,9 @@ def test_close_gate_tolerance_is_explicit_and_finite(trial_launch):
             trial_launch._nodes(ctx)
 
 
-def test_small_map_detours_keep_collision_checks_and_short_tracking_distance(trial_launch):
+def test_hardware_trial_preserves_base_tracking_and_collision_checks(trial_launch):
     nodes = {n['executable']: n for n in trial_launch._nodes(context(.15, .08))}
     controller = nodes['controller_server']['parameters'][1]
     assert controller['FollowPath.use_collision_detection'] is True
-    minimum = controller['FollowPath.min_lookahead_dist']
-    nominal = controller['FollowPath.lookahead_dist']
-    maximum = controller['FollowPath.max_lookahead_dist']
-    assert 0 < minimum <= nominal <= maximum <= .20
-    assert controller['FollowPath.lookahead_time'] == 1.0
+    assert not any('lookahead' in key for key in controller)
     assert not any('inflation' in key or 'footprint' in key for key in controller)

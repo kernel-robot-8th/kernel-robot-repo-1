@@ -141,3 +141,12 @@ def test_recovery_tree_ports_match_installed_nav2_jazzy_nodes():
         if node.tag in ports:
             supplied = set(node.attrib) - {'name'}
             assert supplied <= ports[node.tag], (node.tag, supplied - ports[node.tag])
+
+
+def test_missing_pose_during_recovery_cancels_even_if_ready_flags_are_true():
+    bridge = recovery_bridge()
+    feedback(bridge, 1)
+    bridge._check_recovery({'localization_ready': True, 'nav2_ready': True, 'pose': None})
+    assert bridge.result[0] == 'nav2_not_ready'
+    assert bridge.cancelled == [True]
+    assert bridge.navigation['current_pose'] is None

@@ -199,3 +199,30 @@ def test_unknown_start_node_rejected_by_constructor():
 ])
 def test_error_code(reason, code):
     assert error_code(reason) == code
+
+
+@pytest.mark.parametrize('result_code', ['SUCCEEDED', 'nav2_recovery_timeout'])
+def test_result_reporting_without_optional_navigation_diagnostic(result_code):
+    import threading
+    import time
+    from types import SimpleNamespace
+    from roport_pinky.trial_driver import TrialDriver
+    driver = object.__new__(TrialDriver)
+    driver.lock = threading.RLock()
+    pose = {'x': 1., 'y': 2., 'yaw': 0.}
+    cmd = {'type': 'nav2_goal.requested', 'payload': {
+        'goal_id': 'G2', 'goal_version': 1, 'pose': pose,
+        'position_tolerance_m': .03, 'yaw_tolerance_rad': .1}}
+    driver.nav_command = cmd
+    driver.logic = SimpleNamespace(active=None, drain_results=lambda: [])
+    driver.nav = SimpleNamespace(navigation=None, result=(result_code, time.monotonic()-4),
+                                 snapshot=lambda: {'pose': pose})
+    driver.observe = lambda: {'fault': None, 'stopped': True}
+    leases, stopped = [], []
+    driver._lease = leases.append
+    driver.safe_stop = stopped.append
+    result = driver.drain_results()
+    assert leases == ['none']
+    assert driver.nav_command is None
+    assert result[0][1] == ('completed' if result_code == 'SUCCEEDED' else 'failed')
+    assert stopped == ([] if result_code == 'SUCCEEDED' else [result_code])

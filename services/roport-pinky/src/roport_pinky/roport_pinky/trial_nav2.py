@@ -279,7 +279,7 @@ class Nav2Bridge:
             return
         pose = state.get('pose')
         self.navigation['current_pose'] = dict(pose) if pose else None
-        if not state.get('localization_ready') or not state.get('nav2_ready'):
+        if not pose or not state.get('localization_ready') or not state.get('nav2_ready'):
             self._fail('nav2_not_ready')
             return
         if self.recovery_started is None:

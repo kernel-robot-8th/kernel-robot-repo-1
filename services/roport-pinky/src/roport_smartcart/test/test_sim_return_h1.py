@@ -122,3 +122,52 @@ def test_sim_truth_and_localization_must_agree_before_or_during_navigation():
     for pose in [(2., 2., math.pi), (1., 2., 0.), (float('nan'), 2., math.pi)]:
         with pytest.raises(RuntimeError, match='sim_localization_mismatch'):
             require_pose_consistency((1., 2., math.pi), pose)
+
+
+def test_sonar_survey_uses_measured_rotation_and_stops_after_wrap():
+    from roport_smartcart.sim_return_h1 import survey_low_obstacles
+    yaw, elapsed, commands = [3.], [0.], []
+    def command(v=0., w=0.):
+        commands.append((v, w))
+    def spin(dt):
+        elapsed[0] += dt
+        yaw[0] += commands[-1][1] * dt
+    survey_low_obstacles(lambda: wrap(yaw[0]), command, spin, lambda: elapsed[0])
+    assert 2*math.pi-.03 <= yaw[0]-3. < 2*math.pi+.03
+    assert commands[-1] == (0., 0.)
+    assert all(v == 0. for v, _ in commands)
+
+
+def test_blocked_sonar_survey_times_out_without_translating():
+    from roport_smartcart.sim_return_h1 import survey_low_obstacles
+    elapsed, commands = [0.], []
+    def spin(dt):
+        elapsed[0] += dt
+    with pytest.raises(RuntimeError, match='blocked or timed out'):
+        survey_low_obstacles(lambda: 0., lambda **kw: commands.append(kw),
+                             spin, lambda: elapsed[0])
+    assert 90. <= elapsed[0] < 90.1
+    assert commands[-1] == {}
+    assert all(c in ({}, {'w': .5}) for c in commands)
+
+
+def test_stale_sensor_during_survey_stops_before_propagating_error():
+    from roport_smartcart.sim_return_h1 import survey_low_obstacles
+    calls, commands = [0], []
+    def heading():
+        calls[0] += 1
+        if calls[0] > 2:
+            raise RuntimeError('range missing or stale')
+        return 0.
+    with pytest.raises(RuntimeError, match='range missing or stale'):
+        survey_low_obstacles(heading, lambda **kw: commands.append(kw), lambda dt: None)
+    assert commands[-1] == {}
+
+
+@pytest.mark.parametrize('yaw', [math.nan, math.inf])
+def test_invalid_initial_survey_heading_stops(yaw):
+    from roport_smartcart.sim_return_h1 import survey_low_obstacles
+    commands = []
+    with pytest.raises(RuntimeError, match='invalid survey heading'):
+        survey_low_obstacles(lambda: yaw, lambda **kw: commands.append(kw), lambda dt: None)
+    assert commands == [{}]

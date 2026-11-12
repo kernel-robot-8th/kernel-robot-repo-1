@@ -491,11 +491,13 @@ class TrialDriver:
                 self.nav_command = None
                 self._lease('none')
                 if code != 'SUCCEEDED':
-                    self.nav.navigation.update(phase='failed', error_code=code)
+                    if self.nav.navigation is not None:
+                        self.nav.navigation.update(phase='failed', error_code=code)
                     self.safe_stop(code)
                     results.append((cmd, 'failed', {'error_code': code}))
                 else:
-                    self.nav.navigation.update(phase='completed', error_code=None)
+                    if self.nav.navigation is not None:
+                        self.nav.navigation.update(phase='completed', error_code=None)
                     results.append((cmd, 'completed', {
                         'goal_id': p['goal_id'], 'goal_version': p['goal_version'],
                         'frame_id': 'map', 'pose': pose, 'nav2_result': 'SUCCEEDED',
