@@ -18,6 +18,8 @@ jobs:
           fetch-depth: 2
       - name: Check whitespace
         run: git show --format= --check HEAD -- . ':!services/roport-omx/lerobot' ':!services/roport-pinky/src/pinky_pro'
+      - name: Test read-only trial baseline checker
+        run: python3 -m unittest discover -s scripts -p 'test_trial_baseline.py' -v
       - name: Check local Markdown links
         run: |
           python3 - <<'PY'
