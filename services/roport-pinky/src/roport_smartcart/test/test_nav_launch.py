@@ -17,7 +17,7 @@ def launch_module(monkeypatch, tmp_path):
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, 'get_package_share_directory',
                         lambda package: str(tmp_path / package))
-    monkeypatch.setattr(module, 'build_params', lambda *a, **kw: {'test': kw, 'amcl': {'ros__parameters': {
+    monkeypatch.setattr(module, 'build_params', lambda *a, **kw: {'test': kw, 'bt_navigator': {'ros__parameters': {}}, 'amcl': {'ros__parameters': {
                             'initial_pose': dict(x=.3, y=-.3, z=0., yaw=0.)}}})
     for directory in ('roport_gz_world/maps', 'roport_gz_world/worlds'):
         (tmp_path / directory).mkdir(parents=True, exist_ok=True)
@@ -90,6 +90,7 @@ def test_gazebo_spawn_uses_amcl_pose_including_heading(launch_module, monkeypatc
     module, _ = launch_module
     initial = dict(x=.42, y=-.27, z=.02, yaw=.7)
     monkeypatch.setattr(module, 'build_params', lambda *a, **kw: {
+        'bt_navigator': {'ros__parameters': {}},
         'amcl': {'ros__parameters': {'initial_pose': initial}}})
     ctx = context(gui='false')
     actions = module._launch(ctx)

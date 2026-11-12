@@ -1,4 +1,4 @@
-"""Actual Nav2 controller must recover after its first low scan arrives late."""
+"""Actual Nav2 controller must recover after its first Range observation arrives late."""
 
 import os
 from pathlib import Path
@@ -10,10 +10,10 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "marking_range,has_max_range_obstacles", [(0.94, False), (0.95, True)]
+    "reading,has_obstacles", [(0.95, False), (0.60, True)]
 )
-def test_delayed_low_scan_recovers_controller_without_disabling_freshness(
-    monkeypatch, tmp_path, marking_range, has_max_range_obstacles
+def test_delayed_range_recovers_controller_without_disabling_freshness(
+    monkeypatch, tmp_path, reading, has_obstacles
 ):
     import rclpy
     from ament_index_python.packages import (
@@ -27,7 +27,7 @@ def test_delayed_low_scan_recovers_controller_without_disabling_freshness(
     from rclpy.action import ActionClient
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
-    from sensor_msgs.msg import LaserScan
+    from sensor_msgs.msg import Range, LaserScan
     from tf2_ros import StaticTransformBroadcaster
     from roport_smartcart.profiles import build_params, _clock_mode
 
@@ -45,10 +45,13 @@ def test_delayed_low_scan_recovers_controller_without_disabling_freshness(
     t.child_frame_id = "test_base"
     t.transform.rotation.w = 1.0
     tf.sendTransform(t)
-    source = n.create_publisher(LaserScan, "/test_low_scan", 10)
+    source = n.create_publisher(Range, "/us_sensor/range", 10)
     odom = n.create_publisher(Odometry, "odom", 10)
     commands = []
     maps = []
+    adapted = []
+    n.create_subscription(LaserScan, "/smartcart/sonar_scan",
+                          lambda m: adapted.append(m), 10)
     n.create_subscription(Twist, "cmd_vel", lambda m: commands.append(m.linear.x), 10)
     n.create_subscription(
         OccupancyGrid, "local_costmap/costmap", lambda m: maps.append(m), 10
@@ -76,8 +79,6 @@ def test_delayed_low_scan_recovers_controller_without_disabling_freshness(
         always_send_full_costmap=True,
         publish_frequency=10.0,
     )
-    c["sonar_layer"]["sonar_proxy"]["topic"] = "/test_low_scan"
-    c["sonar_layer"]["sonar_proxy"]["obstacle_max_range"] = marking_range
     config = tmp_path / "params.yaml"
     config.write_text(yaml.safe_dump(p))
     log = (tmp_path / "controller.log").open("w")
@@ -95,6 +96,10 @@ def test_delayed_low_scan_recovers_controller_without_disabling_freshness(
         stdout=log,
         stderr=log,
     )
+    adapter = subprocess.Popen([
+        str(Path(get_package_prefix('roport_smartcart')) / 'lib' /
+            'roport_smartcart' / 'range_scan')],
+        env={**os.environ, 'ROS_DOMAIN_ID': '184'}, stdout=log, stderr=log)
     handle = None
     try:
         lifecycle = n.create_client(ChangeState, "controller_server/change_state")
@@ -122,17 +127,16 @@ def test_delayed_low_scan_recovers_controller_without_disabling_freshness(
             goal.path.poses.append(pose)
         started = time.monotonic()
         future = None
-        while time.monotonic() - started < 6:
+        while time.monotonic() - started < 12:
             now = n.get_clock().now().to_msg()
-            scan = LaserScan()
+            scan = Range()
             scan.header.stamp = now
             scan.header.frame_id = "test_base"
-            scan.angle_min = -0.13
-            scan.angle_max = 0.13
-            scan.angle_increment = 0.0325
-            scan.range_min = 0.02
-            scan.range_max = 0.95
-            scan.ranges = [float("inf")] * 9
+            scan.radiation_type = Range.ULTRASOUND
+            scan.field_of_view = 0.26
+            scan.min_range = 0.02
+            scan.max_range = 0.95
+            scan.range = reading
             source.publish(scan)
             msg = Odometry()
             msg.header.stamp = now
@@ -140,16 +144,22 @@ def test_delayed_low_scan_recovers_controller_without_disabling_freshness(
             msg.child_frame_id = "test_base"
             msg.pose.pose.orientation.w = 1.0
             odom.publish(msg)
-            if future is None and time.monotonic() - started > 1.0:
+            if (future is None and adapted and maps
+                    and (100 in maps[-1].data) is has_obstacles
+                    and (maps[-1].header.stamp.sec + maps[-1].header.stamp.nanosec / 1e9
+                         > adapted[0].header.stamp.sec
+                         + adapted[0].header.stamp.nanosec / 1e9 + .5)):
                 future = client.send_goal_async(goal)
             ex.spin_once(timeout_sec=0.02)
-            if any(v > 0.01 for v in commands) and maps:
+            time.sleep(.02)  # Sensor-rate publishing, not an unbounded queued burst.
+            if (any(v > 0.01 for v in commands) and maps
+                    and (100 in maps[-1].data) is has_obstacles):
                 break
         assert any(v > 0.01 for v in commands), (
             tmp_path / "controller.log"
         ).read_text()
-        assert maps and (100 in maps[-1].data) is has_max_range_obstacles
-        assert c["sonar_layer"]["sonar_proxy"]["expected_update_rate"] == 0.5
+        assert maps and (100 in maps[-1].data) is has_obstacles
+        assert c["sonar_layer"]["sonar_range"]["expected_update_rate"] == 0.5
         if future and future.done():
             handle = future.result()
     finally:
@@ -162,6 +172,12 @@ def test_delayed_low_scan_recovers_controller_without_disabling_freshness(
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait(timeout=3)
+        adapter.send_signal(signal.SIGINT)
+        try:
+            adapter.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            adapter.kill()
+            adapter.wait(timeout=3)
         log.close()
         ex.shutdown()
         n.destroy_node()
