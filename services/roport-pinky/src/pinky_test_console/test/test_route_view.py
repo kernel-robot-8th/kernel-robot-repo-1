@@ -363,3 +363,109 @@ def test_dock_nodes_match_layout_load_nodes():
     g = graph_view(LAYOUT)
     assert set(g['dock_nodes']) == set(DOCK_NODES)
     assert g['bar_length'] == 12.0 and g['line_width'] == 2.4
+
+
+def test_parse_pause_resume_back():
+    assert parse_route_command({'cmd': 'pause', 'x': 1}) == {'cmd': 'pause'}
+    assert parse_route_command({'cmd': 'resume'}) == {'cmd': 'resume'}
+    assert parse_route_command({'cmd': 'back', 'to': 'N23', 'x': 1}) == {'cmd': 'back', 'to': 'N23'}
+    for bad in ({'cmd': 'back'}, {'cmd': 'back', 'to': 'n23'}, {'cmd': 'back', 'to': 'N23; ls'},
+                {'cmd': 'back', 'to': 23}, {'cmd': 'back', 'to': None}, {'cmd': 'back', 'to': ['N23']}):
+        with pytest.raises(RouteCommandError):
+            parse_route_command(bad)
+
+
+def test_parse_reverse_speed():
+    assert parse_route_command({'cmd': 'speed', 'reverse_speed': 0.02}) == \
+        {'cmd': 'speed', 'reverse_speed': 0.02}
+    assert parse_route_command({'cmd': 'speed', 'reverse_speed': 0.01})['reverse_speed'] == 0.01
+    assert parse_route_command({'cmd': 'speed', 'reverse_speed': 0.03})['reverse_speed'] == 0.03
+    assert parse_route_command({'cmd': 'speed', 'base_speed': 0.04, 'reverse_speed': 0.015}) == \
+        {'cmd': 'speed', 'base_speed': 0.04, 'reverse_speed': 0.015}
+    for bad in (0.009, 0.031, 0, -0.02, True, 'x', float('nan'), float('inf')):
+        with pytest.raises(RouteCommandError):
+            parse_route_command({'cmd': 'speed', 'reverse_speed': bad})
+    assert 'foo' not in parse_route_command({'cmd': 'speed', 'reverse_speed': 0.02, 'foo': 1})
+
+
+# ---- web/routemap.js 후진 보조 함수(node 로 실행, 없으면 건너뜀) ----
+import shutil
+import subprocess
+
+_RM = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'web', 'routemap.js')
+_SCRIPT = r"""
+const RM = require(process.argv[1]);
+const route = ['N07', 'N23', 'N19', 'N11'];
+const o = {};
+o.paused_mid = RM.backCandidates({state: 'paused', route, index: 2});    // N19→N11 도중
+o.paused_first = RM.backCandidates({state: 'paused', route, index: 0});
+o.arrived = RM.backCandidates({state: 'arrived', route});
+o.loading = RM.backCandidates({state: 'loading', route, index: 2});
+o.loop = RM.backCandidates({state: 'arrived', route: ['A', 'B', 'A', 'B', 'A']});
+o.follow = RM.backCandidates({state: 'follow', route, index: 1});
+o.none = [RM.backCandidates(null), RM.backCandidates({state: 'paused'}), RM.backCandidates({state: 'idle', route})];
+o.text = RM.reverseText({reverse: {to: 'N23', leg: ['N19', 'N11'], expected_cm: 40, done_cm: 12.34,
+                                   y_cm: -0.46, theta_deg: 1.2}});
+o.text_none = [RM.reverseText(null), RM.reverseText({}), RM.reverseText({reverse: 'x'})];
+o.text_part = RM.reverseText({reverse: {to: 'N23'}});
+o.bt = RM.backCandidates({state: 'paused', route, index: 2, back_targets: ['N23', 'N07']});
+o.bt_empty = RM.backCandidates({state: 'paused', route, index: 2, back_targets: []});
+o.bt_clean = RM.backCandidates({state: 'idle', back_targets: ['N23', 'N23', '', 5, 'N07']});
+o.bt_null = RM.backCandidates({state: 'paused', route, index: 0, back_targets: null});
+console.log(JSON.stringify(o));
+"""
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='node 없음')
+def test_routemap_reverse_helpers():
+    out = subprocess.run(['node', '-e', _SCRIPT, _RM], capture_output=True, text=True, check=True)
+    o = json.loads(out.stdout)
+    assert o['paused_mid'] == ['N19', 'N23', 'N07']       # 가장 최근 먼저, 지금 구간 출발 노드 포함
+    assert o['paused_first'] == ['N07']
+    assert o['arrived'] == ['N19', 'N23', 'N07']          # 현재(마지막) 노드 제외
+    assert o['loading'] == ['N19', 'N23', 'N07']
+    assert o['loop'] == ['B']                             # 중복 제거, 현재 노드 id 는 모두 제외
+    assert o['follow'] == [] and o['none'] == [[], [], []]
+    assert o['text'] == '목표 N23 · 구간 N11→N19 · 12.3 / 40.0 cm · 옆 -0.5 cm · 방향 +1.2°'
+    assert o['text_none'] == ['-', '-', '-']
+    assert o['text_part'].startswith('목표 N23 · 구간 - · - / - cm')
+    # back_targets 가 배열이면 경로 기반 계산 대신 그것만(빈 배열 = 후보 없음), 없을 때만 옛 계산
+    assert o['bt'] == ['N23', 'N07']
+    assert o['bt_empty'] == []
+    assert o['bt_clean'] == ['N23', 'N07']
+    assert o['bt_null'] == ['N07']
+
+
+_END_SCRIPT = r"""
+const RM = require(process.argv[1]);
+const route = ['N16', 'N14', 'N02', 'N10', 'N18'];
+const o = {};
+o.end = RM.endMemory({state: 'follow', route, end: {node: 'N18', facing: 'S'}});   // state.end 우선
+o.end_over = RM.endMemory({state: 'arrived', route, end: {node: 'N10', facing: 'E'}});
+o.fb_arrived = RM.endMemory({state: 'arrived', route});
+o.fb_loading = RM.endMemory({state: 'loading', route});
+o.fb_none = [RM.endMemory(null), RM.endMemory({state: 'follow', route}), RM.endMemory({state: 'stopped', route}),
+             RM.endMemory({state: 'arrived', route: []}), RM.endMemory({state: 'idle', end: {node: ''}})];
+o.same = RM.startMismatchMsg({state: 'arrived', route}, 'N18');
+o.diff = RM.startMismatchMsg({state: 'arrived', route}, 'P5');
+o.diff_end = RM.startMismatchMsg({state: 'idle', end: {node: 'N18'}}, 'P5');
+o.end_null = [RM.endMemory({state: 'arrived', route, end: null}), RM.endMemory({state: 'handoff', route, end: null})];
+o.no_mem = [RM.startMismatchMsg({state: 'stopped', route}, 'P5'), RM.startMismatchMsg(null, 'P5'),
+            RM.startMismatchMsg({state: 'arrived', route}, null)];
+console.log(JSON.stringify(o));
+"""
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='node 없음')
+def test_routemap_end_memory_and_start_check():
+    out = subprocess.run(['node', '-e', _END_SCRIPT, _RM], capture_output=True, text=True, check=True)
+    o = json.loads(out.stdout)
+    assert o['end'] == {'node': 'N18', 'facing': 'S'}
+    assert o['end_over']['node'] == 'N10'
+    assert o['fb_arrived'] == {'node': 'N18', 'facing': None} and o['fb_loading']['node'] == 'N18'
+    assert o['fb_none'] == [None] * 5
+    assert o['same'] is None
+    assert o['diff'] == '로봇이 N18 에서 끝났다고 기억 중입니다. 로봇을 P5 에 옮겨 놓았나요?'
+    assert o['diff_end'] == o['diff']
+    assert o['no_mem'] == [None, None, None]
+    assert o['end_null'] == [None, None]   # end 키가 있고 null 이면 route 로 대신하지 않음(재검토 R3)

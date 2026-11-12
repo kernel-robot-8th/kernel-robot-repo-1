@@ -6,6 +6,7 @@
 #   layout_file:=<roport_airport.yaml>  roport_gz_world 를 설치하지 않았을 때
 #   cmd_guard:=true(기본)  line_nav → line_nav/cmd_vel → cmd_vel_guard → cmd_vel (0.3 s 끊기면 0)
 #   dock_file:=~/roport_dock.yaml(기본)  상차 노드 정밀 도킹 값(FFT1-112), 빈 값이면 파일 안 씀
+#   reverse_follow_speed:=0.02  back 명령 라인 후진 속도(FFT1-172, 0.01~0.03)
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -32,6 +33,9 @@ FLOAT_ARGS = {
     'gap_heading_window_cm': ('4.0', 'line-gap recovery: heading from the last N cm on the line'),
     'search_deg': ('0.0', 'line-gap recovery: in-place search width (0 = off, default)'),
     'ir_spacing_cm': ('2.0', 'center to side IR (HW spec ~20 mm, not measured)'),
+    'reverse_follow_speed': ('0.02', 'm/s line reverse (back command), 0.01..0.03'),
+    'reverse_wn': ('0.8', 'rad/s line reverse state feedback natural frequency'),
+    'reverse_zeta': ('0.8', 'line reverse state feedback damping'),
 }
 
 

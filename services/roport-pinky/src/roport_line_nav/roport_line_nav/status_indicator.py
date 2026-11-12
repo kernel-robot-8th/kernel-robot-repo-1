@@ -30,6 +30,7 @@ STYLES = {
     'PARKING':   ('PARKING',   BLUE_BG, (0, 255, 0), 1.0),
     'PARKED':    ('PARKED',    BLUE_BG, (0, 255, 0), 0.0),
     'HANDOFF':   ('HANDOFF',   BLUE_BG, (160, 0, 255), 0.0),
+    'PAUSED':    ('PAUSED',    BLUE_BG, (255, 200, 0), 0.0),     # FFT1-172 일시정지(추천값)
     'STOPPED':   ('STOPPED',   RED_BG, (255, 0, 0), 0.0),
     'ERROR':     ('ERROR',     RED_BG, (255, 0, 0), 2.5),
     'NO_SIGNAL': ('NO SIGNAL', GRAY_BG, (0, 0, 0), None),
@@ -82,6 +83,11 @@ def classify(state):
         return Status('DOCKED', f"{leg.get('to') or ''} waiting load".strip())
     if st == 'handoff':
         return Status('HANDOFF', str(leg.get('to') or ''))
+    if st == 'paused':
+        return Status('PAUSED', where)
+    rv = state.get('reverse')
+    if st in MOVE_STATES and rv and rv.get('phase') != 'done':     # 라인 후진(back) 중 = 이동
+        return Status('MOVING', f"back -> {rv.get('to')}")
     if st == 'arrived':
         if action == 'park':
             return Status('PARKED', str(leg.get('to') or ''))
