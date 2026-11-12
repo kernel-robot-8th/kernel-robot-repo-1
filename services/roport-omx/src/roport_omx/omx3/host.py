@@ -194,9 +194,12 @@ class Omx3Host:
     def _write(self, entry: dict) -> None:
         if self.journal is None:
             return
+        self._write_raw(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def _write_raw(self, text: str) -> None:
         self.journal.parent.mkdir(parents=True, exist_ok=True)
         with self.journal.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.write(text)
             f.flush()
             os.fsync(f.fileno())
 
@@ -204,9 +207,12 @@ class Omx3Host:
         if self.journal is None or not self.journal.exists():
             return
         reconciled = set()
-        for n, line in enumerate(
-            self.journal.read_text(encoding="utf-8").splitlines(), 1
-        ):
+        text = self.journal.read_text(encoding="utf-8")
+        if text and not text.endswith("\n"):
+            self._write_raw(
+                "\n"
+            )  # 끊긴 줄을 닫아 다음 기록이 그 줄에 이어 붙지 않게 한다
+        for n, line in enumerate(text.splitlines(), 1):
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:

@@ -187,9 +187,13 @@ class Journal(unittest.TestCase):
         self.assertEqual(host2.reconciling, [])
 
     def test_unfinished_run_blocks_until_cleared(self):
-        host, runner, _ = make(journal=self.path)
+        host, runner, events = make(journal=self.path)
         runner.gate.clear()
         host.handle_load(request("c1"))  # 실행 중 프로세스가 죽었다고 본다
+        for _ in range(500):  # 실행 스레드가 progress(HOMING·RUNNING)를 다 쓸 때까지
+            if kinds(events).count("load.progress") == 2:
+                break
+            threading.Event().wait(0.01)
         with self.path.open("a") as f:
             f.write('{"key": "c9/e1", "fp"')  # 쓰다 끊긴 줄
         host2, runner2, events2 = make(journal=self.path)
