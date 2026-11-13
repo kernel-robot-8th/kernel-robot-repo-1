@@ -56,6 +56,84 @@ const RM = (() => {
     return out;
   }
 
+  // 로봇이 끝났다고 기억하는 노드(FFT1-172 후속). 필드 이름이 바뀌면 이 함수만 고친다.
+  // state.end {node, facing} 를 우선 읽고, 없으면(옛 line_nav) arrived·loading 일 때 route 마지막 노드로 대신한다.
+  // handoff 는 옛 동작 호환으로 포함. 반환: {node, facing|null} 또는 null.
+  function endMemory(st) {
+    if (!st) return null;
+    if ("end" in st) {   // 새 line_nav: end 키가 있으면 그 값만 쓴다(null = 기억 없음)
+      const e = st.end;
+      if (e && typeof e === "object" && typeof e.node === "string" && e.node) {
+        return { node: e.node, facing: e.facing === undefined ? null : e.facing };
+      }
+      return null;
+    }
+    if (Array.isArray(st.route) && st.route.length && ["arrived", "loading", "handoff"].includes(st.state)) {
+      return { node: st.route[st.route.length - 1], facing: null };
+    }
+    return null;
+  }
+
+  // 출발 노드가 끝 기억과 다르면 확인창에 쓸 문구, 같거나 기억이 없으면 null.
+  function startMismatchMsg(st, startNode) {
+    const e = endMemory(st);
+    if (!e || !startNode || e.node === startNode) return null;
+    return `로봇이 ${e.node} 에서 끝났다고 기억 중입니다. 로봇을 ${startNode} 에 옮겨 놓았나요?`;
+  }
+
+  // 후진 양보(FFT1-172): 「후진」으로 돌아갈 수 있는 지나온 노드(가장 최근 먼저, 현재 노드 제외).
+  // paused = route[0..index] (index 구간의 출발 노드 포함), arrived·loading = 마지막(현재) 노드만 뺀 앞쪽.
+  // 그 밖의 상태는 후진을 시작할 수 없어 빈 목록. 최종 판단(지나온 경로 여부·자세)은 로봇의 line_nav 가 한다.
+  // state.back_targets(line_nav 가 지금 back 으로 받는 노드, 최근 순)가 배열이면 그것만 쓴다(빈 배열 = 후진 불가).
+  // 필드가 없을 때(옛 line_nav)만 아래 경로 기반 계산으로 대신한다.
+  function backCandidates(st) {
+    if (st && Array.isArray(st.back_targets)) {
+      const out = [];
+      for (const id of st.back_targets) if (typeof id === "string" && id && !out.includes(id)) out.push(id);
+      return out;
+    }
+    if (!st || !Array.isArray(st.route) || st.route.length < 2) return [];
+    const r = st.route;
+    let passed;
+    if (st.state === "paused") passed = r.slice(0, Math.max(0, Math.min(st.index || 0, r.length - 1)) + 1);
+    else if (st.state === "arrived" || st.state === "loading") passed = r.slice(0, -1);
+    else return [];
+    const here = st.state === "paused" ? null : r[r.length - 1];
+    const out = [];
+    for (let i = passed.length - 1; i >= 0; i--) {
+      if (passed[i] !== here && !out.includes(passed[i])) out.push(passed[i]);
+    }
+    return out;
+  }
+
+  // state.reverse {to, leg:[A,B], expected_cm, done_cm, y_cm, theta_deg} → 표시 문자열(없으면 "-")
+  function reverseText(st) {
+    const rv = st && st.reverse;
+    if (!rv || typeof rv !== "object") return "-";
+    const n = (v, d) => (typeof v === "number" && isFinite(v) ? v.toFixed(d) : "-");
+    const leg = Array.isArray(rv.leg) ? `${rv.leg[1]}→${rv.leg[0]}` : "-";
+    const sign = (v) => (typeof v === "number" && v > 0 ? "+" : "");
+    return `목표 ${rv.to || "-"} · 구간 ${leg} · ${n(rv.done_cm, 1)} / ${n(rv.expected_cm, 1)} cm`
+      + ` · 옆 ${typeof rv.y_cm === "number" ? sign(rv.y_cm) : ""}${n(rv.y_cm, 1)} cm`
+      + ` · 방향 ${typeof rv.theta_deg === "number" ? sign(rv.theta_deg) : ""}${n(rv.theta_deg, 1)}°`;
+  }
+
+  // 후진 노드 선택 상자를 후보로 다시 채운다(같은 목록이면 그대로, 고른 값이 남아 있으면 유지, 아니면 가장 최근).
+  function fillBackSelect(sel, cands) {
+    const key = cands.join(",");
+    if (sel.dataset.key === key) return;
+    const keep = cands.includes(sel.value) ? sel.value : "";
+    sel.replaceChildren();
+    for (const id of cands) {
+      const o = document.createElement("option");
+      o.value = id;
+      o.textContent = id;
+      sel.appendChild(o);
+    }
+    sel.dataset.key = key;
+    sel.value = keep || (cands.length ? cands[0] : "");
+  }
+
   const COLORS = {
     bg: "#ffffff", grid: "#eef0f3", tape: "#9cc7b4", node: "#ffffff", text: "#222222",
     route: "#e1702b", sw: "#2e4fd8", goal: "#e1702b", wall: "#2f3640", zone: "#eef0fb",
@@ -310,5 +388,7 @@ const RM = (() => {
     }
   }
 
-  return { getJson, postJson, setMsg, markConnection, RouteMap, traversed, mapToCm, ROBOT_COLORS };
+  return { getJson, postJson, setMsg, markConnection, RouteMap, traversed, mapToCm, ROBOT_COLORS,
+    backCandidates, reverseText, fillBackSelect, endMemory, startMismatchMsg };
 })();
+if (typeof module !== "undefined") module.exports = RM;
