@@ -8,6 +8,8 @@ import yaml
 from geometry_msgs.msg import TransformStamped
 from sensor_msgs.msg import CameraInfo, CompressedImage
 from tf2_ros import StaticTransformBroadcaster
+from nav2_msgs.action import FollowPath
+from rclpy.action import ActionServer
 
 from ros_trial_fixture import RosTrial
 from test_gate_docking import CONFIG
@@ -21,6 +23,16 @@ def test_gate_camera_stage_preserves_original_control_completion(tmp_path, monke
     monkeypatch.setenv('ROPORT_GATE_DOCK_CONFIG', str(path))
     trial = RosTrial()
     try:
+        def final_approach(handle):
+            goal = handle.request
+            assert goal.controller_id == 'GateDock'
+            assert goal.goal_checker_id == 'gate_dock_goal_checker'
+            assert len(goal.path.poses) == 6
+            end = goal.path.poses[-1].pose
+            trial.pose = dict(x=end.position.x, y=end.position.y, yaw=0.)
+            handle.succeed()
+            return FollowPath.Result()
+        final_server = ActionServer(trial.node, FollowPath, 'follow_path', final_approach)
         trial.driver.mode = 'nav2'
         trial.pose = dict(x=1.9, y=0., yaw=0.)
         trial.wait(lambda: abs(trial.driver.nav.snapshot()['pose']['x']-1.9) < .01)
@@ -70,5 +82,6 @@ def test_gate_camera_stage_preserves_original_control_completion(tmp_path, monke
             assert trial.pose['x'] == pytest.approx(2.09)  # approach only; no guessed final goal
         assert trial.driver.nav.snapshot()['stopped']
         timer.cancel()
+        final_server.destroy()
     finally:
         trial.close()

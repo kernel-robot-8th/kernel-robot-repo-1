@@ -48,7 +48,7 @@ class Nav2Bridge:
     def __init__(self, node, profile, map_path, lock):
         from geometry_msgs.msg import PoseWithCovarianceStamped
         from lifecycle_msgs.srv import GetState
-        from nav2_msgs.action import NavigateToPose
+        from nav2_msgs.action import NavigateToPose, FollowPath
         from nav_msgs.msg import OccupancyGrid, Odometry
         from rclpy.action import ActionClient
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -61,10 +61,12 @@ class Nav2Bridge:
         self.tf = Buffer()
         self.listener = TransformListener(self.tf, node, spin_thread=False)
         self.docking = None
+        self.dock_action = None
         self.dock_phase = None
         if os.environ.get('ROPORT_GATE_DOCK_CONFIG'):
             from .gate_docking import GateDocking
             self.docking = GateDocking(node, self.tf, os.environ['ROPORT_GATE_DOCK_CONFIG'])
+            self.dock_action = ActionClient(node, FollowPath, 'follow_path')
         self.map_ok = False
         self.amcl = None
         self.scan = self.odom = None
@@ -244,9 +246,10 @@ class Nav2Bridge:
             goal.pose.pose.position.y -= .20 * math.sin(p['yaw'])
         self._send_goal(goal, generation)
 
-    def _send_goal(self, goal, generation):
-        future = self.action.send_goal_async(
-            goal, feedback_callback=lambda msg: self._feedback(msg, generation))
+    def _send_goal(self, goal, generation, *, client=None):
+        action = self.action if client is None else client
+        feedback = (lambda msg: self._feedback(msg, generation)) if client is None else None
+        future = action.send_goal_async(goal, feedback_callback=feedback)
         self.goal_ack = future
         future.add_done_callback(lambda f: self._accepted(f, generation))
 
@@ -348,18 +351,29 @@ class Nav2Bridge:
         if target is None:
             return
         if self.dock_phase == 'acquire' and state.get('stopped'):
-            from ament_index_python.packages import get_package_share_directory
-            from nav2_msgs.action import NavigateToPose
-            goal = NavigateToPose.Goal()
-            goal.pose.header.frame_id = 'map'
-            goal.pose.header.stamp = self.node.get_clock().now().to_msg()
-            goal.pose.pose.position.x, goal.pose.pose.position.y = target['x'], target['y']
-            goal.pose.pose.orientation.z = math.sin(target['yaw']/2)
-            goal.pose.pose.orientation.w = math.cos(target['yaw']/2)
-            goal.behavior_tree = str(Path(get_package_share_directory('roport_pinky')) /
-                                     'behavior_trees/gate_docking.xml')
+            from geometry_msgs.msg import PoseStamped
+            from nav2_msgs.action import FollowPath
+            if not self.dock_action.server_is_ready():
+                self._fail('gate_dock_controller_unavailable')
+                return
+            # Smac's same-cell path ends at START, losing a sub-cell correction.
+            # This bounded final approach supplies its exact endpoint directly
+            # to the normal collision-checking controller, never raw cmd_vel.
+            goal = FollowPath.Goal()
+            goal.path.header.frame_id = 'map'
+            goal.path.header.stamp = self.node.get_clock().now().to_msg()
+            for step in range(6):
+                point = PoseStamped()
+                point.header = goal.path.header
+                point.pose.position.x = pose['x']+(target['x']-pose['x'])*step/5
+                point.pose.position.y = pose['y']+(target['y']-pose['y'])*step/5
+                point.pose.orientation.z = math.sin(target['yaw']/2)
+                point.pose.orientation.w = math.cos(target['yaw']/2)
+                goal.path.poses.append(point)
+            goal.controller_id, goal.goal_checker_id = 'GateDock', 'gate_dock_goal_checker'
             self.dock_phase = 'executing'
-            self._send_goal(goal, self.generation)
+            self.generation += 1  # ignore any late approach feedback
+            self._send_goal(goal, self.generation, client=self.dock_action)
         elif self.dock_phase == 'verify' and state.get('stopped'):
             if (math.hypot(pose['x']-target['x'], pose['y']-target['y']) > .015
                     or abs(math.atan2(math.sin(pose['yaw']-target['yaw']),
