@@ -60,8 +60,12 @@ def _launch(context):
                           footprint=json.loads(arg('footprint')) if arg('footprint') else None,
                           max_linear=float(arg('max_linear')) if arg('max_linear') else None,
                           max_angular=float(arg('max_angular')) if arg('max_angular') else None)
-    params['bt_navigator']['ros__parameters']['default_nav_to_pose_bt_xml'] = str(
-        Path(get_package_share_directory('roport_pinky')) / 'behavior_trees' / 'bounded_recovery.xml')
+    recovery = (Path(arg('recovery_bt')) if arg('recovery_bt') else
+                Path(get_package_share_directory('roport_pinky')) /
+                'behavior_trees' / 'bounded_recovery.xml')
+    if arg('recovery_bt') and not recovery.is_file():
+        raise ValueError('recovery_bt must be an existing local behavior tree')
+    params['bt_navigator']['ros__parameters']['default_nav_to_pose_bt_xml'] = str(recovery)
     sim_time = 'true' if mode == 'sim' else 'false'
     actions = [SetEnvironmentVariable('ROS_DOMAIN_ID', domain)]
     if mode == 'sim':
@@ -142,7 +146,8 @@ def _launch(context):
 def generate_launch_description():
     defaults = {'mode': 'sim', 'gui': 'true', 'rviz': 'false', 'ros_domain_id': '',
                 'gz_partition': '', 'map': '', 'base_params_file': '',
-                'overrides_file': '', 'footprint': '', 'max_linear': '', 'max_angular': ''}
+                'overrides_file': '', 'footprint': '', 'max_linear': '', 'max_angular': '',
+                'recovery_bt': ''}
     return LaunchDescription([DeclareLaunchArgument(name, default_value=value)
                               for name, value in defaults.items()] +
                              [OpaqueFunction(function=_launch)])

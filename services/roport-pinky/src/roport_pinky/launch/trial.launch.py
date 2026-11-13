@@ -66,11 +66,11 @@ def _nodes(context):
         if name == 'bt_navigator':
             # Goal acknowledgements must survive short scheduling delays on the Pi.
             overrides['default_server_timeout'] = 500  # milliseconds
-            overrides['default_nav_to_pose_bt_xml'] = PathJoinSubstitution([
-                FindPackageShare('roport_pinky'), 'behavior_trees', 'bounded_recovery.xml'])
+            overrides['default_nav_to_pose_bt_xml'] = LaunchConfiguration('recovery_bt')
         if name == 'planner_server':
             # The public-space goal is near the map edge; a .5 m search crosses it.
             overrides['GridBased.tolerance'] = 0.1  # meters
+            overrides['GridBased.plugin'] = LaunchConfiguration('planner_plugin')
         if name == 'controller_server':
             overrides.update(CONTROLLER_OVERRIDES)
             overrides['general_goal_checker.xy_goal_tolerance'] = goal_xy_tolerance
@@ -96,6 +96,9 @@ def _nodes(context):
 
 def generate_launch_description():
     args = [DeclareLaunchArgument('robot'), DeclareLaunchArgument('map'),
+            DeclareLaunchArgument('planner_plugin', default_value='nav2_navfn_planner::NavfnPlanner'),
+            DeclareLaunchArgument('recovery_bt', default_value=PathJoinSubstitution([
+                FindPackageShare('roport_pinky'), 'behavior_trees', 'bounded_recovery.xml'])),
             DeclareLaunchArgument('layout_file'),
             DeclareLaunchArgument('ir_node', default_value='false'),
             DeclareLaunchArgument('line_speed', default_value='0.03',

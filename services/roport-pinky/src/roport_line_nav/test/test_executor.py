@@ -17,6 +17,31 @@ def graph():
     return Graph.load(LAYOUT)
 
 
+def test_confirmed_n12_start_rejects_early_noise_but_accepts_expected_branch(graph):
+    from roport_pinky_line.line_sensor import LineReading
+    runner = RouteExecutor(graph)
+    runner.start(['N12', 'N08', 'N09', 'H1'], start_offset_cm=0., confirmed_start=True)
+    runner._odo = runner._ref_odo+25.
+    side = LineReading((300,)*3, (1., 1., 0.), (True, True, False), -.5, False, False)
+    for _ in range(2):
+        runner._follow(side)
+    assert not any(e['event'] == 'node' for e in runner.events)
+    runner._odo = runner._ref_odo+35.
+    # _arrive dispatch needs an established odom heading.
+    runner._pose, runner._hold_yaw = (0., 0., math.pi), math.pi
+    for _ in range(2):
+        runner._follow(side)
+    assert any(e['event'] == 'node' and e['detail'].startswith('N08') for e in runner.events)
+
+
+@pytest.mark.parametrize('offset', [None, -1., math.nan, math.inf, 1000.])
+def test_confirmed_start_rejects_unmeasured_offsets(graph, offset):
+    runner = RouteExecutor(graph)
+    with pytest.raises(ValueError):
+        runner.start(['N12', 'N08'], start_offset_cm=offset, confirmed_start=True)
+    assert runner.state == 'idle'
+
+
 def _axle_to(sim, node_id):
     n = sim.graph.nodes[node_id]
     return math.hypot(sim.x - n.x, sim.y - n.y)

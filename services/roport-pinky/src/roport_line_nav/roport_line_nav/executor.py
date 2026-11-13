@@ -207,10 +207,12 @@ class RouteExecutor:
         self._reset_primitive()
 
     # ------------------------------------------------------------ 명령
-    def start(self, route, start_offset_cm=None, start_cross=False, start_facing=None):
+    def start(self, route, start_offset_cm=None, start_cross=False, start_facing=None,
+              *, confirmed_start=False):
         """경로 시작. 잘못된 경로는 GraphError(현재 상태 유지). 주행 중이면 거부.
 
-        start_cross: IR 3개가 route[0] 을 지나는 교차선 위, 로봇은 start_facing(E·N·W·S)을 봄.
+        start_cross: IR 3개가 route[0] 교차선 위, start_facing(E·N·W·S) 방향으로 출발.
+        confirmed_start: 실제 센서로 확인한 출발 오프셋에 gate_early 거리 창을 적용.
         """
         if self.state not in TERMINAL:
             raise GraphError(f'busy ({self.state}); stop first')
@@ -219,6 +221,10 @@ class RouteExecutor:
             self._check_cross(str(route[0]), start_facing, start_offset_cm)
         elif start_facing is not None:
             raise GraphError('start_facing is only for start_cross')
+        if confirmed_start and (start_cross or start_offset_cm is None
+                                or not math.isfinite(start_offset_cm)
+                                or not 0 <= start_offset_cm < legs[0].length):
+            raise ValueError('Confirmed start requires a finite offset within the first leg')
         self.route = [str(r) for r in route]
         self.legs = legs
         self._seg_ends = seg_ends
@@ -235,7 +241,7 @@ class RouteExecutor:
         if start_cross:
             self._depart_cross(legs[0], start_facing)
             return
-        self._depart(legs[0], end, start_offset_cm)
+        self._depart(legs[0], end, start_offset_cm, confirmed_start=confirmed_start)
 
     def _check_cross(self, nid, facing, offset):
         if facing not in FACINGS:
@@ -311,7 +317,7 @@ class RouteExecutor:
             a = b
         return legs, ends
 
-    def _depart(self, leg, end, s0_override=None):
+    def _depart(self, leg, end, s0_override=None, *, confirmed_start=False):
         """이 노드에서 leg 로 출발: 필요하면 출발 전 회전, 첫 구간 거리 창."""
         facing, pre, s0 = self._start_plan(leg, end)
         if s0_override is not None:
@@ -319,6 +325,7 @@ class RouteExecutor:
         if pre is None:
             # 기억한 끝 위치 없이 가정한 거리(사람이 놓은 출발·지정 오프셋)면 gate_early 를 걸지 않음
             guess = end is None or end['node'] != leg.frm or s0_override is not None
+            guess = guess and not confirmed_start
             self._begin_leg(s0, guess)
             return
         direction, lo, hi = pre

@@ -99,6 +99,8 @@ class HardwareReturn:
         self.node, self.options, self.target = node, options, target
         self.goal_parameters = AsyncParameterClient(node, 'controller_server')
         self.saved_goal_tolerance = None
+        self.fine_send = self.fine_handle = None
+        self.fine_client = None
         self.bridge = Nav2Bridge(node, profile, options.map, threading.RLock())
         self.nav = NavClient(node, action_name='navigate_to_pose',
                              timeout_seconds=300, environment='real')
@@ -149,6 +151,9 @@ class HardwareReturn:
     def spin(self):
         import rclpy
         rclpy.spin_once(self.node, timeout_sec=.01)
+        # Drain ready callbacks before checking freshness; action feedback shares this executor.
+        for _ in range(8):
+            rclpy.spin_once(self.node, timeout_sec=0.)
         self.nav.poll()
         self.lease(self.owner if self.guard_ok() else 'none')
         if time.monotonic()-self.last_status > .1:
@@ -271,6 +276,7 @@ class HardwareReturn:
         if not from_n12:
             self.navigate('return_entry')
             self.navigate('return_n12')
+            self.align_n12()
         self.phase = 'ACQUIRE_IR'
         acquire = Acquisition()
         end = time.monotonic()+10
@@ -287,10 +293,121 @@ class HardwareReturn:
             raise RuntimeError('N12 physical tape not acquired; staying stopped')
         self.follow_line(line_route(self.options.bay))
 
+    def align_n12(self):
+        """Correct a sub-cell endpoint through Nav2; never bypass the IR handoff."""
+        from action_msgs.msg import GoalStatus
+        from geometry_msgs.msg import PoseStamped
+        from nav_msgs.msg import Path as RosPath
+        from nav2_msgs.action import FollowPath
+        from rclpy.action import ActionClient
+        state = self.stop_confirmed()
+        if aligned(state.get('pose'), self.target, self.reading,
+                   math.inf if self.ir_at is None else time.monotonic()-self.ir_at):
+            return
+        result = self.parameter_result(self.goal_parameters.get_parameters([
+            'general_goal_checker.xy_goal_tolerance']))
+        if (len(result.values) != 1 or result.values[0].type != 3
+                or not math.isfinite(result.values[0].double_value)
+                or result.values[0].double_value <= 0):
+            raise RuntimeError('Invalid original goal tolerance')
+        self.saved_goal_tolerance = result.values[0].double_value
+        self.set_goal_tolerance(.01)
+        client = ActionClient(self.node, FollowPath, 'follow_path')
+        self.fine_client = client
+        try:
+            end = time.monotonic()+2
+            while not client.server_is_ready():
+                self.spin()
+                self.require_guard()
+                if time.monotonic() > end:
+                    raise RuntimeError('Fine alignment controller unavailable')
+            for _ in range(2):
+                state = self.stop_confirmed()
+                p = state.get('pose')
+                if not state['localization_ready'] or not p:
+                    raise RuntimeError('Fine alignment localization unavailable')
+                distance = math.hypot(p['x']-self.target.x, p['y']-self.target.y)
+                if distance > .08 or angle_error(p['yaw'], self.target.yaw) > .1:
+                    raise RuntimeError('Fine alignment outside N12 approach envelope')
+                if distance <= .01:
+                    return
+                goal = FollowPath.Goal()
+                goal.controller_id, goal.goal_checker_id = 'FollowPath', 'general_goal_checker'
+                goal.path = RosPath()
+                goal.path.header.frame_id = 'map'
+                goal.path.header.stamp = self.node.get_clock().now().to_msg()
+                for i in range(6):
+                    q = PoseStamped()
+                    q.header = goal.path.header
+                    q.pose.position.x = p['x']+(self.target.x-p['x'])*i/5
+                    q.pose.position.y = p['y']+(self.target.y-p['y'])*i/5
+                    a = self.target.yaw if i == 5 else p['yaw']
+                    q.pose.orientation.z, q.pose.orientation.w = math.sin(a/2), math.cos(a/2)
+                    goal.path.poses.append(q)
+                self.phase = 'ALIGN_N12'
+                self.fine_send = client.send_goal_async(goal)
+                self.parameter_result(self.fine_send)
+                self.fine_handle = self.fine_send.result()
+                if not self.fine_handle.accepted:
+                    raise RuntimeError('Fine alignment rejected')
+                future = self.fine_handle.get_result_async()
+                self.owner = 'nav2'
+                end = time.monotonic()+25
+                while not future.done():
+                    state = self.spin()
+                    self.require_guard()
+                    if not state['nav2_ready'] or not state['localization_ready']:
+                        raise RuntimeError('Fine alignment readiness lost')
+                    if time.monotonic() > end:
+                        raise RuntimeError('Fine alignment timed out')
+                self.owner = 'none'
+                self.lease('none')
+                result = future.result()
+                if result.status != GoalStatus.STATUS_SUCCEEDED or result.result.error_code:
+                    raise RuntimeError('Fine alignment failed')
+                self.fine_send = self.fine_handle = None
+                state = self.stop_confirmed()
+                p = state.get('pose')
+                if (state['localization_ready'] and p
+                        and math.hypot(p['x']-self.target.x, p['y']-self.target.y) <= .015
+                        and angle_error(p['yaw'], self.target.yaw) <= .1):
+                    return
+            raise RuntimeError('Fine alignment terminal pose not achieved')
+        finally:
+            self.owner = 'none'
+            self.lease('none')
+            # Keep the client alive through cancellation, including a late goal acceptance.
+            try:
+                self.cancel_fine_alignment()
+                self.stop_confirmed()
+                self.restore_goal_tolerance()
+            finally:
+                if self.fine_send is None:
+                    client.destroy()
+                    self.fine_client = None
+
+    def cancel_fine_alignment(self):
+        def wait(future):
+            end = time.monotonic()+10
+            while not future.done():
+                self.spin()  # owner NONE; cancellation must also work after guard loss
+                if time.monotonic() > end:
+                    raise RuntimeError('Fine alignment cancellation not confirmed')
+            try:
+                return future.result()
+            except Exception as exc:
+                raise RuntimeError('Fine alignment cancellation transport failed') from exc
+        if self.fine_send is not None and self.fine_handle is None:
+            self.fine_handle = wait(self.fine_send)
+        if self.fine_handle is not None and self.fine_handle.accepted:
+            wait(self.fine_handle.cancel_goal_async())
+            wait(self.fine_handle.get_result_async())
+        self.fine_send = self.fine_handle = None
+
     def follow_line(self, route):
         self.require_guard()
         self.stop_confirmed()
-        self.line.start(route, start_offset_cm=0.)
+        self.line.start(route, start_offset_cm=0., confirmed_start=route[0] == 'N12')
         self.phase = 'LINE'
         previous = self.ir_seq
         end = time.monotonic()+150
@@ -336,6 +453,11 @@ class HardwareReturn:
         self.line.stop('return shutdown')
         self.velocity.publish(self.Twist())
         self.nav.cancel()
+        if getattr(self, 'fine_send', None) is not None:
+            self.cancel_fine_alignment()
+        if getattr(self, 'fine_client', None) is not None:
+            self.fine_client.destroy()
+            self.fine_client = None
         # Retain the action until a terminal result; continue sending lease NONE.
         while self.nav.lifecycle.busy:
             self.spin()
