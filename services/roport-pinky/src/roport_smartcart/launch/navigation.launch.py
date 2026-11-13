@@ -106,8 +106,6 @@ def _launch(context):
                  parameters=[{'use_sim_time': True}]),
             Node(package='roport_smartcart', executable='sim_sonar', output='screen',
                  parameters=[{'use_sim_time': True}]),
-            Node(package='roport_smartcart', executable='range_scan', output='screen',
-                 parameters=[{'use_sim_time': True}]),
             Node(package='nav2_collision_monitor', executable='collision_monitor',
                  name='collision_monitor', output='screen',
                  parameters=[str(share / 'config' / 'collision_monitor_sim.yaml')]),

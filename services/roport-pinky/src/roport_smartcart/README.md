@@ -376,7 +376,7 @@ Gazebo 전용이다. 원본 Pinky xacro를 포함한 팀 wrapper에 전방 거�
 웹 지도는 기존처럼 `http://127.0.0.1:8081`에서 확인한다.
 
 - `/scan`은 기존 라이다, `/sim/sonar_scan`은 낮은 수평 광선, `/us_sensor/range`는 Range 변환 출력이다.
-- 시뮬의 두 costmap은 `/us_sensor/range` 하나를 `range_scan`이 감지각 전체의 같은 거리 호로 보수적으로 투영한 `/smartcart/sonar_scan`을 받는다. 방향을 특정할 수 없어 호 전체를 장애물 후보로 표시한다. 원본 광선별 `/sim/sonar_scan`은 Range 생성에만 사용한다. 센서 중단·오래된 값·잘못된 값은 새 관측으로 대체하지 않으며 0.5초 후 costmap/Collision Monitor가 주행을 막는다. 최대 거리값은 무반환으로 처리하므로 실물 적용 전 포화·무반환 규약 보정이 필요하다.
+- 시뮬의 두 costmap은 `/us_sensor/range` 한 거리와 감지각을 Nav2 Range 센서 모델로 직접 처리한다. 감지각 전체를 확정 장애물 호로 만드는 변환은 사용하지 않는다. 원본 광선별 `/sim/sonar_scan`은 Range 생성에만 사용한다. 0.5초 센서 timeout과 Collision Monitor 정지는 유지한다. 최대 거리값은 무반환이므로 실물 적용 전 규약 보정이 필요하다.
 - Nav2 출력은 Collision Monitor → `/cmd_vel_safe` → Gazebo bridge 순서다. 원래 `/cmd_vel`이 구동 bridge로 직접 가지 않는다.
 - 후보 전방 감속 영역45cm에서는 속도를30%로 줄인다. 모의 몸체16cm에 각 방향4cm 여유를 더한 영역 안에서는 정지하며, 같은 영역의 2초 이동·회전 궤적에 충돌이 예상되면 감속한다. 벽이 회전 궤적 밖에 있으면 제자리 회전을 허용한다. 이는 시뮬 후보 설정이며 실물 제동거리 검증을 대신하지 않는다.
 - 라이다 또는 Range가0.5초 이상 오래되면 명령 처리 시 정지한다. 정상 관측이 돌아오면 필터가 다시 통과시킬 수 있다. 임무 복구/재출발 승인은 별도 실행부 책임이다.
@@ -507,10 +507,13 @@ H1/H2 가로선과 바퀴 축은 IR 장착 거리만큼 다르며 충전 접점 
 관제의 로봇 목표·속도에는 접근하지 않는다. 상태 수신이1초 이상 끊기면 상자 이동도 멈춘다.
 `stationary_line:=true`는 상자를 계속 두어 라인 차단 실패를 시험한다.
 
-Nav2는 라이다와 단일 초음파 Range에서 만든 보수적인 장애물 호를 지도에 반영해 재계획하고, 마지막 Collision Monitor가 감속·정지한다.
-`inf_is_valid`로 생성되는 최대 거리의 지우기용 점을 장애물로 표시하지 않도록, 표시 최대0.94m와 광선 지우기0.95m를 구분한다.
-초음파의 acoustic 반사·흡수·재질 특성은 구현하지 않았다. 실물 Range의 유효 거리·장착 TF·감지각·무반환 규약을 확인하기 전에는 이 변환 경로를 실물에 활성화하지 않는다.
-이전 RangeSensorLayer의 초기 관측 지연 후 current 상태 복구 문제는 실제 Nav2 controller 회귀 시험으로 재현·교체 검증했다.
+Nav2는 라이다와 한 초음파 거리/감지각의 확률 센서 모델을 지도에 반영해 재계획하고, 마지막 Collision Monitor가 감속·정지한다.
+감지각 전체를 확정 장애물 호로 표시하던 경로는 모서리에서 지나갈 공간도 막을 수 있어 시뮬 기본 경로에서 제거했다.
+`range_scan` 실행 파일은 기존 외부 사용자를 위한 도구로 남겨두며 기본 launch는 실행하지 않는다.
+설치된 Jazzy RangeSensorLayer를 상속한 `roport_range_layer::FreshRangeLayer`가 유효한 새 관측만 전달하고,
+TF 변환까지 처리한 새 관측이 있을 때 timeout 뒤 current 상태를 회복한다. 지도/라이다 cost 합성과 0.5초 timeout은 원본을 유지한다.
+첫 관측 지연 후 복구 및 입력 중단·오래된 timestamp·NaN 시 실제 Nav2 controller가 실패하는 회귀 시험을 수행한다.
+초음파의 반사·흡수·재질 특성은 구현하지 않았다. 실물 거리·TF·감지각·무반환 규약 확인 전에는 이 경로를 실물에 활성화하지 않는다.
 참고: [Nav2 Jazzy RangeSensorLayer 구현](https://github.com/ros-navigation/navigation2/blob/jazzy/nav2_costmap_2d/plugins/range_sensor_layer.cpp).
 
 라인 구간은 탈선 우회하지 않는다. 감지된 장애물 때문에 정지한 동안 이동·회전 odom이 진행되지 않으면 기다리며,
@@ -639,3 +642,10 @@ N12 이후 라인 복귀에서는 이 탐색 회전을 하지 않는다.
 standalone real은 기존0.30m(최소0.15m·최대0.45m), trial은 공급된 기본 Nav2 설정의 추종 거리를 유지한다.
 RPP의 충돌 예측은 carrot까지 제한되므로 짧은 lookahead는 예측 범위를 줄일 수 있으며,
 이번 시뮬레이션 성공을 실물 공통값 변경의 근거로 삼지 않는다. 충돌 검사는 계속 활성화한다.
+
+시뮬레이션 costmap은 Collision Monitor의 24cm 정지 영역을 포함하도록 padding을 4cm로 맞춘다.
+Smac2D 선택 시 `cost_travel_multiplier=10`으로 모서리에 붙는 경로보다 여유 있는 경로를 선호한다.
+실물 footprint/padding에는 이 시뮬레이션 값을 복사하지 않는다. 실제 구동기·센서 여유는 별도 실측한다.
+관제의 실패 보고·현장 대조 후 동일 목적지 재시도와 선택형 ArUco 주차 설정은
+[관제 시험 가이드](../../../roport-control-server/docs/pinky-trial.md)의 마지막 두 절을 따른다.
+마커 주차는 앞면–벽 5cm를 목표로 하며 실물 보정 전에는 비활성 상태다.
