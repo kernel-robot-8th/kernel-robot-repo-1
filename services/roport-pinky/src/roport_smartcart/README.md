@@ -640,8 +640,45 @@ JSON 결과는 프레임마다 파일에 기록해 메모리에 쌓지 않는다
 
 회전·작은 크기·흐림·가림으로 충분한 특징이 남지 않으면 미검출 처리한다.
 현재 클래스마다 인형 하나를 가정하며 동일 그림 두 개의 개별 추적은 지원하지 않는다.
-프레임 간 ID 유지·선택 UI·주행 출력은 연결하지 않았다. 실물 적용 전 다른 배경/조명에서의
+이 오프라인 명령에는 프레임 간 ID 유지·선택 UI·주행 출력이 없다. 실물 적용 전 다른 배경/조명에서의
 오검출, 가림과 재등장, CPU 처리속도를 별도로 확인한다.
+
+### 감독하 실물 추종 영상 시험
+
+`doll_follow_demo`는 위 A/B/C 그림 중 **한 종류만** 카메라에서 찾아 저속으로 따라가는
+30초짜리 현장 시험이다. 배송·관제·Nav2 기능과 연결되지 않는다. 핑키와 PC의
+`ROS_DOMAIN_ID`를 같게 하고, 핑키에는 기존 bringup·카메라 송신·`trial_guard`를 각각
+한 번만 실행한다. 기존 관제 runner, 라인 주행, Nav2 목표 실행은 모두 정지시킨다.
+`/camera/image_raw/compressed`, `/scan`, `/us_sensor/range`, `/trial/guard_state`가
+보이는지 먼저 확인한다. 카메라 송신은 현장에서 쓰던
+`/home/pinky/lane_follow/pinky_camera_stream.py`를 사용할 수 있다. `trial_guard`는
+로봇 쪽에서 실행해 PC 통신이 끊겨도 속도 명령을 0으로 내리게 한다.
+
+PC에서 이 브랜치를 빌드하고 실행한다. 기준 그림과 마스크는 공개 저장소 밖에 둔다.
+
+```bash
+cd services/roport-pinky
+source /opt/ros/jazzy/setup.bash
+colcon build --packages-select roport_smartcart
+source install/setup.bash
+export ROS_DOMAIN_ID=13  # 현장 핑키 설정과 동일하게
+ros2 run roport_smartcart doll_follow_demo \
+  --references /absolute/private/references.json --target A
+```
+
+넓고 빈 바닥에서 인형 A를 카메라 정면 **약 30cm**에 놓고 화면의 A 표시를 확인한다.
+`C`로 이 거리를 기준으로 저장한 다음 인형을 조금 멀리 옮긴다. `Space`를 누르면
+핑키가 최대 0.025m/s로 전진·회전하고, 인형이 기준 크기로 돌아오면 전진을 멈춘다.
+`Space`는 즉시 정지, `Q`/Esc는 종료다. 다른 인형을 고르려면 종료 후 `--target B` 또는
+`C`로 다시 실행한다. 인형은 바닥에서 들어 화면에 유지하고, 핑키 앞에 장애물을
+놓지 않는다. 촬영 중 한 사람이 핑키 옆에서 즉시 전원을 끌 수 있어야 한다.
+
+그림을 놓치면 속도 0, 0.8초 이상 보이지 않으면 재시작용 `Space`가 필요하다.
+영상·라이다·초음파 값이 0.4초 넘게 오래되거나 전방 25cm 안에 물체가 있으면
+정지한다. 30초가 지나도 정지한다. 거리 제어는 **실측 거리 추정이 아니라 화면 속
+그림 크기 비교**라서 인형의 각도·조명에 민감하다. 30cm 기준 거리는 현장에서
+직접 맞춰야 한다. 운행 중 guard 자체가 죽으면 Pinky 기본 드라이버에는 모터
+타임아웃이 없으므로 사람이 전원을 꺼야 한다. 이 시험을 무인 주행으로 쓰지 않는다.
 
 ### 단일 거리 입력과 출발 전 주변 탐색 · FFT1-150
 
