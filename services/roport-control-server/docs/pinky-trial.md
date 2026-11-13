@@ -775,3 +775,34 @@ Pinky는 취소한 Nav2 작업의 **최종 종료**, 신선한 센서·위치, �
 관제/로봇 재시작, MQTT/guard/lease 장애, 결과 미확인 timeout, 지도/boot 변경은 이 절차로 해제할 수 없다.
 이때는 기존 현장 대조·새 시험 준비 절차를 따른다. 재시도 명령도 실패하면 다시 HOLD로 보고한다.
 
+### 선택 기능: 게이트 ArUco 최종 주차
+
+별도 `dock.requested`를 시험 프로토콜에 섞지 않고, 기존 `navigate.requested`의 완료 직전에
+게이트 마커를 확인한다. 관제의 pose는 **최종 로봇 기준점**, 허용오차는 최종 기준점의 오차이며
+벽과의 간격이 아니다. 마커 크기·카메라 내부 보정·광학 프레임 TF·로봇 앞면 길이를 실측한 뒤,
+runner와 trial launch 양쪽에 같은 `ROPORT_GATE_DOCK_CONFIG=/private/gate-docking.yaml`을 설정한다.
+검증 전에는 설정하지 않는다. 아래 수치는 형식 예시이며 현장 보정값이 아니다.
+
+```yaml
+version: 1
+field_verified: false
+front_extent_m: 0.06
+clearance_m: 0.05
+image_topic: camera/image_raw/compressed
+camera_info_topic: camera/camera_info
+goals:
+  G2: {marker_id: 9, marker_size_m: 0.10}
+```
+
+실측 후에만 `field_verified: true`로 바꾼다. goals 키는 관제가 보내는 goal_id와 정확히 같아야 한다.
+기존 30cm/25cm 정차 좌표를 그대로 보내면 목표 불일치로 실패할 수 있으므로 관제의 최종 좌표와
+버전도 함께 갱신한다. 도킹은 최종점 20cm 전에서 정지 → 지정 ID의 새 영상 3장 확인 →
+Nav2 저속 controller(최대 0.02m/s)로 접근 → 새 마커와 실제 정지 확인 순서다.
+목표 간격은 **앞면에서 벽까지 5cm**이며 접촉 주차를 뜻하지 않는다. 최종 위치 1.5cm/각도0.08rad
+이내이고 관제 원래 목표 오차도 만족해야 completed가 된다.
+
+잘못된 ID, 미보정 CameraInfo, 영상/TF 유실, 마커 위치 급변, 25초 초과, 관제 목표와 불일치는
+`gate_dock_*` 실패로 정지한다. 영상의 타임스탬프에 맞는 map TF만 쓰며 추정 거리나 목표 좌표를
+관측값으로 대신하지 않는다. 도킹도 Nav2 충돌 검사·기존 guard/속도 watchdog을 통과한다.
+실제 근접 거리에서 마커가 카메라 시야에 남는지는 별도로 실물 확인해야 한다. 현재는 합성 영상과
+ROS 모의 action 검사이며, 실물 마커 주차 검증 완료를 뜻하지 않는다.

@@ -1,5 +1,6 @@
 """Trial-only stack. Bringup and calibration remain explicit operator actions."""
 import math
+import os
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -21,6 +22,27 @@ CONTROLLER_OVERRIDES = {
     'progress_checker.required_movement_radius': 0.05,
     'progress_checker.required_movement_angle': 0.15,
     'progress_checker.movement_time_allowance': 15.0,
+}
+
+
+DOCK_CONTROLLER_OVERRIDES = {
+    'controller_plugins': ['FollowPath', 'GateDock'],
+    'goal_checker_plugins': ['general_goal_checker', 'gate_dock_goal_checker'],
+    'gate_dock_goal_checker.plugin': 'nav2_controller::SimpleGoalChecker',
+    'gate_dock_goal_checker.xy_goal_tolerance': .01,
+    'gate_dock_goal_checker.yaw_goal_tolerance': .05,
+    'gate_dock_goal_checker.stateful': True,
+    'GateDock.plugin': 'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController',
+    'GateDock.desired_linear_vel': .02,
+    'GateDock.min_approach_linear_velocity': .005,
+    'GateDock.regulated_linear_scaling_min_speed': .005,
+    'GateDock.lookahead_dist': .05,
+    'GateDock.min_lookahead_dist': .03,
+    'GateDock.max_lookahead_dist': .10,
+    'GateDock.use_velocity_scaled_lookahead_dist': False,
+    'GateDock.rotate_to_heading_angular_vel': .15,
+    'GateDock.use_collision_detection': True,
+    'GateDock.allow_reversing': False,
 }
 
 
@@ -75,6 +97,9 @@ def _nodes(context):
             overrides.update(CONTROLLER_OVERRIDES)
             overrides['general_goal_checker.xy_goal_tolerance'] = goal_xy_tolerance
             overrides['FollowPath.desired_linear_vel'] = max_linear
+            if os.environ.get('ROPORT_GATE_DOCK_CONFIG'):
+                overrides.update(DOCK_CONTROLLER_OVERRIDES)
+                overrides['GateDock.desired_linear_vel'] = min(.02, max_linear)
             overrides['FollowPath.rotate_to_heading_angular_vel'] = max_angular
         if name in ('controller_server', 'behavior_server', 'velocity_smoother'):
             overrides['enable_stamped_cmd_vel'] = False

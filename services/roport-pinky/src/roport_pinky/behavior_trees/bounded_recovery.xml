@@ -6,7 +6,7 @@
         <RateController hz="1.0">
           <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}"/>
         </RateController>
-        <FollowPath path="{path}" controller_id="FollowPath" error_code_id="{follow_path_error_code}"/>
+        <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
       </PipelineSequence>
       <Timeout msec="10000">
         <Sequence name="BoundedRecovery">

@@ -93,3 +93,9 @@ Pi에서 경로 재계산 중 `follow_path` 목표 수락 응답이 기본 20ms�
 `bash ci/test.sh`: ROS 빌드, 라인 시뮬레이터, 별도 ROS domain의 가상 map/TF/AMCL/ActionServer, owner 프로세스 강제 종료 시험. 실제 controller/progress plugin의 회전·10초 이상 저속 주행·막힘 판정도 합성 odom/TF로 검사합니다. 실제 모터·LiDAR·Nav2 경로 계획의 현장 검증은 별도다. 테스트는 loopback으로 격리하며 bringup을 실행하지 않는다.
 
 Nav2 제한 복구·관제 실패 처리·G2 후보 전송은 [관제 참고 가이드](../../../../docs/pinky-nav2-recovery.md)를 따른다.
+
+게이트 ArUco 주차는 `ROPORT_GATE_DOCK_CONFIG`로 명시적으로 설정한 경우에만 실행한다.
+미설정 시 기존 Nav2 명령을 그대로 수행한다. 카메라 보정/광학 TF/앞면 길이 실측과 관제의
+최종 정차 좌표·버전을 먼저 맞춘다. 설정·실패 코드·같은 목적지 재시도는
+[관제 시험 가이드](../../../roport-control-server/docs/pinky-trial.md)의 마지막 두 절에 정리했다.
+기본 예제의 `field_verified: false`를 사실 확인 없이 바꾸지 않는다.
