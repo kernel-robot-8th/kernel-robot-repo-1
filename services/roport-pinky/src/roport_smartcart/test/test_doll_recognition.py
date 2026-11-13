@@ -50,3 +50,47 @@ def test_missing_mask_rejected(tmp_path, recognition):
     path.write_text(json.dumps([{'label': 'A', 'view': 'front', 'image': 'absent.png', 'mask': 'absent.png'}]))
     with pytest.raises(ValueError, match='equal dimensions'):
         DollRecognizer(path)
+
+
+@pytest.mark.parametrize('rows', [
+    [{}],
+    [{'label': 'A', 'image': 'ref.png', 'mask': 'mask.png'}],
+    [{'label': 'A', 'view': 'front', 'mask': 'mask.png'}],
+    [{'label': 'A', 'view': 'front', 'image': 'ref.png'}],
+    [{'label': 'A', 'view': 'front', 'image': '', 'mask': 'mask.png'}],
+])
+def test_incomplete_reference_reports_input_error(tmp_path, recognition, rows):
+    _, _, DollRecognizer = recognition
+    path = tmp_path / 'refs.json'
+    path.write_text(json.dumps(rows))
+    with pytest.raises(ValueError, match='reference needs label, view, image and mask'):
+        DollRecognizer(path)
+
+
+def test_video_results_are_valid_json(tmp_path, recognition, monkeypatch):
+    cv2, np, _ = recognition
+    from roport_smartcart import doll_recognition
+
+    source = tmp_path / 'source.avi'
+    writer = cv2.VideoWriter(str(source), cv2.VideoWriter_fourcc(*'MJPG'), 10, (100, 80))
+    assert writer.isOpened()
+    for _ in range(3):
+        writer.write(np.zeros((80, 100, 3), np.uint8))
+    writer.release()
+
+    class EmptyDetector:
+        def __init__(self, manifest):
+            pass
+
+        def detect(self, frame):
+            return []
+
+    monkeypatch.setattr(doll_recognition, 'DollRecognizer', EmptyDetector)
+    output = tmp_path / 'result'
+    doll_recognition.main(['--references', str(tmp_path / 'unused.json'),
+                           '--video', str(source), '--output', str(output)])
+    records = json.loads((output / 'detections.json').read_text())
+    summary = json.loads((output / 'summary.json').read_text())
+    assert [row['frame'] for row in records] == [0, 1, 2]
+    assert summary['frames'] == 3
+    assert summary['detected_frames'] == {'A': 0, 'B': 0, 'C': 0}

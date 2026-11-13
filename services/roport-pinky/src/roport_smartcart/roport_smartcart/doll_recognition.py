@@ -17,7 +17,14 @@ class DollRecognizer:
         self.sift = cv2.SIFT_create(nfeatures=1800)
         self.matcher = cv2.BFMatcher()
         self.references = []
-        for row in json.loads(manifest.read_text()):
+        rows = json.loads(manifest.read_text())
+        if not isinstance(rows, list) or not rows:
+            raise ValueError('reference manifest must be a nonempty list')
+        for row in rows:
+            if (not isinstance(row, dict) or not all(
+                    isinstance(row.get(key), str) and row[key]
+                    for key in ('label', 'view', 'image', 'mask'))):
+                raise ValueError('reference needs label, view, image and mask')
             if row['label'] not in ('A', 'B', 'C'):
                 raise ValueError('label must be A, B or C')
             image = cv2.imread(str(manifest.parent / row['image']), 0)
@@ -28,8 +35,6 @@ class DollRecognizer:
             if descriptors is None or len(points) < 12:
                 raise ValueError('reference needs at least 12 features')
             self.references.append((row['label'], row['view'], image.shape, points, descriptors))
-        if not self.references:
-            raise ValueError('empty reference manifest')
 
     def detect(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -92,7 +97,8 @@ def main(argv=None):
     args.output.mkdir(parents=True, exist_ok=False)
     capture = cv2.VideoCapture(str(args.video))
     writer = None
-    records, timings = [], []
+    frame_count, timings = 0, []
+    detected_frames = dict.fromkeys('ABC', 0)
     try:
         fps = capture.get(cv2.CAP_PROP_FPS)
         if not capture.isOpened() or not np.isfinite(fps) or fps <= 0:
@@ -101,35 +107,44 @@ def main(argv=None):
         writer = cv2.VideoWriter(str(args.output / 'preview.mp4'), cv2.VideoWriter_fourcc(*'mp4v'), fps, size)
         if not writer.isOpened():
             raise RuntimeError('video writer unavailable')
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            start = time.perf_counter()
-            detections = recognizer.detect(frame)
-            timings.append(time.perf_counter() - start)
-            records.append({'frame': len(records), 'seconds': len(records) / fps, 'detections': detections})
-            for detection in detections:
-                quad = np.int32(detection['quad'])
-                color = {'A': (60, 220, 60), 'B': (0, 180, 255), 'C': (255, 180, 70)}[detection['label']]
-                cv2.polylines(frame, [quad], True, color, 2)
-                x, y = np.maximum(quad.min(axis=0), [0, 40])
-                cv2.putText(frame, f"{detection['label']} {detection['view']} ({detection['inliers']} matches)",
-                            (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, .5, color, 1)
-            cv2.putText(frame, 'OFFLINE | A idol  B firefighter  C football | no robot output',
-                        (5, 20), cv2.FONT_HERSHEY_SIMPLEX, .4, (255, 255, 255), 1)
-            writer.write(frame)
-        if not records:
+        with (args.output / 'detections.json').open('w') as result:
+            result.write('[')
+            try:
+                while True:
+                    ok, frame = capture.read()
+                    if not ok:
+                        break
+                    start = time.perf_counter()
+                    detections = recognizer.detect(frame)
+                    timings.append(time.perf_counter() - start)
+                    if frame_count:
+                        result.write(',')
+                    result.write(json.dumps({'frame': frame_count, 'seconds': frame_count / fps,
+                                             'detections': detections}))
+                    frame_count += 1
+                    for label in detected_frames:
+                        detected_frames[label] += any(d['label'] == label for d in detections)
+                    for detection in detections:
+                        quad = np.int32(detection['quad'])
+                        color = {'A': (60, 220, 60), 'B': (0, 180, 255), 'C': (255, 180, 70)}[detection['label']]
+                        cv2.polylines(frame, [quad], True, color, 2)
+                        x, y = np.maximum(quad.min(axis=0), [0, 40])
+                        cv2.putText(frame, f"{detection['label']} {detection['view']} ({detection['inliers']} matches)",
+                                    (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, .5, color, 1)
+                    cv2.putText(frame, 'OFFLINE | A idol  B firefighter  C football | no robot output',
+                                (5, 20), cv2.FONT_HERSHEY_SIMPLEX, .4, (255, 255, 255), 1)
+                    writer.write(frame)
+            finally:
+                result.write(']')
+        if not frame_count:
             raise ValueError('video has no readable frames')
     finally:
         capture.release()
         if writer is not None:
             writer.release()
-    (args.output / 'detections.json').write_text(json.dumps(records))
-    summary = {'frames': len(records), 'source_fps': fps,
+    summary = {'frames': frame_count, 'source_fps': fps,
                'median_processing_ms': round(float(np.median(timings)) * 1000, 2),
-               'detected_frames': {label: sum(any(d['label'] == label for d in r['detections'])
-                                             for r in records) for label in 'ABC'},
+               'detected_frames': detected_frames,
                'note': 'Counts are not accuracy; no ground-truth labels. Boxes cover reference artwork, not full body.'}
     (args.output / 'summary.json').write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary))
