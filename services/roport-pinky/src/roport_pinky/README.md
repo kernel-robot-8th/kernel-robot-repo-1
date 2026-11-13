@@ -99,3 +99,12 @@ Nav2 제한 복구·관제 실패 처리·G2 후보 전송은 [관제 참고 가
 최종 정차 좌표·버전을 먼저 맞춘다. 설정·실패 코드·같은 목적지 재시도는
 [관제 시험 가이드](../../../roport-control-server/docs/pinky-trial.md)의 마지막 두 절에 정리했다.
 기본 예제의 `field_verified: false`를 사실 확인 없이 바꾸지 않는다.
+실측 시에는 앞면–벽 5cm의 최종 위치에서도 마커 전체가 화면 안에 들어오고 연속 검출되는지
+확인한다. 마커가 잘리거나 시야를 벗어나면 `gate_dock_marker_lost`로 정지하므로,
+검출 유지 시간을 늘려 숨기지 말고 카메라·마커 배치를 보정한 뒤 활성화한다.
+
+`ROPORT_NAV_DIAGNOSTICS=1`일 때 취소한 Nav2 goal의 종료 결과가 없거나 결과 수신이
+예외·취소로 끝나면 `navigation.error_code=nav2_cancel_result_unknown`을 보고한다.
+원래 실패 이벤트·fault와 종료 증거는 유지하며 동일 목적지 재시도도 계속 차단한다.
+관제는 이를 자동 재시도하지 않고, 작업자가 실제 정지와 Nav2 goal 종료를 확인한 뒤
+driver/runner 재기동 및 새 boot·현재 위치·작업 상태를 대조하여 시험을 다시 시작한다.

@@ -395,7 +395,14 @@ class Nav2Bridge:
 
     def diagnostic(self):
         with self.lock:
-            return dict(self.navigation) if self.navigation else None
+            if not self.navigation:
+                return None
+            diagnostic = dict(self.navigation)
+            # Keep the original failure/terminal evidence; expose why retry is blocked.
+            if any(f is None or (f.done() and (f.cancelled() or f.exception() is not None))
+                   for f in self.cancelled_goals):
+                diagnostic['error_code'] = 'nav2_cancel_result_unknown'
+            return diagnostic
 
     def _cancel_handle(self, handle):
         # Keep terminal evidence after cancel(); a new control retry cannot
