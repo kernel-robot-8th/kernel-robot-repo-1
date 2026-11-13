@@ -253,6 +253,10 @@ class TrialLogic:
         self.node = None
 
 
+NAV_RETRY_FAULTS = frozenset(('nav2_goal_failed', 'nav2_recovery_limit',
+    'nav2_recovery_timeout', 'gate_dock_marker_missing', 'gate_dock_marker_lost',
+    'gate_dock_timeout'))
+
 class TrialDriver:
     """rclpy 연결부. 별도 스레드에서 spin, 키트의 MQTT 스레드는 hook 만 부른다."""
 
@@ -283,6 +287,7 @@ class TrialDriver:
         self.mode, self.nav_command = 'line', None
         self.guard, self.guard_at = None, None
         self.halted, self.runner_seen = None, None
+        self.failed_navigation = None
         self.session, self.lease_seq = str(uuid4()), 0
         self.lease_pub = self.node.create_publisher(String, 'trial/lease', 1)
         self.nav = Nav2Bridge(self.node, profile, map_path, self.lock)
@@ -331,8 +336,8 @@ class TrialDriver:
                 self.halted = 'drive_guard_restarted'
             self.guard, self.guard_at = state, time.monotonic()
 
-    def _guard_fault(self):
-        if self.halted:
+    def _guard_fault(self, *, navigation_retry=False):
+        if self.halted and not (navigation_retry and self.halted in NAV_RETRY_FAULTS):
             return self.halted
         if self.guard is None or time.monotonic() - self.guard_at > 0.3:
             return 'drive_guard_unavailable'
@@ -353,9 +358,12 @@ class TrialDriver:
 
     def heartbeat(self):
         with self.lock:
-            if self._guard_fault():
+            if self._guard_fault(navigation_retry=self.failed_navigation is not None):
                 return
             self.runner_seen = time.monotonic()
+            if self.halted:
+                self._lease('none')
+                return
             owner = 'line' if self.logic.active else 'none'
             if self.nav_command and self.nav_command['type'] == 'navigate.requested' and not self.nav.result:
                 owner = 'nav2'
@@ -415,8 +423,25 @@ class TrialDriver:
                 'pose_source': source, 'pose': pose, 'velocity': None, 'joints': {},
             }
 
+    def validate_navigation_retry(self, command):
+        """Read-only admission for an explicit new command to the failed goal."""
+        with self.lock:
+            previous = self.failed_navigation
+            if (previous is None or self.halted not in NAV_RETRY_FAULTS
+                    or command['type'] != 'navigate.requested'
+                    or command['payload'] != previous['payload']
+                    or any(command.get(k) == previous.get(k) for k in ('command_id', 'execution_id'))
+                    or self.mode != 'nav2' or self.nav_command or self.logic.active
+                    or self._guard_fault(navigation_retry=True) or not self.nav.quiescent()):
+                return False
+            line, nav = self.logic.observe(), self.nav.snapshot()
+            return bool(line['fault'] is None and line['stopped'] and not line['line_enabled']
+                        and nav['stopped'] and nav['nav2_ready'] and nav['localization_ready'])
+
     def validate_action(self, command):
         with self.lock:
+            if self.validate_navigation_retry(command):
+                return
             state = self.observe()
             if state['fault']:
                 raise ValueError(state['fault'])
@@ -439,6 +464,11 @@ class TrialDriver:
 
     def dispatch(self, command):
         with self.lock:
+            if self.halted:
+                if not self.validate_navigation_retry(command):
+                    raise ValueError('recovery_required')
+                self.halted = None
+                self.failed_navigation = None
             if command['type'] == 'route.requested':
                 self._lease('line')
                 return self.logic.dispatch(command)
@@ -453,6 +483,11 @@ class TrialDriver:
 
     def safe_stop(self, reason):
         with self.lock:
+            if (reason in NAV_RETRY_FAULTS and self.nav_command
+                    and self.nav_command['type'] == 'navigate.requested'):
+                self.failed_navigation = self.nav_command
+            elif reason not in NAV_RETRY_FAULTS:
+                self.failed_navigation = None
             self.halted = reason
             self.nav_command = None
             self.nav.cancel()
@@ -488,14 +523,15 @@ class TrialDriver:
                     if time.monotonic() - ended < 3:
                         return results  # allow the final odom/TF sample to arrive
                     code = 'nav2_goal_not_reached'
-                self.nav_command = None
                 self._lease('none')
                 if code != 'SUCCEEDED':
                     if self.nav.navigation is not None:
                         self.nav.navigation.update(phase='failed', error_code=code)
                     self.safe_stop(code)
+                    self.nav_command = None
                     results.append((cmd, 'failed', {'error_code': code}))
                 else:
+                    self.nav_command = None
                     if self.nav.navigation is not None:
                         self.nav.navigation.update(phase='completed', error_code=None)
                     results.append((cmd, 'completed', {

@@ -145,9 +145,12 @@ class TrialSocket:
             "load_plan",
             "service_preview",
             "service_submit",
+            "retry_navigation",
         }:
             raise ValueError("unknown trial action")
-        if request["action"] == "service_preview":
+        if request["action"] == "retry_navigation":
+            required.update({"failed_execution_id", "field_confirmed"})
+        elif request["action"] == "service_preview":
             required.add("request")
         elif request["action"] == "service_submit":
             required.update({"request", "preview_id", "field_confirmed"})
@@ -245,7 +248,12 @@ class TrialSocket:
                 self.session_id = str(uuid4())
             return self.snapshot()
         try:
-            if request["action"] == "start":
+            if request["action"] == "retry_navigation":
+                self.control.retry_navigation(
+                    request["failed_execution_id"],
+                    reconciled=request["field_confirmed"],
+                )
+            elif request["action"] == "start":
                 self.control.start()
             elif request["action"] == "dummy":
                 self.control.dummy(request["stop_session_id"])

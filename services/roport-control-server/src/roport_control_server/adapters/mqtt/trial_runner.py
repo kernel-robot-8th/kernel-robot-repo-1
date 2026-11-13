@@ -63,6 +63,7 @@ def run(profile, role, connection, journal_path, driver):
         dispatch=driver.dispatch,
         safe_stop=driver.safe_stop,
         observe_motion=getattr(driver, "observe_motion", None),
+        validate_navigation_retry=getattr(driver, "validate_navigation_retry", None),
     )
     try:
         client.start()

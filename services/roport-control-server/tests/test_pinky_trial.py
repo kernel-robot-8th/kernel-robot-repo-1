@@ -3,6 +3,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import closing
 from copy import deepcopy
@@ -984,3 +985,180 @@ def test_optional_navigation_diagnostics_are_strict_and_legacy_compatible(pair):
     event["payload"]["navigation"]["unexpected"] = True
     with pytest.raises(ValueError, match="unexpected"):
         validate_trial(event)
+
+
+def navigation_failure(control):
+    index = next(
+        i for i, step in enumerate(control.plan["steps"]) if step["kind"] == "navigate"
+    )
+    step = control.plan["steps"][index]
+    robot = control._robot(step["id"])
+    status = deepcopy(control.state["statuses"][robot["robot_id"]])
+    status.update(
+        mode="nav2",
+        nav2_ready=True,
+        localization_ready=True,
+        drive_owner="nav2",
+        node_id=None,
+        fault="nav2_goal_failed",
+    )
+    old = command(
+        site=control.config["site_id"],
+        control=control.config["control_id"],
+        robot=robot["robot_id"],
+        task=control.state["task_id"],
+        step=step["id"],
+        kind="navigate",
+        payload={
+            **step["payload"],
+            "binding_id": robot["binding_id"],
+            "expected_boot_id": status["boot_id"],
+        },
+    )
+    failed = reply(
+        old,
+        "navigate.failed",
+        {**status, "phase_revision": 2, "error_code": "nav2_goal_failed"},
+    )
+    state = deepcopy(control.state)
+    state.update(phase="HOLD", fault="nav2_goal_failed", active=old, plan_index=index)
+    state["statuses"][robot["robot_id"]] = status
+    state["events"][failed["message_id"]] = failed
+    control.journal.save(state)
+    return old, robot
+
+
+def test_cli_reconciled_navigation_retry_retains_goal_and_uses_new_execution(
+    control_memory,
+):
+    c = control_memory
+    old, _ = navigation_failure(c)
+    with pytest.raises(ValueError, match="reconciliation"):
+        c.retry_navigation(old["execution_id"])
+    assert c.state["phase"] == "HOLD"
+    c.retry_navigation(old["execution_id"], reconciled=True)
+    new = c.state["active"]
+    validate_trial(new)
+    assert new["payload"] == old["payload"]
+    assert new["execution_id"] != old["execution_id"]
+    assert new["command_id"] != old["command_id"]
+    assert new["task_id"] == old["task_id"]
+    assert c.transport.sent[-1][1] == new
+    assert (
+        c.state["navigation_retries"][0]["failed_execution_id"] == old["execution_id"]
+    )
+    with pytest.raises(ValueError):
+        c.retry_navigation(old["execution_id"], reconciled=True)
+
+
+@pytest.mark.parametrize(
+    "bad", ["moving", "stale", "boot", "map", "guard", "unconfirmed"]
+)
+def test_navigation_retry_never_clears_other_holds_or_unknown_outcome(
+    control_memory, bad
+):
+    c = control_memory
+    old, robot = navigation_failure(c)
+    state = deepcopy(c.state)
+    status = state["statuses"][robot["robot_id"]]
+    if bad == "moving":
+        status["stopped"] = False
+    elif bad == "stale":
+        c.heard[robot["robot_id"]] -= 4
+    elif bad == "boot":
+        status["boot_id"] = "restarted"
+    elif bad == "map":
+        status["map_version"] = "other-map"
+    elif bad == "guard":
+        state["fault"] = status["fault"] = "drive_guard_restarted"
+    else:
+        state["events"] = {}
+    c.journal.save(state)
+    sent = len(c.transport.sent)
+    with pytest.raises(ValueError):
+        c.retry_navigation(old["execution_id"], reconciled=True)
+    assert c.state["phase"] == "HOLD"
+    assert len(c.transport.sent) == sent
+
+
+def test_retry_hook_is_optional_and_cannot_override_boot_or_endpoint_halt(
+    pair, profile
+):
+    client, fake, _ = pair
+    fake.state.update(
+        mode="nav2",
+        stopped=True,
+        line_enabled=False,
+        nav2_ready=True,
+        localization_ready=True,
+        drive_owner="nav2",
+        fault="nav2_goal_failed",
+    )
+    request = command(
+        site=client.site,
+        control=client.control,
+        robot=client.robot,
+        task="retry-task",
+        step="nav",
+        kind="navigate",
+        payload={
+            **profile["nav_goal"],
+            "binding_id": client.binding,
+            "expected_boot_id": client.boot,
+        },
+    )
+    client.handle(delivery(request))
+    assert client.transport.sent[-1][1]["type"] == "navigate.rejected"
+    assert fake.execution_count == 0
+    client.validate_navigation_retry = lambda _: True
+    wrong = deepcopy(request)
+    wrong["payload"]["expected_boot_id"] = "wrong-boot"
+    client.handle(delivery(wrong))
+    assert client.transport.sent[-1][1]["payload"]["error_code"] == "boot_mismatch"
+    assert fake.execution_count == 0
+    client.halted = "control_timeout"
+    client.handle(delivery(request))
+    assert client.transport.sent[-1][1]["type"] == "navigate.rejected"
+    assert fake.execution_count == 0
+    client.halted = None
+    client.handle(delivery(request))
+    assert fake.execution_count == 1
+    client.handle(delivery(request))
+    assert fake.execution_count == 1
+
+
+def test_local_retry_rpc_requires_current_session_expiry_and_field_confirmation(
+    control_memory, tmp_path
+):
+    from roport_control_server.executor.trial_socket import TrialSocket
+
+    c = control_memory
+    old, _ = navigation_failure(c)
+    socket_dir = tempfile.mkdtemp(prefix="nav-retry-", dir="/tmp")
+    channel = TrialSocket(Path(socket_dir) / "s", c)
+    try:
+        request = {
+            "action": "retry_navigation",
+            "session_id": channel.session_id,
+            "task_id": c.state["task_id"],
+            "phase": "HOLD",
+            "expires_at": time.time() + 1,
+            "failed_execution_id": old["execution_id"],
+            "field_confirmed": False,
+        }
+        with pytest.raises(ValueError):
+            channel.dispatch(request)
+        with pytest.raises(ValueError, match="expired"):
+            channel.dispatch(
+                {**request, "field_confirmed": True, "expires_at": time.time() - 1}
+            )
+        with pytest.raises(ValueError, match="changed"):
+            channel.dispatch(
+                {**request, "field_confirmed": True, "session_id": "stale-session"}
+            )
+        result = channel.dispatch({**request, "field_confirmed": True})
+        assert result["state"]["phase"] == old["step_id"]
+        assert result["state"]["fault"] is None
+    finally:
+        channel.close()
+        Path(socket_dir).rmdir()

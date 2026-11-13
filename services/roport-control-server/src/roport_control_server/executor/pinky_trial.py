@@ -54,6 +54,17 @@ from roport_control_server.executor.plans import (
 )
 from roport_control_server.executor.trial_socket import TrialSocket
 
+NAV_RETRY_FAULTS = frozenset(
+    (
+        "nav2_goal_failed",
+        "nav2_recovery_limit",
+        "nav2_recovery_timeout",
+        "gate_dock_marker_missing",
+        "gate_dock_marker_lost",
+        "gate_dock_timeout",
+    )
+)
+
 ROUTES = (
     "to_loading",
     "to_delivery",
@@ -257,6 +268,74 @@ class TrialControl:
         state.update(phase="HOLD", fault=reason)
         self.journal.save(state)
         # Stop renewing the active robot's lease. Its local controller must stop.
+
+    def retry_navigation(self, execution_id, *, reconciled=False):
+        """CLI-only, explicit field reconciliation; never clears other HOLDs."""
+        old = self.state["active"]
+        if (
+            reconciled is not True
+            or not self.transport.ready
+            or self.state["phase"] != "HOLD"
+            or self.state["fault"] not in NAV_RETRY_FAULTS
+            or not old
+            or old["type"] != "navigate.requested"
+            or old["execution_id"] != execution_id
+        ):
+            raise ValueError("explicit navigation failure reconciliation required")
+        failures = [
+            e
+            for e in self.state["events"].values()
+            if e["command_id"] == old["command_id"]
+            and e["type"] == "navigate.failed"
+            and e["payload"]["error_code"] == self.state["fault"]
+        ]
+        if not failures:
+            raise ValueError("navigation terminal failure not confirmed")
+        robot = self._robot(old["step_id"])
+        status = self.state["statuses"].get(robot["robot_id"])
+        if (
+            not status
+            or monotonic() - self.heard.get(robot["robot_id"], -math.inf) > 3
+            or not -0.5
+            <= (datetime.now(UTC) - timestamp(status["observed_at"])).total_seconds()
+            <= 3
+            or status["fault"] != self.state["fault"]
+            or not status["stopped"]
+            or status["line_enabled"]
+            or status["mode"] != "nav2"
+            or not status["nav2_ready"]
+            or not status["localization_ready"]
+            or status["drive_owner"] != "nav2"
+            or status["boot_id"] != old["payload"]["expected_boot_id"]
+            or any(status[k] != old["payload"][k] for k in ("map_id", "map_version"))
+        ):
+            raise ValueError(
+                "navigation retry requires fresh stopped state in same boot/map"
+            )
+        cmd = command(
+            site=self.config["site_id"],
+            control=self.config["control_id"],
+            robot=robot["robot_id"],
+            task=old["task_id"],
+            step=old["step_id"],
+            kind="navigate",
+            payload=deepcopy(old["payload"]),
+        )
+        state = deepcopy(self.state)
+        state.setdefault("navigation_retries", []).append(
+            {
+                "failed_execution_id": old["execution_id"],
+                "execution_id": cmd["execution_id"],
+                "goal_id": old["payload"]["goal_id"],
+                "reconciled_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        state.update(phase=old["step_id"], fault=None, active=cmd)
+        self.journal.save(state)  # Persist the new attempt before publication.
+        self.deadline = monotonic() + self.config["command_timeout_s"]
+        self.transport.publish(
+            topic(self.config["site_id"], "robot", robot["robot_id"], "cmd"), cmd
+        )
 
     def _step(self, step=None):
         if step is None:
@@ -756,8 +835,28 @@ class TrialControl:
             state["statuses"][device], state["boot_ids"][device] = p, p["boot_id"]
             self.journal.save(state)
             self.heard[device] = monotonic()
-            if p["fault"] is not None:
-                self.hold("robot_fault")
+            retry_pending = (
+                self.state.get("active")
+                and any(
+                    r["execution_id"] == self.state["active"]["execution_id"]
+                    for r in self.state.get("navigation_retries", [])
+                )
+                and not any(
+                    e["command_id"] == self.state["active"]["command_id"]
+                    and e["type"] == "navigate.accepted"
+                    for e in self.state["events"].values()
+                )
+            )
+            if p["fault"] is not None and not (
+                retry_pending and p["fault"] in NAV_RETRY_FAULTS
+            ):
+                self.hold(
+                    p["fault"]
+                    if self.state.get("active")
+                    and self.state["active"]["type"] == "navigate.requested"
+                    and p["fault"] in NAV_RETRY_FAULTS
+                    else "robot_fault"
+                )
             return
         cmd = self.state["active"]
         if not cmd or event["command_id"] != cmd["command_id"]:
@@ -824,7 +923,15 @@ class TrialControl:
                 for r in self.robots.values()
             ):
                 self.hold("robot_status_timeout")
-            if now - self.last_poll >= 1 and self.state["phase"] != "HOLD":
+            retry_wait = (
+                self.state["phase"] == "HOLD"
+                and self.state.get("active")
+                and self.state["active"]["type"] == "navigate.requested"
+                and self.state["fault"] in NAV_RETRY_FAULTS
+            )
+            if now - self.last_poll >= 1 and (
+                self.state["phase"] != "HOLD" or retry_wait
+            ):
                 # A fresh response can arrive after the next 1 Hz request.
                 utc_now = datetime.now(UTC)
                 self.pending_status = {
@@ -989,7 +1096,7 @@ def main():
                 control.poll(0.05)
                 web.poll()
         print(
-            "Inputs: start | dummy <stop_session_id> | request <package_id> | status | stop",
+            "Inputs: start | dummy <stop_session_id> | request <package_id> | retry <failed_execution_id> reconciled | status | stop",
             flush=True,
         )
         previous = None
@@ -1021,6 +1128,12 @@ def main():
                         control.dummy(fields[1])
                     elif len(fields) == 2 and fields[0] == "request":
                         control.request([{"package_id": fields[1], "quantity": 1}])
+                    elif (
+                        len(fields) == 3
+                        and fields[0] == "retry"
+                        and fields[2] == "reconciled"
+                    ):
+                        control.retry_navigation(fields[1], reconciled=True)
                     elif fields == ["status"]:
                         print(json.dumps(control.state, ensure_ascii=False), flush=True)
                     elif fields == ["stop"]:
