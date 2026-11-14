@@ -2,6 +2,7 @@
 import hashlib
 import json
 import math
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,7 +48,7 @@ class Nav2Bridge:
     def __init__(self, node, profile, map_path, lock):
         from geometry_msgs.msg import PoseWithCovarianceStamped
         from lifecycle_msgs.srv import GetState
-        from nav2_msgs.action import NavigateToPose
+        from nav2_msgs.action import NavigateToPose, FollowPath
         from nav_msgs.msg import OccupancyGrid, Odometry
         from rclpy.action import ActionClient
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -59,6 +60,13 @@ class Nav2Bridge:
         self.action = ActionClient(node, NavigateToPose, 'navigate_to_pose')
         self.tf = Buffer()
         self.listener = TransformListener(self.tf, node, spin_thread=False)
+        self.docking = None
+        self.dock_action = None
+        self.dock_phase = None
+        if os.environ.get('ROPORT_GATE_DOCK_CONFIG'):
+            from .gate_docking import GateDocking
+            self.docking = GateDocking(node, self.tf, os.environ['ROPORT_GATE_DOCK_CONFIG'])
+            self.dock_action = ActionClient(node, FollowPath, 'follow_path')
         self.map_ok = False
         self.amcl = None
         self.scan = self.odom = None
@@ -195,6 +203,7 @@ class Nav2Bridge:
             state = self._localization_state()
             self.localization = (state, time.monotonic())
             self._check_recovery(state)
+            self._check_docking(state)
             report = dict(state)
             if self.navigation is not None:
                 report['navigation'] = self.diagnostic()
@@ -227,8 +236,21 @@ class Nav2Bridge:
             'recovery_elapsed_s': 0.0, 'recovery_timeout_s': RECOVERY_TIMEOUT_S,
             'nav2_error_code': 0, 'action_status': 0, 'error_code': None,
         }
-        future = self.action.send_goal_async(
-            goal, feedback_callback=lambda msg: self._feedback(msg, generation))
+        if self.docking is not None:
+            self.docking.reset(payload)
+        self.dock_phase = None
+        if self.docking is not None and self.docking.enabled(payload['goal_id']):
+            # Control still owns the final target. Nav2 first stops 20 cm behind
+            # it, then a measured marker may authorize the final approach.
+            self.dock_phase = 'approach'
+            goal.pose.pose.position.x -= .20 * math.cos(p['yaw'])
+            goal.pose.pose.position.y -= .20 * math.sin(p['yaw'])
+        self._send_goal(goal, generation)
+
+    def _send_goal(self, goal, generation, *, client=None):
+        action = self.action if client is None else client
+        feedback = (lambda msg: self._feedback(msg, generation)) if client is None else None
+        future = action.send_goal_async(goal, feedback_callback=feedback)
         self.goal_ack = future
         self.pending_goal_acks += 1
         future.add_done_callback(lambda f: self._accepted(f, generation))
@@ -264,6 +286,11 @@ class Nav2Bridge:
                 self.navigation['action_status'] = int(result.status)
             except (RuntimeError, ValueError, AttributeError):
                 code = 'nav2_action_error'
+            if code == 'SUCCEEDED' and getattr(self, 'dock_phase', None) in ('approach', 'executing'):
+                self.dock_phase = 'await_stop' if self.dock_phase == 'approach' else 'verify'
+                self.dock_waiting_since = time.monotonic()
+                self.handle = None  # action has terminated; no overlapping velocity owner
+                return
             self.navigation['phase'] = 'navigating' if code == 'SUCCEEDED' else 'failed'
             self.navigation['error_code'] = None if code == 'SUCCEEDED' else code
             self.result = (code, time.monotonic())
@@ -302,7 +329,68 @@ class Nav2Bridge:
         if elapsed >= RECOVERY_TIMEOUT_S:
             self._fail('nav2_recovery_timeout')
 
+    def _check_docking(self, state):
+        if not getattr(self, 'dock_phase', None) or self.result is not None:
+            return
+        pose = state.get('pose')
+        if not pose or not state.get('localization_ready') or not state.get('nav2_ready'):
+            self._fail('nav2_not_ready')
+            return
+        now = self.node.get_clock().now().nanoseconds/1e9
+        if self.dock_phase == 'approach':
+            return
+        if self.dock_phase == 'await_stop':
+            if time.monotonic()-self.dock_waiting_since > 3:
+                self._fail('gate_dock_stop_unconfirmed')
+                return
+            if state.get('stopped'):
+                self.docking.begin(now)
+                self.dock_phase = 'acquire'
+            return
+        try:
+            target = self.docking.target(pose, now)
+        except ValueError as exc:
+            self._fail(str(exc))
+            return
+        if target is None:
+            return
+        if self.dock_phase == 'acquire' and state.get('stopped'):
+            from geometry_msgs.msg import PoseStamped
+            from nav2_msgs.action import FollowPath
+            if not self.dock_action.server_is_ready():
+                self._fail('gate_dock_controller_unavailable')
+                return
+            # Smac's same-cell path ends at START, losing a sub-cell correction.
+            # This bounded final approach supplies its exact endpoint directly
+            # to the normal collision-checking controller, never raw cmd_vel.
+            goal = FollowPath.Goal()
+            goal.path.header.frame_id = 'map'
+            goal.path.header.stamp = self.node.get_clock().now().to_msg()
+            for step in range(6):
+                point = PoseStamped()
+                point.header = goal.path.header
+                point.pose.position.x = pose['x']+(target['x']-pose['x'])*step/5
+                point.pose.position.y = pose['y']+(target['y']-pose['y'])*step/5
+                point.pose.orientation.z = math.sin(target['yaw']/2)
+                point.pose.orientation.w = math.cos(target['yaw']/2)
+                goal.path.poses.append(point)
+            goal.controller_id, goal.goal_checker_id = 'GateDock', 'gate_dock_goal_checker'
+            self.dock_phase = 'executing'
+            self.generation += 1  # ignore any late approach feedback
+            self._send_goal(goal, self.generation, client=self.dock_action)
+        elif self.dock_phase == 'verify' and state.get('stopped'):
+            if (math.hypot(pose['x']-target['x'], pose['y']-target['y']) > .015
+                    or abs(math.atan2(math.sin(pose['yaw']-target['yaw']),
+                                      math.cos(pose['yaw']-target['yaw']))) > .08):
+                self._fail('gate_dock_final_tolerance')
+                return
+            self.docking.active = False
+            self.dock_phase = None
+            self.result = ('SUCCEEDED', time.monotonic())
+
     def _fail(self, code):
+        if getattr(self, 'docking', None) is not None:
+            self.docking.active = False
         self.result = (code, time.monotonic())
         if self.navigation:
             self.navigation.update(phase='failed', error_code=code)
@@ -314,13 +402,15 @@ class Nav2Bridge:
             if not self.navigation:
                 return None
             diagnostic = dict(self.navigation)
+            # Keep the original failure/terminal evidence; expose why retry is blocked.
             if any(f is None or (f.done() and (f.cancelled() or f.exception() is not None))
                    for f in self.cancelled_goals):
                 diagnostic['error_code'] = 'nav2_cancel_result_unknown'
             return diagnostic
 
     def _cancel_handle(self, handle):
-        # A cancel ACK is not a terminal result; keep that evidence before line handoff.
+        # Keep terminal evidence after cancel(); a new control retry cannot
+        # overlap a goal which has merely acknowledged the cancellation request.
         if not hasattr(self, 'cancelled_goals'):
             self.cancelled_goals = []
         terminal = handle.get_result_async() if hasattr(handle, 'get_result_async') else None
@@ -337,6 +427,9 @@ class Nav2Bridge:
                    and f.exception() is None for f in futures)
 
     def cancel(self):
+        if getattr(self, 'docking', None) is not None:
+            self.docking.reset()
+        self.dock_phase = None
         self.generation += 1  # a late goal acceptance must cancel itself
         if self.handle is not None:
             self._cancel_handle(self.handle)

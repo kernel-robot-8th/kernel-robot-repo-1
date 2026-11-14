@@ -37,6 +37,14 @@
 
 ## N12 복귀
 
+Nav2 실패 후 같은 목적지 재시도는 기존 관제의 명시적 현장 대조 절차를 유지한다.
+v2 endpoint도 ROS driver의 `validate_navigation_retry`를 읽기 전용으로 확인하며,
+종료 결과가 아직 pending이면 `command_status/rejected`의 `reason=recovery_required`를 보낸다.
+관제는 실행 전 거절된 시도의 원래 실패를 보존하지만, 그 사이 발생한 다른 HOLD는 덮어쓰지 않는다.
+새 command ID만으로 다른 목표·이전 boot·통신 장애·구동 guard 고장을 해제할 수 없다.
+v2의 기본 보고는 fault/reason과 별도 robot_pose이며, 자세한 navigation 진단은 현재 ROS에서 확인한다.
+기존 `ROPORT_NAV_DIAGNOSTICS` 옵션만으로 v2 state의 필드를 추가하지 않는다.
+
 Nav2로 N12 복귀 골에 이동 → 정지 → `nav2 → line` 전환 → 라인 경로 전송 순서다. 복귀 골은 layout N12에서 바디 중심을 동쪽으로 3cm 옮긴 위치, 서쪽 방향에 frame 변환을 적용한 값이다. 로봇 센서 바가 바디 앞 3cm인 현재 설정을 기준으로 한다.
 
 드라이버는 실제 localization 준비, 정지, 목표 오차 5cm/0.1rad 이내, 0.3초 이내 IR 센터 선 검출·오차 0.25 이내를 확인하고 0.5초 연속 확인 후 라인으로 바꾼다. 다음 시작은 N12와 sensor offset=0을 검증한 `confirmed_start`로 전달한다. 실제 IR/위치 정합·캘리브레이션이 맞지 않으면 전환하지 않는다.

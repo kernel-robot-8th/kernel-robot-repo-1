@@ -81,6 +81,7 @@ def test_trial_driver_rejects_line_switch_until_nav2_cancel_finishes():
     bridge.handle = SimpleNamespace(get_result_async=lambda: terminal, cancel_goal_async=lambda: None)
     bridge.cancel()
     driver = object.__new__(TrialDriver)
+    driver.failed_navigation = None
     driver.lock, driver.nav = bridge.lock, bridge
     driver.mode, driver.nav_command = 'nav2', None
     driver.logic = SimpleNamespace(active=None)
@@ -235,3 +236,50 @@ def test_missing_pose_during_recovery_cancels_even_if_ready_flags_are_true():
     assert bridge.result[0] == 'nav2_not_ready'
     assert bridge.cancelled == [True]
     assert bridge.navigation['current_pose'] is None
+
+
+def test_docking_approach_success_is_not_reported_as_delivery(monkeypatch):
+    bridge = recovery_bridge()
+    bridge.dock_phase = 'approach'
+    bridge._result(SimpleNamespace(result=lambda: SimpleNamespace(status=4,
+                   result=SimpleNamespace(error_code=0))), 1)
+    assert bridge.result is None
+    assert bridge.dock_phase == 'await_stop'
+    assert bridge.handle is None
+    bridge.dock_waiting_since = time.monotonic()-4
+    bridge.node = SimpleNamespace(get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=10000000000)))
+    bridge.docking = SimpleNamespace(active=True)
+    bridge._check_docking({'localization_ready': True, 'nav2_ready': True,
+                          'stopped': False, 'pose': dict(x=1., y=1., yaw=0.)})
+    assert bridge.result[0] == 'gate_dock_stop_unconfirmed'
+    assert not bridge.docking.active
+
+
+def test_docking_verify_requires_actual_stop_and_marker_tolerance():
+    bridge = recovery_bridge()
+    bridge.dock_phase = 'verify'
+    bridge.node = SimpleNamespace(get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=10000000000)))
+    target = dict(x=1., y=1., yaw=0.)
+    bridge.docking = SimpleNamespace(active=True, target=lambda p,t: target)
+    state = dict(localization_ready=True, nav2_ready=True, stopped=False, pose=target)
+    bridge._check_docking(state)
+    assert bridge.result is None
+    bridge._check_docking({**state, 'stopped': True})
+    assert bridge.result[0] == 'SUCCEEDED'
+    assert bridge.dock_phase is None
+    assert not bridge.docking.active
+
+
+def test_lost_marker_during_docking_cancels_navigation():
+    bridge = recovery_bridge()
+    bridge.dock_phase = 'executing'
+    bridge.node = SimpleNamespace(get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=10000000000)))
+    def lost(*args):
+        raise ValueError('gate_dock_marker_lost')
+    bridge.docking = SimpleNamespace(active=True, target=lost)
+    bridge._check_docking(dict(localization_ready=True, nav2_ready=True,
+                              stopped=False, pose=dict(x=1.,y=1.,yaw=0.)))
+    assert bridge.result[0] == 'gate_dock_marker_lost'
+    assert bridge.cancelled == [True]
+    bridge._result(SimpleNamespace(result=lambda: pytest.fail('late docking success')), 1)
+    assert bridge.result[0] == 'gate_dock_marker_lost'

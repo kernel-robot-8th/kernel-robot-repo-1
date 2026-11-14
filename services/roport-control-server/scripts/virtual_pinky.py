@@ -20,7 +20,7 @@ sys.path.insert(0, str(PINKY / "src/roport_line_nav/test"))
 
 from roport_line_nav.executor import NavConfig, RouteExecutor
 from roport_line_nav.graph import Graph
-from roport_pinky.trial_driver import TrialDriver, TrialLogic
+from roport_pinky.trial_driver import NAV_RETRY_FAULTS, TrialDriver, TrialLogic
 from sim import Sim
 
 
@@ -66,12 +66,12 @@ class SimulatedNav:
         self.result = None
         self.stopped = False
 
+    def quiescent(self):
+        return self.goal is None and self.stopped
+
     def cancel(self):
         self.goal = None
         self.stopped = True
-
-    def quiescent(self):
-        return self.goal is None
 
     def tick(self, dt):
         self.observed_at = time.time()
@@ -133,6 +133,7 @@ class VirtualPinky(TrialDriver):
         self.mode, self.nav_command = "line", None
         self.pose_source = "simulation"
         self.halted, self.runner_seen = None, time.monotonic()
+        self.failed_navigation = None
         self.guard = {"owner": "none", "blocked": False}
         self.lease_at = None
         self.last = None
@@ -184,11 +185,16 @@ class VirtualPinky(TrialDriver):
         except ValueError as exc:
             self.last = {"cmd": body["cmd"], "ok": False, "detail": str(exc)}
 
-    def _guard_fault(self):
+    def _guard_fault(self, *, navigation_retry=False):
         # shortcut: in-process lease model; independent ROS guard/process death needs hardware/HIL.
         if self.lease_at is not None and time.monotonic() - self.lease_at > 1:
             self.guard.update(blocked=True, owner="none")
-        return self.halted or ("drive_lease_expired" if self.guard["blocked"] else None)
+        fault = (
+            None
+            if navigation_retry and self.halted in NAV_RETRY_FAULTS
+            else self.halted
+        )
+        return fault or ("drive_lease_expired" if self.guard["blocked"] else None)
 
     def _lease(self, owner):
         if not self._guard_fault():

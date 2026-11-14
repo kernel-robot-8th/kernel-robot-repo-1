@@ -39,6 +39,7 @@ class PinkyTrialClient:
         dispatch,
         safe_stop,
         observe_motion=None,
+        validate_navigation_retry=None,
     ):
         if robot not in {"pinky1", "pinky2", "pinky3"}:
             raise ValueError("Pinky slot required")
@@ -51,6 +52,7 @@ class PinkyTrialClient:
         self.observe, self.dispatch, self.safe_stop = observe, dispatch, safe_stop
         self.validate_action = validate_action
         self.observe_motion = observe_motion
+        self.validate_navigation_retry = validate_navigation_retry
         self.motion_sequence, self.motion_errors, self.motion_sent = 0, 0, 0.0
         self.boot = str(uuid4())
         self.journal = Journal(journal_path)
@@ -144,7 +146,13 @@ class PinkyTrialClient:
             <= 3
         ):
             raise ValueError("stale_robot_observation")
-        if self.halted or s["fault"] is not None:
+        if self.halted:
+            raise ValueError("recovery_required")
+        if s["fault"] is not None and not (
+            request["type"] == "navigate.requested"
+            and self.validate_navigation_retry is not None
+            and self.validate_navigation_retry(deepcopy(request))
+        ):
             raise ValueError("recovery_required")
         if p["expected_boot_id"] != self.boot:
             raise ValueError("boot_mismatch")

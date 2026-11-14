@@ -300,6 +300,13 @@ class FieldPinkyClient:
                 ):
                     raise ValueError("current_arrival_required")
             legacy = driver_command(m, self.profile, self.binding)
+            retry = getattr(self.driver, "validate_navigation_retry", None)
+            if s["fault"] is not None and not (
+                m["type"] == "nav_goal_command"
+                and retry is not None
+                and retry(deepcopy(legacy))
+            ):
+                raise ValueError("recovery_required")
             self.driver.validate_action(deepcopy(legacy))
         except ValueError as exc:
             self._save_event(

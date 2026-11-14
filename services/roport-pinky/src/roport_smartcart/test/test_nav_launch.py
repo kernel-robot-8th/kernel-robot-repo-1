@@ -30,7 +30,7 @@ def context(**changes):
     ctx.launch_configurations.update({
         'mode': 'sim', 'gui': 'true', 'rviz': 'false', 'ros_domain_id': '',
         'gz_partition': '', 'map': '', 'base_params_file': '',
-        'overrides_file': '', 'footprint': '', 'max_linear': '', 'max_angular': '',
+        'overrides_file': '', 'footprint': '', 'max_linear': '', 'max_angular': '', 'recovery_bt': '',
         **changes})
     return ctx
 
@@ -79,6 +79,7 @@ def test_real_plan_has_no_hardware_or_gazebo_nodes(launch_module):
     {'mode': 'real'}, {'mode': 'invalid'}, {'gui': 'yes'},
     {'ros_domain_id': '-1'}, {'ros_domain_id': '233'},
     {'mode': 'real', 'ros_domain_id': '0'},
+    {'recovery_bt': '/missing/recovery.xml'},
 ])
 def test_invalid_plan_fails_before_creating_processes(launch_module, changes):
     module, _ = launch_module

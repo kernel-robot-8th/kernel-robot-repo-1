@@ -105,3 +105,44 @@ def test_fresh_heartbeat_never_hides_lost_localization_evidence(trial, source):
     trial.wait(lambda: not trial.driver.nav.snapshot()['localization_ready'], timeout=3)
     with pytest.raises(ValueError, match='nav2_not_ready'):
         trial.driver.validate_action(navigate())
+
+
+def test_explicit_same_destination_retry_after_terminal_failure(trial):
+    from copy import deepcopy
+    from uuid import uuid4
+    trial.driver.mode = 'nav2'
+    trial.succeed = False
+    old = {**navigate(), 'command_id': str(uuid4()), 'execution_id': str(uuid4())}
+    result = trial.run(old)[-1]
+    assert result[1:] == ('failed', {'error_code': 'nav2_goal_failed'})
+    # Keep a NONE lease while waiting for an explicit control decision.
+    end = time.monotonic()+1.5
+    while time.monotonic()<end:
+        trial.driver.heartbeat()
+        time.sleep(.03)
+    assert trial.driver.guard['owner'] == 'none'
+    assert not trial.driver.guard['blocked']
+    new = deepcopy(old)
+    new.update(command_id=str(uuid4()), execution_id=str(uuid4()))
+    trial.wait(lambda: trial.driver.validate_navigation_retry(new))
+    wrong = deepcopy(new)
+    wrong['payload']['pose']['x'] += .1
+    assert not trial.driver.validate_navigation_retry(wrong)
+    assert not trial.driver.validate_navigation_retry(old)
+    trial.succeed = True
+    result = trial.run(new)[-1]
+    assert result[1] == 'completed'
+    assert trial.driver.halted is None
+
+
+def test_guard_fault_cannot_be_cleared_by_navigation_retry(trial):
+    from uuid import uuid4
+    trial.driver.mode = 'nav2'
+    trial.succeed = False
+    old = {**navigate(), 'command_id': str(uuid4()), 'execution_id': str(uuid4())}
+    trial.run(old)
+    trial.driver.safe_stop('drive_guard_restarted')
+    new = {**old, 'command_id': str(uuid4()), 'execution_id': str(uuid4())}
+    assert not trial.driver.validate_navigation_retry(new)
+    with pytest.raises(ValueError, match='drive_guard_restarted'):
+        trial.driver.validate_action(new)

@@ -341,6 +341,42 @@ def test_docking_selector_is_preserved_at_driver_boundary(endpoint):
     )
 
 
+def test_v2_navigation_retry_waits_for_terminal_result_and_preserves_failure(endpoint):
+    client, driver = endpoint
+    driver.mode = "nav2"
+    nav = deepcopy(client.profile["nav_goal"])
+    nav.pop("map_id")
+    nav.pop("goal_version")
+    nav.update(expected_boot_version=client.boot, goal_id="G2")
+    original = request(client, "nav_goal_command", nav, "failed-navigation")
+    deliver(client, original)
+    assert client.journal.data["active"] == original["command_id"]
+    driver.nav.result = ("nav2_goal_failed", time.monotonic())
+    for command, phase, details in driver.drain_results():
+        client.report(command, phase, **details)
+    assert client.journal.data["active"] is None
+    failed = deepcopy(driver.failed_navigation)
+    driver.nav.quiescent = lambda: False
+    pending = request(client, "nav_goal_command", nav, "pending-retry")
+    deliver(client, pending)
+    rejected = client.journal.data["records"][pending["command_id"]]["event"]
+    assert rejected["payload"]["status"] == "rejected"
+    assert rejected["payload"]["reason"] == "recovery_required"
+    assert driver.failed_navigation == failed
+    assert driver.nav_command is None
+    driver.nav.quiescent = lambda: True
+    other = request(client, "nav_goal_command", {**nav, "goal_id": "G3"}, "other-goal")
+    deliver(client, other)
+    rejected_other = client.journal.data["records"][other["command_id"]]["event"]
+    assert rejected_other["payload"]["reason"] == "recovery_required"
+    assert driver.failed_navigation == failed
+    terminal = request(client, "nav_goal_command", nav, "terminal-retry")
+    deliver(client, terminal)
+    assert client.journal.data["active"] == terminal["command_id"]
+    assert driver.halted is None
+    assert driver.nav_command["payload"] == failed["payload"]
+
+
 @pytest.mark.parametrize(
     ("operation", "error"),
     [
