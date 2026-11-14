@@ -10,6 +10,8 @@ SCHEMA_VERSION = "2.0"
 PROFILE = "roport-control-v2"
 MAX_MESSAGE_BYTES = 65536
 ROBOTS = {"pinky1", "pinky2", "pinky3", "omx1", "omx2", "omx3"}
+# One process host per endpoint; OMX1/OMX2 share the shelf-01 workcell host.
+HOSTS = {"pinky1", "pinky2", "pinky3", "omx3", "shelf-01"}
 COMMANDS = {
     "line_route_command",
     "set_drive_mode_command",
@@ -25,12 +27,15 @@ TYPES = COMMANDS | {
     "command_status",
     "robot_pose",
     "event_stored",
+    "host_metrics",
 }
 ID = {"type": "string", "pattern": r"[A-Za-z0-9_.:-]{1,128}"}
 NULL_ID = {**ID, "nullable": True}
 BOOL = {"type": "boolean"}
 NUMBER = {"type": "number", "minimum": -10000, "maximum": 10000}
 SEQ = {"type": "integer", "minimum": 0, "maximum": 2**53 - 1}
+KB = {"type": "integer", "minimum": 0, "maximum": 2**53 - 1, "nullable": True}
+LOAD = {"type": "number", "minimum": 0, "maximum": 10000, "nullable": True}
 
 
 def choice(*values):
@@ -210,6 +215,24 @@ SCHEMAS = {
         pose={**POSE, "nullable": True},
     ),
     "event_stored": obj(acked_message_id=ID),
+    # Display-only host telemetry; unknown values stay null and never gate control.
+    "host_metrics": obj(
+        boot_version=ID,
+        sequence={**SEQ, "minimum": 1},
+        observed_at={"type": "string"},
+        cpu_count={"type": "integer", "minimum": 1, "maximum": 4096, "nullable": True},
+        load_1m=LOAD,
+        load_5m=LOAD,
+        load_15m=LOAD,
+        mem_total_kb=KB,
+        mem_available_kb=KB,
+        cpu_temp_c={
+            "type": "number",
+            "minimum": -100,
+            "maximum": 200,
+            "nullable": True,
+        },
+    ),
 }
 
 
@@ -277,10 +300,13 @@ def topic(target, channel):
         "event",
         "ack",
         "motion",
+        "host",
     }:
         raise ValueError("unknown topic endpoint/channel")
     if channel == "motion" and not target.startswith("pinky"):
         raise ValueError("motion is Pinky only")
+    if channel == "host" and target not in HOSTS:
+        raise ValueError("unknown host")
     return (
         f"roport/{'workcell' if target == 'shelf-01' else 'robot'}/{target}/{channel}"
     )
@@ -326,11 +352,17 @@ def validate(message):
         timestamp(p["observed_at"])
     endpoint = (
         message["source"]
-        if kind in {"robot_state", "robot_pose", "command_status"}
+        if kind in {"robot_state", "robot_pose", "command_status", "host_metrics"}
         else message["target"]
     )
     if endpoint not in ROBOTS | {"shelf-01"}:
         raise ValueError("unknown endpoint")
+    if kind == "host_metrics" and (
+        endpoint not in HOSTS
+        or None not in (p["mem_total_kb"], p["mem_available_kb"])
+        and p["mem_available_kb"] > p["mem_total_kb"]
+    ):
+        raise ValueError("invalid host metrics")
     if (
         kind == "robot_state_request"
         and keep

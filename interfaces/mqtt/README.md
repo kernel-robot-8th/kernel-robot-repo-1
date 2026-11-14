@@ -2,7 +2,7 @@
 
 현재 로컬 구현은 `schema_version=2.0`, `profile=roport-control-v2`다. PR #68의 AsyncAPI 초안에서 토픽의 `v1/{site}`와 `route.requested` 표현을 제거하고, 실행 중복 방지에 필요한 `command_id`와 기동 구분 `boot_version`을 유지했다. 아직 병합·실물 검증 완료를 뜻하지 않는다.
 
-- [AsyncAPI](roport-mqtt.yaml): 전체 12종의 토픽·JSON 구조.
+- [AsyncAPI](roport-mqtt.yaml): 전체 13종의 토픽·JSON 구조.
 - [JSON 예시](examples.json): 조회, 실행, 결과, 재시작 방어, 출발 승인, 양방향 N12 전환.
 - [실행 검증 코드](../../services/roport-control-server/src/roport_control_server/adapters/mqtt/field_wire.py): 명령 대상, 상관관계, 필드 조합까지 검사하는 정본. 문서와 코드의 일치는 테스트로 확인한다.
 - [Pinky 이식·구동 경계](../../services/roport-control-server/docs/mqtt-field.md).
@@ -16,8 +16,9 @@
 | `roport/robot/{robot}/event`, `roport/workcell/shelf-01/event` | `robot_state`, `command_status` | 로봇/작업셀 → 관제 / 1 |
 | `roport/robot/{robot}/ack`, `roport/workcell/shelf-01/ack` | `event_stored` | 관제 → 발행 주체 / 1 |
 | `roport/robot/{pinky}/motion` | `robot_pose` | Pinky → 표시 UI / 0 |
+| `roport/robot/{pinky1\|pinky2\|pinky3\|omx3}/host`, `roport/workcell/shelf-01/host` | `host_metrics` (CPU 수·loadavg·메모리 kB·CPU 온도 °C, 모르는 값은 null, `command_id`·`expires_at` 없음) | 발행 호스트 → 관제 표시 / 0 |
 
-모든 발행은 `retain=false`. 물리 명령에는 만료 시각이 필요하다. QoS1 PUBACK은 브로커 수신 확인이며 동작 완료나 관제 저장 확인이 아니다. 중요 결과는 저장 후 `event_stored`를 받아야 outbox에서 제거한다.
+모든 발행은 `retain=false`. `host_metrics`는 표시 전용이며 출발 허가·HOLD·timeout 판정에 쓰지 않는다. 물리 명령에는 만료 시각이 필요하다. QoS1 PUBACK은 브로커 수신 확인이며 동작 완료나 관제 저장 확인이 아니다. 중요 결과는 저장 후 `event_stored`를 받아야 outbox에서 제거한다.
 
 `message_id`는 전송 메시지, `command_id`는 한 실행을 구분한다. 같은 명령의 재전송은 두 값과 본문 전체를 유지한다. `boot_version`은 프로그램 재기동마다 새로 생성하며 파일 버전이 아니다. `robot_state`의 `sequence`는 기동 내 상태 순서, `command_status.sequence`는 **해당 command_id 안의 상태 순서**, `robot_pose.sequence`는 표시 샘플 순서다.
 
