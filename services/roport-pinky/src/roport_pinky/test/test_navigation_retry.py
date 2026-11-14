@@ -22,6 +22,17 @@ def test_retry_waits_for_goal_acceptance_and_cancelled_goal_terminal_result():
     assert not bridge.quiescent()
 
 
+def test_retry_waits_until_completed_goal_acceptance_callback_runs():
+    bridge = object.__new__(Nav2Bridge)
+    ack = Future()
+    ack.set_result('accepted')
+    bridge.goal_ack, bridge.cancelled_goals = ack, []
+    bridge.pending_goal_acks = 1
+    assert not bridge.quiescent()
+    bridge.pending_goal_acks = 0
+    assert bridge.quiescent()
+
+
 @pytest.mark.parametrize('evidence', ['pending', 'terminal', 'missing', 'exception', 'cancelled'])
 def test_diagnostic_explains_unknown_cancel_result_without_unlocking_retry(evidence):
     bridge = object.__new__(Nav2Bridge)

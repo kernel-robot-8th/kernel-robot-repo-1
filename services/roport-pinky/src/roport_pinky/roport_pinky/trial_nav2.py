@@ -78,6 +78,7 @@ class Nav2Bridge:
                               for name in ('amcl', 'bt_navigator')}
         self.goal = self.handle = self.result = None
         self.goal_ack = None
+        self.pending_goal_acks = 0
         self.cancelled_goals = []
         self.generation = 0
         self.navigation = None
@@ -251,6 +252,7 @@ class Nav2Bridge:
         feedback = (lambda msg: self._feedback(msg, generation)) if client is None else None
         future = action.send_goal_async(goal, feedback_callback=feedback)
         self.goal_ack = future
+        self.pending_goal_acks += 1
         future.add_done_callback(lambda f: self._accepted(f, generation))
 
     def _accepted(self, future, generation):
@@ -269,6 +271,8 @@ class Nav2Bridge:
             except (RuntimeError, ValueError, AttributeError):
                 if generation == self.generation:
                     self._fail('nav2_action_error')
+            finally:
+                self.pending_goal_acks = getattr(self, 'pending_goal_acks', 1) - 1
 
     def _result(self, future, generation):
         with self.lock:
@@ -414,6 +418,8 @@ class Nav2Bridge:
         handle.cancel_goal_async()
 
     def quiescent(self):
+        if getattr(self, 'pending_goal_acks', 0):
+            return False
         futures = list(self.cancelled_goals)
         if self.goal_ack is not None:
             futures.append(self.goal_ack)

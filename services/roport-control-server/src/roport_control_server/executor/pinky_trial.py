@@ -325,6 +325,8 @@ class TrialControl:
         state.setdefault("navigation_retries", []).append(
             {
                 "failed_execution_id": old["execution_id"],
+                "failed_command": deepcopy(old),
+                "fault": self.state["fault"],
                 "execution_id": cmd["execution_id"],
                 "goal_id": old["payload"]["goal_id"],
                 "reconciled_at": datetime.now(UTC).isoformat(),
@@ -888,6 +890,31 @@ class TrialControl:
         self.heard[device] = monotonic()
         self._ack(event)  # Application ACK only after fsync; separate from PUBACK.
         phase = event["type"].split(".")[1]
+        retry = next(
+            (
+                retry
+                for retry in self.state.get("navigation_retries", [])
+                if retry["execution_id"] == cmd["execution_id"]
+            ),
+            None,
+        )
+        if (
+            phase == "rejected"
+            and p["error_code"] == "recovery_required"
+            and retry
+            and retry.get("failed_command")
+            and retry.get("fault")
+        ):
+            # The robot did not start this attempt; keep the confirmed failure retryable.
+            state = deepcopy(self.state)
+            state.update(
+                phase="HOLD",
+                fault=retry["fault"],
+                active=retry["failed_command"],
+            )
+            self.deadline = None
+            self.journal.save(state)
+            return
         if phase in {"failed", "rejected"}:
             self.hold(p["error_code"])
         elif phase == "completed" and self.state["phase"] != "HOLD":

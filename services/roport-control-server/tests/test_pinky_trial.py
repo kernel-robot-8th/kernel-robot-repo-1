@@ -1051,6 +1051,26 @@ def test_cli_reconciled_navigation_retry_retains_goal_and_uses_new_execution(
         c.retry_navigation(old["execution_id"], reconciled=True)
 
 
+def test_unstarted_navigation_retry_rejection_restores_original_failure(control_memory):
+    c = control_memory
+    old, robot = navigation_failure(c)
+    c.retry_navigation(old["execution_id"], reconciled=True)
+    retry = c.state["active"]
+    status = deepcopy(c.state["statuses"][robot["robot_id"]])
+    rejected = reply(
+        retry,
+        "navigate.rejected",
+        {**status, "phase_revision": 1, "error_code": "recovery_required"},
+    )
+
+    c.handle(delivery(rejected, "event"))
+
+    assert c.state["phase"] == "HOLD"
+    assert c.state["fault"] == "nav2_goal_failed"
+    assert c.state["active"] == old
+    assert c.deadline is None
+
+
 @pytest.mark.parametrize(
     "bad", ["moving", "stale", "boot", "map", "guard", "unconfirmed"]
 )
