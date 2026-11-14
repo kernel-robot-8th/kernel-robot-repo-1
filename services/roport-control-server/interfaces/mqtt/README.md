@@ -4,10 +4,10 @@
 
 - [AsyncAPI](roport-mqtt.yaml): 전체 12종의 토픽·JSON 구조.
 - [JSON 예시](examples.json): 조회, 실행, 결과, 재시작 방어, 출발 승인, 양방향 N12 전환.
-- [실행 검증 코드](../../services/roport-control-server/src/roport_control_server/adapters/mqtt/field_wire.py): 명령 대상, 상관관계, 필드 조합까지 검사하는 정본. 문서와 코드의 일치는 테스트로 확인한다.
-- [Pinky 이식·구동 경계](../../services/roport-control-server/docs/mqtt-field.md).
+- [실행 검증 코드](../../src/roport_control_server/adapters/mqtt/field_wire.py): 명령 대상, 상관관계, 필드 조합까지 검사하는 정본. 문서와 코드의 일치는 테스트로 확인한다.
+- [Pinky 이식·구동 경계](../../docs/mqtt-field.md).
 
-현재 실행 연결은 Pinky에 적용한다. OMX 단독·공동 작업 메시지도 계약에 포함하지만, 해당 v2 OMX Host와 관제 실행 연결은 후속 구현으로 구분한다. 기존 OMX 시험은 기존 계약을 유지한다.
+Pinky와 OMX v2 Host에 같은 계약을 적용한다. OMX 단독·공동 작업은 실제 MQTT와 가상 장치로 검증하며, 현장 장치·센서 연결은 별도다. [OMX 적용 조건](../../../roport-omx/README.md#최소화-규약-현장-host-fft1-180)을 확인한다. 기존 OMX 시험은 기존 계약을 유지한다.
 
 | 토픽 | 메시지 | 방향 / QoS |
 | --- | --- | --- |
@@ -37,11 +37,11 @@ Node.js가 필요하다. `@asyncapi/cli@3`은 HTML 템플릿과 버전이 맞지
 
 ```bash
 # 문법 검증
-npx @asyncapi/cli@latest validate interfaces/mqtt/roport-mqtt.yaml
+npx @asyncapi/cli@latest validate services/roport-control-server/interfaces/mqtt/roport-mqtt.yaml
 # 편집·미리보기 (브라우저)
-npx @asyncapi/cli@latest start studio interfaces/mqtt/roport-mqtt.yaml
+npx @asyncapi/cli@latest start studio services/roport-control-server/interfaces/mqtt/roport-mqtt.yaml
 # 단일 HTML 생성 (저장소 밖 폴더에 만든다)
-npx @asyncapi/cli@latest generate fromTemplate interfaces/mqtt/roport-mqtt.yaml @asyncapi/html-template@3 -o /tmp/mqtt-doc --force-write --param singleFile=true --param outFilename=index.html
+npx @asyncapi/cli@latest generate fromTemplate services/roport-control-server/interfaces/mqtt/roport-mqtt.yaml @asyncapi/html-template@3 -o /tmp/mqtt-doc --force-write --param singleFile=true --param outFilename=index.html
 ```
 
 생성한 HTML은 저장소에 올리지 않는다. `.gitignore`에 `out/`이 없으므로 출력 폴더는 저장소 밖(`/tmp/...`)으로 잡는다. 필요할 때 다시 만든다.
@@ -49,4 +49,4 @@ npx @asyncapi/cli@latest generate fromTemplate interfaces/mqtt/roport-mqtt.yaml 
 ## 수정 규칙
 
 - yaml과 `field_wire.py`는 함께 바꾸고 문서와 코드의 일치는 테스트로 확인한다. 토픽·필드를 바꾸면 관제·Pinky·OMX 담당자가 함께 확인한다.
-- 예시 값은 가짜 값만 쓴다. 실제 SSID·IP·인증정보·현장 좌표를 넣지 않는다([공개 저장소 보안 규칙](../../.agents/rules/public-repository-security.md)).
+- 예시 값은 가짜 값만 쓴다. 실제 SSID·IP·인증정보·현장 좌표를 넣지 않는다([공개 저장소 보안 규칙](../../../../.agents/rules/public-repository-security.md)).

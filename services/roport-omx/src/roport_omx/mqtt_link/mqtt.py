@@ -1,4 +1,3 @@
-# Copied unchanged from services/roport-control-server/.../adapters/mqtt (0bd7a85); update both together.
 """Bounded MQTT 5 transport. PUBACK is not execution or durable application ACK."""
 
 import logging
@@ -204,9 +203,50 @@ class MqttTransport:
         with self._publish_lock:
             self._publish(destination, message, timeout)
 
+    def publish_motion(self, destination, message):
+        """Best-effort latest display sample; never wait for PUBACK or replay it."""
+        if message.get("type") == "robot_pose":
+            from . import field_wire
+
+            raw = field_wire.encode(message)
+            if destination != field_wire.topic(message["source"], "motion"):
+                raise ValueError("motion topic mismatch")
+        else:
+            from .motion import encode_motion
+
+            raw = encode_motion(destination, message)
+        if not self.ready:
+            raise ConnectionError("motion transport unavailable")
+        properties = Properties(PacketTypes.PUBLISH)
+        properties.MessageExpiryInterval = 1
+        info = self._client.publish(
+            destination, raw, qos=0, retain=False, properties=properties
+        )
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            raise ConnectionError("motion sample not sent")
+
     def _publish(self, destination: str, message: dict, timeout: float) -> None:
         if not self.ready:
             raise ConnectionError(self._fault or "MQTT subscriptions not ready")
+        if message.get("schema_version") == "2.0":
+            from . import field_wire
+
+            raw = field_wire.encode(message)
+            channel = destination.rsplit("/", 1)[-1]
+            expected_channel = (
+                "event"
+                if message["type"] in {"robot_state", "command_status"}
+                else "ack"
+                if message["type"] == "event_stored"
+                else "cmd"
+            )
+            device = message["source"] if channel == "event" else message["target"]
+            if channel != expected_channel or destination != field_wire.topic(
+                device, channel
+            ):
+                raise ValueError("field topic and envelope mismatch")
+            self._publish_raw(destination, raw, message, timeout)
+            return
         raw = encode(message)
         parts = destination.split("/")
         if len(parts) != 6 or destination != topic(
@@ -216,17 +256,23 @@ class MqttTransport:
         device = message["source"] if parts[5] == "event" else message["target"]
         if device != parts[4]:
             raise ValueError("topic and envelope device mismatch")
+        self._publish_raw(destination, raw, message, timeout)
+
+    def _publish_raw(self, destination, raw, message, timeout):
         properties = None
         if destination.endswith("/cmd"):
-            remaining = (
-                timestamp(message.get("expires_at")) - datetime.now(UTC)
-            ).total_seconds()
-            if remaining <= 0:
-                raise ValueError("expired_command")
-            properties = Properties(PacketTypes.PUBLISH)
-            properties.MessageExpiryInterval = min(math.ceil(remaining), 2**32 - 1)
+            if "expires_at" in message:
+                remaining = (
+                    timestamp(message.get("expires_at")) - datetime.now(UTC)
+                ).total_seconds()
+                if remaining <= 0:
+                    raise ValueError("expired_command")
+                properties = Properties(PacketTypes.PUBLISH)
+                properties.MessageExpiryInterval = min(math.ceil(remaining), 2**32 - 1)
+            elif message["type"] != "robot_state_request":
+                raise ValueError("command expiry required")
         elif destination.endswith("/ack"):
-            if message["type"] != "event.ack":
+            if message["type"] not in {"event.ack", "event_stored"}:
                 raise ValueError("ack channel requires event.ack")
         elif not destination.endswith("/event"):
             raise ValueError("only task cmd/event/ack publishing is implemented")
