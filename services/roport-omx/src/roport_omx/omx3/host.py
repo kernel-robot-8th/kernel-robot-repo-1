@@ -58,6 +58,7 @@ class Omx3Host:
         self._records: dict[str, dict] = {}
         self._active: str | None = None
         self._abort = threading.Event()
+        self._abort_seq = 0
         self._thread: threading.Thread | None = None
         self.reconciling: list[str] = []
         self._load_journal()
@@ -66,6 +67,7 @@ class Omx3Host:
     def handle_load(self, request: dict) -> None:
         s = self.settings
         key, fp = _key(request), _fingerprint(request)
+        seq = self._abort_seq  # 이 뒤에 온 abort()는 접수될 명령을 취소한다
         with self._lock:
             known = self._records.get(key)
             if known is not None:
@@ -93,12 +95,25 @@ class Omx3Host:
             self._active = key
             # 명령마다 새 취소 신호를 접수 알림 전에 정한다: 알림 뒤에 온 abort()가 지워지지 않는다(#71 리뷰)
             abort = self._abort = threading.Event()
-            self._emit(request, "load.accepted", {"marker_id": marker_id})
+            if self._abort_seq != seq:  # precheck 중에 온 abort()도 이 명령에 반영
+                abort.set()
             try:
-                self._thread = threading.Thread(
+                self._emit(request, "load.accepted", {"marker_id": marker_id})
+            except (
+                Exception
+            ) as exc:  # 기록 실패: 접수를 되돌리고 거절해 BUSY로 남지 않게 한다
+                log.exception("journal write failed")
+                del self._records[key]
+                self._active = None
+                return self._reject(
+                    request, ErrorCode.ROBOT_ERROR, repr(exc), marker_id, record=False
+                )
+            try:
+                thread = threading.Thread(
                     target=self._execute, args=(request, marker_id, abort), daemon=True
                 )
-                self._thread.start()
+                thread.start()
+                self._thread = thread  # 시작된 스레드만 wait()가 join한다
             except (
                 Exception
             ) as exc:  # 스레드를 못 띄우면 실패로 끝내 BUSY로 남지 않게 한다
@@ -106,11 +121,15 @@ class Omx3Host:
                 out = Outcome(
                     Phase.FAILED, ErrorCode.ROBOT_ERROR, marker_id, detail=repr(exc)
                 )
-                self._emit(request, "load.failed", out.to_dict(), done=True)
-                self._active = None
+                try:
+                    self._emit(request, "load.failed", out.to_dict(), done=True)
+                finally:
+                    self._active = None
 
     def abort(self) -> None:
         """실행 중인 명령을 멈춘다(runner가 CANCELED로 끝내고 자세를 유지한다)."""
+        # 잠금 없이 막히지 않게 한다. 접수 중인 handle_load는 seq 변화를 보고 새 신호에 옮긴다
+        self._abort_seq += 1
         self._abort.set()
 
     def wait(self, timeout: float | None = None) -> None:
@@ -134,8 +153,26 @@ class Omx3Host:
     def clear_reconciling(self, key: str) -> None:
         with self._lock:
             if key in self.reconciling:
+                # 끝나지 않은 기록을 실패로 닫는다: 재전송 때 이전 boot의 progress를 다시 보내지 않는다
+                record = self._records[key]
+                out = Outcome(
+                    Phase.FAILED,
+                    ErrorCode.ROBOT_ERROR,
+                    record["last_payload"].get("marker_id"),
+                    detail="interrupted by restart, cleared by operator",
+                )
+                payload = self._stamp(out.to_dict())
+                self._write(
+                    {
+                        "key": key,
+                        "fp": record["fp"],
+                        "type": "load.failed",
+                        "payload": payload,
+                        "done": True,
+                    }
+                )
+                record.update(last_type="load.failed", last_payload=payload, done=True)
                 self.reconciling.remove(key)
-                self._write({"key": key, "event": "reconciled"})
 
     # ------------------------------------------------------------ 내부
     def _execute(self, request: dict, marker_id: int, abort: threading.Event) -> None:
@@ -221,7 +258,6 @@ class Omx3Host:
     def _load_journal(self) -> None:
         if self.journal is None or not self.journal.exists():
             return
-        reconciled = set()
         # 바이트로 읽고 줄마다 디코딩한다: UTF-8 문자 중간이 잘려도 앞의 기록은 살린다(#71 리뷰)
         data = self.journal.read_bytes()
         if data and not data.endswith(b"\n"):
@@ -237,15 +273,10 @@ class Omx3Host:
                 # 쓰는 중 전원이 꺼진 줄. 건너뛰면 끝나지 않은 실행으로 남아 RECONCILING(안전한 쪽)
                 log.warning("journal line %d unreadable, skipped", n)
                 continue
-            if entry.get("event") == "reconciled":
-                reconciled.add(entry["key"])
-                continue
             self._records[entry["key"]] = {
                 "fp": entry["fp"],
                 "done": entry["done"],
                 "last_type": entry["type"],
                 "last_payload": entry["payload"],
             }
-        self.reconciling = [
-            k for k, r in self._records.items() if not r["done"] and k not in reconciled
-        ]
+        self.reconciling = [k for k, r in self._records.items() if not r["done"]]

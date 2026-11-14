@@ -69,6 +69,14 @@ def kinds(events):
     return [k for k, _ in events]
 
 
+def wait_progress(events):
+    """실행 스레드가 progress(HOMING·RUNNING)를 다 쓸 때까지(그 뒤 프로세스가 죽었다고 본다)."""
+    for _ in range(500):
+        if kinds(events).count("load.progress") == 2:
+            return
+        threading.Event().wait(0.01)
+
+
 class Accept(unittest.TestCase):
     def test_accepted_progress_completed(self):
         host, runner, events = make()
@@ -146,6 +154,15 @@ class Race(unittest.TestCase):
                 self.assertEqual(events[-1][0], "load.completed")
                 self.assertEqual(len(runner.runs), 1)
 
+    def test_abort_during_precheck_cancels_new_run(self):
+        # precheck(카메라·관측) 중에 온 abort()도 접수될 명령에 반영(#71 minjee92 P2)
+        runner = FakeRunner()
+        host, _, events = make(runner)
+        runner.precheck = lambda marker_id: host.abort()
+        host.handle_load(request())
+        host.wait(5)
+        self.assertEqual(events[-1][1]["error_code"], "CANCELED")
+
     def test_worker_start_failure_reports_failed(self):
         host, runner, events = make()
         start = threading.Thread.start
@@ -157,6 +174,24 @@ class Race(unittest.TestCase):
         self.assertEqual(kinds(events), ["load.accepted", "load.failed"])
         self.assertIsNone(host.status()["active"])
         self.assertEqual(runner.runs, [])
+        host.wait(1)  # 시작 못 한 스레드를 join하지 않는다(#71 minjee92 P3)
+
+    def test_journal_write_failure_rejects_without_busy(self):
+        # accepted 기록 실패(디스크 가득 참 등) → 거절, 다음 명령은 정상 접수(#71 minjee92 P2)
+        host, runner, events = make()
+        write = host._write
+        host._write = lambda entry: (_ for _ in ()).throw(OSError("disk full"))
+        host.handle_load(request("c1"))
+        self.assertEqual(
+            (events[-1][0], events[-1][1]["error_code"]),
+            ("load.rejected", "ROBOT_ERROR"),
+        )
+        self.assertIsNone(host.status()["active"])
+        host._write = write
+        host.handle_load(request("c1"))  # 기록하지 않았으므로 같은 명령도 다시 받는다
+        host.wait(5)
+        self.assertEqual(events[-1][0], "load.completed")
+        self.assertEqual(len(runner.runs), 1)
 
 
 class Duplicate(unittest.TestCase):
@@ -237,9 +272,10 @@ class Journal(unittest.TestCase):
 
     def test_truncated_utf8_last_line_keeps_earlier_records(self):
         # 한글 detail을 쓰다 문자 중간에서 끊김 → 앞의 미완료 기록은 살아 RECONCILING(#71 리뷰 P2)
-        host, runner, _ = make(journal=self.path)
+        host, runner, events = make(journal=self.path)
         runner.gate.clear()
         host.handle_load(request("c1"))
+        wait_progress(events)
         with self.path.open("ab") as f:
             f.write('{"key": "c1/e1", "detail": "한'.encode()[:-1])
         host2, _, _ = make(journal=self.path)
@@ -253,10 +289,7 @@ class Journal(unittest.TestCase):
         host, runner, events = make(journal=self.path)
         runner.gate.clear()
         host.handle_load(request("c1"))  # 실행 중 프로세스가 죽었다고 본다
-        for _ in range(500):  # 실행 스레드가 progress(HOMING·RUNNING)를 다 쓸 때까지
-            if kinds(events).count("load.progress") == 2:
-                break
-            threading.Event().wait(0.01)
+        wait_progress(events)
         with self.path.open("a") as f:
             f.write('{"key": "c9/e1", "fp"')  # 쓰다 끊긴 줄
         host2, runner2, events2 = make(journal=self.path)
@@ -265,6 +298,13 @@ class Journal(unittest.TestCase):
         host2.handle_load(request("c2"))
         self.assertEqual(events2[-1][1]["error_code"], "RECONCILING")
         host2.clear_reconciling("c1/e1")
+        host2.handle_load(
+            request("c1")
+        )  # 해제한 명령 재전송 → 이전 progress가 아니라 failed
+        self.assertEqual(
+            (events2[-1][0], events2[-1][1]["error_code"]),
+            ("load.failed", "ROBOT_ERROR"),
+        )
         host2.handle_load(request("c3"))
         host2.wait(5)
         self.assertEqual(events2[-1][0], "load.completed")
