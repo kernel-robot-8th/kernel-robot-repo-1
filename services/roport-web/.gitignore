@@ -16,3 +16,5 @@ target/
 *.pt
 *.pth
 *.safetensors
+test-results/
+playwright-report/

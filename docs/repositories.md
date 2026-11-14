@@ -28,6 +28,7 @@ RO:PORT는 `kernel-robot-8th/kernel-robot-repo-1` 하나에서 개발하는 mono
 - `ai-server-ci.yml`: uv lock 검증·Ruff·준비 상태 테스트·패키지 빌드
 - `service-server-ci.yml`: Gradle 테스트·JAR 빌드·artifact 저장
 - `web-ci.yml`: 두 웹 앱 타입 검사·빌드·artifact 저장
+- `e2e-ci.yml`: PostgreSQL 16·서비스 서버(개발 전용 인증)·카트 패드를 띄워 Chromium으로 예약번호 확인 흐름 검사
 - `labeler.yml`: PR 변경 경로에 따라 구성요소 라벨 자동 적용. 각 라벨은 고유 색상으로 관리합니다.
 - `ci.yml`: 추적 중인 Markdown의 로컬 링크·공백 검사
 

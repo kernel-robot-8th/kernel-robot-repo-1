@@ -1,5 +1,6 @@
 // 화면에서 쓰는 타입. 필드 이름은 서비스 서버 첫 슬라이스(FFT1-166) 응답을 따른다.
-// QR 인증·수령 확인·서비스 선택 API는 아직 없어 아래 형태는 제안이며 확정 규격이 아니다.
+// VerifiedPickup은 카트 예약 확인 API(FFT1-178) 응답의 pickup과 같다.
+// 수령 확인·서비스 선택 API는 아직 없어 그 형태는 제안이며 확정 규격이 아니다.
 
 export type Location = { locationId: string; name: string };
 
@@ -27,6 +28,7 @@ export interface VerifiedPickup {
 // 입국장 수령 후 선택하는 서비스(SR-21 게이트 안내 P0, SR-22 짐 운반·추종 P1).
 export type ServiceMode = 'GATE_GUIDE' | 'FOLLOW';
 
-export type VerifyFailure = 'NOT_FOUND' | 'WRONG_CART' | 'ALREADY_RECEIVED';
+// NOT_ACTIVE: 취소됐거나 주문이 확정되지 않아 수령할 수 없는 예약(서버 PICKUP_NOT_ACTIVE).
+export type VerifyFailure = 'NOT_FOUND' | 'WRONG_CART' | 'ALREADY_RECEIVED' | 'NOT_ACTIVE';
 
 export type VerifyResult = { ok: true; pickup: VerifiedPickup } | { ok: false; reason: VerifyFailure };

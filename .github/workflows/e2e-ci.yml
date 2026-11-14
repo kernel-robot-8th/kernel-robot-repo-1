@@ -1,0 +1,87 @@
+name: e2e CI
+# 카트 패드 화면 → 서비스 서버 → PostgreSQL을 실제로 띄워 브라우저(Playwright)로 확인한다.
+# 서비스 서버는 개발 전용 로그인·카트 인증을 켠 상태로 CI 안에서만 실행한다.
+on:
+  push:
+    paths:
+      - 'services/roport-web/**'
+      - 'services/roport-service-server/**'
+      - '.github/workflows/e2e-ci.yml'
+  pull_request:
+    paths:
+      - 'services/roport-web/**'
+      - 'services/roport-service-server/**'
+      - '.github/workflows/e2e-ci.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  pad-service:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: roport_service
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SERVICE_DB_URL: jdbc:postgresql://127.0.0.1:5432/roport_service
+      SERVICE_DB_USER: postgres
+      SERVICE_DEV_LOGIN: 'true'
+      SERVICE_DEV_CART: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+          cache-dependency-path: |
+            services/roport-service-server/*.gradle.kts
+            services/roport-service-server/gradle/wrapper/gradle-wrapper.properties
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: services/roport-web/package-lock.json
+      - uses: gradle/actions/wrapper-validation@v4
+      - name: 서비스 서버 빌드
+        working-directory: services/roport-service-server
+        run: ./gradlew --no-daemon bootJar
+      - name: 서비스 서버 실행(Flyway로 스키마 생성)
+        working-directory: services/roport-service-server
+        run: |
+          nohup java -jar build/libs/*.jar > "$RUNNER_TEMP/service.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fs http://127.0.0.1:8080/actuator/health | grep -q UP && exit 0
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/service.log"; exit 1
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: 개발 시드 적용
+        run: psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d roport_service -f services/roport-service-server/src/main/resources/db/dev/seed.sql
+      - working-directory: services/roport-web
+        run: npm ci
+      - working-directory: services/roport-web
+        run: npx playwright install --with-deps chromium
+      - working-directory: services/roport-web
+        run: npm run test:e2e
+      - if: failure()
+        run: cat "$RUNNER_TEMP/service.log"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-failure
+          path: services/roport-web/test-results/
+          retention-days: 7
