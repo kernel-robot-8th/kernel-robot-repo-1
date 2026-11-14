@@ -178,7 +178,7 @@ class PanelExecutor:
         self.timeout, self.start_timeout = timeout, start_timeout
         self.repo_id: str | None = None
         self._missing_since: float | None = None
-        self._models: tuple[float, set[str]] = (0.0, set())
+        self._models: tuple[float, set[str]] = (float("-inf"), set())
 
     def _call(self, method: str, path: str, body: dict | None = None, timeout=None):
         data = None if body is None else json.dumps(body).encode()

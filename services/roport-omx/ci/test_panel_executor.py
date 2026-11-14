@@ -9,6 +9,8 @@ import urllib.parse
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -248,6 +250,23 @@ class PanelExecutorTest(unittest.TestCase):
         )
         self.assertIs(p["departure_ready"], True)
         self.assertIsNone(p["placement_confirmed"])
+
+    def test_model_cache_fetches_on_fresh_boot_and_refreshes_after_ttl(self):
+        clock = 1.0
+        with (
+            patch.object(
+                panel_executor, "time", SimpleNamespace(monotonic=lambda: clock)
+            ),
+            patch.object(self.executor, "_call", wraps=self.executor._call) as call,
+        ):
+            self.assertEqual(self.executor._model_paths(), {MODEL})
+            self.panel.models = []
+            clock += 1
+            self.assertEqual(self.executor._model_paths(), {MODEL})
+            self.assertEqual(call.call_count, 1)
+            clock += panel_executor.MODELS_TTL_S + 1
+            self.assertEqual(self.executor._model_paths(), set())
+            self.assertEqual(call.call_count, 2)
 
     def test_refusals_happen_before_anything_starts(self):
         cases = [("NOT_ARMED", {"armed": False}), ("NOT_ARMED", {"armed": None})]
