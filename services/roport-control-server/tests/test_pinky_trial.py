@@ -1072,6 +1072,32 @@ def test_unstarted_navigation_retry_rejection_restores_original_failure(control_
 
 
 @pytest.mark.parametrize(
+    "fault", ["robot_status_timeout", "mqtt_disconnected", "execution_timeout_unknown"]
+)
+def test_late_retry_rejection_preserves_intervening_hold(control_memory, fault):
+    c = control_memory
+    old, robot = navigation_failure(c)
+    c.retry_navigation(old["execution_id"], reconciled=True)
+    retry = deepcopy(c.state["active"])
+    c.hold(fault)
+    deadline = c.deadline
+    status = deepcopy(c.state["statuses"][robot["robot_id"]])
+    rejected = reply(
+        retry,
+        "navigate.rejected",
+        {**status, "phase_revision": 1, "error_code": "recovery_required"},
+    )
+    c.handle(delivery(rejected, "event"))
+    assert c.state["phase"] == "HOLD"
+    assert c.state["fault"] == fault
+    assert c.state["active"] == retry
+    assert c.deadline == deadline
+    assert rejected["message_id"] in c.state["events"]
+    with pytest.raises(ValueError):
+        c.retry_navigation(old["execution_id"], reconciled=True)
+
+
+@pytest.mark.parametrize(
     "bad", ["moving", "stale", "boot", "map", "guard", "unconfirmed"]
 )
 def test_navigation_retry_never_clears_other_holds_or_unknown_outcome(

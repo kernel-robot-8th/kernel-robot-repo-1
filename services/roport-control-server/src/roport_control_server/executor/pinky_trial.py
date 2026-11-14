@@ -899,7 +899,8 @@ class TrialControl:
             None,
         )
         if (
-            phase == "rejected"
+            self.state["phase"] != "HOLD"
+            and phase == "rejected"
             and p["error_code"] == "recovery_required"
             and retry
             and retry.get("failed_command")
