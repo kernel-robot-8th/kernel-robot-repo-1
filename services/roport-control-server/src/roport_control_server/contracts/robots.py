@@ -6,6 +6,22 @@ from dataclasses import asdict, dataclass
 from uuid import UUID
 
 PINKY_SLOTS = ("pinky1", "pinky2", "pinky3")
+# Host telemetry endpoints, display order. OMX1/OMX2 share the shelf-01 host.
+HOST_IDS = ("pinky1", "pinky2", "pinky3", "omx3", "shelf-01")
+HOST_FIELDS = (
+    "age_s",
+    "received_at",
+    "observed_at",
+    "boot_version",
+    "sequence",
+    "cpu_count",
+    "load_1m",
+    "load_5m",
+    "load_15m",
+    "mem_total_kb",
+    "mem_available_kb",
+    "cpu_temp_c",
+)
 ROLES = ("logistics", "smartcart")
 
 
@@ -133,6 +149,11 @@ class ReleaseEvidence:
             if value is not expected:
                 reasons.append(f"{field}_unknown" if value is None else field)
         return reasons
+
+
+def unknown_host(host_id: str) -> dict:
+    # No sample is not idle CPU, free memory or a cool board.
+    return {"host_id": host_id, "status": "unknown", **dict.fromkeys(HOST_FIELDS)}
 
 
 def unknown_observation() -> dict:

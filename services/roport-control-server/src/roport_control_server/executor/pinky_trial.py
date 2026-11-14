@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import itertools
 import json
+import logging
 import math
 import os
 import selectors
@@ -25,9 +26,12 @@ from queue import Empty
 from time import monotonic
 from uuid import uuid4
 
+from roport_control_server.adapters.mqtt import field_wire
+from roport_control_server.adapters.mqtt.host_metrics import HostMetricsReceiver
 from roport_control_server.adapters.mqtt.journal import Journal
 from roport_control_server.adapters.mqtt.messages import decode, timestamp, topic
 from roport_control_server.adapters.mqtt.motion import MotionReceiver, motion_topic
+from roport_control_server.adapters.mqtt.mqtt import MqttTransport
 from roport_control_server.adapters.mqtt.trial_wire import (
     PROFILE,
     check_result,
@@ -53,6 +57,8 @@ from roport_control_server.executor.plans import (
 )
 from roport_control_server.executor.trial_socket import TrialSocket
 
+LOG = logging.getLogger(__name__)
+
 NAV_RETRY_FAULTS = frozenset(
     (
         "nav2_goal_failed",
@@ -73,7 +79,34 @@ ROUTES = (
 )
 
 
+def validate_host_metrics(settings):
+    if not isinstance(settings, dict) or set(settings) != {"hosts", "stale_after_s"}:
+        raise ValueError("host_metrics requires hosts and stale_after_s")
+    HostMetricsReceiver(None, settings["hosts"], settings["stale_after_s"])
+
+
+def start_host_metrics(config, connection):
+    """Optional display-only subscriber; its failure never affects the task link."""
+    settings = config.get("host_metrics")
+    if settings is None:
+        return None, None
+    transport = MqttTransport(
+        replace(connection, client_id=connection.client_id + "-host"),
+        [field_wire.topic(host, "host") for host in settings["hosts"]],
+    )
+    receiver = HostMetricsReceiver(
+        transport, settings["hosts"], settings["stale_after_s"]
+    )
+    try:
+        transport.start()
+    except (ConnectionError, OSError):
+        print("Host metrics unavailable; task connection is unchanged.", flush=True)
+    return receiver, transport
+
+
 def validate_config(config, *, require_field_verification=True):
+    if "host_metrics" in config:
+        validate_host_metrics(config["host_metrics"])
     if "omx" in config:
         validate_settings(config["omx"])
         if config["mode"] == "simulation" and config["omx"]["execution_mode"] != "mock":
@@ -244,6 +277,7 @@ class TrialControl:
         self.discovery_robots = {}
         self.service_preview = None
         self.motion = None
+        self.host_metrics = None
         self.last_poll = 0.0
         self.deadline = None
         self.omx = OmxTrial(self) if "omx" in config else None
@@ -927,6 +961,12 @@ class TrialControl:
     def poll(self, timeout=0.1):
         if self.motion is not None:
             self.motion.poll(self.state["statuses"])
+        if self.host_metrics is not None:
+            # Display only: never feeds gate, departure, HOLD or timeouts.
+            try:
+                self.host_metrics.poll()
+            except Exception as exc:  # noqa: BLE001 - display-only; isolate from control loop
+                LOG.warning("host metrics poll failed: %s", type(exc).__name__)
         try:
             if not self.transport.ready:
                 self.hold("mqtt_disconnected")
@@ -1066,7 +1106,7 @@ def main():
     selector = selectors.DefaultSelector()
     if not args.socket:
         selector.register(sys.stdin, selectors.EVENT_READ)
-    web = motion_transport = None
+    web = motion_transport = host_transport = None
     owner = ExitStack()
     started = False
 
@@ -1117,6 +1157,7 @@ def main():
             print(
                 "Display motion unavailable; task connection is unchanged.", flush=True
             )
+        control.host_metrics, host_transport = start_host_metrics(config, connection)
         if web:
             print(
                 "Trial web owner ready; waiting for explicit operator commands.",
@@ -1182,6 +1223,8 @@ def main():
             transport.stop()
             if motion_transport:
                 motion_transport.stop()
+            if host_transport:
+                host_transport.stop()
             if web:
                 web.close()
             owner.close()

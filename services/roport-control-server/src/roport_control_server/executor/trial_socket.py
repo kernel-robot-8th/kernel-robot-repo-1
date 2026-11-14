@@ -121,6 +121,14 @@ class TrialSocket:
             "motion_diagnostics": c.motion.diagnostics()
             if c.motion
             else {"rejected": 0, "reasons": {}},
+            # None = not configured; display-only, never read by gates.
+            "hosts": c.host_metrics.snapshot() if c.host_metrics else {},
+            "host_metrics_diagnostics": c.host_metrics.diagnostics()
+            if c.host_metrics
+            else None,
+            "host_metrics_ready": c.host_metrics.transport.ready
+            if c.host_metrics
+            else None,
             "events": [
                 {k: e[k] for k in ("message_id", "type", "source", "sent_at")}
                 for e in list(state["events"].values())[-12:]
