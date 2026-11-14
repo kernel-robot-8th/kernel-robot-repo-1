@@ -6,7 +6,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
-from .pinky_trial import PinkyTrialClient
+from .field_pinky import FieldPinkyClient
 from .trial_wire import PROFILE, command, mqtt_config
 
 
@@ -51,19 +51,7 @@ def run(profile, role, connection, journal_path, driver):
         if not callable(getattr(driver, name, None)):
             raise TypeError(f"driver requires callable {name}")
     robot = profile["robots"][role]
-    client = PinkyTrialClient(
-        connection,
-        site=profile["site_id"],
-        control=profile["control_id"],
-        robot=robot["robot_id"],
-        binding_id=robot["binding_id"],
-        journal_path=journal_path,
-        observe=driver.observe,
-        validate_action=driver.validate_action,
-        dispatch=driver.dispatch,
-        safe_stop=driver.safe_stop,
-        observe_motion=getattr(driver, "observe_motion", None),
-    )
+    client = FieldPinkyClient(connection, profile, role, journal_path, driver)
     try:
         client.start()
         print(

@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { readFile } from 'node:fs/promises';
 
-test('virtual driver motion reaches original UI; Nav2 and stale samples remain visible', async ({page}, testInfo) => {
+test('virtual driver motion reaches original UI; Nav2 and stale samples remain visible', async ({page}) => {
   const child = spawn('.venv/bin/python', ['-u', 'tools/run_virtual_trial.py', '--scenario', 'single'], {stdio:['ignore','pipe','pipe']});
   let diagnostics = '';
   child.stderr.on('data', d => diagnostics += d);
@@ -34,7 +34,6 @@ test('virtual driver motion reaches original UI; Nav2 and stale samples remain v
     const moved = (await snapshot()).robots[0];
     expect(moved.status.node_id).toBe(first.status.node_id); // Movement between nodes, not a node jump.
     await expect(label).toBeVisible();
-    await page.screenshot({path:testInfo.outputPath('live-line-motion.png'), fullPage:true});
 
     // Projection checks use a controlled stream, without changing the running virtual robot.
     const frame = await snapshot();
@@ -68,7 +67,6 @@ test('virtual driver motion reaches original UI; Nav2 and stale samples remain v
     frame.trial.motion_diagnostics = {rejected: 0, reasons: {}};
     stream.send(JSON.stringify(frame));
     await expect(page.locator('#trial-motion-diagnostics')).toBeHidden();
-    await page.screenshot({path:testInfo.outputPath('nav2-last-position.png'), fullPage:true});
     expect(errors).toEqual([]);
   } finally {
     lines.close();

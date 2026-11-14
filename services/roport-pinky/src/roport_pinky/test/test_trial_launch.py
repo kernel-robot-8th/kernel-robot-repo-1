@@ -21,7 +21,7 @@ def context(limit, linear=.03, line_speed=.03, line_rotate_speed=.15):
     ctx.launch_configurations.update(max_angular=str(limit), max_linear=str(linear), robot='test_robot',
                                     line_speed=str(line_speed), line_rotate_speed=str(line_rotate_speed),
                                     map='/unused/map.yaml', layout_file='/unused/layout.yaml',
-                                    params_file='/unused/params.yaml', ir_node='false')
+                                    params_file='/unused/params.yaml', ir_node='false', goal_xy_tolerance='0.08')
     return ctx
 
 
@@ -93,3 +93,22 @@ def test_invalid_line_rotation_fails_before_nodes(trial_launch, rotation, monkey
     with pytest.raises(ValueError, match='line_rotate_speed|convert'):
         trial_launch._nodes(context(.45, line_rotate_speed=rotation))
     assert created == []
+
+
+def test_close_gate_tolerance_is_explicit_and_finite(trial_launch):
+    ctx = context(.15)
+    ctx.launch_configurations['goal_xy_tolerance'] = '0.02'
+    nodes = {n['executable']: n for n in trial_launch._nodes(ctx)}
+    assert nodes['controller_server']['parameters'][1]['general_goal_checker.xy_goal_tolerance'] == .02
+    for invalid in ('nan', '0.001', '0.11'):
+        ctx.launch_configurations['goal_xy_tolerance'] = invalid
+        with pytest.raises(ValueError):
+            trial_launch._nodes(ctx)
+
+
+def test_hardware_trial_preserves_base_tracking_and_collision_checks(trial_launch):
+    nodes = {n['executable']: n for n in trial_launch._nodes(context(.15, .08))}
+    controller = nodes['controller_server']['parameters'][1]
+    assert controller['FollowPath.use_collision_detection'] is True
+    assert not any('lookahead' in key for key in controller)
+    assert not any('inflation' in key or 'footprint' in key for key in controller)

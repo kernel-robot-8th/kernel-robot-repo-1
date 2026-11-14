@@ -1,163 +1,1286 @@
 asyncapi: 3.0.0
 info:
-  title: RO:PORT MQTT 인터페이스
-  version: 1.1.0-draft
-  description: |
-    관제 ↔ Pinky / OMX 작업셀 MQTT 계약. 기준: Confluence "Interface Specification (comm)" 운영 검토안.
-    **필수 ID는 `message_id`, `robot_id`, `user_id`, `product_id`, `gate_id` 5개뿐이다.**
-    `task_id`·`step_id`·`command_id`·`execution_id`·`site_id`는 필요한 정보이지만 메시지에는 싣지 않는다
-    (환경은 토픽 주소의 `{site}`로 구분한다). 상태는 enum 필드로 표현한다.
-    시험용 `roport-pinky-driving-trial-v1` 스키마는 포함하지 않는다.
-
-    **이 문서는 설계 초안이며 현재 코드(관제 서버 `messages.py`, OMX `mqtt_link/`)와 일치하지 않는다.
-    코드 적용은 별도 작업이다.**
-    위 ID를 제거하면서 중복 실행 방지와 오래된 명령 방어를 `message_id`·`expires_at`만으로는 보장할 수 없다.
-    중복 처리 이력의 보존 범위·기간, 재시작 후 처리, 새 명령이 대체한 이전 명령의 거부 기준은 아직 정해지지 않았으며
-    코드에 적용하기 전에 먼저 정해야 한다.
-    `expires_at` 판정은 로봇과 관제의 시계가 맞는다는 전제가 필요하다. 로봇 시계가 늦으면 만료된 명령이 유효해 보이므로
-    시각 동기화(NTP) 요구 또는 수신 시각 기준 판정도 함께 정해야 한다.
-
+  title: RO:PORT field MQTT
+  version: '2.0'
+  description: 'Single-site local implementation. Runtime field_wire.py is authoritative;
+    PR #68 draft site/version topics and route.requested names are superseded. Physical
+    validation remains required.'
 servers:
-  mosquitto:
+  local:
     host: localhost:1883
     protocol: mqtt
-    description: P0 현장 Mosquitto. 운영 host·TLS·인증은 환경 설정으로 분리.
-
 channels:
   robotCmd:
-    address: roport/v1/{site}/robot/{robot_id}/cmd
-    parameters:
-      site: {description: "환경. demo | test", enum: [demo, test]}
-      robot_id: {description: "수신 로봇. robot/ 토픽은 pinky1·2·3과 omx3만 받는다. omx1·omx2는 shelf-01 작업셀 채널(추가 예정)로 다루므로 RobotId(6개)보다 좁다.", enum: [pinky1, pinky2, pinky3, omx3]}
+    address: roport/robot/{robot_id}/cmd
     messages:
-      routeRequested: {$ref: '#/components/messages/routeRequested'}
+      arm_action_command:
+        $ref: '#/components/messages/arm_action_command'
+      line_route_command:
+        $ref: '#/components/messages/line_route_command'
+      nav_goal_command:
+        $ref: '#/components/messages/nav_goal_command'
+      robot_state_request:
+        $ref: '#/components/messages/robot_state_request'
+      robot_stop_command:
+        $ref: '#/components/messages/robot_stop_command'
+      set_drive_mode_command:
+        $ref: '#/components/messages/set_drive_mode_command'
+      shelf_transfer_command:
+        $ref: '#/components/messages/shelf_transfer_command'
+      warehouse_load_command:
+        $ref: '#/components/messages/warehouse_load_command'
+    parameters:
+      robot_id:
+        description: pinky1/pinky2/pinky3 (motion); pinky1/pinky2/pinky3/omx1/omx2/omx3
+          (others)
   robotEvent:
-    address: roport/v1/{site}/robot/{robot_id}/event
-    parameters:
-      site: {description: "환경. demo | test", enum: [demo, test]}
-      robot_id: {description: "발행 로봇. robot/ 토픽은 pinky1·2·3과 omx3만 쓴다. omx1·omx2는 shelf-01 작업셀 채널(추가 예정)로 다루므로 RobotId(6개)보다 좁다.", enum: [pinky1, pinky2, pinky3, omx3]}
+    address: roport/robot/{robot_id}/event
     messages:
-      routeProgress: {$ref: '#/components/messages/routeProgress'}
-
+      robot_state:
+        $ref: '#/components/messages/robot_state'
+      command_status:
+        $ref: '#/components/messages/command_status'
+    parameters:
+      robot_id:
+        description: pinky1/pinky2/pinky3 (motion); pinky1/pinky2/pinky3/omx1/omx2/omx3
+          (others)
+  robotAck:
+    address: roport/robot/{robot_id}/ack
+    messages:
+      event_stored:
+        $ref: '#/components/messages/event_stored'
+    parameters:
+      robot_id:
+        description: pinky1/pinky2/pinky3 (motion); pinky1/pinky2/pinky3/omx1/omx2/omx3
+          (others)
+  robotMotion:
+    address: roport/robot/{robot_id}/motion
+    messages:
+      robot_pose:
+        $ref: '#/components/messages/robot_pose'
+    parameters:
+      robot_id:
+        description: pinky1/pinky2/pinky3 (motion); pinky1/pinky2/pinky3/omx1/omx2/omx3
+          (others)
+  workcellCmd:
+    address: roport/workcell/shelf-01/cmd
+    messages:
+      robot_state_request:
+        $ref: '#/components/messages/robot_state_request'
+      shelf_transfer_command:
+        $ref: '#/components/messages/shelf_transfer_command'
+      robot_stop_command:
+        $ref: '#/components/messages/robot_stop_command'
+  workcellEvent:
+    address: roport/workcell/shelf-01/event
+    messages:
+      robot_state:
+        $ref: '#/components/messages/robot_state'
+      command_status:
+        $ref: '#/components/messages/command_status'
+  workcellAck:
+    address: roport/workcell/shelf-01/ack
+    messages:
+      event_stored:
+        $ref: '#/components/messages/event_stored'
 operations:
-  sendRobotCmd:
+  sendrobotCmd:
     action: send
-    channel: {$ref: '#/channels/robotCmd'}
-    summary: 관제 → 로봇 명령 (QoS 1, retain=false)
-    bindings: {mqtt: {qos: 1, retain: false}}
-  receiveRobotEvent:
+    channel:
+      $ref: '#/channels/robotCmd'
+    bindings:
+      mqtt:
+        qos: 1
+        retain: false
+  receiverobotEvent:
     action: receive
-    channel: {$ref: '#/channels/robotEvent'}
-    summary: 로봇 → 관제 결과 (QoS 1, retain=false)
-    bindings: {mqtt: {qos: 1, retain: false}}
-
+    channel:
+      $ref: '#/channels/robotEvent'
+    bindings:
+      mqtt:
+        qos: 1
+        retain: false
+  sendrobotAck:
+    action: send
+    channel:
+      $ref: '#/channels/robotAck'
+    bindings:
+      mqtt:
+        qos: 1
+        retain: false
+  receiverobotMotion:
+    action: receive
+    channel:
+      $ref: '#/channels/robotMotion'
+    bindings:
+      mqtt:
+        qos: 0
+        retain: false
+  sendworkcellCmd:
+    action: send
+    channel:
+      $ref: '#/channels/workcellCmd'
+    bindings:
+      mqtt:
+        qos: 1
+        retain: false
+  receiveworkcellEvent:
+    action: receive
+    channel:
+      $ref: '#/channels/workcellEvent'
+    bindings:
+      mqtt:
+        qos: 1
+        retain: false
+  sendworkcellAck:
+    action: send
+    channel:
+      $ref: '#/channels/workcellAck'
+    bindings:
+      mqtt:
+        qos: 1
+        retain: false
 components:
-  schemas:
-    # ---- 필수 ID 5개 ----
-    Id:
-      type: string
-      pattern: '^[A-Za-z0-9_.:-]{1,128}$'
-    MessageId:
-      description: 메시지 고유 ID. 재전송은 같은 값을 유지한다.
-      allOf:
-        - $ref: '#/components/schemas/Id'
-    RobotId:
-      description: 로봇 ID
-      enum: [pinky1, pinky2, pinky3, omx1, omx2, omx3]
-    UserId:
-      description: 고객(회원) ID. 예약·인도 메시지에서 사용한다.
-      allOf:
-        - $ref: '#/components/schemas/Id'
-    ProductId:
-      description: 상품(포장품) ID. 상차·입고·반출 메시지에서 사용한다.
-      allOf:
-        - $ref: '#/components/schemas/Id'
-    GateId:
-      description: 수령 위치 ID (Gate 1·2·3, 입국장).
-      allOf:
-        - $ref: '#/components/schemas/Id'
-    # ---- ID가 아닌 별도 enum (필수 ID 5개에 포함하지 않음) ----
-    Pinky:
-      description: 상차·입고·반출 대상 Pinky. 토픽의 robot_id와 다른 의미라 별도 enum으로 둔다.
-      enum: [pinky1, pinky2, pinky3]
-    DockPoint:
-      description: 도킹·대기 지점. gate_id(수령 위치)와 구분한다. 값은 확정 전(P4·P7 외 추가 가능). 현재 쓰는 메시지가 없다. Pinky 그래프는 P4·P7이 아니라 노드 ID(N01·N11 등)만 쓰므로 도킹 메시지를 정할 때 노드 ID로 통일할지 판단한다(대응 관계는 지도 문서로 확인 필요).
-      enum: [P4, P7]
-    # ---- 공통 envelope ----
-    Envelope:
-      type: object
-      required: [schema_version, message_id, type, source, target, sent_at, payload]
-      properties:
-        schema_version: {const: "1.0"}
-        message_id: {$ref: '#/components/schemas/MessageId'}
-        in_reply_to:
-          description: 응답이 가리키는 명령·이벤트의 message_id. 응답(event·ack)에서 필수.
-          allOf:
-            - $ref: '#/components/schemas/MessageId'
-        type: {type: string}
-        source: {type: string, description: 발행 주체(논리 이름)}
-        target: {type: [string, "null"], description: 수신 주체}
-        sent_at: {type: string, format: date-time, description: UTC ISO 8601}
-        expires_at: {type: string, format: date-time, description: cmd의 새 실행 허용 만료. sent_at보다 늦어야 함}
-        payload: {type: object}
   messages:
-    routeRequested:
-      name: route.requested
+    robot_state_request:
+      name: robot_state_request
+      contentType: application/json
       payload:
-        allOf:
-          - $ref: '#/components/schemas/Envelope'
-          - type: object
-            required: [expires_at]
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: robot_state_request
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
             properties:
-              type: {const: route.requested}
-              payload:
-                type: object
-                required: [graph_version, start_node, start_heading_rad, start_maneuver, route, goal, speed_limit_mps]
-                properties:
-                  graph_version: {type: string}
-                  start_node: {type: string}
-                  start_heading_rad:
-                    type: number
-                    description: 출발 방향(rad). 현재 Pinky 구현은 상차 정차 방향 또는 첫 구간 방향과 0.35 rad를 넘게 다르면 거절한다(loading_heading_mismatch, start_heading_not_first_leg).
-                  start_maneuver: {type: string}
-                  route:
-                    type: array
-                    minItems: 1
-                    items: {type: string}
-                    description: 출발 노드 포함. 마지막 원소가 목적 노드. start_node와 첫 원소의 일치는 스키마로 표현할 수 없어 수신 측이 검증한다.
-                  goal:
-                    type: object
-                    description: 목적지 노드는 별도 필드 없이 route의 마지막 원소다(물류 목적지 N01·N11·N16 포함). gate_id는 수령 위치(Gate 1·2·3, 입국장)가 목적지일 때만 채운다.
-                    properties:
-                      gate_id: {description: 목적 수령 위치. 수령 위치가 아니면 null, oneOf: [{$ref: '#/components/schemas/GateId'}, {type: "null"}]}
-                      on_arrival: {type: string}
-                  speed_limit_mps:
-                    type: number
-                    exclusiveMinimum: 0
-                    description: 속도 상한(m/s). 수신 측이 범위를 벗어나면 거절한다(현재 Pinky 구현은 로봇 설정의 최소 속도 미만이면 speed_limit_too_low로 거절하고, 시험 상한은 0.08 m/s다). Confluence 명세는 선택 필드지만 현재 Pinky 구현이 이 값을 필수로 읽어 이 초안은 필수로 둔다.
-    routeProgress:
-      name: route.progress
+              expected_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              keep_running_command_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+            required: []
+            additionalProperties: false
+          expires_at:
+            type: string
+            format: date-time
+        additionalProperties: false
+        oneOf:
+        - properties:
+            payload:
+              maxProperties: 0
+          not:
+            required:
+            - expires_at
+        - required:
+          - expires_at
+          properties:
+            payload:
+              required:
+              - expected_boot_version
+              - keep_running_command_id
+    line_route_command:
+      name: line_route_command
+      contentType: application/json
       payload:
-        allOf:
-          - $ref: '#/components/schemas/Envelope'
-          - type: object
-            required: [in_reply_to]
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        - command_id
+        - expires_at
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: line_route_command
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
             properties:
-              type: {const: route.progress}
-              payload:
+              expected_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              graph_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              start_node:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              start_heading_rad:
+                type: number
+                minimum: -3.141592653589793
+                maximum: 3.141592653589793
+              start_maneuver:
+                enum:
+                - none
+              route:
+                type: array
+                items:
+                  type: string
+                  pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                minItems: 2
+                maxItems: 64
+              goal:
                 type: object
-                required: [node, seq, total, observed_at, phase_revision, phase]
                 properties:
-                  node: {type: string, description: 현재 통과한 노드 이름. 현재 코드의 node_id에 해당하며 필수 ID 5개 원칙에 따라 node로 적었다(코드 적용 때 이름을 정렬한다).}
-                  seq: {type: integer}
-                  total: {type: integer}
-                  prev_node: {type: [string, "null"]}
-                  next_node: {type: [string, "null"]}
-                  maneuver: {type: string}
-                  detected_by: {type: string}
-                  distance_from_prev_m: {type: number}
-                  observed_at: {type: string, format: date-time}
-                  phase_revision: {type: integer}
-                  phase:
+                  node:
                     type: string
-                    description: "진행 단계. 값 집합이 확정되지 않아 enum으로 선언하지 못했다(상태는 enum 규칙의 예외). 알려진 값: NODE_PASSED, ARRIVED, DOCKED 등. 확정되면 enum으로 바꾼다."
+                    pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                  on_arrival:
+                    enum:
+                    - hold
+                required:
+                - node
+                - on_arrival
+                additionalProperties: false
+              speed_limit_mps:
+                type: number
+                minimum: 0.015
+                maximum: 0.08
+              departure:
+                type: object
+                properties:
+                  arrival_command_id:
+                    type: string
+                    pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                  transfer_command_id:
+                    type: string
+                    pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                required:
+                - arrival_command_id
+                - transfer_command_id
+                additionalProperties: false
+            required:
+            - expected_boot_version
+            - graph_version
+            - start_node
+            - start_heading_rad
+            - start_maneuver
+            - route
+            - goal
+            - speed_limit_mps
+            additionalProperties: false
+          command_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          expires_at:
+            type: string
+            format: date-time
+        additionalProperties: false
+    set_drive_mode_command:
+      name: set_drive_mode_command
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        - command_id
+        - expires_at
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: set_drive_mode_command
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              expected_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              node:
+                enum:
+                - N12
+              from_mode:
+                enum:
+                - line
+                - nav2
+              to_mode:
+                enum:
+                - line
+                - nav2
+              graph_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              map_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+            required:
+            - expected_boot_version
+            - node
+            - from_mode
+            - to_mode
+            - graph_version
+            - map_version
+            additionalProperties: false
+          command_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          expires_at:
+            type: string
+            format: date-time
+        additionalProperties: false
+    nav_goal_command:
+      name: nav_goal_command
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        - command_id
+        - expires_at
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: nav_goal_command
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              expected_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              map_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              frame_id:
+                enum:
+                - map
+              pose:
+                type: object
+                properties:
+                  x:
+                    type: number
+                    minimum: -10000
+                    maximum: 10000
+                  y:
+                    type: number
+                    minimum: -10000
+                    maximum: 10000
+                  yaw:
+                    type: number
+                    minimum: -3.141592653589793
+                    maximum: 3.141592653589793
+                required: &id004
+                - x
+                - y
+                - yaw
+                additionalProperties: false
+              goal_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              position_tolerance_m:
+                type: number
+                minimum: 0.01
+                maximum: 0.5
+              yaw_tolerance_rad:
+                type: number
+                minimum: 0.01
+                maximum: 0.5
+            required:
+            - expected_boot_version
+            - map_version
+            - frame_id
+            - pose
+            - position_tolerance_m
+            - yaw_tolerance_rad
+            additionalProperties: false
+          command_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          expires_at:
+            type: string
+            format: date-time
+        additionalProperties: false
+    shelf_transfer_command:
+      name: shelf_transfer_command
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        - command_id
+        - expires_at
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: shelf_transfer_command
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              expected_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              package_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              arrival_command_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              expected_pinky_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              operation:
+                enum:
+                - store
+                - retrieve
+              slot_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              pinky_id:
+                enum:
+                - pinky1
+                - pinky2
+                - pinky3
+              arms:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    robot_id:
+                      enum:
+                      - omx1
+                      - omx2
+                    expected_boot_version:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                  required:
+                  - robot_id
+                  - expected_boot_version
+                  additionalProperties: false
+                minItems: 2
+                maxItems: 2
+              model_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              calibration_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+            required:
+            - expected_boot_version
+            - package_id
+            - arrival_command_id
+            - expected_pinky_boot_version
+            - operation
+            - slot_id
+            - pinky_id
+            - arms
+            - model_version
+            - calibration_version
+            additionalProperties: false
+          command_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          expires_at:
+            type: string
+            format: date-time
+        additionalProperties: false
+    arm_action_command:
+      name: arm_action_command
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        - command_id
+        - expires_at
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: arm_action_command
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              expected_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              operation:
+                enum:
+                - transfer
+                - return_home
+              workcell_id:
+                enum:
+                - shelf-01
+              calibration_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              package_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              arrival_command_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              expected_pinky_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              source_location:
+                type: object
+                properties:
+                  kind:
+                    enum: &id001
+                    - pinky
+                    - shelf
+                  robot_id:
+                    type: string
+                    pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                  position:
+                    type: string
+                    pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                  slot_id:
+                    type: string
+                    pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                required: &id002
+                - kind
+                additionalProperties: false
+              destination_location:
+                type: object
+                properties:
+                  kind:
+                    enum: *id001
+                  robot_id:
+                    type: string
+                    pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                  position:
+                    type: string
+                    pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                  slot_id:
+                    type: string
+                    pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                required: *id002
+                additionalProperties: false
+              model_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+            required:
+            - expected_boot_version
+            - operation
+            - workcell_id
+            - calibration_version
+            additionalProperties: false
+          command_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          expires_at:
+            type: string
+            format: date-time
+        additionalProperties: false
+    warehouse_load_command:
+      name: warehouse_load_command
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        - command_id
+        - expires_at
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: warehouse_load_command
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              expected_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              package_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              arrival_command_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              expected_pinky_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              pickup_location_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              pinky_id:
+                enum:
+                - pinky1
+                - pinky2
+                - pinky3
+              load_position:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              model_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              calibration_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+            required:
+            - expected_boot_version
+            - package_id
+            - arrival_command_id
+            - expected_pinky_boot_version
+            - pickup_location_id
+            - pinky_id
+            - load_position
+            - model_version
+            - calibration_version
+            additionalProperties: false
+          command_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          expires_at:
+            type: string
+            format: date-time
+        additionalProperties: false
+    robot_stop_command:
+      name: robot_stop_command
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        - command_id
+        - expires_at
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: robot_stop_command
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              expected_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              target_command_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              reason:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+            required:
+            - expected_boot_version
+            - target_command_id
+            - reason
+            additionalProperties: false
+          command_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          expires_at:
+            type: string
+            format: date-time
+        additionalProperties: false
+    robot_state:
+      name: robot_state
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: robot_state
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              observed_at:
+                type: string
+              sequence:
+                type: integer
+                minimum: 0
+                maximum: 9007199254740991
+              active_command_id:
+                anyOf:
+                - type: string
+                  pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                - type: 'null'
+              state:
+                oneOf:
+                - type: object
+                  properties:
+                    node:
+                      anyOf:
+                      - type: string
+                        pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                      - type: 'null'
+                    arrival_command_id:
+                      anyOf:
+                      - type: string
+                        pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                      - type: 'null'
+                    mode:
+                      enum:
+                      - line
+                      - nav2
+                      - unknown
+                    stopped:
+                      type: boolean
+                    line_enabled:
+                      type: boolean
+                    nav2_ready:
+                      type: boolean
+                    localization_ready:
+                      type: boolean
+                    drive_owner:
+                      enum:
+                      - none
+                      - line
+                      - nav2
+                    graph_version:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                    map_version:
+                      type: string
+                      pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                    heading_rad:
+                      anyOf:
+                      - type: number
+                        minimum: -3.141592653589793
+                        maximum: 3.141592653589793
+                      - type: 'null'
+                    fault:
+                      anyOf:
+                      - type: string
+                        pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                      - type: 'null'
+                  required:
+                  - node
+                  - arrival_command_id
+                  - mode
+                  - stopped
+                  - line_enabled
+                  - nav2_ready
+                  - localization_ready
+                  - drive_owner
+                  - graph_version
+                  - map_version
+                  - heading_rad
+                  - fault
+                  additionalProperties: false
+                - type: object
+                  properties:
+                    stopped:
+                      type: boolean
+                    ready:
+                      type: boolean
+                    home_reached:
+                      type: boolean
+                    holding_state:
+                      enum: &id003
+                      - empty
+                      - holding
+                      - unknown
+                    holding_package_id:
+                      anyOf:
+                      - type: string
+                        pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                      - type: 'null'
+                    fault:
+                      anyOf:
+                      - type: string
+                        pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                      - type: 'null'
+                  required:
+                  - stopped
+                  - ready
+                  - home_reached
+                  - holding_state
+                  - holding_package_id
+                  - fault
+                  additionalProperties: false
+                - type: object
+                  properties:
+                    stopped:
+                      type: boolean
+                    ready:
+                      type: boolean
+                    fault:
+                      anyOf:
+                      - type: string
+                        pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                      - type: 'null'
+                    arms:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          robot_id:
+                            enum:
+                            - omx1
+                            - omx2
+                          boot_version:
+                            type: string
+                            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                          active_command_id:
+                            anyOf:
+                            - type: string
+                              pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                            - type: 'null'
+                          stopped:
+                            type: boolean
+                          ready:
+                            type: boolean
+                          home_reached:
+                            type: boolean
+                          holding_state:
+                            enum: *id003
+                          holding_package_id:
+                            anyOf:
+                            - type: string
+                              pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                            - type: 'null'
+                          fault:
+                            anyOf:
+                            - type: string
+                              pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                            - type: 'null'
+                        required:
+                        - robot_id
+                        - boot_version
+                        - active_command_id
+                        - stopped
+                        - ready
+                        - home_reached
+                        - holding_state
+                        - holding_package_id
+                        - fault
+                        additionalProperties: false
+                      minItems: 1
+                      maxItems: 2
+                    docking:
+                      anyOf:
+                      - type: object
+                        properties:
+                          pinky_id:
+                            enum:
+                            - pinky1
+                            - pinky2
+                            - pinky3
+                          pinky_boot_version:
+                            type: string
+                            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                          arrival_command_id:
+                            anyOf:
+                            - type: string
+                              pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                            - type: 'null'
+                          observed_at:
+                            type: string
+                          alignment:
+                            enum:
+                            - confirmed
+                            - unconfirmed
+                            - unknown
+                        required:
+                        - pinky_id
+                        - pinky_boot_version
+                        - arrival_command_id
+                        - observed_at
+                        - alignment
+                        additionalProperties: false
+                      - type: 'null'
+                  required:
+                  - stopped
+                  - ready
+                  - fault
+                  - arms
+                  - docking
+                  additionalProperties: false
+            required:
+            - boot_version
+            - observed_at
+            - sequence
+            - active_command_id
+            - state
+            additionalProperties: false
+        additionalProperties: false
+    command_status:
+      name: command_status
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        - command_id
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: command_status
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              observed_at:
+                type: string
+              sequence:
+                type: integer
+                minimum: 0
+                maximum: 9007199254740991
+              status:
+                enum:
+                - accepted
+                - in_progress
+                - completed
+                - rejected
+                - failed
+                - interrupted
+              reason:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              result:
+                type: object
+            required:
+            - boot_version
+            - observed_at
+            - sequence
+            - status
+            additionalProperties: false
+          command_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+        additionalProperties: false
+    robot_pose:
+      name: robot_pose
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: robot_pose
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              observed_at:
+                type: string
+              sequence:
+                type: integer
+                minimum: 0
+                maximum: 9007199254740991
+              map_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              frame_id:
+                enum:
+                - map
+                - odom
+              pose_source:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              pose:
+                anyOf:
+                - type: object
+                  properties:
+                    x:
+                      type: number
+                      minimum: -10000
+                      maximum: 10000
+                    y:
+                      type: number
+                      minimum: -10000
+                      maximum: 10000
+                    yaw:
+                      type: number
+                      minimum: -3.141592653589793
+                      maximum: 3.141592653589793
+                  required: *id004
+                  additionalProperties: false
+                - type: 'null'
+            required:
+            - boot_version
+            - observed_at
+            - sequence
+            - map_version
+            - frame_id
+            - pose_source
+            - pose
+            additionalProperties: false
+        additionalProperties: false
+    event_stored:
+      name: event_stored
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: event_stored
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              acked_message_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+            required:
+            - acked_message_id
+            additionalProperties: false
+        additionalProperties: false

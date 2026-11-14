@@ -60,6 +60,8 @@ def _launch(context):
                           footprint=json.loads(arg('footprint')) if arg('footprint') else None,
                           max_linear=float(arg('max_linear')) if arg('max_linear') else None,
                           max_angular=float(arg('max_angular')) if arg('max_angular') else None)
+    params['bt_navigator']['ros__parameters']['default_nav_to_pose_bt_xml'] = str(
+        Path(get_package_share_directory('roport_pinky')) / 'behavior_trees' / 'bounded_recovery.xml')
     sim_time = 'true' if mode == 'sim' else 'false'
     actions = [SetEnvironmentVariable('ROS_DOMAIN_ID', domain)]
     if mode == 'sim':
@@ -99,6 +101,8 @@ def _launch(context):
                  remappings=[('/model/pinky/pose', '/sim/gazebo_poses')],
                  parameters=[{'use_sim_time': True}]),
             Node(package='roport_smartcart', executable='sim_sonar', output='screen',
+                 parameters=[{'use_sim_time': True}]),
+            Node(package='roport_smartcart', executable='range_scan', output='screen',
                  parameters=[{'use_sim_time': True}]),
             Node(package='nav2_collision_monitor', executable='collision_monitor',
                  name='collision_monitor', output='screen',

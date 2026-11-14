@@ -2,8 +2,8 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  api, ApiError, fmt, statusLabel, reserveErrorText, loginErrorText, loadErrorText, nextRequestId,
-  newRequestId, shouldReloadTimes, timesErrorText, upcomingFlights,
+  api, ApiError, fmt, statusLabel, reserveErrorText, loginErrorText, loadErrorText,
+  shouldReloadTimes, isActivePickupExists, timesErrorText, upcomingFlights,
 } from './api.ts';
 
 const realFetch = globalThis.fetch;
@@ -27,12 +27,33 @@ test('statusLabel: 수령 완료/도착 문구 없음', () => {
 // 2. 오류 문구
 const RESERVE_CODES = [
   'VALIDATION_FAILED', 'ORDER_NOT_FOUND', 'LOCATION_NOT_FOUND', 'FLIGHT_NOT_FOUND',
-  'ORDER_NOT_RESERVABLE', 'ACTIVE_PICKUP_EXISTS', 'IDEMPOTENCY_CONFLICT', 'PICKUP_TIME_NOT_AVAILABLE',
+  'ORDER_NOT_RESERVABLE', 'ACTIVE_PICKUP_EXISTS', 'PICKUP_TIME_NOT_AVAILABLE',
 ];
-test('reserveErrorText: 예약 오류 8종은 각자 고유 문구', () => {
+test('reserveErrorText: 예약 오류 7종은 각자 고유 문구', () => {
   const texts = RESERVE_CODES.map((c) => reserveErrorText(new ApiError(409, c, 'x')));
   for (const t of texts) assert.doesNotMatch(t, /확인하지 못했습니다/);
-  assert.equal(new Set(texts).size, 8);
+  assert.equal(new Set(texts).size, 7);
+});
+test('reserveErrorText: ACTIVE_PICKUP_EXISTS는 예약 조회 안내', () => {
+  const t = reserveErrorText(new ApiError(409, 'ACTIVE_PICKUP_EXISTS', 'x'));
+  assert.match(t, /이미 접수된 예약/);
+  assert.match(t, /예약 조회/);
+});
+test('reserveErrorText: IDEMPOTENCY_CONFLICT는 고유 문구 없이 결과 불명 문구', () => {
+  assert.match(reserveErrorText(new ApiError(409, 'IDEMPOTENCY_CONFLICT', 'x')), /결과를 확인하지 못했습니다 \(IDEMPOTENCY_CONFLICT\)/);
+});
+test('isActivePickupExists: ACTIVE_PICKUP_EXISTS만 true', () => {
+  assert.equal(isActivePickupExists(new ApiError(409, 'ACTIVE_PICKUP_EXISTS', 'x')), true);
+  for (const e of [new ApiError(409, 'ORDER_NOT_RESERVABLE', 'x'), new ApiError(0, 'NETWORK', 'x'), new Error('x')]) {
+    assert.equal(isActivePickupExists(e), false);
+  }
+});
+test('reserve: POST 본문은 orderId·locationId·flightId·pickupAt 4개뿐(requestId 없음)', async () => {
+  let body: unknown;
+  globalThis.fetch = (async (_u: unknown, init?: RequestInit) => { body = init?.body; return new Response('{}', { status: 201 }); }) as typeof fetch;
+  const r = { orderId: 'o', locationId: 'l', flightId: 'f', pickupAt: 't', requestId: 'stale' };
+  await api.reserve(r);
+  assert.deepEqual(Object.keys(JSON.parse(body as string)).sort(), ['flightId', 'locationId', 'orderId', 'pickupAt']);
 });
 test('reserveErrorText: NETWORK는 같은 요청 재시도 안내', () => {
   assert.match(reserveErrorText(new ApiError(0, 'NETWORK', 'x')), /연결하지 못했습니다.*다시 시도/);
@@ -52,20 +73,6 @@ test('loadErrorText: NETWORK와 그 외 구분', () => {
   assert.equal(loadErrorText(new ApiError(0, 'NETWORK', 'x')), '서버에 연결하지 못했습니다.');
   assert.match(loadErrorText(new ApiError(500, null, 'x')), /불러오지 못했습니다/);
   assert.match(loadErrorText(new Error('x')), /불러오지 못했습니다/);
-});
-
-// 3. requestId 정책
-const fresh = () => 'NEW';
-test('nextRequestId: 선택 변경은 새 값', () => {
-  assert.equal(nextRequestId('OLD', { type: 'selection' }, fresh), 'NEW');
-});
-test('nextRequestId: 네트워크·결과 불명·그 외 오류는 유지(같은 선택 재시도)', () => {
-  for (const e of [new ApiError(0, 'NETWORK', 'x'), new ApiError(500, null, 'x'), new ApiError(409, 'ACTIVE_PICKUP_EXISTS', 'x'), new Error('x')]) {
-    assert.equal(nextRequestId('OLD', { type: 'error', error: e }, fresh), 'OLD');
-  }
-});
-test('nextRequestId: IDEMPOTENCY_CONFLICT는 새 값', () => {
-  assert.equal(nextRequestId('OLD', { type: 'error', error: new ApiError(409, 'IDEMPOTENCY_CONFLICT', 'x') }, fresh), 'NEW');
 });
 
 // 4. 시각
@@ -114,21 +121,6 @@ test('BAD_RESPONSE는 고정 문구로 원인을 보여준다', () => {
   assert.match(loadErrorText(e), /서버 응답 형식이 올바르지 않습니다/);
   assert.match(reserveErrorText(e), /서버 응답 형식이 올바르지 않습니다/);
   assert.match(loginErrorText(e), /서버 응답 형식이 올바르지 않습니다/);
-});
-
-// 7. requestId 생성: secure context가 아니면 crypto.randomUUID가 없다
-const fakeCrypto = (byte: number) => ({
-  getRandomValues: <T extends ArrayBufferView>(a: T) => { new Uint8Array(a.buffer).fill(byte); return a; },
-}) as unknown as Crypto;
-const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-test('newRequestId: randomUUID 없는 crypto에서도 v4 형식(버전·variant 비트)', () => {
-  assert.match(newRequestId(fakeCrypto(0x00)), V4);
-  assert.match(newRequestId(fakeCrypto(0xff)), V4);
-});
-test('newRequestId: 기본 crypto에서 호출마다 다른 값', () => {
-  const a = newRequestId(); const b = newRequestId();
-  assert.match(a, V4);
-  assert.notEqual(a, b);
 });
 
 // 8. 시간 목록 재조회·오류 문구

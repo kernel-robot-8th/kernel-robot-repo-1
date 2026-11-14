@@ -1,49 +1,28 @@
-# MQTT 인터페이스 (AsyncAPI)
+# 현장 MQTT 계약
 
-관제 ↔ Pinky / OMX 작업셀 MQTT 계약을 [AsyncAPI](https://www.asyncapi.com/) 3.0으로 기록한다. 기준은 Confluence "Interface Specification (comm)"의 운영 검토안이다. 원문을 복제하지 않고 토픽·필드·QoS 구조만 담는다.
+현재 로컬 구현은 `schema_version=2.0`, `profile=roport-control-v2`다. PR #68의 AsyncAPI 초안에서 토픽의 `v1/{site}`와 `route.requested` 표현을 제거하고, 실행 중복 방지에 필요한 `command_id`와 기동 구분 `boot_version`을 유지했다. 아직 병합·실물 검증 완료를 뜻하지 않는다.
 
-## 상태: 설계 초안
+- [AsyncAPI](roport-mqtt.yaml): 전체 12종의 토픽·JSON 구조.
+- [JSON 예시](examples.json): 조회, 실행, 결과, 재시작 방어, 출발 승인, 양방향 N12 전환.
+- [실행 검증 코드](../../services/roport-control-server/src/roport_control_server/adapters/mqtt/field_wire.py): 명령 대상, 상관관계, 필드 조합까지 검사하는 정본. 문서와 코드의 일치는 테스트로 확인한다.
+- [Pinky 이식·구동 경계](../../services/roport-control-server/docs/mqtt-field.md).
 
-- 현재 `route.requested`, `route.progress` 2개 메시지만 있다. 나머지 메시지(`dock`, `depart`, `navigate`, `stop/resume/cancel`, `notify`, `load`, `shelf`, `ack`, `telemetry`, `motion`, `presence`, `heartbeat`)는 합의되는 대로 추가한다.
-- **현재 코드와 일치하지 않는다.** 이 문서는 필수 ID를 `message_id`, `robot_id`, `user_id`, `product_id`, `gate_id` 5개로 줄이는 설계를 담고 있다. 관제 서버 `adapters/mqtt/messages.py`와 OMX `mqtt_link/`는 아직 `task_id`, `step_id`, `command_id`, `execution_id`, `site_id`를 필수 헤더로 요구하고 `boot_id`·`command_id`를 재시작 방어·중복 실행 방지에 쓴다. 코드 적용은 별도 작업이며 이 문서가 구현을 뜻하지 않는다.
-- **코드 적용 전에 먼저 정해야 할 것(미정):** ID를 제거하면서 `command_id`·`boot_id`가 하던 방어를 `message_id`·`expires_at`만으로는 보장할 수 없다. 중복 처리 이력의 보존 범위·기간, 재시작 후 처리, 새 명령이 대체한 이전 명령의 거부 기준이 정해지지 않았다. 이 방어 설계가 구현의 선행 조건이다. 기존 ID를 모두 복원할 필요는 없다.
-- `expires_at`로 오래된 명령을 막으려면 로봇·관제의 시각이 맞아야 한다. 로봇 시계가 늦으면 만료된 명령이 유효해 보이므로 시각 동기화(NTP) 요구 또는 수신 시각 기준 판정도 함께 정해야 한다.
-- `route.progress`의 `phase`처럼 값 집합이 확정되지 않은 필드는 enum으로 선언하지 못하고 설명에 알려진 값만 적었다(상태는 enum이라는 규칙의 예외). 확정되면 enum으로 바꾼다.
+현재 실행 연결은 Pinky에 적용한다. OMX 단독·공동 작업 메시지도 계약에 포함하지만, 해당 v2 OMX Host와 관제 실행 연결은 후속 구현으로 구분한다. 기존 OMX 시험은 기존 계약을 유지한다.
 
-### 코드 적용 때 정렬할 항목
+| 토픽 | 메시지 | 방향 / QoS |
+| --- | --- | --- |
+| `roport/robot/{robot}/cmd` | `robot_state_request`, `line_route_command`, `set_drive_mode_command`, `nav_goal_command`, `arm_action_command`, `warehouse_load_command`, `robot_stop_command` | 관제 → 로봇 / 1 |
+| `roport/workcell/shelf-01/cmd` | `robot_state_request`, `shelf_transfer_command`, `robot_stop_command` | 관제 → 공동 작업셀 / 1 |
+| `roport/robot/{robot}/event`, `roport/workcell/shelf-01/event` | `robot_state`, `command_status` | 로봇/작업셀 → 관제 / 1 |
+| `roport/robot/{robot}/ack`, `roport/workcell/shelf-01/ack` | `event_stored` | 관제 → 발행 주체 / 1 |
+| `roport/robot/{pinky}/motion` | `robot_pose` | Pinky → 표시 UI / 0 |
 
-- `route.progress`의 `node`는 현재 코드의 `node_id`다. 필수 ID 5개 원칙에 따라 `node`로 적었고 코드 적용 때 이름을 정렬한다. `phase` 값은 Pinky가 실제 보내는 이벤트(`route.completed` 등)와 이름을 맞춘다.
-- `site` enum(`demo`·`test`)은 현재 시험 도구가 쓰는 site 값(시나리오마다 고유 값)과 다르다. 코드 적용 때 정리한다.
-- `route.requested`의 `speed_limit_mps`는 Confluence 명세에서는 선택 필드지만 현재 Pinky 구현이 필수로 읽어 이 초안은 필수로 둔다. `start_heading_rad`도 Pinky 구현이 필수로 읽는다.
-- 목적지 노드는 별도 필드 없이 `route`의 마지막 원소다. `goal.gate_id`는 수령 위치가 목적지일 때만 채운다.
-- `DockPoint`(`P4`·`P7`)는 현재 쓰는 메시지가 없고 Pinky 그래프는 노드 ID만 쓴다. 도킹 메시지를 정할 때 노드 ID로 통일할지 판단한다.
-- 시험용 스키마 `roport-pinky-driving-trial-v1`은 포함하지 않는다.
-- `follow.requested`(고객 추종)는 시나리오 확정 전이라 넣지 않았다.
+모든 발행은 `retain=false`. 물리 명령에는 만료 시각이 필요하다. QoS1 PUBACK은 브로커 수신 확인이며 동작 완료나 관제 저장 확인이 아니다. 중요 결과는 저장 후 `event_stored`를 받아야 outbox에서 제거한다.
 
-## 필드 규칙
+`message_id`는 전송 메시지, `command_id`는 한 실행을 구분한다. 같은 명령의 재전송은 두 값과 본문 전체를 유지한다. `boot_version`은 프로그램 재기동마다 새로 생성하며 파일 버전이 아니다. `robot_state`의 `sequence`는 기동 내 상태 순서, `command_status.sequence`는 **해당 command_id 안의 상태 순서**, `robot_pose.sequence`는 표시 샘플 순서다.
 
-- 필수 ID는 `message_id`, `robot_id`, `user_id`, `product_id`, `gate_id`뿐이다.
-- `task_id`, `step_id`, `command_id`, `execution_id`, `site_id`는 필요한 정보이지만 메시지 필드에는 싣지 않는다. 환경(`site`)은 토픽 주소의 `{site}`로 구분한다. 이 정보를 어디서 관리하는지는 별도로 정한다.
-- 상태는 enum 필드로 표현한다.
-- 메시지 종류별로 필요한 ID만 필수로 둔다. 토픽(`robot/{robot_id}/…`)에 이미 있는 `robot_id`는 payload에 중복해 넣지 않는다.
-- 응답(event·ack)은 `in_reply_to`에 명령의 `message_id`를 넣는다.
+상태 조회 `{}`는 모터 동작을 유지하지 않는다. 활성 명령을 유지하려면 같은 `expected_boot_version`과 `keep_running_command_id`를 새 메시지로 주기 전송한다. Pinky에서 3초 동안 유효한 유지 확인이 없으면 정지/HOLD한다. ROS drive guard의 1초 lease는 별도로 유지한다.
 
-## 검증과 보기
+관제 내부 주문·계획·작업 키와 구형 trial journal 표현은 MQTT에 보내지 않는다. `goal_id`는 내부 목표 이름을 전달하는 선택 필드이며 이 구현에 마커 주차 동작은 포함하지 않는다. 도착 표시용 `robot_pose`만으로 구역을 해제하거나 적재 완료를 확정하지 않는다.
 
-Node.js가 필요하다. `@asyncapi/cli@3`은 HTML 템플릿과 버전이 맞지 않아 실패하므로 `@latest`를 쓴다.
-
-```bash
-# 문법 검증
-npx @asyncapi/cli@latest validate interfaces/mqtt/roport-mqtt.yaml
-# 편집·미리보기 (브라우저)
-npx @asyncapi/cli@latest start studio interfaces/mqtt/roport-mqtt.yaml
-# 단일 HTML 생성 (저장소 밖 폴더에 만든다)
-npx @asyncapi/cli@latest generate fromTemplate interfaces/mqtt/roport-mqtt.yaml @asyncapi/html-template@3 -o /tmp/mqtt-doc --force-write --param singleFile=true --param outFilename=index.html
-```
-
-생성한 HTML은 저장소에 올리지 않는다. `.gitignore`에 `out/`이 없으므로 출력 폴더는 저장소 밖(`/tmp/...`)으로 잡는다. 필요할 때 다시 만든다.
-
-## 수정 규칙
-
-- yaml이 정본이다. 토픽·필드를 바꾸면 이 파일을 PR로 고치고 관제·Pinky·OMX 담당자가 함께 확인한다.
-- 예시 값은 가짜 값만 쓴다. 실제 SSID·IP·인증정보·현장 좌표를 넣지 않는다([공개 저장소 보안 규칙](../../.agents/rules/public-repository-security.md)).
+모델·도킹 캘리브레이션, 실제 통로 폭과 팔 간섭, 하드웨어 정지 시간은 현장 검증 대상이다. 가상 Nav2는 장애물 없는 위치 이동 모델이며 ROS Nav2 경로 계획 검증을 대신하지 않는다.

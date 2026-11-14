@@ -54,7 +54,8 @@ class Rig:
         self.sent.append(body['cmd'])
         try:
             {'speed': lambda: self.ex.set_speed(body.get('base_speed')),
-             'start': lambda: self.ex.start(body['route']),
+             'start': lambda: self.ex.start(body['route'],
+                                            hold_at_goal=body.get('hold_at_goal', False)),
              'load_done': self.ex.load_done, 'stop': self.ex.stop}[body['cmd']]()
             self.last = {'cmd': body['cmd'], 'ok': True, 'detail': ''}
         except Exception as e:
@@ -120,7 +121,22 @@ def test_p5_to_p7_progress_then_complete_while_loading():
     assert s['node_id'] == 'N11' and s['stopped'] and not s['line_enabled']
     assert abs(s['heading_rad'] - math.radians(0.10)) < 0.1   # 남쪽 + 90° = 동쪽
     _, _, done = rig.results[-1]
-    assert done == {'seq': 8, 'total': 9, 'prev_node': 'N19', 'next_node': None}
+    assert done == {'node_id': 'N11', 'seq': 8, 'total': 9,
+                    'prev_node': 'N19', 'next_node': None}
+
+
+def test_queued_progress_keeps_each_detected_node():
+    rig = Rig()
+    rig.logic.dispatch(route_cmd(TO_P7))
+    while rig.logic.seq < 2:
+        rig.sim.tick(rig.ex)
+        rig.clock.t = 1000.0 + rig.sim.t
+        rig.feed()
+        assert rig.sim.t < 120
+    events = rig.logic.drain_results()
+    assert rig.logic.observe()['node_id'] == 'N02'
+    assert [(d['seq'], d['node_id']) for _, phase, d in events if phase == 'progress'] == [
+        (1, 'N14'), (2, 'N02')]
 
 
 def test_next_route_from_loading_sends_load_done_first():
@@ -139,6 +155,34 @@ def test_next_route_from_loading_sends_load_done_first():
     assert rig.sent == ['load_done', 'speed', 'start']
     assert [p for _, p, _ in rig.results][-1] == 'completed'
     assert rig.ex.state == 'handoff' and rig.logic.observe()['node_id'] == 'N12'
+
+
+@pytest.mark.parametrize('start, heading, first, continuation', [
+    ('N16', 'S', ['N16', 'N14', 'N02', 'N10', 'N18'],
+     ['N18', 'N07', 'N23', 'N19', 'N11']),
+    ('N01', 'N', ['N01', 'N18'], ['N18', 'N10', 'N02', 'N14', 'N16']),
+    ('N01', 'N', ['N01', 'N18'], ['N18', 'N07', 'N23', 'N19', 'N11']),
+])
+def test_shared_driver_junction_hold_and_resume(start, heading, first, continuation):
+    rig = Rig(start, heading)
+    cmd = route_cmd(first, heading=rig.logic.observe()['heading_rad'])
+    rig.logic.validate_action(cmd)
+    rig.logic.dispatch(cmd)
+    assert rig.run(until=finished)
+    assert rig.results[-1][1] == 'completed', rig.results
+    observed = rig.logic.observe()
+    assert observed['node_id'] == first[-1] and observed['stopped']
+    assert observed['drive_owner'] == 'none' and not observed['line_enabled']
+    assert rig.ex.state == 'arrived'
+    nxt = route_cmd(continuation, heading=observed['heading_rad'])
+    with pytest.raises(ValueError, match='junction_heading_mismatch'):
+        rig.logic.validate_action(route_cmd(continuation, heading=observed['heading_rad'] + 1.0))
+    rig.logic.validate_action(nxt)
+    rig.results.clear()
+    rig.logic.dispatch(nxt)
+    assert rig.run(until=finished)
+    assert rig.results[-1][1] == 'completed', rig.results
+    assert rig.logic.observe()['node_id'] == continuation[-1]
 
 
 def test_failure_reports_line_nav_reason_and_forgets_node():
@@ -199,3 +243,30 @@ def test_unknown_start_node_rejected_by_constructor():
 ])
 def test_error_code(reason, code):
     assert error_code(reason) == code
+
+
+@pytest.mark.parametrize('result_code', ['SUCCEEDED', 'nav2_recovery_timeout'])
+def test_result_reporting_without_optional_navigation_diagnostic(result_code):
+    import threading
+    import time
+    from types import SimpleNamespace
+    from roport_pinky.trial_driver import TrialDriver
+    driver = object.__new__(TrialDriver)
+    driver.lock = threading.RLock()
+    pose = {'x': 1., 'y': 2., 'yaw': 0.}
+    cmd = {'type': 'nav2_goal.requested', 'payload': {
+        'goal_id': 'G2', 'goal_version': 1, 'pose': pose,
+        'position_tolerance_m': .03, 'yaw_tolerance_rad': .1}}
+    driver.nav_command = cmd
+    driver.logic = SimpleNamespace(active=None, drain_results=lambda: [])
+    driver.nav = SimpleNamespace(navigation=None, result=(result_code, time.monotonic()-4),
+                                 snapshot=lambda: {'pose': pose})
+    driver.observe = lambda: {'fault': None, 'stopped': True}
+    leases, stopped = [], []
+    driver._lease = leases.append
+    driver.safe_stop = stopped.append
+    result = driver.drain_results()
+    assert leases == ['none']
+    assert driver.nav_command is None
+    assert result[0][1] == ('completed' if result_code == 'SUCCEEDED' else 'failed')
+    assert stopped == ([] if result_code == 'SUCCEEDED' else [result_code])

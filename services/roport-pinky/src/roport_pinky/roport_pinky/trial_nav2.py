@@ -39,6 +39,10 @@ def yaw(q):
                       1 - 2 * (q.y * q.y + q.z * q.z))
 
 
+MAX_RECOVERIES = 2
+RECOVERY_TIMEOUT_S = 30.0
+
+
 class Nav2Bridge:
     def __init__(self, node, profile, map_path, lock):
         from geometry_msgs.msg import PoseWithCovarianceStamped
@@ -65,7 +69,13 @@ class Nav2Bridge:
         self.state_clients = {name: node.create_client(GetState, name + '/get_state')
                               for name in ('amcl', 'bt_navigator')}
         self.goal = self.handle = self.result = None
+        self.goal_ack = None
+        self.pending_goal_acks = 0
+        self.cancelled_goals = []
         self.generation = 0
+        self.navigation = None
+        self.recovery_started = None
+        self.recovery_pose = None
         self.subs = [node.create_subscription(
             OccupancyGrid, 'map', self._map,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -184,7 +194,11 @@ class Nav2Bridge:
         with self.lock:
             state = self._localization_state()
             self.localization = (state, time.monotonic())
-            self.status_pub.publish(self._String(data=json.dumps(state, allow_nan=False)))
+            self._check_recovery(state)
+            report = dict(state)
+            if self.navigation is not None:
+                report['navigation'] = self.diagnostic()
+            self.status_pub.publish(self._String(data=json.dumps(report, allow_nan=False)))
 
     def snapshot(self):
         with self.lock:
@@ -204,41 +218,126 @@ class Nav2Bridge:
         goal.pose.pose.orientation.w = math.cos(p['yaw'] / 2)
         self.generation += 1
         generation = self.generation
-        self.goal, self.result = payload, None
-        future = self.action.send_goal_async(goal)
+        self.goal, self.handle, self.result = payload, None, None
+        self.recovery_started = self.recovery_pose = None
+        self.navigation = {
+            'phase': 'navigating', 'goal_id': payload['goal_id'],
+            'target_pose': dict(p), 'current_pose': None,
+            'recoveries': 0, 'max_recoveries': MAX_RECOVERIES,
+            'recovery_elapsed_s': 0.0, 'recovery_timeout_s': RECOVERY_TIMEOUT_S,
+            'nav2_error_code': 0, 'action_status': 0, 'error_code': None,
+        }
+        future = self.action.send_goal_async(
+            goal, feedback_callback=lambda msg: self._feedback(msg, generation))
+        self.goal_ack = future
+        self.pending_goal_acks += 1
         future.add_done_callback(lambda f: self._accepted(f, generation))
 
     def _accepted(self, future, generation):
         with self.lock:
             try:
                 handle = future.result()
-                if generation != self.generation:
+                if generation != self.generation or self.result is not None:
                     if handle.accepted:
-                        handle.cancel_goal_async()
+                        self._cancel_handle(handle)
                     return
                 if not handle.accepted:
-                    self.result = ('nav2_goal_rejected', time.monotonic())
+                    self._fail('nav2_goal_rejected')
                     return
                 self.handle = handle
                 handle.get_result_async().add_done_callback(lambda f: self._result(f, generation))
             except (RuntimeError, ValueError, AttributeError):
                 if generation == self.generation:
-                    self.result = ('nav2_action_error', time.monotonic())
+                    self._fail('nav2_action_error')
+            finally:
+                self.pending_goal_acks = getattr(self, 'pending_goal_acks', 1) - 1
 
     def _result(self, future, generation):
         with self.lock:
-            if generation != self.generation:
+            if generation != self.generation or self.result is not None:
                 return
             try:
                 result = future.result()
                 success = result.status == 4 and getattr(result.result, 'error_code', 0) == 0
                 code = 'SUCCEEDED' if success else 'nav2_goal_failed'
+                self.navigation['nav2_error_code'] = int(getattr(result.result, 'error_code', 0))
+                self.navigation['action_status'] = int(result.status)
             except (RuntimeError, ValueError, AttributeError):
                 code = 'nav2_action_error'
+            self.navigation['phase'] = 'navigating' if code == 'SUCCEEDED' else 'failed'
+            self.navigation['error_code'] = None if code == 'SUCCEEDED' else code
             self.result = (code, time.monotonic())
+
+    def _feedback(self, message, generation):
+        with self.lock:
+            if generation != self.generation or self.result is not None:
+                return
+            count = int(message.feedback.number_of_recoveries)
+            if count > self.navigation['recoveries']:
+                if self.recovery_started is None:
+                    self.recovery_started = time.monotonic()
+                    self.recovery_pose = self.snapshot().get('pose')
+                self.navigation.update(phase='recovering', recoveries=count)
+            if count > MAX_RECOVERIES:
+                self._fail('nav2_recovery_limit')
+
+    def _check_recovery(self, state):
+        if not self.navigation or self.result is not None or self.goal is None:
+            return
+        pose = state.get('pose')
+        self.navigation['current_pose'] = dict(pose) if pose else None
+        if not pose or not state.get('localization_ready') or not state.get('nav2_ready'):
+            self._fail('nav2_not_ready')
+            return
+        if self.recovery_started is None:
+            return
+        if self.recovery_pose is not None and math.hypot(
+                pose['x'] - self.recovery_pose['x'], pose['y'] - self.recovery_pose['y']) >= .05:
+            # Only measured TF progress ends a recovery episode, never feedback timing.
+            self.recovery_started = self.recovery_pose = None
+            self.navigation.update(phase='navigating', recovery_elapsed_s=0.0)
+            return
+        elapsed = time.monotonic() - self.recovery_started
+        self.navigation['recovery_elapsed_s'] = round(elapsed, 3)
+        if elapsed >= RECOVERY_TIMEOUT_S:
+            self._fail('nav2_recovery_timeout')
+
+    def _fail(self, code):
+        self.result = (code, time.monotonic())
+        if self.navigation:
+            self.navigation.update(phase='failed', error_code=code)
+        if self.handle is not None:
+            self._cancel_handle(self.handle)
+
+    def diagnostic(self):
+        with self.lock:
+            if not self.navigation:
+                return None
+            diagnostic = dict(self.navigation)
+            if any(f is None or (f.done() and (f.cancelled() or f.exception() is not None))
+                   for f in self.cancelled_goals):
+                diagnostic['error_code'] = 'nav2_cancel_result_unknown'
+            return diagnostic
+
+    def _cancel_handle(self, handle):
+        # A cancel ACK is not a terminal result; keep that evidence before line handoff.
+        if not hasattr(self, 'cancelled_goals'):
+            self.cancelled_goals = []
+        terminal = handle.get_result_async() if hasattr(handle, 'get_result_async') else None
+        self.cancelled_goals.append(terminal)
+        handle.cancel_goal_async()
+
+    def quiescent(self):
+        if getattr(self, 'pending_goal_acks', 0) or (self.handle is not None and self.result is None):
+            return False
+        futures = list(self.cancelled_goals)
+        if self.goal_ack is not None:
+            futures.append(self.goal_ack)
+        return all(f is not None and f.done() and not f.cancelled()
+                   and f.exception() is None for f in futures)
 
     def cancel(self):
         self.generation += 1  # a late goal acceptance must cancel itself
         if self.handle is not None:
-            self.handle.cancel_goal_async()
+            self._cancel_handle(self.handle)
         self.goal = self.handle = self.result = None

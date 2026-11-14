@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { readFile } from 'node:fs/promises';
 
-test('virtual reset restores position after driving or HOLD and preserves both runs', async ({page}, testInfo) => {
+test('virtual reset restores position after driving or HOLD and preserves both runs', async ({page}) => {
   const child = spawn('.venv/bin/python', ['-u', 'tools/run_virtual_trial.py', '--scenario', 'single'], {stdio:['ignore','pipe','pipe']});
   let diagnostics = '';
   child.stderr.on('data', d => diagnostics += d);
@@ -62,7 +62,6 @@ test('virtual reset restores position after driving or HOLD and preserves both r
       if (previousArchive) expect(JSON.parse(await readFile(`${previousArchive}/outcome.json`, 'utf8')).result).toBe('reset');
       previousArchive = run.previous_run_dir;
     }
-    await page.screenshot({path:testInfo.outputPath('virtual-reset-ready.png'), fullPage:true});
   } finally {
     lines.close();
     child.kill('SIGINT');

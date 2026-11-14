@@ -59,5 +59,11 @@ jobs:
           REQUIRE_MQTT_TESTS: '1'
       - run: npx playwright install --with-deps chromium
       - run: npm run test:web
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: control-browser-failure
+          path: services/roport-control-server/test-results/
+          retention-days: 7
       - run: uv build
       - run: uv run python tools/check_asset_package.py dist/*.whl
