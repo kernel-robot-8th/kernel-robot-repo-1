@@ -20,9 +20,7 @@ def wire_schema():
 
 
 def examples():
-    rows = json.loads(
-        (SERVICE.parents[1] / "interfaces/mqtt/examples.json").read_text()
-    )
+    rows = json.loads((SERVICE / "interfaces/mqtt/examples.json").read_text())
     messages = [row["message"] for row in rows]
     for message in messages:
         validate(message)

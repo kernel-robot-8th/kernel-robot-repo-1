@@ -1,6 +1,6 @@
 # Pinky 주행 시험 — 관제 구현 및 MQTT 이식 가이드
 
-> **이 문서의 trial-v1 토픽·JSON은 이전 버전 기록이다.** 현재 실제 MQTT 연결은 [v2 연결 가이드](mqtt-field.md)와 [전체 인터페이스](../../../interfaces/mqtt/README.md)를 따른다. 기존 시험 계획/이력은 경계 어댑터 내부에서 유지되며 새 endpoint와 혼합 배포하면 안 된다.
+> **이 문서의 trial-v1 토픽·JSON은 이전 버전 기록이다.** 현재 실제 MQTT 연결은 [v2 연결 가이드](mqtt-field.md)와 [전체 인터페이스](../interfaces/mqtt/README.md)를 따른다. 기존 시험 계획/이력은 경계 어댑터 내부에서 유지되며 새 endpoint와 혼합 배포하면 안 된다.
 
 이 문서는 **독립 CLI 주행 시험 버전**의 연결 계약이다. 운영 통신 규약 전체를 대체하지 않는다.
 공통 envelope 1.0 위에 profile=roport-pinky-driving-trial-v1을 명시한다.
