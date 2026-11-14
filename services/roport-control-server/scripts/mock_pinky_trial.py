@@ -6,7 +6,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from itertools import pairwise
 
-from roport_control_server.adapters.mqtt.pinky_trial import PinkyTrialClient
+from roport_control_server.adapters.mqtt.field_pinky import FieldPinkyClient
 from roport_control_server.adapters.mqtt.trial_wire import mqtt_config
 
 
@@ -57,7 +57,10 @@ class FakePinky:
         self.execution_count += 1
 
     def stop(self, reason):
+        self.pending = None
         self.state.update(stopped=True, line_enabled=False, drive_owner="none")
+
+    safe_stop = stop
 
     def finish(self, client):
         cmd = self.pending
@@ -124,18 +127,7 @@ def main():
     }:
         parser.error("fake robot requires simulation profile and loopback broker")
     fake = FakePinky(config, args.role)
-    client = PinkyTrialClient(
-        connection,
-        site=config["site_id"],
-        control=config["control_id"],
-        robot=robot["robot_id"],
-        binding_id=robot["binding_id"],
-        journal_path=args.journal,
-        observe=fake.observe,
-        validate_action=fake.validate_action,
-        dispatch=fake.dispatch,
-        safe_stop=fake.stop,
-    )
+    client = FieldPinkyClient(connection, config, args.role, args.journal, fake)
     try:
         client.start()
         print(
