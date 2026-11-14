@@ -81,8 +81,8 @@ SCHEMAS = {
     "mode_switch.requested": obj(
         **FENCE,
         node_id=enum("N12"),
-        from_mode=enum("line"),
-        to_mode=enum("nav2"),
+        from_mode=enum("line", "nav2"),
+        to_mode=enum("line", "nav2"),
         map_id=ID,
         map_version=ID,
     ),
@@ -335,6 +335,17 @@ def check_result(request, event):
         ):
             raise ValueError("route completion requires goal stop and disabled line")
     if kind in {"mode_switch", "navigate"} and phase == "completed":
+        if kind == "mode_switch" and p["to_mode"] == "line":
+            if (
+                result["mode"] != "line"
+                or result["node_id"] != "N12"
+                or not result["stopped"]
+                or result["line_enabled"]
+                or result["drive_owner"] != "none"
+                or any(result[k] != p[k] for k in ("map_id", "map_version"))
+            ):
+                raise ValueError("line handoff requires confirmed N12 stop")
+            return
         if (
             result["mode"] != "nav2"
             or not result["stopped"]

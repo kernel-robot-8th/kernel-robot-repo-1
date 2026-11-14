@@ -207,18 +207,25 @@ class RouteExecutor:
         self._reset_primitive()
 
     # ------------------------------------------------------------ 명령
-    def start(self, route, start_offset_cm=None, start_cross=False, start_facing=None):
+    def start(self, route, start_offset_cm=None, start_cross=False, start_facing=None,
+              *, confirmed_start=False, hold_at_goal=False):
         """경로 시작. 잘못된 경로는 GraphError(현재 상태 유지). 주행 중이면 거부.
 
-        start_cross: IR 3개가 route[0] 을 지나는 교차선 위, 로봇은 start_facing(E·N·W·S)을 봄.
+        start_cross: IR 3개가 route[0] 교차선 위, start_facing(E·N·W·S) 방향으로 출발.
+        confirmed_start: 실제 센서로 확인한 출발 오프셋에 gate_early 거리 창을 적용.
+        hold_at_goal: 마지막 교차점에서 축을 중심으로 옮겨 정지하고 재출발 자세를 보존.
         """
         if self.state not in TERMINAL:
             raise GraphError(f'busy ({self.state}); stop first')
-        legs, seg_ends = self._plan_segments([str(r) for r in route])
+        legs, seg_ends = self._plan_segments([str(r) for r in route], hold_at_goal)
         if start_cross:
             self._check_cross(str(route[0]), start_facing, start_offset_cm)
         elif start_facing is not None:
             raise GraphError('start_facing is only for start_cross')
+        if confirmed_start and (start_cross or start_offset_cm is None
+                                or not math.isfinite(start_offset_cm)
+                                or not 0 <= start_offset_cm < legs[0].length):
+            raise ValueError('Confirmed start requires a finite offset within the first leg')
         self.route = [str(r) for r in route]
         self.legs = legs
         self._seg_ends = seg_ends
@@ -235,7 +242,7 @@ class RouteExecutor:
         if start_cross:
             self._depart_cross(legs[0], start_facing)
             return
-        self._depart(legs[0], end, start_offset_cm)
+        self._depart(legs[0], end, start_offset_cm, confirmed_start=confirmed_start)
 
     def _check_cross(self, nid, facing, offset):
         if facing not in FACINGS:
@@ -300,18 +307,18 @@ class RouteExecutor:
         if self.state not in TERMINAL:
             raise ValueError(f'{what} rejected while driving ({self.state}); stop first')
 
-    def _plan_segments(self, route):
+    def _plan_segments(self, route, hold_at_goal=False):
         """중간 가로선 노드에서 나눠 구간 묶음마다 plan_route. → (전체 Leg 목록, 묶음 끝 Leg 번호)."""
         cuts = [i for i in range(1, len(route) - 1) if self.graph.nodes.get(route[i]) is not None
                 and self.graph.nodes[route[i]].bar]
         legs, ends, a = [], set(), 0
         for b in cuts + [len(route) - 1]:
-            legs += plan_route(self.graph, route[a:b + 1])
+            legs += plan_route(self.graph, route[a:b + 1], allow_junction_stop=hold_at_goal)
             ends.add(len(legs) - 1)
             a = b
         return legs, ends
 
-    def _depart(self, leg, end, s0_override=None):
+    def _depart(self, leg, end, s0_override=None, *, confirmed_start=False):
         """이 노드에서 leg 로 출발: 필요하면 출발 전 회전, 첫 구간 거리 창."""
         facing, pre, s0 = self._start_plan(leg, end)
         if s0_override is not None:
@@ -319,6 +326,7 @@ class RouteExecutor:
         if pre is None:
             # 기억한 끝 위치 없이 가정한 거리(사람이 놓은 출발·지정 오프셋)면 gate_early 를 걸지 않음
             guess = end is None or end['node'] != leg.frm or s0_override is not None
+            guess = guess and not confirmed_start
             self._begin_leg(s0, guess)
             return
         direction, lo, hi = pre
@@ -339,6 +347,13 @@ class RouteExecutor:
         turn = turn_of(facing, leg.heading)
         if turn == GO_STRAIGHT:
             return facing, None, end['s0']
+        if not self.graph.nodes[leg.frm].bar:
+            # 교차점 정차는 축이 중심에 있다. 회전 뒤에도 센서는 중심에서 ir_ahead만큼 앞.
+            if turn == BACK:
+                pre = (1.0, c.back_min_deg, c.back_max_deg)
+            else:
+                pre = (1.0 if turn == LEFT else -1.0, c.turn_min_deg, c.turn_max_deg)
+            return facing, pre, c.ir_ahead_cm
         if turn == BACK:       # 바퀴 축 기준 반 바퀴: 센서가 축 반대편으로
             return (facing, (1.0, c.back_min_deg, c.back_max_deg),
                     2 * c.ir_ahead_cm + c.half_line_cm)
@@ -550,6 +565,8 @@ class RouteExecutor:
             return {'node': leg.to, 'facing': back, 's0': 2 * c.ir_ahead_cm + c.half_line_cm}
         if leg.action == PARK:    # 후진해 가로선 가장자리에서 멈춤
             return {'node': leg.to, 'facing': back, 's0': c.half_line_cm}
+        if leg.action == STOP and not self.graph.nodes[leg.to].bar:
+            return {'node': leg.to, 'facing': leg.heading, 's0': c.ir_ahead_cm}
         return {'node': leg.to, 'facing': leg.heading, 's0': None}
 
     def _begin_leg(self, s0_cm, guess=False):
@@ -691,6 +708,8 @@ class RouteExecutor:
         elif leg.action == HANDOFF:
             steps.append(done + (HANDOFF_STATE,))
         elif leg.action == STOP:
+            if not self.graph.nodes[leg.to].bar:
+                steps.append((ADVANCE, c.turn_advance_cm))
             steps.append(done + (ARRIVED,))
         else:  # pragma: no cover - plan_route 가 막음
             raise GraphError(f'unknown action {leg.action}')

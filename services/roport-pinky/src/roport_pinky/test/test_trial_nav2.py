@@ -1,5 +1,6 @@
 import threading
 import time
+from concurrent.futures import Future
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -7,6 +8,90 @@ import pytest
 from roport_pinky.trial_nav2 import Nav2Bridge, map_reference
 from ros_trial_fixture import PINKY
 from test_trial_driver import PROFILE
+
+
+def handoff_bridge():
+    bridge = object.__new__(Nav2Bridge)
+    bridge.lock, bridge.generation = threading.RLock(), 1
+    bridge.goal = {'goal_id': 'N12'}
+    bridge.handle = bridge.result = bridge.goal_ack = None
+    bridge.pending_goal_acks = 0
+    bridge.cancelled_goals = []
+    bridge.navigation = {'phase': 'navigating', 'error_code': None}
+    return bridge
+
+
+def test_line_handoff_waits_for_late_goal_acceptance_and_terminal_cancel():
+    bridge = handoff_bridge()
+    bridge.goal_ack = Future()
+    bridge.pending_goal_acks = 1
+    terminal, cancellations = Future(), []
+    handle = SimpleNamespace(accepted=True, get_result_async=lambda: terminal,
+                             cancel_goal_async=lambda: cancellations.append(True))
+    bridge.cancel()
+    assert not bridge.quiescent()
+    bridge.goal_ack.set_result(handle)
+    bridge._accepted(bridge.goal_ack, 1)
+    assert cancellations == [True]
+    assert not bridge.quiescent()  # Acknowledging cancel cannot release drive ownership.
+    terminal.set_result(SimpleNamespace(status=5))
+    assert bridge.quiescent()
+
+
+@pytest.mark.parametrize('failure', ['missing', 'cancelled', 'exception'])
+def test_unknown_cancel_result_blocks_line_handoff(failure):
+    bridge = handoff_bridge()
+    terminal = Future()
+    bridge.handle = SimpleNamespace(get_result_async=lambda: None if failure == 'missing' else terminal,
+                                     cancel_goal_async=lambda: None)
+    bridge.cancel()
+    if failure == 'cancelled':
+        terminal.cancel()
+    elif failure == 'exception':
+        terminal.set_exception(RuntimeError('result unavailable'))
+    assert not bridge.quiescent()
+    assert bridge.diagnostic()['error_code'] == 'nav2_cancel_result_unknown'
+
+
+def test_active_goal_is_not_quiescent_until_its_success_result():
+    bridge = handoff_bridge()
+    bridge.handle = SimpleNamespace()
+    assert not bridge.quiescent()
+    result = Future()
+    result.set_result(SimpleNamespace(status=4, result=SimpleNamespace(error_code=0)))
+    bridge._result(result, 1)
+    assert bridge.result[0] == 'SUCCEEDED'
+    assert bridge.quiescent()
+
+
+def test_recovery_failure_waits_for_cancel_terminal_before_handoff():
+    bridge = handoff_bridge()
+    terminal = Future()
+    bridge.handle = SimpleNamespace(get_result_async=lambda: terminal, cancel_goal_async=lambda: None)
+    bridge._fail('nav2_recovery_timeout')
+    assert not bridge.quiescent()
+    terminal.set_result(SimpleNamespace(status=5))
+    assert bridge.quiescent()
+
+
+def test_trial_driver_rejects_line_switch_until_nav2_cancel_finishes():
+    from roport_pinky.trial_driver import TrialDriver
+    bridge = handoff_bridge()
+    terminal = Future()
+    bridge.handle = SimpleNamespace(get_result_async=lambda: terminal, cancel_goal_async=lambda: None)
+    bridge.cancel()
+    driver = object.__new__(TrialDriver)
+    driver.lock, driver.nav = bridge.lock, bridge
+    driver.mode, driver.nav_command = 'nav2', None
+    driver.logic = SimpleNamespace(active=None)
+    driver._return_aligned = lambda: True
+    driver.observe = lambda: {**PROFILE, 'fault': None, 'stopped': True, 'line_enabled': False,
+                             'nav2_ready': True, 'localization_ready': True}
+    command = {'type': 'mode_switch.requested', 'payload': {**PROFILE, 'to_mode': 'line'}}
+    with pytest.raises(ValueError, match='N12_physical_alignment_required'):
+        driver.validate_action(command)
+    terminal.set_result(SimpleNamespace(status=5))
+    driver.validate_action(command)
 
 
 def test_late_goal_acceptance_is_cancelled_after_stop():

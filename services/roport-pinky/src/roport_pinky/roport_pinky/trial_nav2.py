@@ -69,6 +69,9 @@ class Nav2Bridge:
         self.state_clients = {name: node.create_client(GetState, name + '/get_state')
                               for name in ('amcl', 'bt_navigator')}
         self.goal = self.handle = self.result = None
+        self.goal_ack = None
+        self.pending_goal_acks = 0
+        self.cancelled_goals = []
         self.generation = 0
         self.navigation = None
         self.recovery_started = None
@@ -226,6 +229,8 @@ class Nav2Bridge:
         }
         future = self.action.send_goal_async(
             goal, feedback_callback=lambda msg: self._feedback(msg, generation))
+        self.goal_ack = future
+        self.pending_goal_acks += 1
         future.add_done_callback(lambda f: self._accepted(f, generation))
 
     def _accepted(self, future, generation):
@@ -234,7 +239,7 @@ class Nav2Bridge:
                 handle = future.result()
                 if generation != self.generation or self.result is not None:
                     if handle.accepted:
-                        handle.cancel_goal_async()
+                        self._cancel_handle(handle)
                     return
                 if not handle.accepted:
                     self._fail('nav2_goal_rejected')
@@ -244,6 +249,8 @@ class Nav2Bridge:
             except (RuntimeError, ValueError, AttributeError):
                 if generation == self.generation:
                     self._fail('nav2_action_error')
+            finally:
+                self.pending_goal_acks = getattr(self, 'pending_goal_acks', 1) - 1
 
     def _result(self, future, generation):
         with self.lock:
@@ -300,14 +307,37 @@ class Nav2Bridge:
         if self.navigation:
             self.navigation.update(phase='failed', error_code=code)
         if self.handle is not None:
-            self.handle.cancel_goal_async()
+            self._cancel_handle(self.handle)
 
     def diagnostic(self):
         with self.lock:
-            return dict(self.navigation) if self.navigation else None
+            if not self.navigation:
+                return None
+            diagnostic = dict(self.navigation)
+            if any(f is None or (f.done() and (f.cancelled() or f.exception() is not None))
+                   for f in self.cancelled_goals):
+                diagnostic['error_code'] = 'nav2_cancel_result_unknown'
+            return diagnostic
+
+    def _cancel_handle(self, handle):
+        # A cancel ACK is not a terminal result; keep that evidence before line handoff.
+        if not hasattr(self, 'cancelled_goals'):
+            self.cancelled_goals = []
+        terminal = handle.get_result_async() if hasattr(handle, 'get_result_async') else None
+        self.cancelled_goals.append(terminal)
+        handle.cancel_goal_async()
+
+    def quiescent(self):
+        if getattr(self, 'pending_goal_acks', 0) or (self.handle is not None and self.result is None):
+            return False
+        futures = list(self.cancelled_goals)
+        if self.goal_ack is not None:
+            futures.append(self.goal_ack)
+        return all(f is not None and f.done() and not f.cancelled()
+                   and f.exception() is None for f in futures)
 
     def cancel(self):
         self.generation += 1  # a late goal acceptance must cancel itself
         if self.handle is not None:
-            self.handle.cancel_goal_async()
+            self._cancel_handle(self.handle)
         self.goal = self.handle = self.result = None

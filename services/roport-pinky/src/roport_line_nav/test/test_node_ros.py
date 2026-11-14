@@ -138,6 +138,20 @@ def test_bad_command_rejected_and_reported(ros):
     assert ros.node.ex.state == 'idle' and ros.cmds == []
 
 
+def test_junction_goal_requires_explicit_hold_command(ros):
+    ros.feed(3)
+    ros.command({'cmd': 'start', 'route': ['N16', 'N14']})
+    ros.wait(lambda: ros.states and ros.states[-1]['last_command']
+             and ros.states[-1]['last_command']['ok'] is False)
+    assert ros.node.ex.state == 'idle'
+    ros.feed(3)
+    ros.command({'cmd': 'start', 'route': ['N16', 'N14'], 'hold_at_goal': True})
+    ros.wait(lambda: ros.node.ex.state == 'follow')
+    assert ros.node.ex.legs[-1].action == 'stop'
+    ros.command({'cmd': 'stop'})
+    ros.wait(lambda: ros.node.ex.state == 'stopped')
+
+
 def test_ir_timeout_stops(ros):
     ros.feed(3)
     ros.command({'cmd': 'start', 'route': ROUTE})
@@ -185,7 +199,16 @@ def test_parse_command_ok():
     assert parse_command('{"cmd": "stop"}') == ('stop', {})
     cmd, args = parse_command('{"cmd": "start", "route": ["N16", "N14"], "start_offset_cm": 7}')
     assert cmd == 'start' and args == {'route': ['N16', 'N14'], 'start_offset_cm': 7.0,
-                                       'start_cross': False, 'start_facing': None}
+                                       'start_cross': False, 'start_facing': None,
+                                       'confirmed_start': False, 'hold_at_goal': False}
+    _, args = parse_command('{"cmd":"start","route":["N01","N18"],"hold_at_goal":true}')
+    assert args['hold_at_goal'] is True
+    with pytest.raises(ValueError, match='hold_at_goal'):
+        parse_command('{"cmd":"start","route":["N01","N18"],"hold_at_goal":1}')
+    _, args = parse_command('{"cmd":"start","route":["N12","N08"],"start_offset_cm":0,"confirmed_start":true}')
+    assert args['confirmed_start'] is True
+    with pytest.raises(ValueError, match='confirmed_start'):
+        parse_command('{"cmd":"start","route":["N16","N14"],"start_offset_cm":0,"confirmed_start":true}')
     cmd, args = parse_command('{"cmd": "start", "route": ["N07", "N18", "N01"], '
                               '"start_cross": true, "start_facing": "S"}')
     assert args['start_cross'] is True and args['start_facing'] == 'S'
