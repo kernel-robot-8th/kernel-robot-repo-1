@@ -22,13 +22,20 @@ export function progressIndex(status: string): number {
 export const hhmm = (iso: string) =>
   new Date(iso).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 
-// 오늘(KST)이면 HH:mm, 다른 날이면 M/D HH:mm. 자정을 넘는 수령 시간·항공편을 헷갈리지 않게 한다.
+// KST 연·월·일 [y, m, d]
+function kstYmd(d: Date): [string, string, string] {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  return [get('year'), get('month'), get('day')];
+}
+
+// 오늘(KST)이면 HH:mm, 올해 다른 날이면 M/D HH:mm, 다른 해면 YYYY/M/D HH:mm.
+// 자정을 넘는 수령 시간·항공편이나 지난 예약을 오늘 것으로 헷갈리지 않게 한다.
 export function when(iso: string, now: Date = new Date()): string {
-  const day = (d: Date) => d.toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric' });
-  const d = new Date(iso);
-  if (day(d) === day(now)) return hhmm(iso);
-  const [m, dd] = d.toLocaleDateString('en-US', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric' }).split('/');
-  return `${m}/${dd} ${hhmm(iso)}`;
+  const [y, m, d] = kstYmd(new Date(iso));
+  const [ny, nm, nd] = kstYmd(now);
+  if (y === ny && m === nm && d === nd) return hhmm(iso);
+  return `${y === ny ? '' : `${y}/`}${m}/${d} ${hhmm(iso)}`;
 }
 
 // 탑승 알림 문구. 항공편의 탑승 시작·마감 시각만으로 계산한다(게이트 변경 실시간 반영은 관제·운항 연동 이후).
