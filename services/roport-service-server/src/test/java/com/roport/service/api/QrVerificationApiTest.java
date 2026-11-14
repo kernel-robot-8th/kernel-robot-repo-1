@@ -100,8 +100,13 @@ class QrVerificationApiTest {
         return call(c, "POST", "/api/pickups/" + pickupId + "/qr-token", null, null);
     }
 
+    /** 카트별 실패 제한이 테스트끼리 섞이지 않게 테스트마다 카트 ID를 따로 쓴다. */
+    String cartId() {
+        return "pinky3-" + s;
+    }
+
     Res verify(String requestId, String method, String value) throws Exception {
-        return verifyAs("pinky3", requestId, method, value);
+        return verifyAs(cartId(), requestId, method, value);
     }
 
     Res verifyAs(String cartId, String requestId, String method, String value) throws Exception {
@@ -122,6 +127,9 @@ class QrVerificationApiTest {
         String token = first.body().path("token").asString("");
         assertThat(token).startsWith(QrTokens.PREFIX).hasSizeGreaterThan(40);
         assertThat(first.body().path("pickupId").asString("")).isEqualTo("pa" + s);
+        // 만료는 발급 시각 + 기본 10분(service.qr.ttl).
+        java.time.Instant issuedAt = java.time.Instant.parse(first.body().path("issuedAt").asString(""));
+        assertThat(java.time.Instant.parse(first.body().path("expiresAt").asString(""))).isEqualTo(issuedAt.plusSeconds(600));
 
         // DB에는 원문이 없고 해시만 있다.
         assertThat(db.sql("SELECT count(*) FROM qr_credentials WHERE token_hash = ?").param(token).query(Integer.class).single()).isZero();
@@ -170,7 +178,7 @@ class QrVerificationApiTest {
         assertThat(p.path("packageCount").asInt(-1)).isZero();
 
         assertThat(db.sql("SELECT actor_ref || ' ' || method || ' ' || result FROM verifications WHERE verification_request_id = ?")
-                .param("rq-a-" + s).query(String.class).single()).isEqualTo("cart:pinky3 RESERVATION_NO VERIFIED");
+                .param("rq-a-" + s).query(String.class).single()).isEqualTo("cart:" + cartId() + " RESERVATION_NO VERIFIED");
         // 확인은 인도 승인·수령이 아니다.
         assertThat(db.sql("SELECT count(*) FROM handover_approvals WHERE pickup_id = ?").param("pa" + s).query(Integer.class).single()).isZero();
         assertThat(db.sql("SELECT business_status FROM orders WHERE order_id = ?").param("oa" + s).query(String.class).single()).isEqualTo("CONFIRMED");
@@ -226,5 +234,38 @@ class QrVerificationApiTest {
         problem(call(alice, "POST", "/cart-api/verifications", "{}", null), 401, "CART_UNAUTHENTICATED");
         // 카트 헤더로는 고객 API에 들어갈 수 없다.
         problem(call(cart, "GET", "/api/orders", null, "pinky3"), 401, "UNAUTHENTICATED");
+    }
+
+    @Test
+    void expiredQrIsRejected() throws Exception {
+        String token = issue(alice, "pa" + s).body().path("token").asString("");
+        assertThat(db.sql("SELECT expires_at > issued_at FROM qr_credentials WHERE token_hash = ?")
+                .param(QrTokens.hash(token)).query(Boolean.class).single()).isTrue();
+        db.sql("UPDATE qr_credentials SET expires_at = now() - interval '1 second' WHERE token_hash = ?")
+                .param(QrTokens.hash(token)).update();
+        Res expired = verify("rq-exp-" + s, "QR", token);
+        assertThat(expired.status()).isEqualTo(201);
+        assertThat(expired.body().path("result").asString("")).isEqualTo("REJECTED");
+        assertThat(expired.body().path("reasonCode").asString("")).isEqualTo("QR_EXPIRED");
+    }
+
+    @Test
+    void repeatedFailuresAreLimitedPerCart() throws Exception {
+        assertThat(verify("rq-lim-ok-" + s, "RESERVATION_NO", reservationNo).status()).isEqualTo(201);
+        // 기본 기준: 1분에 실패 5회(예약 없음 4회 + 거절 1회).
+        for (int i = 1; i <= 4; i++) {
+            problem(verify("rq-lim-" + i + "-" + s, "RESERVATION_NO", "ZZZZZZZZ"), 404, "RESERVATION_NOT_FOUND");
+        }
+        assertThat(verify("rq-lim-5-" + s, "RESERVATION_NO", receivedNo).body().path("reasonCode").asString(""))
+                .isEqualTo("ALREADY_RECEIVED");
+        // 기록된 거절의 재전송(200)은 다시 세지 않는다. 세었다면 아래 재전송 확인 전에 이미 막혔을 것이다.
+        assertThat(verify("rq-lim-5-" + s, "RESERVATION_NO", receivedNo).status()).isEqualTo(200);
+
+        // 기준에 이르면 올바른 예약번호라도 새 요청은 429.
+        problem(verify("rq-lim-6-" + s, "RESERVATION_NO", reservationNo), 429, "TOO_MANY_ATTEMPTS");
+        // 이미 기록된 요청의 재전송은 막지 않는다(패드의 응답 유실 재시도).
+        assertThat(verify("rq-lim-ok-" + s, "RESERVATION_NO", reservationNo).status()).isEqualTo(200);
+        // 다른 카트는 영향이 없다.
+        assertThat(verifyAs("other-" + s, "rq-lim-other-" + s, "RESERVATION_NO", reservationNo).status()).isEqualTo(201);
     }
 }
