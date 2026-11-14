@@ -22,7 +22,10 @@ jobs:
 
       - name: Open sync pull request
         env:
-          GH_TOKEN: ${{ github.token }}
+          # SYNC_PR_TOKEN(PR 생성 권한이 있는 토큰)이 있으면 쓴다. 없으면 github.token을 쓰며, 이때는 저장소 설정
+          # "Allow GitHub Actions to create and approve pull requests"가 켜져 있어야 한다.
+          # github.token으로 만든 PR은 GitHub 규칙상 pull_request CI가 자동 실행되지 않는다.
+          GH_TOKEN: ${{ secrets.SYNC_PR_TOKEN || github.token }}
           TASK_BRANCH: ${{ inputs.task_branch }}
         run: |
           if [[ ! "$TASK_BRANCH" =~ ^task/[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
@@ -43,8 +46,22 @@ jobs:
             exit 0
           fi
 
-          gh pr create \
+          set +e
+          output=$(gh pr create \
             --base "$TASK_BRANCH" \
             --head main \
             --title "chore: sync main into ${TASK_BRANCH}" \
-            --body "Synchronize the latest main changes into ${TASK_BRANCH}. Merge this pull request with a merge commit to preserve the branch history."
+            --body "Synchronize the latest main changes into ${TASK_BRANCH}. Merge this pull request with a merge commit to preserve the branch history." 2>&1)
+          status=$?
+          set -e
+
+          if [[ $status -ne 0 ]]; then
+            echo "$output" >&2
+            if grep -q "not permitted to create or approve pull requests" <<<"$output"; then
+              compare_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${TASK_BRANCH}...main?expand=1"
+              echo "::error title=PR 생성 권한 없음::GitHub Actions의 PR 생성이 꺼져 있습니다. Settings > Actions > General > Workflow permissions에서 'Allow GitHub Actions to create and approve pull requests'를 켜거나, PR 생성 권한이 있는 토큰을 저장소 secret SYNC_PR_TOKEN으로 등록하세요. 지금은 ${compare_url} 에서 수동으로 PR(base ${TASK_BRANCH}, head main)을 만들 수 있습니다."
+            fi
+            exit "$status"
+          fi
+
+          echo "$output"
