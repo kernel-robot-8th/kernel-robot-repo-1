@@ -62,6 +62,14 @@ channels:
       robot_id:
         description: pinky1/pinky2/pinky3 (motion); pinky1/pinky2/pinky3/omx1/omx2/omx3
           (others)
+  robotHost:
+    address: roport/robot/{robot_id}/host
+    messages:
+      host_metrics: &id001
+        $ref: '#/components/messages/host_metrics'
+    parameters:
+      robot_id:
+        description: pinky1/pinky2/pinky3/omx3 (OMX1/OMX2 share workcell shelf-01)
   workcellCmd:
     address: roport/workcell/shelf-01/cmd
     messages:
@@ -83,6 +91,10 @@ channels:
     messages:
       event_stored:
         $ref: '#/components/messages/event_stored'
+  workcellHost:
+    address: roport/workcell/shelf-01/host
+    messages:
+      host_metrics: *id001
 operations:
   sendrobotCmd:
     action: send
@@ -116,6 +128,14 @@ operations:
       mqtt:
         qos: 0
         retain: false
+  receiverobotHost:
+    action: receive
+    channel:
+      $ref: '#/channels/robotHost'
+    bindings:
+      mqtt:
+        qos: 0
+        retain: false
   sendworkcellCmd:
     action: send
     channel:
@@ -139,6 +159,14 @@ operations:
     bindings:
       mqtt:
         qos: 1
+        retain: false
+  receiveworkcellHost:
+    action: receive
+    channel:
+      $ref: '#/channels/workcellHost'
+    bindings:
+      mqtt:
+        qos: 0
         retain: false
 components:
   messages:
@@ -447,7 +475,7 @@ components:
                     type: number
                     minimum: -3.141592653589793
                     maximum: 3.141592653589793
-                required: &id004
+                required: &id005
                 - x
                 - y
                 - yaw
@@ -647,7 +675,7 @@ components:
                 type: object
                 properties:
                   kind:
-                    enum: &id001
+                    enum: &id002
                     - pinky
                     - shelf
                   robot_id:
@@ -659,14 +687,14 @@ components:
                   slot_id:
                     type: string
                     pattern: ^[A-Za-z0-9_.:-]{1,128}$
-                required: &id002
+                required: &id003
                 - kind
                 additionalProperties: false
               destination_location:
                 type: object
                 properties:
                   kind:
-                    enum: *id001
+                    enum: *id002
                   robot_id:
                     type: string
                     pattern: ^[A-Za-z0-9_.:-]{1,128}$
@@ -676,7 +704,7 @@ components:
                   slot_id:
                     type: string
                     pattern: ^[A-Za-z0-9_.:-]{1,128}$
-                required: *id002
+                required: *id003
                 additionalProperties: false
               model_version:
                 type: string
@@ -960,7 +988,7 @@ components:
                     home_reached:
                       type: boolean
                     holding_state:
-                      enum: &id003
+                      enum: &id004
                       - empty
                       - holding
                       - unknown
@@ -1017,7 +1045,7 @@ components:
                           home_reached:
                             type: boolean
                           holding_state:
-                            enum: *id003
+                            enum: *id004
                           holding_package_id:
                             anyOf:
                             - type: string
@@ -1228,7 +1256,7 @@ components:
                       type: number
                       minimum: -3.141592653589793
                       maximum: 3.141592653589793
-                  required: *id004
+                  required: *id005
                   additionalProperties: false
                 - type: 'null'
             required:
@@ -1282,5 +1310,105 @@ components:
                 pattern: ^[A-Za-z0-9_.:-]{1,128}$
             required:
             - acked_message_id
+            additionalProperties: false
+        additionalProperties: false
+    host_metrics:
+      name: host_metrics
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: host_metrics
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              sequence:
+                type: integer
+                minimum: 1
+                maximum: 9007199254740991
+              observed_at:
+                type: string
+              cpu_count:
+                anyOf:
+                - type: integer
+                  minimum: 1
+                  maximum: 4096
+                - type: 'null'
+              load_1m:
+                anyOf:
+                - type: number
+                  minimum: 0
+                  maximum: 10000
+                - type: 'null'
+              load_5m:
+                anyOf:
+                - type: number
+                  minimum: 0
+                  maximum: 10000
+                - type: 'null'
+              load_15m:
+                anyOf:
+                - type: number
+                  minimum: 0
+                  maximum: 10000
+                - type: 'null'
+              mem_total_kb:
+                anyOf:
+                - type: integer
+                  minimum: 0
+                  maximum: 9007199254740991
+                - type: 'null'
+              mem_available_kb:
+                anyOf:
+                - type: integer
+                  minimum: 0
+                  maximum: 9007199254740991
+                - type: 'null'
+              cpu_temp_c:
+                anyOf:
+                - type: number
+                  minimum: -100
+                  maximum: 200
+                - type: 'null'
+            required:
+            - boot_version
+            - sequence
+            - observed_at
+            - cpu_count
+            - load_1m
+            - load_5m
+            - load_15m
+            - mem_total_kb
+            - mem_available_kb
+            - cpu_temp_c
             additionalProperties: false
         additionalProperties: false

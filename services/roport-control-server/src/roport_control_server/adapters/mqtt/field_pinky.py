@@ -5,6 +5,7 @@ No task, step, execution, binding or site identifier crosses MQTT.
 """
 
 import logging
+import math
 from copy import deepcopy
 from datetime import UTC, datetime
 from queue import Empty
@@ -12,6 +13,7 @@ from time import monotonic
 from uuid import uuid4
 
 from . import field_wire as wire
+from .host_metrics import host_metrics_message, read_host_metrics
 from .journal import Journal
 from .mqtt import MqttTransport
 from .trial_wire import PROFILE, check_result
@@ -69,7 +71,23 @@ def driver_command(message, profile, binding):
 
 
 class FieldPinkyClient:
-    def __init__(self, connection, profile, role, journal_path, driver):
+    def __init__(
+        self,
+        connection,
+        profile,
+        role,
+        journal_path,
+        driver,
+        host_metrics_period_s=None,
+    ):
+        # Host telemetry is display-only and off unless a period is given explicitly.
+        if host_metrics_period_s is not None and not (
+            type(host_metrics_period_s) in (int, float)
+            and 0 < host_metrics_period_s < math.inf
+        ):
+            raise ValueError("host_metrics_period_s must be a positive number")
+        self.host_metrics_period_s = host_metrics_period_s
+        self.host_sequence, self.last_host_metrics = 0, -math.inf
         self.profile, self.driver = profile, driver
         self.robot = profile["robots"][role]["robot_id"]
         self.binding = profile["robots"][role]["binding_id"]
@@ -493,6 +511,27 @@ class FieldPinkyClient:
             },
         )
         self.transport.publish_motion(wire.topic(self.robot, "motion"), message)
+
+    def publish_host_metrics(self):
+        """Best-effort; failures are logged only and never stop or HOLD motion."""
+        period = self.host_metrics_period_s
+        if period is None or monotonic() - self.last_host_metrics < period:
+            return
+        self.last_host_metrics = monotonic()
+        try:
+            self.host_sequence += 1
+            message = host_metrics_message(
+                self.robot,
+                self.control,
+                self.boot,
+                self.host_sequence,
+                read_host_metrics(),
+            )
+            self.transport.publish_host_metrics(
+                wire.topic(self.robot, "host"), message, period
+            )
+        except Exception as exc:  # noqa: BLE001 - display-only; must not end the runner loop
+            LOG.warning("host metrics not sent: %s", type(exc).__name__)
 
     def close(self):
         try:

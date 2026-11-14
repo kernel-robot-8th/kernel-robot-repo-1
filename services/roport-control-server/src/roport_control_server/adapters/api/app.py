@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from ...contracts.pinky_settings import validate_job, validate_registration
+from ...contracts.robots import HOST_IDS, unknown_host
 from .display import ROBOTS, Display
 from .maps import load_map
 from .pinky_settings import NOT_CONNECTED, settings_view
@@ -113,6 +114,17 @@ def create_app(
                 return JSONResponse({"detail": "trial UI is not configured"}, 503)
             return app.state.trial.snapshot()
         return Display().snapshot()
+
+    @app.get("/api/hosts/metrics")
+    async def host_metrics():
+        """Display-only host telemetry; always 200, never device readiness."""
+        if app.state.trial is None:
+            return {
+                "receiver": "not_configured",
+                "rejected": {},
+                "hosts": [unknown_host(host) for host in HOST_IDS],
+            }
+        return await asyncio.to_thread(app.state.trial.host_metrics)
 
     async def json_object(request, max_bytes=MAX_JSON_BYTES):
         if request.headers.get("content-type", "").split(";")[0] != "application/json":

@@ -17,6 +17,33 @@ def client():
         yield client
 
 
+def test_host_ids_and_unknown_host_never_invent_values():
+    from roport_control_server.contracts.robots import HOST_IDS, unknown_host
+
+    assert HOST_IDS == ("pinky1", "pinky2", "pinky3", "omx3", "shelf-01")
+    row = unknown_host("omx3")
+    assert row.pop("host_id") == "omx3" and row.pop("status") == "unknown"
+    assert row and all(value is None for value in row.values())
+
+
+def test_host_metrics_endpoint_without_trial_is_not_configured(client):
+    response = client.get("/api/hosts/metrics")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["receiver"] == "not_configured" and data["rejected"] == {}
+    assert [h["host_id"] for h in data["hosts"]] == [
+        "pinky1",
+        "pinky2",
+        "pinky3",
+        "omx3",
+        "shelf-01",
+    ]
+    assert all(
+        h["status"] == "unknown" and h["cpu_temp_c"] is None for h in data["hosts"]
+    )
+    assert client.post("/api/hosts/metrics").status_code == 405
+
+
 def test_offline_bootstrap_assets_and_no_hardware_controls(client):
     response = client.get("/")
     assert response.status_code == 200

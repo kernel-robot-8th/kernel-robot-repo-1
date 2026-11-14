@@ -3,6 +3,7 @@
 import argparse
 import importlib
 import json
+import math
 from copy import deepcopy
 from pathlib import Path
 
@@ -40,7 +41,7 @@ def select_robot(profile, role, *, hardware_authorized=False):
     return robot
 
 
-def run(profile, role, connection, journal_path, driver):
+def run(profile, role, connection, journal_path, driver, host_metrics_period_s=None):
     for name in (
         "observe",
         "validate_action",
@@ -51,7 +52,14 @@ def run(profile, role, connection, journal_path, driver):
         if not callable(getattr(driver, name, None)):
             raise TypeError(f"driver requires callable {name}")
     robot = profile["robots"][role]
-    client = FieldPinkyClient(connection, profile, role, journal_path, driver)
+    client = FieldPinkyClient(
+        connection,
+        profile,
+        role,
+        journal_path,
+        driver,
+        host_metrics_period_s=host_metrics_period_s,
+    )
     try:
         client.start()
         print(
@@ -67,6 +75,7 @@ def run(profile, role, connection, journal_path, driver):
             for original, phase, details in driver.drain_results():
                 client.report(original, phase, **details)
             client.publish_motion()
+            client.publish_host_metrics()
     except KeyboardInterrupt:
         pass
     finally:
@@ -90,7 +99,15 @@ def main():
         action="store_true",
         help="validate identity/mode; no driver import or network",
     )
+    parser.add_argument(
+        "--host-metrics-period-s",
+        type=float,
+        help="publish display-only host metrics every N seconds (off if omitted)",
+    )
     args = parser.parse_args()
+    period = args.host_metrics_period_s
+    if period is not None and not 0 < period < math.inf:
+        parser.error("--host-metrics-period-s must be a positive number")
     try:
         profile = json.loads(Path(args.config).read_text())
         robot = select_robot(
@@ -113,7 +130,14 @@ def main():
         module, factory = args.driver.split(":")
         make_driver = getattr(importlib.import_module(module), factory)
         driver = make_driver(deepcopy(profile), args.role)
-        run(profile, args.role, connection, args.journal, driver)
+        run(
+            profile,
+            args.role,
+            connection,
+            args.journal,
+            driver,
+            host_metrics_period_s=period,
+        )
     except (ValueError, KeyError, TypeError) as exc:
         parser.error(str(exc))
 

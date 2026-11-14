@@ -2,7 +2,7 @@
 
 관제와 실물·가상 Pinky 모두 `field_wire.py` / `FieldPinkyClient`를 사용한다. 물리 동작은 팀원의 `roport_pinky.trial_driver:TrialDriver`가 맡는다. `trial_wire.py`는 기존 시험 설정·실행부 내부 표현이며 새 MQTT 스키마가 아니다.
 
-토픽은 `roport/robot/{pinky1|pinky2|pinky3}/{cmd|event|ack|motion}`이다. 명령은 cmd, 상태·결과는 event, 저장 확인은 ack, 표시 좌표는 motion이다. motion만 QoS0이고 나머지는 QoS1이며 모두 retain=false다. `message.schema.json`과 `examples.json`은 v2 실제 JSON이며 예시의 ID·시각은 재생용 명령이 아니다.
+토픽은 `roport/robot/{pinky1|pinky2|pinky3}/{cmd|event|ack|motion|host}`이다. 명령은 cmd, 상태·결과는 event, 저장 확인은 ack, 표시 좌표는 motion, 호스트 지표는 host다. motion·host만 QoS0이고 나머지는 QoS1이며 모두 retain=false다. `message.schema.json`과 `examples.json`은 v2 실제 JSON이며 예시의 ID·시각은 재생용 명령이 아니다.
 
 ## 연결 정보
 
@@ -16,6 +16,8 @@
 2. Pinky에 `paho-mqtt==2.1.0`을 준비하고 ROS 환경을 source한다. 설정 JSON을 복사하고 초기 기체 위치를 `ROPORT_PINKY_START_NODE`로 지정한다. 이 값은 실제 위치를 자동 측정한 결과가 아니다.
 3. 기존 준비된 `line_nav`, Nav2, 독립 drive guard를 사용한다. ROS driver·`line_nav_node`도 이번 버전으로 갱신해야 N12 역전환이 가능하다. 이 문서는 bringup이나 모터를 자동 실행하지 않는다.
 4. `python -m pinky_mqtt.trial_runner --config /path/trial.json --role logistics --journal /path/new-journal.json --driver roport_pinky.trial_driver:create_driver --hardware-authorized`로 연결한다. 스마트카트 역할은 `--role smartcart`다. 먼저 같은 인자에 `--check`를 추가하면 장비·브로커에 접속하지 않고 설정만 검사한다. `field_verified=true`는 현장 확인 후 설정한다.
+
+호스트 지표는 기본 꺼짐이다. `--host-metrics-period-s 5`처럼 주기를 명시하면 `roport/robot/{pinky}/host`로 `host_metrics`(CPU 수·loadavg·메모리 kB·CPU 온도 °C)를 QoS0·retain=false로 보낸다. 읽지 못한 값은 null이며 0으로 바꾸지 않는다. 표시 전용이라 발행 실패는 로그만 남기고 정지·HOLD·출발 판정에 쓰지 않는다. 온도는 thermal zone type `cpu-thermal`/`x86_pkg_temp`에서 읽는다. 관제는 시험 설정 `host_metrics: {"hosts": [...], "stale_after_s": 15}`가 있을 때만 별도 client(`<client_id>-host`)로 구독하고 `GET /api/hosts/metrics`로 보여 준다.
 
 기존 v1 journal을 v2 endpoint에 재사용하지 않는다. 이전 파일은 보관하고 새 파일로 시작한다. 미완료 실행이 있는 v2 journal을 다시 열면 자동 재주행하지 않고 복구 확인을 요구한다. 프로세스가 재시작되면 `boot_version`이 바뀌므로 관제도 새 상태를 확인해야 한다.
 
