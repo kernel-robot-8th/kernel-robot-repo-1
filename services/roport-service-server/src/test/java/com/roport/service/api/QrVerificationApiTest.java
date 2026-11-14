@@ -187,6 +187,13 @@ class QrVerificationApiTest {
 
         problem(verify("rq-dup-" + s, "RESERVATION_NO", receivedNo), 409, "IDEMPOTENCY_CONFLICT"); // 다른 예약
         problem(verifyAs("pinky2", "rq-dup-" + s, "RESERVATION_NO", reservationNo), 409, "IDEMPOTENCY_CONFLICT"); // 다른 카트
+
+        // 같은 예약이라도 다른 QR 토큰이면 다른 요청이다(재발급 전 토큰의 결과를 새 토큰에 돌려주지 않는다).
+        String a = issue(alice, "pa" + s).body().path("token").asString("");
+        assertThat(verify("rq-qr-" + s, "QR", a).status()).isEqualTo(201);
+        String b = issue(alice, "pa" + s).body().path("token").asString("");
+        problem(verify("rq-qr-" + s, "QR", b), 409, "IDEMPOTENCY_CONFLICT");
+        assertThat(verify("rq-qr-" + s, "QR", a).status()).isEqualTo(200); // 원래 토큰 재전송은 저장 결과
     }
 
     @Test

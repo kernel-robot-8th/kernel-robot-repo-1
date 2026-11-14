@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -20,7 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>확인(VERIFIED)은 인도 승인이 아니다. 이 카트에 배정된 예약인지는 관제의 배정 정보가 있어야 판단할 수 있어
  * 아직 대조하지 않으며(cartAssignmentChecked=false), handover_approvals·receipts는 만들지 않는다.
  *
- * <p>같은 verificationRequestId 재전송은 저장된 결과를 돌려준다. 같은 ID로 다른 카트·방법·예약을 보내면 409.
+ * <p>같은 verificationRequestId 재전송은 저장된 결과를 돌려준다. 같은 ID로 다른 카트·방법·예약·QR 토큰을 보내면 409.
  * 예약을 찾지 못하면 verifications.pickup_id가 NOT NULL이라 기록하지 않고 404를 돌려준다.
  */
 @Service
@@ -41,7 +42,8 @@ class VerificationService {
 
     private record Target(String pickupId, String credentialId, String reasonCode) {}
 
-    private record Stored(String verificationId, String verificationRequestId, String pickupId, String method, String actorRef, String result,
+    private record Stored(String verificationId, String verificationRequestId, String pickupId, String credentialId,
+                          String method, String actorRef, String result,
                           String reasonCode, Instant verifiedAt) {}
 
     private final JdbcClient db;
@@ -82,7 +84,8 @@ class VerificationService {
 
     private Outcome replay(Stored row, String actorRef, Method method, Target target) {
         if (!row.actorRef().equals(actorRef) || !row.method().equals(method.name())
-                || !row.pickupId().equals(target.pickupId())) {
+                || !row.pickupId().equals(target.pickupId())
+                || !Objects.equals(row.credentialId(), target.credentialId())) {
             throw new ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT",
                     "같은 요청 ID로 다른 확인 요청을 보낼 수 없습니다.");
         }
@@ -134,13 +137,13 @@ class VerificationService {
 
     private Optional<Stored> stored(String verificationRequestId) {
         return db.sql("""
-                SELECT verification_id, verification_request_id, pickup_id, method, actor_ref, result, reason_code, verified_at
+                SELECT verification_id, verification_request_id, pickup_id, credential_id, method, actor_ref, result, reason_code, verified_at
                 FROM verifications WHERE verification_request_id = ?""")
                 .param(verificationRequestId)
                 .query((rs, n) -> {
                     OffsetDateTime at = rs.getObject("verified_at", OffsetDateTime.class);
                     return new Stored(rs.getString("verification_id"), rs.getString("verification_request_id"),
-                            rs.getString("pickup_id"),
+                            rs.getString("pickup_id"), rs.getString("credential_id"),
                             rs.getString("method"), rs.getString("actor_ref"), rs.getString("result"),
                             rs.getString("reason_code"), at == null ? null : at.toInstant());
                 })
