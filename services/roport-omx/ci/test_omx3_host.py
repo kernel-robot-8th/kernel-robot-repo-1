@@ -110,6 +110,55 @@ class Accept(unittest.TestCase):
         self.assertEqual(events[-1][1]["error_code"], "CANCELED")
 
 
+class Race(unittest.TestCase):
+    def test_abort_while_publishing_accepted_is_kept(self):
+        # accepted 발행 도중 다른 스레드가 abort() → 실행은 취소돼야 한다(#71 리뷰 P1)
+        events, runner = [], FakeRunner()
+
+        def publish(kind, req, p):
+            events.append((kind, p))
+            if kind == "load.accepted":
+                threading.Thread(target=host.abort).start()
+                threading.Event().wait(0.05)
+
+        host = Omx3Host(runner, publish)
+        host.handle_load(request())
+        host.wait(5)
+        self.assertEqual(events[-1][1]["error_code"], "CANCELED")
+
+    def test_publish_failure_does_not_leave_busy(self):
+        # 발행이 한 번씩 실패해도 실행은 끝나고, 재전송하면 마지막 결과를 받는다(#71 리뷰 P2)
+        for broken in ("load.accepted", "load.progress", "load.completed"):
+            with self.subTest(broken):
+                events, failed, runner = [], [], FakeRunner()
+
+                def publish(kind, req, p, broken=broken):
+                    if kind == broken and not failed:
+                        failed.append(kind)
+                        raise ConnectionError("broker down")
+                    events.append((kind, p))
+
+                host = Omx3Host(runner, publish)
+                host.handle_load(request())
+                host.wait(5)
+                self.assertIsNone(host.status()["active"])
+                host.handle_load(request())  # 관제 재전송
+                self.assertEqual(events[-1][0], "load.completed")
+                self.assertEqual(len(runner.runs), 1)
+
+    def test_worker_start_failure_reports_failed(self):
+        host, runner, events = make()
+        start = threading.Thread.start
+        threading.Thread.start = lambda self: (_ for _ in ()).throw(RuntimeError("x"))
+        try:
+            host.handle_load(request())
+        finally:
+            threading.Thread.start = start
+        self.assertEqual(kinds(events), ["load.accepted", "load.failed"])
+        self.assertIsNone(host.status()["active"])
+        self.assertEqual(runner.runs, [])
+
+
 class Duplicate(unittest.TestCase):
     def test_same_request_replays_last_event_without_running(self):
         host, runner, events = make()
@@ -185,6 +234,20 @@ class Journal(unittest.TestCase):
         self.assertEqual(runner2.runs, [])
         self.assertEqual(events2[-1][0], "load.completed")
         self.assertEqual(host2.reconciling, [])
+
+    def test_truncated_utf8_last_line_keeps_earlier_records(self):
+        # 한글 detail을 쓰다 문자 중간에서 끊김 → 앞의 미완료 기록은 살아 RECONCILING(#71 리뷰 P2)
+        host, runner, _ = make(journal=self.path)
+        runner.gate.clear()
+        host.handle_load(request("c1"))
+        with self.path.open("ab") as f:
+            f.write('{"key": "c1/e1", "detail": "한'.encode()[:-1])
+        host2, _, _ = make(journal=self.path)
+        self.assertEqual(host2.reconciling, ["c1/e1"])
+        host2.clear_reconciling("c1/e1")
+        self.assertEqual(make(journal=self.path)[0].reconciling, [])
+        runner.gate.set()
+        host.wait(5)
 
     def test_unfinished_run_blocks_until_cleared(self):
         host, runner, events = make(journal=self.path)

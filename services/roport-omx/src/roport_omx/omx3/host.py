@@ -91,12 +91,23 @@ class Omx3Host:
                 return self._reject(request, code, marker_id=marker_id, fp=fp)
             self._records[key] = {"fp": fp, "done": False}
             self._active = key
+            # 명령마다 새 취소 신호를 접수 알림 전에 정한다: 알림 뒤에 온 abort()가 지워지지 않는다(#71 리뷰)
+            abort = self._abort = threading.Event()
             self._emit(request, "load.accepted", {"marker_id": marker_id})
-            self._abort.clear()
-            self._thread = threading.Thread(
-                target=self._execute, args=(request, marker_id), daemon=True
-            )
-            self._thread.start()
+            try:
+                self._thread = threading.Thread(
+                    target=self._execute, args=(request, marker_id, abort), daemon=True
+                )
+                self._thread.start()
+            except (
+                Exception
+            ) as exc:  # 스레드를 못 띄우면 실패로 끝내 BUSY로 남지 않게 한다
+                log.exception("worker start failed")
+                out = Outcome(
+                    Phase.FAILED, ErrorCode.ROBOT_ERROR, marker_id, detail=repr(exc)
+                )
+                self._emit(request, "load.failed", out.to_dict(), done=True)
+                self._active = None
 
     def abort(self) -> None:
         """실행 중인 명령을 멈춘다(runner가 CANCELED로 끝내고 자세를 유지한다)."""
@@ -127,14 +138,14 @@ class Omx3Host:
                 self._write({"key": key, "event": "reconciled"})
 
     # ------------------------------------------------------------ 내부
-    def _execute(self, request: dict, marker_id: int) -> None:
+    def _execute(self, request: dict, marker_id: int, abort: threading.Event) -> None:
         def on_phase(phase: Phase, info: dict) -> None:
             if phase in PROGRESS:
                 with self._lock:
                     self._emit(request, "load.progress", {"phase": str(phase)})
 
         try:
-            outcome = self.runner.run(marker_id, self._abort, on_phase)
+            outcome = self.runner.run(marker_id, abort, on_phase)
         except Exception as exc:  # 실행 오류도 실패로 보고(log.exception으로 남김)
             log.exception("run failed")
             outcome = Outcome(
@@ -144,7 +155,7 @@ class Omx3Host:
         with self._lock:
             try:
                 self._emit(request, kind, outcome.to_dict(), done=True)
-            finally:  # 보고가 실패해도 다음 명령을 막지 않는다(기록은 이미 남았다)
+            finally:  # 기록이 실패해도 다음 명령을 막지 않는다
                 self._active = None
 
     def _reject(
@@ -162,9 +173,8 @@ class Omx3Host:
             "marker_id": marker_id,
             "detail": detail,
         }
-        if (
-            not record
-        ):  # BUSY 등은 키를 남기지 않는다: 나중에 같은 명령을 다시 받을 수 있다
+        # BUSY 등은 키를 남기지 않는다: 나중에 같은 명령을 다시 받을 수 있다
+        if not record:
             self.publish("load.rejected", request, self._stamp(payload))
             return
         self._records[_key(request)] = {"fp": fp or _fingerprint(request), "done": True}
@@ -186,7 +196,12 @@ class Omx3Host:
                 "done": record["done"],
             }
         )
-        self.publish(kind, request, payload)
+        # 기록이 기준이다. 보내기가 실패해도 실행을 멈추거나 BUSY로 남기지 않고, 관제가 같은 명령을
+        # 다시 보내면 마지막 이벤트를 재전송한다(#71 리뷰)
+        try:
+            self.publish(kind, request, payload)
+        except Exception:
+            log.exception("publish %s failed", kind)
 
     def _stamp(self, payload: dict) -> dict:
         return {"boot_id": self.boot_id, **payload}
@@ -207,15 +222,18 @@ class Omx3Host:
         if self.journal is None or not self.journal.exists():
             return
         reconciled = set()
-        text = self.journal.read_text(encoding="utf-8")
-        if text and not text.endswith("\n"):
+        # 바이트로 읽고 줄마다 디코딩한다: UTF-8 문자 중간이 잘려도 앞의 기록은 살린다(#71 리뷰)
+        data = self.journal.read_bytes()
+        if data and not data.endswith(b"\n"):
             self._write_raw(
                 "\n"
             )  # 끊긴 줄을 닫아 다음 기록이 그 줄에 이어 붙지 않게 한다
-        for n, line in enumerate(text.splitlines(), 1):
+        for n, line in enumerate(data.split(b"\n"), 1):
+            if not line.strip():
+                continue
             try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
+                entry = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
                 # 쓰는 중 전원이 꺼진 줄. 건너뛰면 끝나지 않은 실행으로 남아 RECONCILING(안전한 쪽)
                 log.warning("journal line %d unreadable, skipped", n)
                 continue
