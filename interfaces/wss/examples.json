@@ -1,0 +1,134 @@
+[
+  {
+    "label": "01 세션 시작",
+    "direction": "service->control",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "1d4e8a60-2c9b-4f37-8e15-6a0b3c7d9e21",
+      "type": "session.opened",
+      "site_id": "site-sim",
+      "source": "service",
+      "target": "control",
+      "sent_at": "2026-11-14T03:00:00.000Z",
+      "payload": {
+        "connection_generation": 1,
+        "server_time": "2026-11-14T03:00:00.000Z"
+      }
+    }
+  },
+  {
+    "label": "02 작업 요청",
+    "direction": "service->control",
+    "request_sha256": "a284ecef3d70d7b253223ab2ac261933f49cee78cb9af5ae735f0bcd1b8238d9",
+    "canonical": "{\"command_id\":\"5b0e7c1a-3d2f-4c8e-9a41-0f6d2b7e8a13\",\"order_id\":\"order-sim-001\",\"order_revision\":0,\"packages\":[{\"package_id\":\"pkg-sim-001\",\"package_revision\":1},{\"package_id\":\"pkg-sim-002\",\"package_revision\":0}],\"pickup_id\":\"pickup-sim-001\",\"pickup_location_id\":\"loc-sim-01\",\"site_id\":\"site-sim\",\"type\":\"task.requested\"}",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "9c3a1f20-7b5d-4e6a-8f12-4d0c9e1b2a77",
+      "type": "task.requested",
+      "site_id": "site-sim",
+      "source": "service",
+      "target": "control",
+      "sent_at": "2026-11-14T03:00:01.000Z",
+      "expires_at": "2026-11-14T03:05:01.000Z",
+      "command_id": "5b0e7c1a-3d2f-4c8e-9a41-0f6d2b7e8a13",
+      "payload": {
+        "pickup_id": "pickup-sim-001",
+        "order_id": "order-sim-001",
+        "order_revision": 0,
+        "pickup_location_id": "loc-sim-01",
+        "packages": [
+          { "package_id": "pkg-sim-002", "package_revision": 0 },
+          { "package_id": "pkg-sim-001", "package_revision": 1 }
+        ]
+      }
+    }
+  },
+  {
+    "label": "03 요청 저장 확인",
+    "direction": "control->service",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "a7f20c94-5e18-4b3d-9c60-1e8d4a2b6f05",
+      "type": "message.ack",
+      "site_id": "site-sim",
+      "source": "control",
+      "target": "service",
+      "sent_at": "2026-11-14T03:00:01.200Z",
+      "payload": {
+        "acked_message_id": "9c3a1f20-7b5d-4e6a-8f12-4d0c9e1b2a77",
+        "status": "STORED"
+      }
+    }
+  },
+  {
+    "label": "04 작업 거부(S1은 항상 거부)",
+    "direction": "control->service",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "3e9b6d12-8a47-4c05-b1f3-7d2a0c5e8b49",
+      "type": "task.rejected",
+      "site_id": "site-sim",
+      "source": "control",
+      "target": "service",
+      "sent_at": "2026-11-14T03:00:01.300Z",
+      "command_id": "5b0e7c1a-3d2f-4c8e-9a41-0f6d2b7e8a13",
+      "in_reply_to_message_id": "9c3a1f20-7b5d-4e6a-8f12-4d0c9e1b2a77",
+      "payload": { "reason_code": "CONTROL_NOT_ACCEPTING" }
+    }
+  },
+  {
+    "label": "05 거부 저장 확인",
+    "direction": "service->control",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "c5d81e37-0f6a-4a92-8b24-9e3f7a1d6c08",
+      "type": "message.ack",
+      "site_id": "site-sim",
+      "source": "service",
+      "target": "control",
+      "sent_at": "2026-11-14T03:00:01.450Z",
+      "payload": {
+        "acked_message_id": "3e9b6d12-8a47-4c05-b1f3-7d2a0c5e8b49",
+        "status": "STORED"
+      }
+    }
+  },
+  {
+    "label": "06 같은 command_id에 다른 본문",
+    "direction": "control->service",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "e2a47b95-1c38-4d60-a7f9-5b0e3d8c1a26",
+      "type": "command.conflict",
+      "site_id": "site-sim",
+      "source": "control",
+      "target": "service",
+      "sent_at": "2026-11-14T03:00:09.000Z",
+      "command_id": "5b0e7c1a-3d2f-4c8e-9a41-0f6d2b7e8a13",
+      "in_reply_to_message_id": "0b6f3d84-9a21-4e75-8c13-2d7e5a9f4b60",
+      "payload": {
+        "conflicting_message_id": "0b6f3d84-9a21-4e75-8c13-2d7e5a9f4b60",
+        "original_message_id": "9c3a1f20-7b5d-4e6a-8f12-4d0c9e1b2a77"
+      }
+    }
+  },
+  {
+    "label": "07 전송 거부(잘못된 payload)",
+    "direction": "control->service",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "f8c13a59-6d02-4b87-9e41-3a5c7b0d2e94",
+      "type": "message.ack",
+      "site_id": "site-sim",
+      "source": "control",
+      "target": "service",
+      "sent_at": "2026-11-14T03:00:10.000Z",
+      "payload": {
+        "acked_message_id": "0b6f3d84-9a21-4e75-8c13-2d7e5a9f4b60",
+        "status": "REJECTED",
+        "error_code": "INVALID_PAYLOAD",
+        "detail": "packages must not be empty"
+      }
+    }
+  }
+]
