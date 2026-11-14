@@ -21,7 +21,8 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>확인(VERIFIED)은 인도 승인이 아니다. 이 카트에 배정된 예약인지는 관제의 배정 정보가 있어야 판단할 수 있어
  * 아직 대조하지 않으며(cartAssignmentChecked=false), handover_approvals·receipts는 만들지 않는다.
  *
- * <p>같은 verificationRequestId 재전송은 저장된 결과를 돌려준다. 같은 ID로 다른 카트·방법·예약·QR 토큰을 보내면 409.
+ * <p>같은 verificationRequestId 재전송은 저장된 결과를 돌려준다. 같은 ID로 다른 카트·방법·예약·QR 토큰을 보내면 409이며,
+ * 없는 값을 보내도 404보다 409가 우선한다(처음 쓰는 ID의 없는 값만 404).
  * 예약을 찾지 못하면 verifications.pickup_id가 NOT NULL이라 기록하지 않고 404를 돌려준다.
  */
 @Service
@@ -58,8 +59,17 @@ class VerificationService {
     Outcome verify(String cartId, VerifyRequest req) {
         String actorRef = "cart:" + cartId;
         Instant now = clock.instant();
-        Target target = resolve(req, now);
         Optional<Stored> existing = stored(req.verificationRequestId());
+        Target target;
+        try {
+            target = resolve(req, now);
+        } catch (ApiException e) {
+            // 이미 쓴 요청 ID에 없는 값을 보내도 "같은 ID, 다른 요청"이다. 존재하는 다른 값과 같은 409로 답한다.
+            if (existing.isPresent() && "RESERVATION_NOT_FOUND".equals(e.code)) {
+                throw conflict();
+            }
+            throw e;
+        }
         if (existing.isPresent()) {
             return replay(existing.get(), actorRef, req.method(), target);
         }
@@ -86,10 +96,13 @@ class VerificationService {
         if (!row.actorRef().equals(actorRef) || !row.method().equals(method.name())
                 || !row.pickupId().equals(target.pickupId())
                 || !Objects.equals(row.credentialId(), target.credentialId())) {
-            throw new ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT",
-                    "같은 요청 ID로 다른 확인 요청을 보낼 수 없습니다.");
+            throw conflict();
         }
         return new Outcome(toResponse(row), false);
+    }
+
+    private static ApiException conflict() {
+        return new ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT", "같은 요청 ID로 다른 확인 요청을 보낼 수 없습니다.");
     }
 
     /** 예약을 찾고 거절 사유를 정한다. 찾지 못하면 404(기록 없음). */
