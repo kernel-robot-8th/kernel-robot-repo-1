@@ -26,3 +26,27 @@
 관제 내부 주문·계획·작업 키와 구형 trial journal 표현은 MQTT에 보내지 않는다. `goal_id`는 내부 목표 이름을 전달하는 선택 필드이며 이 구현에 마커 주차 동작은 포함하지 않는다. 도착 표시용 `robot_pose`만으로 구역을 해제하거나 적재 완료를 확정하지 않는다.
 
 모델·도킹 캘리브레이션, 실제 통로 폭과 팔 간섭, 하드웨어 정지 시간은 현장 검증 대상이다. 가상 Nav2는 장애물 없는 위치 이동 모델이며 ROS Nav2 경로 계획 검증을 대신하지 않는다.
+
+## 시각 동기화 전제 (미정)
+
+명령의 만료는 수신한 로봇이 **자기 시계의 현재 시각**과 `expires_at`을 비교해 판정한다(Pinky: `field_pinky.py`, 만료면 `expired_command`로 거절). 로봇 시계가 늦으면 이미 만료된 명령이 유효로 판정될 수 있고, 시계가 앞서면 유효한 명령이 만료로 거절될 수 있다. 관제의 `field_wire.py`는 `sent_at`보다 `expires_at`이 늦은지만 검사하고 시각 동기화를 요구하지 않는다. 현장망에서 로봇 시계가 크게 어긋난 사례가 있었다(Pinky 쪽 리뷰 보고). 코드를 현장에 적용하기 전에 시각 동기화(NTP) 요구와 어긋남 허용 범위, 또는 수신 시각 기준 판정을 정해야 한다.
+
+## 검증과 보기
+
+Node.js가 필요하다. `@asyncapi/cli@3`은 HTML 템플릿과 버전이 맞지 않아 실패하므로 `@latest`를 쓴다.
+
+```bash
+# 문법 검증
+npx @asyncapi/cli@latest validate interfaces/mqtt/roport-mqtt.yaml
+# 편집·미리보기 (브라우저)
+npx @asyncapi/cli@latest start studio interfaces/mqtt/roport-mqtt.yaml
+# 단일 HTML 생성 (저장소 밖 폴더에 만든다)
+npx @asyncapi/cli@latest generate fromTemplate interfaces/mqtt/roport-mqtt.yaml @asyncapi/html-template@3 -o /tmp/mqtt-doc --force-write --param singleFile=true --param outFilename=index.html
+```
+
+생성한 HTML은 저장소에 올리지 않는다. `.gitignore`에 `out/`이 없으므로 출력 폴더는 저장소 밖(`/tmp/...`)으로 잡는다. 필요할 때 다시 만든다.
+
+## 수정 규칙
+
+- yaml과 `field_wire.py`는 함께 바꾸고 문서와 코드의 일치는 테스트로 확인한다. 토픽·필드를 바꾸면 관제·Pinky·OMX 담당자가 함께 확인한다.
+- 예시 값은 가짜 값만 쓴다. 실제 SSID·IP·인증정보·현장 좌표를 넣지 않는다([공개 저장소 보안 규칙](../../.agents/rules/public-repository-security.md)).
