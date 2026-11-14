@@ -126,8 +126,15 @@ def parse_command(text):
         raise ValueError('start_facing is only for start_cross')
     if cross and offset is not None:
         raise ValueError('start_cross cannot be combined with start_offset_cm')
+    confirmed = data.get('confirmed_start', False)
+    if not isinstance(confirmed, bool) or (confirmed and (route[0] != 'N12' or offset != 0.0)):
+        raise ValueError('confirmed_start requires N12 and zero sensor offset')
+    hold = data.get('hold_at_goal', False)
+    if not isinstance(hold, bool):
+        raise ValueError('hold_at_goal must be true or false')
     return cmd, {'route': route, 'start_offset_cm': offset,
-                 'start_cross': cross, 'start_facing': facing}
+                 'start_cross': cross, 'start_facing': facing, 'confirmed_start': confirmed,
+                 'hold_at_goal': hold}
 
 
 def yaw_of(q):
@@ -225,7 +232,9 @@ class LineNavNode(Node):
                     raise ValueError('no IR yet')
                 self.sensor.reset()
                 self.ex.start(args['route'], args['start_offset_cm'],
-                              start_cross=args['start_cross'], start_facing=args['start_facing'])
+                               start_cross=args['start_cross'], start_facing=args['start_facing'],
+                               confirmed_start=args['confirmed_start'],
+                               hold_at_goal=args['hold_at_goal'])
                 ok, detail = True, 'started'
         except (ValueError, GraphError, OSError) as e:
             ok, detail = False, str(e)
@@ -324,6 +333,7 @@ class LineNavNode(Node):
             'cmd': None if self._last_cmd is None else {
                 'linear': round(self._last_cmd[0], 3), 'angular': round(self._last_cmd[1], 3)},
             'ir': None if self._reading is None else self._reading.as_dict(),
+            'ir_observed_at': None if self._last_ir is None else time.time() - (time.monotonic() - self._last_ir),
             'odom_ok': self._odom_t is not None
             and time.monotonic() - self._odom_t <= self.odom_timeout_sec,
             'last_command': self._last_command,

@@ -55,6 +55,34 @@ def _done(ex):
     return not ex.active
 
 
+@pytest.mark.parametrize('first, heading, continuation', [
+    (['N16', 'N14', 'N02', 'N10', 'N18'], 'S', ['N18', 'N07', 'N23', 'N19', 'N11']),
+    (['N01', 'N18'], 'N', ['N18', 'N10', 'N02', 'N14', 'N16']),
+    (['N01', 'N18'], 'N', ['N18', 'N07', 'N23', 'N19', 'N11']),
+    (['N01', 'N18'], 'N', ['N18', 'N01']),
+])
+@pytest.mark.parametrize('speed', [0.03, 0.08])
+def test_junction_hold_centers_then_continues(graph, first, heading, continuation, speed):
+    sim = Sim(graph)
+    sim.place(first[0], heading, 0.0)
+    ex = RouteExecutor(graph, NavConfig(base_speed=speed, max_linear=max(0.06, speed)))
+    with pytest.raises(GraphError, match='must end at a stop node'):
+        ex.start(first)
+    ex.start(first, hold_at_goal=True)
+    assert sim.run(ex, _done)
+    assert ex.state == ARRIVED, ex.as_dict()
+    assert _axle_to(sim, first[-1]) < 3.0
+    position = (sim.x, sim.y, sim.yaw)
+    for _ in range(20):
+        sim.tick(ex)
+    assert sim.cmd == (0.0, 0.0)
+    assert (sim.x, sim.y, sim.yaw) == position
+    ex.start(continuation)
+    assert sim.run(ex, _done, on_loading=lambda _: True)
+    assert ex.state == ARRIVED, ex.as_dict()
+    assert _axle_to(sim, continuation[-1]) < 7.0
+
+
 def run_route(graph, route, start_heading, start_offset, skip=(), loading=None, sim_kw=None,
               **cfg):
     sim = Sim(graph, skip=skip, **(sim_kw or {}))

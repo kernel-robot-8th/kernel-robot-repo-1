@@ -314,11 +314,11 @@ class CustomerApiTest {
     void candidateTimesBoundary() {
         Instant boarding = Instant.parse("2030-01-01T03:00:00Z");
         // 현재+60분이 정확히 슬롯이면 포함, 1ns라도 지나면 다음 슬롯. boarding_start 자체는 제외.
-        assertThat(new PickupService(null, Clock.fixed(Instant.parse("2030-01-01T00:30:00Z"), ZoneOffset.UTC), null)
+        assertThat(new PickupService(null, Clock.fixed(Instant.parse("2030-01-01T00:30:00Z"), ZoneOffset.UTC), null, null)
                 .candidateTimes(boarding)).first().isEqualTo(Instant.parse("2030-01-01T01:30:00Z"));
-        assertThat(new PickupService(null, Clock.fixed(Instant.parse("2030-01-01T00:30:00.000000001Z"), ZoneOffset.UTC), null)
+        assertThat(new PickupService(null, Clock.fixed(Instant.parse("2030-01-01T00:30:00.000000001Z"), ZoneOffset.UTC), null, null)
                 .candidateTimes(boarding)).first().isEqualTo(Instant.parse("2030-01-01T02:00:00Z"));
-        assertThat(new PickupService(null, Clock.fixed(Instant.parse("2030-01-01T02:00:00Z"), ZoneOffset.UTC), null)
+        assertThat(new PickupService(null, Clock.fixed(Instant.parse("2030-01-01T02:00:00Z"), ZoneOffset.UTC), null, null)
                 .candidateTimes(boarding)).isEmpty();
     }
 

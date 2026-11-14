@@ -392,7 +392,7 @@ class OmxTrial:
                     not -2 <= age <= 5
                     or p.get("departure_ready") is not True
                     or not returned(p)
-                    or p.get("evidence") != "arm_return_only"
+                    or p.get("evidence") not in {"arm_return_only", "shelf_align"}
                 ):
                     c.hold("omx_completion_not_safe")
                 elif c.state["phase"] != "HOLD":

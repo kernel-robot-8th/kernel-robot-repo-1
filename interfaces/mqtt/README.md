@@ -1,0 +1,26 @@
+# 현장 MQTT 계약
+
+현재 로컬 구현은 `schema_version=2.0`, `profile=roport-control-v2`다. PR #68의 AsyncAPI 초안에서 토픽의 `v1/{site}`와 `route.requested` 표현을 제거하고, 실행 중복 방지에 필요한 `command_id`와 기동 구분 `boot_version`을 유지했다. 아직 병합·실물 검증 완료를 뜻하지 않는다.
+
+- [AsyncAPI](roport-mqtt.yaml): 전체 12종의 토픽·JSON 구조.
+- [JSON 예시](examples.json): 조회, 실행, 결과, 재시작 방어, 출발 승인, 양방향 N12 전환.
+- [실행 검증 코드](../../services/roport-control-server/src/roport_control_server/adapters/mqtt/field_wire.py): 명령 대상, 상관관계, 필드 조합까지 검사하는 정본. 문서와 코드의 일치는 테스트로 확인한다.
+- [Pinky 이식·구동 경계](../../services/roport-control-server/docs/mqtt-field.md).
+
+| 토픽 | 메시지 | 방향 / QoS |
+| --- | --- | --- |
+| `roport/robot/{robot}/cmd` | `robot_state_request`, `line_route_command`, `set_drive_mode_command`, `nav_goal_command`, `arm_action_command`, `warehouse_load_command`, `robot_stop_command` | 관제 → 로봇 / 1 |
+| `roport/workcell/shelf-01/cmd` | `robot_state_request`, `shelf_transfer_command`, `robot_stop_command` | 관제 → 공동 작업셀 / 1 |
+| `roport/robot/{robot}/event`, `roport/workcell/shelf-01/event` | `robot_state`, `command_status` | 로봇/작업셀 → 관제 / 1 |
+| `roport/robot/{robot}/ack`, `roport/workcell/shelf-01/ack` | `event_stored` | 관제 → 발행 주체 / 1 |
+| `roport/robot/{pinky}/motion` | `robot_pose` | Pinky → 표시 UI / 0 |
+
+모든 발행은 `retain=false`. 물리 명령에는 만료 시각이 필요하다. QoS1 PUBACK은 브로커 수신 확인이며 동작 완료나 관제 저장 확인이 아니다. 중요 결과는 저장 후 `event_stored`를 받아야 outbox에서 제거한다.
+
+`message_id`는 전송 메시지, `command_id`는 한 실행을 구분한다. 같은 명령의 재전송은 두 값과 본문 전체를 유지한다. `boot_version`은 프로그램 재기동마다 새로 생성하며 파일 버전이 아니다. `robot_state`의 `sequence`는 기동 내 상태 순서, `command_status.sequence`는 **해당 command_id 안의 상태 순서**, `robot_pose.sequence`는 표시 샘플 순서다.
+
+상태 조회 `{}`는 모터 동작을 유지하지 않는다. 활성 명령을 유지하려면 같은 `expected_boot_version`과 `keep_running_command_id`를 새 메시지로 주기 전송한다. Pinky에서 3초 동안 유효한 유지 확인이 없으면 정지/HOLD한다. ROS drive guard의 1초 lease는 별도로 유지한다.
+
+관제 내부 주문·계획·작업 키와 구형 trial journal 표현은 MQTT에 보내지 않는다. `goal_id`는 PR #73의 Nav2/마커 주차 동작 선택에 필요한 선택 필드다. 도착 표시용 `robot_pose`만으로 구역을 해제하거나 적재 완료를 확정하지 않는다.
+
+모델·도킹 캘리브레이션, 실제 통로 폭과 팔 간섭, 하드웨어 정지 시간은 현장 검증 대상이다. 가상 Nav2는 장애물 없는 위치 이동 모델이며 ROS Nav2 경로 계획 검증을 대신하지 않는다.

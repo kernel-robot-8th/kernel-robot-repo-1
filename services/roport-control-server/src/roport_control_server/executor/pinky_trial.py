@@ -28,7 +28,6 @@ from uuid import uuid4
 from roport_control_server.adapters.mqtt.journal import Journal
 from roport_control_server.adapters.mqtt.messages import decode, timestamp, topic
 from roport_control_server.adapters.mqtt.motion import MotionReceiver, motion_topic
-from roport_control_server.adapters.mqtt.mqtt import MqttTransport
 from roport_control_server.adapters.mqtt.trial_wire import (
     PROFILE,
     check_result,
@@ -202,7 +201,6 @@ class TrialControl:
         self.scope = scope
         validate_config(config)
         self.config, self.transport, self.journal = deepcopy(config), transport, journal
-        self.single_robot = config.get("scenario") == "single_pinky"
         self.smartcart_only = smartcart_only
         self.robots = {
             role: robot
@@ -216,7 +214,6 @@ class TrialControl:
             allowed_roles=self.allowed_robots,
         )
         self.robots = self._plan_robots(self.plan)
-        self.start_step = self.plan["steps"][0]["id"]
         if journal.data and journal.data.get("config") != config:
             raise ValueError("journal configuration changed; reconcile old trial first")
         if not journal.data:
@@ -424,7 +421,6 @@ class TrialControl:
                 request=None,
                 fault=None,
             )
-            self.pending_status.clear()
         state.update(
             plan=plan,
             plan_index=0,
@@ -451,7 +447,6 @@ class TrialControl:
         self.robots = self._plan_robots(plan)
         self.pending_status.clear()
         self.last_poll = 0.0
-        self.start_step = plan["steps"][0]["id"]
         self.discovery_robots = {}
         self.service_preview = None
 
@@ -626,8 +621,7 @@ class TrialControl:
         if not self.transport.ready:
             return "MQTT subscriptions not ready"
         try:
-            for role, robot in self.robots.items():
-                self._status(robot)
+            for role in self.robots:
                 first = next((s for s in self.plan["steps"] if s["role"] == role), None)
                 if first is not None:
                     self._step_status(first)
@@ -1019,7 +1013,11 @@ def main():
     if config["mode"] == "hardware" and not args.hardware_authorized:
         parser.error("hardware trial requires field checks and --hardware-authorized")
     journal = Journal(args.journal)
-    transport = MqttTransport(
+    from roport_control_server.adapters.mqtt.field_trial_transport import (
+        FieldTrialTransport,
+    )
+
+    transport = FieldTrialTransport(
         connection,
         [
             topic(config["site_id"], "robot", r["robot_id"], "event")
@@ -1031,6 +1029,8 @@ def main():
             if "omx" in config
             else []
         ),
+        config,
+        lambda: journal.data,
     )
     control = TrialControl(
         config, transport, journal, scope=args.scope, smartcart_only=args.smartcart_only
@@ -1073,12 +1073,14 @@ def main():
             web = TrialSocket(args.socket, control)
         transport.start()
         started = True
-        motion_transport = MqttTransport(
+        motion_transport = FieldTrialTransport(
             replace(connection, client_id=connection.client_id + "-motion"),
             [
                 motion_topic(config["site_id"], r["robot_id"])
                 for r in config["robots"].values()
             ],
+            config,
+            lambda: journal.data,
         )
         control.motion = MotionReceiver(config, motion_transport)
         try:

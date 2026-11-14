@@ -9,16 +9,40 @@ from pathlib import Path
 import pytest
 from virtual_pinky import VirtualPinky
 
+from roport_control_server.adapters.mqtt.field_pinky import FieldPinkyClient
+from roport_control_server.adapters.mqtt.field_trial_transport import (
+    FieldTrialTransport,
+)
 from roport_control_server.adapters.mqtt.journal import Journal
 from roport_control_server.adapters.mqtt.messages import topic
 from roport_control_server.adapters.mqtt.motion import MotionReceiver, motion_topic
-from roport_control_server.adapters.mqtt.mqtt import MqttConfig, MqttTransport
-from roport_control_server.adapters.mqtt.pinky_trial import PinkyTrialClient
+from roport_control_server.adapters.mqtt.mqtt import MqttConfig
 from roport_control_server.executor.pinky_trial import TrialControl
 from roport_control_server.executor.plans import trial_presets
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from run_virtual_fleet import profiles
 from run_virtual_trial import simulation_profile
+
+
+def test_virtual_fleet_and_robot_profiles_share_requested_speed():
+    fleet, robots = profiles()
+    assert fleet["speed_limit_mps"] == 0.08
+    for profile in (fleet, *(p for _, p in robots.values())):
+        assert {r["speed_limit_mps"] for r in profile["routes"].values()} == {0.08}
+    for role, profile in robots.values():
+        driver = VirtualPinky(profile, role, threaded=False)
+        try:
+            assert driver.ex.cfg.base_speed == 0.08
+            assert driver.nav.speed_mps == 0.08
+            before = dict(driver.nav.pose)
+            driver.nav.start(
+                {"goal_id": "speed-check", "pose": {**before, "x": before["x"] + 1}}
+            )
+            driver.nav.tick(1)
+            assert driver.nav.pose["x"] - before["x"] == pytest.approx(0.08)
+        finally:
+            driver.close()
 
 
 @pytest.mark.parametrize("scenario", ["single", "two", "smartcart"])
@@ -34,14 +58,16 @@ def test_shared_driver_mqtt_full_scenario(broker, tmp_path, scenario, common_pro
             or r == ("smartcart" if scenario == "smartcart" else "logistics")
         )
     }
-    transport = MqttTransport(
+    journal = Journal(tmp_path / "control.json")
+    transport = FieldTrialTransport(
         MqttConfig("127.0.0.1", "virtual-owner", port=port),
         [
             topic(profile["site_id"], "robot", r["robot_id"], "event")
             for r in profile["robots"].values()
         ],
+        profile,
+        lambda: journal.data,
     )
-    journal = Journal(tmp_path / "control.json")
     control = TrialControl(
         profile,
         transport,
@@ -50,9 +76,11 @@ def test_shared_driver_mqtt_full_scenario(broker, tmp_path, scenario, common_pro
     )
     if common_profile:
         control.configure(trial_presets(profile)[scenario])
-    motion_transport = MqttTransport(
+    motion_transport = FieldTrialTransport(
         MqttConfig("127.0.0.1", "virtual-poses", port=port),
         [motion_topic(profile["site_id"], r["robot_id"]) for r in roles.values()],
+        profile,
+        lambda: journal.data,
     )
     control.motion = MotionReceiver(profile, motion_transport)
     positions = {"line": set(), "nav2": set()}
@@ -61,18 +89,12 @@ def test_shared_driver_mqtt_full_scenario(broker, tmp_path, scenario, common_pro
         for role, robot in roles.items():
             driver = VirtualPinky(profile, role, threaded=False)
             drivers.append(driver)
-            client = PinkyTrialClient(
+            client = FieldPinkyClient(
                 MqttConfig("127.0.0.1", role, port=port),
-                site=profile["site_id"],
-                control=profile["control_id"],
-                robot=robot["robot_id"],
-                binding_id=robot["binding_id"],
-                journal_path=tmp_path / f"{role}.json",
-                observe=driver.observe,
-                validate_action=driver.validate_action,
-                dispatch=driver.dispatch,
-                safe_stop=driver.safe_stop,
-                observe_motion=driver.observe_motion,
+                profile,
+                role,
+                tmp_path / f"{role}.json",
+                driver,
             )
             clients.append(client)
             client.start()
@@ -109,8 +131,17 @@ def test_shared_driver_mqtt_full_scenario(broker, tmp_path, scenario, common_pro
         assert control.state["phase"] == "COMPLETE", control.state["phase"]
         assert all(len(points) > 1 for points in positions.values()), positions
         assert "navigate" in control.state["completed"]
-        assert all(driver.sim.t > 100 for driver in drivers)
-        assert all(driver.ex.cfg.base_speed == 0.03 for driver in drivers)
+        # Preserve the old 100 s lower bound, scaled from the 0.03 m/s preset.
+        assert all(driver.sim.t > 100 * 0.03 / 0.08 for driver in drivers)
+        assert all(driver.ex.cfg.base_speed == 0.08 for driver in drivers)
+        for client in clients:
+            routes = [
+                row["command"]
+                for row in client.journal.data["records"].values()
+                if row["command"]["type"] == "line_route_command"
+            ]
+            assert routes
+            assert {m["payload"]["speed_limit_mps"] for m in routes} == {0.08}
         assert (
             control.state["completed"]["navigate"]["payload"]["nav2_result"]
             == "SUCCEEDED"
@@ -148,7 +179,7 @@ def test_real_route_logic_requires_time_rotation_and_load_done():
             driver.tick()
             results += driver.drain_results()
             assert driver.sim.t < 300
-        assert 120 < driver.sim.t < 300
+        assert 60 < driver.sim.t < 120
         assert driver.ex.state == "loading"
         assert abs(driver.observe()["heading_rad"] - 0.0017453) < 0.1
         assert [r[2]["seq"] for r in results] == list(range(1, 9))
@@ -192,7 +223,7 @@ def test_missing_tape_fails_instead_of_fake_arrival():
             driver.heartbeat()
             driver.tick()
             result += driver.drain_results()
-            if result:
+            if any(phase in {"failed", "completed"} for _, phase, _ in result):
                 break
         assert result[-1][1] == "failed"
         assert driver.logic.node is None
@@ -220,18 +251,36 @@ def test_nav2_off_does_not_claim_readiness():
 def test_record_preserves_settings_but_isolates_identity(tmp_path):
     profile, _ = simulation_profile("two")
     profile.update(mode="hardware", field_verified=True)
+    for route in profile["routes"].values():
+        route["speed_limit_mps"] = 0.04
     record = tmp_path / "real.json"
-    data = {"config": profile, "phase": "COMPLETE", "events": {}, "completed": {}}
+    data = {
+        "config": profile,
+        "phase": "COMPLETE",
+        "events": {},
+        "completed": {},
+        "scope": "line-only",
+        "smartcart_only": True,
+        "plan": {"name": "recorded segment", "steps": []},
+    }
     record.write_text(json.dumps(data))
     original = record.read_bytes()
     virtual, baseline = simulation_profile("two", record)
     assert virtual["routes"] == profile["routes"]
+    driver = VirtualPinky(virtual, "logistics", threaded=False)
+    try:
+        assert driver.ex.cfg.base_speed == driver.nav.speed_mps == 0.04
+    finally:
+        driver.close()
     assert virtual["robots"]["smartcart"]["robot_id"] == "pinky3"
     assert virtual["robots"] != profile["robots"]
     assert virtual["site_id"] != profile["site_id"]
     assert virtual["mode"] == "simulation" and not virtual["field_verified"]
     assert record.read_bytes() == original
     assert baseline["phase"] == "COMPLETE"
+    assert baseline["recorded_plan"] == data["plan"]
+    assert baseline["replay_scope"] == "configuration_only"
+    assert baseline["source_code_verified"] is False
     old = deepcopy(data)
     old["config"]["graph_version"] = "line-v13-20261103"
     record.write_text(json.dumps(old))

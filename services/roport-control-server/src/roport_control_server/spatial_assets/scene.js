@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "./vendor/three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "./vendor/three/examples/jsm/loaders/GLTFLoader.js";
 import { renderTrial, trialDisconnected } from "./trial.js";
+import { renderFleet, fleetDisconnected } from "./fleet.js";
 
 const $ = (id) => document.getElementById(id);
 let ids = [], inventory = [];
@@ -12,6 +13,7 @@ let selected,
   views,
   models = {},
   definitions = {};
+let fleet = false;
 let demo = false, trial = false,
   playing = true,
   dropped = new Set(),
@@ -32,7 +34,7 @@ function displayedPose(row) {
 function displayMotion(model, pose, row) {
   if (!pose) { delete model.userData.motion; return; }
   const now = performance.now(), previous = model.userData.motion;
-  const continuous = trial && row.pose_live && !row.pose_stale
+  const continuous = (trial || fleet) && row.pose_live && !row.pose_stale
     && !matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (continuous && previous?.key === row.pose_key) return;
   const from = [...model.position.toArray(), model.rotation.z];
@@ -183,30 +185,47 @@ function makeMap(map) {
   );
   floor.position.set(width / 2, height / 2, -0.003);
   group.add(floor);
-  const walls = new THREE.InstancedMesh(
-    new THREE.BoxGeometry(1, 1, 1),
-    new THREE.MeshStandardMaterial({ color: 0xc3cbd0, roughness: 0.9 }),
-    map.walls.length,
-  );
-  const matrix = new THREE.Matrix4(),
-    q = new THREE.Quaternion();
-  map.walls.forEach(([x, y, length], i) => {
-    matrix.compose(
-      new THREE.Vector3(
-        (x + length / 2) * map.resolution,
-        (map.height - y - 0.5) * map.resolution,
-        map.wall_height / 2,
-      ),
-      q,
-      new THREE.Vector3(
-        length * map.resolution,
-        map.resolution,
-        map.wall_height,
-      ),
+  if (map.layout?.geometry?.length) {
+    for (const item of map.layout.geometry) {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(...item.size),
+        new THREE.MeshStandardMaterial({
+          color: item.kind === "wall" ? 0xc3cbd0 : item.name === "shelf_02" ? 0xaeb9bc : 0xc8c7bd,
+          roughness: 0.9,
+        }),
+      );
+      // Layout geometry already uses the ROS map frame, unlike occupancy pixels.
+      mesh.position.set(...item.position);
+      mesh.rotation.z = item.yaw;
+      mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({color: 0x899399})));
+      views.map.scene.add(mesh);
+    }
+  } else {
+    const walls = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: 0xc3cbd0, roughness: 0.9 }),
+      map.walls.length,
     );
-    walls.setMatrixAt(i, matrix);
-  });
-  group.add(walls);
+    const matrix = new THREE.Matrix4(),
+      q = new THREE.Quaternion();
+    map.walls.forEach(([x, y, length], i) => {
+      matrix.compose(
+        new THREE.Vector3(
+          (x + length / 2) * map.resolution,
+          (map.height - y - 0.5) * map.resolution,
+          map.wall_height / 2,
+        ),
+        q,
+        new THREE.Vector3(
+          length * map.resolution,
+          map.resolution,
+          map.wall_height,
+        ),
+      );
+      walls.setMatrixAt(i, matrix);
+    });
+    group.add(walls);
+  }
   views.map.scene.add(group);
   group.updateMatrixWorld(true);
   mapCenter = group.localToWorld(new THREE.Vector3(width / 2, height / 2, 0));
@@ -393,6 +412,7 @@ function receive(raw) {
         $("time").value = data.demo_time;
     }
     updateDetails();
+    if (fleet) renderFleet(data);
     $("message").textContent = data.message;
   } catch (error) {
     $("message").textContent = `표시 오류: ${error.message}`;
@@ -401,6 +421,8 @@ function receive(raw) {
 async function start(config) {
   demo = config.demo;
   trial = config.trial === true;
+  fleet = config.fleet === true;
+  $("fleet-panel").hidden = !fleet;
   inventory = config.robots;
   ids = inventory.map((r) => r.id);
   selected = ids[0];
@@ -415,7 +437,8 @@ async function start(config) {
   $("trial-panel").hidden = !trial;
   $("pinky-trial-details").hidden = !trial;
   $("pinky-detail").hidden = trial;
-  $("offline-actions").hidden = trial;
+  $("offline-actions").hidden = trial || fleet;
+  if (fleet) { $("mode").textContent = "FLEET · 요청 기반 관제"; $("scope-note").textContent = "공유 상태 · MQTT 실행 결과 기준"; }
   if (trial) {
     $("mode").textContent = "TRIAL · MQTT 시나리오";
     $("inventory-label").textContent = "고정 자리";
@@ -427,7 +450,9 @@ async function start(config) {
   $("map-detail").textContent = config.map.layout
     ? `map · 벽 ${(config.map.wall_height * 100).toFixed(0)}cm 기준 · ${config.map.layout.graph_version}`
     : "map · m / rad · 벽 높이는 표시용";
-  if (config.map.layout) document.querySelector(".map-note").textContent = "실측 지도 · 점유셀 돌출 표시 · 설치 배치는 기준값";
+  if (config.map.layout) document.querySelector(".map-note").textContent = config.map.layout.geometry?.length
+    ? "실측 배치 · 벽·받침 외곽 표시 · 물체 기본 높이·설치 자세는 기준값"
+    : "실측 지도 · 점유셀 돌출 표시 · 설치 배치는 기준값";
   if (demo && !config.example_map) document.querySelector(".map-note").textContent += " · 움직임은 예시 경로";
   if (trial) { trialConfig = config; makeTrialRoutes(config); }
   const loader = new GLTFLoader();
@@ -563,12 +588,13 @@ async function start(config) {
 }
 let socket, retry, lastReceived = 0, revision = -1, session;
 const requestedMode = new URLSearchParams(location.search).get("mode");
-let mode = ["offline", "demo", "trial"].includes(requestedMode) ? requestedMode : "auto";
+let mode = ["offline", "demo", "trial", "fleet"].includes(requestedMode) ? requestedMode : "auto";
 function sendControl(data) {
   if (demo && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
 }
 function disconnected() {
   if (trial) trialDisconnected();
+  if (fleet) fleetDisconnected();
   $("source").textContent = "서버 연결 끊김 · 재연결 중";
   $("task-source").textContent = "연결 끊김 · 마지막 작업 상태";
   for (const row of rows) {

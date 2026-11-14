@@ -47,7 +47,6 @@ class TrialSocket:
                 "scenario",
                 "mode",
                 "package_id",
-                "robots",
                 "routes",
                 "nodes",
                 "graph_version",

@@ -1,5 +1,7 @@
 # Pinky 주행 시험 — 관제 구현 및 MQTT 이식 가이드
 
+> **이 문서의 trial-v1 토픽·JSON은 이전 버전 기록이다.** 현재 실제 MQTT 연결은 [v2 연결 가이드](mqtt-field.md)와 [전체 인터페이스](../../../interfaces/mqtt/README.md)를 따른다. 기존 시험 계획/이력은 경계 어댑터 내부에서 유지되며 새 endpoint와 혼합 배포하면 안 된다.
+
 이 문서는 **독립 CLI 주행 시험 버전**의 연결 계약이다. 운영 통신 규약 전체를 대체하지 않는다.
 공통 envelope 1.0 위에 profile=roport-pinky-driving-trial-v1을 명시한다.
 Pinky ROS 주행·Nav2 연결 및 독립 정지 감시는 [PR #35](https://github.com/kernel-robot-8th/kernel-robot-repo-1/pull/35)의 드라이버와 함께 사용한다. 실장비 방향·Nav2·정지 시간은 현장 검증이 필요하다.
@@ -609,7 +611,7 @@ env -u PYTHONPATH uv run python tools/run_virtual_trial.py \
 `--record`는 hardware 관제 journal의 설정을 읽어 경로·출발 방향·제한 속도·deadline·Nav2 목표를 유지한다.
 연결 ID와 hardware 승인은 가상 시험용으로 바꾸고 원본 파일은 수정하지 않는다. 현재 지도/graph/node/scenario와
 다른 기록은 거부한다. v13 실물 기록을 v14에 그대로 재생하지 않는다. `smartcart`는 two 기록을 사용할 수 있다.
-기록 미지정 시 현재 v14 경로와 실물 완료 시험 당시의 0.03m/s 제한을 사용한다.
+기록 미지정 시 현재 v14 경로와 가상 시험 기본 속도 0.08m/s를 사용한다. 이 기본값은 실물 설정을 변경하지 않는다.
 
 - `run.json`: 시뮬레이션 조건, 원본 기록 SHA256, 실제 accepted→completed 구간 시간, 실행한 코드·지도 해시, PID.
 - `control.json`, `logistics.json`, `smartcart.json`: 실제 MQTT 명령·응답 및 상태 전이 이력.
@@ -625,8 +627,8 @@ env -u PYTHONPATH uv run python tools/run_virtual_trial.py \
 | 명령/응답·중복·ACK·재시도·boot/binding·정차 판정 | 실제 MQTT 모듈과 Pinky 드라이버 공통 코드 |
 | 경로·상하차 90° 회전·load_done 후 복귀·창고 후진 정차·N12 handoff | 현재 실측 맵 + 실제 라인 실행 코드 |
 | 센서·바퀴 | 팀의 2D `Sim`: 20Hz, IR 3채널, 선폭·센서 위치, 이상적인 odom. 기체별 재측정값은 아님 |
-| 속도 | 실제와 같이 `min(로컬 base_speed=0.03, 명령 상한)`. 관제 상한만 0.06으로 바꿔도 두 배로 빨라지지 않음 |
-| Nav2 | `--nav2 simulated` 기본: 0.03m/s의 장애물 없는 가상 목표 이동. 실제 드라이버의 전환/완료 검사를 사용하나 Nav2·AMCL·경로 계획은 실행하지 않음 |
+| 속도 | 실제와 같은 `min(로컬 base_speed, 명령 상한)` 계산. 가상 기본 프로필은 두 값을 모두 0.08m/s로 맞추며, 가상 실행기의 최대 속도도 이 프로필을 허용하도록 설정. `--record`는 기록의 제한 속도를 사용 |
+| Nav2 | `--nav2 simulated` 기본: 프로필 속도(기본 0.08m/s)로 장애물 없는 가상 목표 이동. 실제 드라이버의 전환/완료 검사를 사용하나 Nav2·AMCL·경로 계획은 실행하지 않음 |
 | 구동권 watchdog | 가상 프로세스 내 1초 lease 모델. 실제 ROS 독립 guard 및 프로세스 강제 종료 시 물리 정지를 검증한 것은 아님 |
 
 - `--scope line-only`: N12 정차까지만 검증.

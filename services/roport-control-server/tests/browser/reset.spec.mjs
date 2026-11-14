@@ -1,10 +1,13 @@
 import { test, expect } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 test('virtual reset restores position after driving or HOLD and preserves both runs', async ({page}, testInfo) => {
-  const child = spawn('.venv/bin/python', ['-u', 'tools/run_virtual_trial.py', '--scenario', 'single'], {stdio:['ignore','pipe','pipe']});
+  const output = await mkdtemp(join(tmpdir(), 'roport-reset-'));
+  const child = spawn('.venv/bin/python', ['-u', 'tools/run_virtual_trial.py', '--scenario', 'single', '--output', join(output, 'run')], {stdio:['ignore','pipe','pipe']});
   let diagnostics = '';
   child.stderr.on('data', d => diagnostics += d);
   const lines = createInterface({input: child.stdout});
@@ -67,5 +70,6 @@ test('virtual reset restores position after driving or HOLD and preserves both r
     lines.close();
     child.kill('SIGINT');
     if (child.exitCode === null) await new Promise(resolve => child.once('exit', resolve));
+    await rm(output, {recursive:true, force:true});
   }
 });

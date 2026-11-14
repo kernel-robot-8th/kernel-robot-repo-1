@@ -86,6 +86,23 @@
             <button disabled title="실행부 미구현">출발 승인</button>
             <button disabled title="실행부 미구현">작업 취소</button>
           </div>
+          <section id="fleet-panel" hidden aria-label="요청 기반 관제">
+            <h3 id="fleet-state">요청 처리 시작 대기</h3>
+            <label>관제 조작 키 <input id="fleet-key" type="password" autocomplete="off" /></label>
+            <div class="actions"><button id="fleet-enable" disabled>요청 처리 시작</button><button id="fleet-stop" disabled>관제 보류</button></div>
+            <p id="fleet-roles"></p><p class="muted">현장에 배치하지 않은 슬롯은 시작 전에 배정 제외하세요. 이미 연결한 기체는 정지 상태를 확인하며 점유 위치를 유지합니다.</p>
+            <fieldset id="fleet-fields" disabled>
+              <label>기체 <select id="fleet-robot"><option>pinky1</option><option>pinky2</option><option>pinky3</option></select></label>
+              <label>역할 <select id="fleet-role"><option value="logistics">물류</option><option value="smartcart">스마트카트</option><option value="">배정 제외</option></select></label>
+              <button id="fleet-assign">역할 적용</button>
+              <div class="actions"><label>작업 <select id="fleet-operation"><option value="inbound">입고</option><option value="outbound">출고</option></select></label>
+              <label>물품 번호 <input id="fleet-package" value="package-small-1" /></label>
+              <label>인도 목적지 <select id="fleet-goal"></select></label><button id="fleet-submit">요청 등록</button></div>
+            </fieldset>
+            <div id="fleet-shelf" aria-label="선반 2행 3열"></div>
+            <p id="fleet-resources"></p><ol id="fleet-work"></ol>
+            <p id="fleet-feedback" role="status">요청을 등록하고 요청 처리를 시작하세요. 고객 수령은 별도 증거로 확인합니다.</p>
+          </section>
           <div id="trial-overview"><div id="trial-panel" hidden>
             <div class="section-head"><h3 id="trial-phase">연결 대기</h3><small id="trial-connection">MQTT 미연결</small></div>
             <p id="trial-scope" class="note"></p>

@@ -37,7 +37,7 @@ OMX 로봇팔과 Pinky 이동로봇을 연동해 면세품 보관·운송·인�
 - 구성요소별 초기 코드·실행 안내·CI가 등록되어 있습니다. 업무 기능·실로봇 연동은 아직 구현·검증 전입니다.
 - 시나리오와 설계 문서의 작성 상태를 기능 구현·통합 검증 상태와 구분합니다.
 
-통합관제의 2026-11-03 변경: PR #24 계층 구조를 바탕으로 PyQt를 3D 웹 UI + FastAPI로 전환했습니다. 현재 OFFLINE/DEMO 표시·조회·상태 스트림과 독립 MQTT/UDP 모듈을 제공하며, 원본 UI에 Unix socket으로 연결한 Pinky MQTT 시험 실행부를 제공합니다. 운영 DB 연결은 보류하며 공유 등록 계약·PostgreSQL 저장소만 별도로 제공하고 API/UI에는 연결하지 않았습니다. 운영 실행부·영상 웹 중계는 후속입니다. [실행 및 현재 범위](services/roport-control-server/README.md)를 확인하세요. 위의 프로젝트 전체 진행 이력과 구분합니다.
+통합관제는 원본 3D 웹 UI + FastAPI + 별도 실행부 1개를 사용합니다. 실행부가 MQTT 기체 상태, 3대 Pinky 역할, 6칸 선반, 입출고·N12 왕복을 판단하며 운영 PostgreSQL과 서비스 WSS를 소유합니다. UI는 Unix socket으로 같은 상태를 조회·조작합니다. 기존 구간별 주행 시험과 새 요청 기반 가상 시험을 함께 제공합니다. 점유 해제 기반 동시 주행을 지원하며, 시간 최적화·현장 장치 보정·운영 복구는 후속입니다. [실행 및 현재 범위](services/roport-control-server/README.md), [요청 기반 통합 관제](services/roport-control-server/docs/field-control.md)를 확인하세요.
 
 ## 팀
 
@@ -77,6 +77,7 @@ kernel-robot-repo-1/
 
 ## 문서와 협업
 
+- [Pinky·OMX 공통 시험 버전과 PC별 설치·실행 순서](docs/pinky-omx-baseline.md): 코드/키트 버전 검사부터 시작·종료·복구까지의 배포 기준. 실물 OMX 실행부는 별도 인수 전입니다.
 - [디렉토리·기술 스택·CI 안내](docs/repositories.md)
 - [설계·요구사항·검증 문서 안내](docs/README.md)
 - [현재 Git-flow 및 PR 운영 규칙](.agents/rules/git-flow.md): `develop` 없이 `main`과 선택적 `task/**`를 사용합니다.
