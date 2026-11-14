@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 for (const scenario of ['single', 'two', 'smartcart']) {
 for (const scope of ['line-only', 'nav2']) {
 test(`${scenario}/${scope}: trial UI completes real MQTT simulation, reconnects and fences duplicate approvals`, async ({ page, context }, testInfo) => {
-  const child = spawn('.venv/bin/python', ['-u', 'tests/trial_web_fixture.py', scope, scenario], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn('.venv/bin/python', ['-u', 'tests/trial_web_fixture.py', scope, scenario], { stdio: ['ignore', 'pipe', 'pipe'], env: {...process.env, ROPORT_TEST_OUTPUT_DIR: testInfo.outputPath('fixture')} });
   let diagnostics = '';
   child.stderr.on('data', (data) => { diagnostics += data; });
   const lines = createInterface({ input: child.stdout });
@@ -123,7 +123,7 @@ test(`${scenario}/${scope}: trial UI completes real MQTT simulation, reconnects 
 
 for (const source of ['segment', 'delivery']) {
 test(`composer/${source}: edit, validate, persist and execute through shared MQTT owner`, async ({page}, testInfo) => {
-  const child = spawn('.venv/bin/python', ['-u', 'tests/trial_web_fixture.py', 'nav2', 'smartcart'], {stdio:['ignore','pipe','pipe']});
+  const child = spawn('.venv/bin/python', ['-u', 'tests/trial_web_fixture.py', 'nav2', 'smartcart'], {stdio:['ignore','pipe','pipe'], env: {...process.env, ROPORT_TEST_OUTPUT_DIR: testInfo.outputPath('fixture')}});
   const lines = createInterface({input:child.stdout});
   let diagnostics = ''; child.stderr.on('data', d => {diagnostics += d;});
   try {
@@ -195,7 +195,7 @@ test(`composer/${source}: edit, validate, persist and execute through shared MQT
 for (const selected of ['single', 'two', 'smartcart']) {
 test(`common owner/${selected}: select preset and edit nodes without scenario CLI flags`, async ({page}, testInfo) => {
   const participant = selected === 'single' ? 'logistics' : selected === 'smartcart' ? 'smartcart' : 'all';
-  const child = spawn('.venv/bin/python', ['-u', 'tests/trial_web_fixture.py', 'nav2', 'two', participant], {stdio:['ignore','pipe','pipe']});
+  const child = spawn('.venv/bin/python', ['-u', 'tests/trial_web_fixture.py', 'nav2', 'two', participant], {stdio:['ignore','pipe','pipe'], env: {...process.env, ROPORT_TEST_OUTPUT_DIR: testInfo.outputPath('fixture')}});
   const lines = createInterface({input:child.stdout});
   let diagnostics = ''; child.stderr.on('data', d => {diagnostics += d;});
   try {
