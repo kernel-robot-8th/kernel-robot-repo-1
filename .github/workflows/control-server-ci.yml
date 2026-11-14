@@ -5,12 +5,14 @@ on:
       - 'services/roport-control-server/**'
       - 'services/roport-pinky/**'
       - 'services/roport-omx/**'
+      - 'interfaces/wss/**'
       - '.github/workflows/control-server-ci.yml'
   pull_request:
     paths:
       - 'services/roport-control-server/**'
       - 'services/roport-pinky/**'
       - 'services/roport-omx/**'
+      - 'interfaces/wss/**'
       - '.github/workflows/control-server-ci.yml'
   workflow_dispatch:
 permissions:
