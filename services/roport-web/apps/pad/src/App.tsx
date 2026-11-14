@@ -1,25 +1,21 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import * as api from './api';
+import { bigButton, initialState, movingPhase, reduce, type MovingPhase, type Notice, type Step } from './flow';
 import { Icon, PhoneQr, type IconName } from './icons';
 import type { ServiceMode, VerifiedPickup, VerifyFailure, VerifyResult } from './types';
-
-// 패드 화면 단계. 대기 → 인증 → 물품 확인 → (입국장이면 서비스 선택·이동) → 수령 확인 → 복귀
-type Step =
-  | { name: 'idle' }
-  | { name: 'keypad' }
-  | { name: 'verifying' }
-  | { name: 'verifyFailed'; reason: VerifyFailure | 'ERROR' }
-  | { name: 'items'; pickup: VerifiedPickup }
-  | { name: 'chooseService'; pickup: VerifiedPickup }
-  | { name: 'moving'; pickup: VerifiedPickup; mode: ServiceMode; paused: boolean; arrived: boolean }
-  | { name: 'receipt'; pickup: VerifiedPickup }
-  | { name: 'returning' };
 
 const FAILURE_TEXT: Record<VerifyFailure | 'ERROR', string> = {
   NOT_FOUND: '예약을 찾을 수 없습니다. 예약번호를 다시 확인해 주세요.',
   WRONG_CART: '이 카트에 배정된 예약이 아닙니다. 안내 직원에게 문의해 주세요.',
   ALREADY_RECEIVED: '이미 수령이 완료된 예약입니다.',
   ERROR: '서버와 통신하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+};
+
+const NOTICE_TEXT: Record<Exclude<Notice, null>, string> = {
+  ERROR: FAILURE_TEXT.ERROR,
+  SERVICE_REJECTED: '요청이 거절되었습니다. 안내 직원에게 문의해 주세요.',
+  COMMAND_REJECTED: '요청이 거절되었습니다. 카트에서 떨어져 안내 직원에게 문의해 주세요.',
+  RECEIPT_NOT_SAVED: '수령 확인이 저장되지 않았습니다. 다시 눌러 주세요.',
 };
 
 const MODE_LABEL: Record<ServiceMode, string> = { GATE_GUIDE: '게이트 안내', FOLLOW: '짐 운반·추종' };
@@ -45,12 +41,34 @@ function progressOf(step: Step, arrival: boolean): { labels: string[]; current: 
   return { labels, current: order[step.name] ?? 0 };
 }
 
+// 이동 화면 문구. 왼쪽 상태 표시와 오른쪽 제목이 같은 단계 값에서 나온다.
+function movingText(phase: MovingPhase, mode: ServiceMode, gate: string): { label: string; title: string; lead: string; icon: IconName; warn: boolean } {
+  switch (phase) {
+    case 'START_PENDING':
+      return { label: '출발 확인 중', title: '출발 요청을 보냈습니다', lead: '카트가 움직이기 시작하면 화면이 바뀝니다. 카트 앞을 비워 주세요.', icon: mode === 'FOLLOW' ? 'follow' : 'gate', warn: false };
+    case 'MOVING':
+      return mode === 'FOLLOW'
+        ? { label: `${MODE_LABEL[mode]} 중`, title: '카드를 들고 천천히 걸어 주세요', lead: '마커 카드가 카트 쪽을 향하도록 들어 주세요. 추종을 끝내려면 먼저 중지해 주세요.', icon: 'follow', warn: false }
+        : { label: `${MODE_LABEL[mode]} 중`, title: `${gate}으로 안내합니다`, lead: '카트를 따라 이동해 주세요.', icon: 'gate', warn: false };
+    case 'PAUSE_PENDING':
+      return { label: '중지 확인 중', title: '중지 요청을 보냈습니다', lead: '카트가 완전히 멈출 때까지 가까이 가지 마세요.', icon: 'pause', warn: true };
+    case 'PAUSED':
+      return { label: '일시 중지', title: '카트가 멈췄습니다', lead: mode === 'FOLLOW' ? '다시 출발하려면 재개를, 추종을 끝내려면 추종 종료를 눌러 주세요.' : '다시 출발하려면 재개를 눌러 주세요.', icon: 'pause', warn: true };
+    case 'RESUME_PENDING':
+      return { label: '재개 확인 중', title: '재개 요청을 보냈습니다', lead: '카트가 다시 움직이기 시작하면 화면이 바뀝니다. 카트 앞을 비워 주세요.', icon: 'play', warn: true };
+    case 'ARRIVED':
+      return { label: '도착', title: `${gate}에 도착했습니다`, lead: '카트에서 물품을 모두 꺼낸 뒤 아래 버튼을 눌러 주세요.', icon: 'check', warn: false };
+  }
+}
+
 export function App() {
-  const [step, setStep] = useState<Step>({ name: 'idle' });
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [state, dispatch] = useReducer(reduce, initialState);
+  const { step, notice, lastPickup } = state;
+  const busy = state.request !== null;
   const [now, setNow] = useState(() => Date.now());
-  const [lastPickup, setLastPickup] = useState<VerifiedPickup | null>(null);
+  const nextToken = useRef(0);
+  // 같은 렌더 안의 연속 터치로 요청이 두 번 나가지 않게 reduce의 요청 상태를 즉시 따라가는 값
+  const inFlight = useRef<{ token: number; stop: boolean } | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
@@ -58,59 +76,50 @@ export function App() {
   }, []);
 
   const pickup = pickupOf(step);
-  useEffect(() => {
-    if (pickup) setLastPickup(pickup);
-  }, [pickup]);
+  const go = (s: Step) => {
+    inFlight.current = null;
+    dispatch({ type: 'go', step: s });
+  };
 
-  async function run<T>(task: () => Promise<T>): Promise<T | null> {
-    if (busy) return null;
-    setBusy(true);
-    setNotice(null);
+  // 요청을 보내고 결과를 토큰과 함께 넘긴다. 그사이 화면이 바뀌었으면 reduce가 결과를 버린다.
+  // 중지(stop)만 다른 요청을 기다리는 중에도 보낼 수 있다(reduce의 send 규칙과 같다).
+  async function send<T>(call: () => Promise<T>, done: (token: number, res: T | null) => void, waitStep?: Step, stop = false) {
+    const cur = inFlight.current;
+    if (cur && (!stop || cur.stop)) return;
+    const token = ++nextToken.current;
+    inFlight.current = { token, stop };
+    dispatch({ type: 'send', token, step: waitStep, stop });
+    let res: T | null = null;
     try {
-      return await task();
+      res = await call();
     } catch {
-      setNotice(FAILURE_TEXT.ERROR);
-      return null;
-    } finally {
-      setBusy(false);
+      res = null;
     }
+    if (inFlight.current?.token === token) inFlight.current = null;
+    done(token, res);
   }
 
-  async function verifyWith(call: () => Promise<VerifyResult>) {
-    if (busy) return;
-    setStep({ name: 'verifying' });
-    const result = await run(call);
-    if (!result) setStep({ name: 'verifyFailed', reason: 'ERROR' });
-    else if (result.ok) setStep({ name: 'items', pickup: result.pickup });
-    else setStep({ name: 'verifyFailed', reason: result.reason });
-  }
+  const verifyWith = (call: () => Promise<VerifyResult>) =>
+    send(call, (token, result) => dispatch({ type: 'verified', token, result }), { name: 'verifying' });
 
-  async function startService(target: VerifiedPickup, mode: ServiceMode) {
-    const res = await run(() => api.requestService(target.pickupId, mode));
-    if (res?.accepted) setStep({ name: 'moving', pickup: target, mode, paused: false, arrived: false });
-    else if (res) setNotice('요청이 거절되었습니다. 안내 직원에게 문의해 주세요.');
-  }
+  const startService = (target: VerifiedPickup, mode: ServiceMode) =>
+    send(() => api.requestService(target.pickupId, mode), (token, res) => dispatch({ type: 'serviceAnswered', token, pickup: target, mode, res }));
 
-  async function togglePause(current: Extract<Step, { name: 'moving' }>) {
-    const call = current.paused ? api.requestResume : api.requestPause;
-    const res = await run(() => call(current.pickup.pickupId));
-    if (res?.accepted) {
-      setStep({ ...current, paused: !current.paused });
-      setNotice(`${current.paused ? '재개' : '중지'} 요청이 접수되었습니다. 카트 상태가 바뀔 때까지 기다려 주세요.`);
-    }
-  }
+  const sendCommand = (target: VerifiedPickup, command: 'PAUSE' | 'RESUME') =>
+    send(
+      () => (command === 'PAUSE' ? api.requestPause : api.requestResume)(target.pickupId),
+      (token, res) => dispatch({ type: 'commandAnswered', token, command, res }),
+      undefined,
+      command === 'PAUSE',
+    );
 
-  async function confirm(target: VerifiedPickup) {
-    const res = await run(() => api.confirmReceipt(target.pickupId));
-    if (res?.accepted) setStep({ name: 'returning' });
-    else if (res) setNotice('수령 확인이 저장되지 않았습니다. 다시 눌러 주세요.');
-  }
+  const confirm = (target: VerifiedPickup) =>
+    send(() => api.confirmReceipt(target.pickupId), (token, res) => dispatch({ type: 'receiptAnswered', token, res }));
 
   function reset() {
     api.resetDemo();
-    setNotice(null);
-    setLastPickup(null);
-    setStep({ name: 'idle' });
+    inFlight.current = null;
+    dispatch({ type: 'reset' });
   }
 
   const progressPickup = pickup ?? (step.name === 'returning' ? lastPickup : null);
@@ -157,14 +166,14 @@ export function App() {
               <li><span>QR을 카트의 <b>카메라</b>에 가까이 비춥니다.</span></li>
               <li><span>확인되면 이 화면에 주문하신 물품이 표시됩니다.</span></li>
             </ol>
-            <button className="btn btn-secondary" onClick={() => setStep({ name: 'keypad' })}>
+            <button className="btn btn-secondary" onClick={() => go({ name: 'keypad' })}>
               <Icon name="keyboard" /> QR이 인식되지 않으면 예약번호 입력
             </button>
           </Split>
         )}
 
         {step.name === 'keypad' && (
-          <Keypad busy={busy} onCancel={() => setStep({ name: 'idle' })} onSubmit={(no) => verifyWith(() => api.verifyReservationNo(no))} />
+          <Keypad busy={busy} onCancel={() => go({ name: 'idle' })} onSubmit={(no) => verifyWith(() => api.verifyReservationNo(no))} />
         )}
 
         {step.name === 'verifying' && (
@@ -179,8 +188,8 @@ export function App() {
             <h1>예약을 확인하지 못했습니다</h1>
             <p className="lead" role="alert">{FAILURE_TEXT[step.reason]}</p>
             <div className="actions">
-              <button className="btn btn-primary" onClick={() => setStep({ name: 'keypad' })}>예약번호 입력</button>
-              <button className="btn btn-secondary" onClick={() => setStep({ name: 'idle' })}>처음으로</button>
+              <button className="btn btn-primary" onClick={() => go({ name: 'keypad' })}>예약번호 입력</button>
+              <button className="btn btn-secondary" onClick={() => go({ name: 'idle' })}>처음으로</button>
             </div>
           </Split>
         )}
@@ -198,11 +207,11 @@ export function App() {
             </table>
             <p className="meta">예약번호 {step.pickup.reservationNo} · 주문번호 {step.pickup.orderNo} · {step.pickup.location.name} 수령</p>
             {api.isArrivalHall(step.pickup.location) ? (
-              <button className="btn btn-primary btn-block" onClick={() => setStep({ name: 'chooseService', pickup: step.pickup })}>
+              <button className="btn btn-primary btn-block" onClick={() => go({ name: 'chooseService', pickup: step.pickup })}>
                 물품을 확인했습니다
               </button>
             ) : (
-              <button className="btn btn-primary btn-block" onClick={() => setStep({ name: 'receipt', pickup: step.pickup })}>
+              <button className="btn btn-primary btn-block" onClick={() => go({ name: 'receipt', pickup: step.pickup })}>
                 물품을 꺼냈습니다
               </button>
             )}
@@ -234,56 +243,53 @@ export function App() {
           </div>
         )}
 
-        {step.name === 'moving' && (
-          <Split
-            visual={
-              <>
-                <StatusIcon
-                  name={step.arrived ? 'check' : step.paused ? 'pause' : step.mode === 'FOLLOW' ? 'follow' : 'gate'}
-                  tone={step.paused ? 'warn' : undefined}
-                />
-                <p className={`state-label ${step.paused ? 'warn' : ''}`}>
-                  {step.arrived ? '도착' : step.paused ? '일시 중지' : `${MODE_LABEL[step.mode]} 중`}
-                </p>
-              </>
-            }
-          >
-            <h1>
-              {step.arrived ? `${api.gateLabel(step.pickup.flight.gateCode)}에 도착했습니다`
-                : step.paused ? '카트를 멈추고 있습니다'
-                : step.mode === 'FOLLOW' ? '카드를 들고 천천히 걸어 주세요'
-                : `${api.gateLabel(step.pickup.flight.gateCode)}으로 안내합니다`}
-            </h1>
-            <p className="lead">
-              {step.arrived ? '카트에서 물품을 모두 꺼낸 뒤 아래 버튼을 눌러 주세요.'
-                : step.paused ? '카트가 완전히 멈출 때까지 가까이 가지 마세요.'
-                : step.mode === 'FOLLOW' ? '마커 카드가 카트 쪽을 향하도록 들어 주세요.'
-                : '카트를 따라 이동해 주세요.'}
-            </p>
-            {step.arrived ? (
-              <button className="btn btn-primary btn-block" onClick={() => setStep({ name: 'receipt', pickup: step.pickup })}>
-                물품을 꺼냈습니다
-              </button>
-            ) : (
-              <div className="actions">
-                <button className={`btn btn-big ${step.paused ? 'btn-primary' : 'btn-stop'}`} disabled={busy} onClick={() => togglePause(step)}>
-                  <Icon name={step.paused ? 'play' : 'pause'} />
-                  {step.paused ? '재개' : '중지'}
+        {step.name === 'moving' && (() => {
+          const phase = movingPhase(step);
+          const gate = api.gateLabel(step.pickup.flight.gateCode);
+          const text = movingText(phase, step.mode, gate);
+          // 재개 요청을 보내는 동안에는 카트가 움직이기 시작할 수 있어 큰 버튼을 중지로 바꾼다.
+          const big = bigButton(phase) === 'RESUME' && busy ? 'PAUSE' : bigButton(phase);
+          return (
+            <Split
+              visual={
+                <>
+                  <StatusIcon name={text.icon} tone={text.warn ? 'warn' : undefined} />
+                  <p className={`state-label ${text.warn ? 'warn' : ''}`}>{text.label}</p>
+                </>
+              }
+            >
+              <h1 aria-live="polite">{text.title}</h1>
+              <p className="lead">{text.lead}</p>
+              {big ? (
+                <div className="actions">
+                  <button
+                    className={`btn btn-big ${big === 'RESUME' ? 'btn-primary' : 'btn-stop'}`}
+                    disabled={big === 'PAUSE' ? state.stopping : busy}
+                    onClick={() => sendCommand(step.pickup, big)}
+                  >
+                    <Icon name={big === 'RESUME' ? 'play' : 'pause'} />
+                    {big === 'RESUME' ? '재개' : '중지'}
+                  </button>
+                  {step.mode === 'FOLLOW' && (
+                    <>
+                      <button className="btn btn-secondary" disabled={busy || phase !== 'MOVING'} onClick={() => startService(step.pickup, 'GATE_GUIDE')}>
+                        게이트 안내로 전환
+                      </button>
+                      {/* 카트가 멈춘 것이 확인된 뒤에만 추종을 끝낸다. */}
+                      <button className="btn btn-secondary" disabled={busy || phase !== 'PAUSED'} onClick={() => go({ name: 'receipt', pickup: step.pickup })}>
+                        추종 종료
+                      </button>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <button className="btn btn-primary btn-block" onClick={() => go({ name: 'receipt', pickup: step.pickup })}>
+                  물품을 꺼냈습니다
                 </button>
-                {step.mode === 'FOLLOW' && (
-                  <>
-                    <button className="btn btn-secondary" disabled={busy} onClick={() => startService(step.pickup, 'GATE_GUIDE')}>
-                      게이트 안내로 전환
-                    </button>
-                    <button className="btn btn-secondary" onClick={() => setStep({ name: 'receipt', pickup: step.pickup })}>
-                      추종 종료
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-          </Split>
-        )}
+              )}
+            </Split>
+          );
+        })()}
 
         {step.name === 'receipt' && (
           <Split visual={<StatusIcon name="bag" />}>
@@ -304,7 +310,7 @@ export function App() {
           </div>
         )}
 
-        {notice && <p className="notice" role="status">{notice}</p>}
+        {notice && <p className="notice" role="alert">{NOTICE_TEXT[notice]}</p>}
       </main>
 
       {api.IS_DEMO && (
@@ -318,11 +324,18 @@ export function App() {
               <button className="btn-mini" onClick={() => verifyWith(() => api.verifyQr('unknown'))}>잘못된 QR</button>
             </>
           )}
-          {step.name === 'moving' && step.mode === 'GATE_GUIDE' && !step.arrived && (
-            <button className="btn-mini" onClick={() => setStep({ ...step, arrived: true })}>게이트 도착</button>
+          {step.name === 'moving' && !step.arrived && (
+            <>
+              <span className="demo-label">모의 카트 상태</span>
+              <button className="btn-mini" onClick={() => dispatch({ type: 'robotState', motion: 'MOVING' })}>주행 중</button>
+              <button className="btn-mini" onClick={() => dispatch({ type: 'robotState', motion: 'PAUSED' })}>정지됨</button>
+              {step.mode === 'GATE_GUIDE' && step.motion === 'MOVING' && (
+                <button className="btn-mini" onClick={() => dispatch({ type: 'arrived' })}>게이트 도착</button>
+              )}
+            </>
           )}
           {step.name === 'returning' && (
-            <button className="btn-mini" onClick={() => setStep({ name: 'idle' })}>복귀 완료</button>
+            <button className="btn-mini" onClick={() => go({ name: 'idle' })}>복귀 완료</button>
           )}
           <button className="btn-mini" onClick={reset}>처음부터</button>
         </footer>
