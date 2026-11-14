@@ -34,10 +34,11 @@ def _flags(raw):
     raw = raw if isinstance(raw, dict) else {}
     safe = raw.get("safe") is True and raw.get("connected") is True
     home = raw.get("returned") is True
+    stopped = raw.get("stopped") is True
     held = raw.get("grasping")
     return {
-        "stopped": safe and home,
-        "ready": safe and home and held is False,
+        "stopped": stopped,
+        "ready": safe and stopped and home and held is False,
         "home_reached": home,
         "holding_state": "holding"
         if held is True
@@ -95,9 +96,15 @@ class FieldOmxHost:
                 "active": None,
                 "hold": None,
             }
-        if self.data["active"]:
-            self.data["hold"] = "host_restarted_outcome_unknown"
-            self.data["active"] = None
+        recovering = self.data["active"] or self.data.get("recovery_command_id")
+        if recovering:
+            stop = self.data.pop("stop", None)
+            self._fail(
+                self.data["commands"][recovering]["command"],
+                "host_restarted_outcome_unknown",
+            )
+            if stop:
+                self._event(stop, "failed", reason="host_restarted_outcome_unknown")
         self._save()
 
     def _save(self):
@@ -271,7 +278,8 @@ class FieldOmxHost:
             {
                 "robot_id": a,
                 "boot_version": self.boot_version,
-                "active_command_id": self.data["active"],
+                "active_command_id": self.data["active"]
+                or self.data.get("recovery_command_id"),
                 **_flags(ready.get("arms", {}).get(a)),
             }
             for a in arm_names
@@ -311,7 +319,8 @@ class FieldOmxHost:
                 "boot_version": self.boot_version,
                 "observed_at": _now(),
                 "sequence": self.state_sequence[target],
-                "active_command_id": self.data["active"],
+                "active_command_id": self.data["active"]
+                or self.data.get("recovery_command_id"),
                 "state": state,
             },
         )
@@ -413,6 +422,8 @@ class FieldOmxHost:
 
     def _fail(self, command, reason):
         self.data["hold"] = str(reason)
+        # A failed outcome does not prove that the device stopped; retain its stop target.
+        self.data["recovery_command_id"] = command["command_id"]
         abort = getattr(self.executors[command["target"]], "abort", None)
         if abort:
             try:
@@ -420,17 +431,29 @@ class FieldOmxHost:
             except Exception:
                 log.exception("Device abort failed; physical stop remains unconfirmed")
         self.data["active"] = None
+        pending_stop = self.data.pop("stop", None)
+        if pending_stop:
+            self._event(pending_stop, "failed", reason=reason)
+        if self.data["commands"][command["command_id"]].get("status") in TERMINAL:
+            self._save()
+            return deepcopy(self.data["commands"][command["command_id"]]["last_event"])
         return self._event(command, "failed", reason=reason)
 
     def _stop(self, stop):
-        active = self.data["commands"].get(self.data["active"])
+        if self.data.get("stop"):
+            return [self._event(stop, "rejected", reason="stop_already_pending")]
+        active = self.data["commands"].get(
+            self.data["active"] or self.data.get("recovery_command_id")
+        )
         if (
             not active
             or active["command"]["command_id"] != stop["payload"]["target_command_id"]
         ):
             return [self._event(stop, "rejected", reason="target_command_not_active")]
         original = active["command"]
-        involved = {original["target"], *self._task(original)["robot_ids"]}
+        involved = {original["target"]}
+        if original["target"] == "shelf-01":
+            involved.update(("omx1", "omx2"))
         if stop["target"] not in involved:
             return [self._event(stop, "rejected", reason="wrong_stop_target")]
         executor = self.executors[original["target"]]
@@ -440,18 +463,20 @@ class FieldOmxHost:
                 self._fail(original, "physical_stop_unavailable"),
                 self._event(stop, "failed", reason="physical_stop_unavailable"),
             ]
+        self.data["active"] = original["command_id"]
+        self.data["hold"] = "operator_stop_requires_reconciliation"
+        self.data["stop"] = deepcopy(stop)
         accepted = self._event(stop, "accepted")
         try:
             abort()
         except Exception:  # noqa: BLE001 - abort errors leave the physical result unknown
+            self.data.pop("stop")
             return [
                 accepted,
                 self._fail(original, "physical_stop_failed"),
                 self._event(stop, "failed", reason="physical_stop_failed"),
             ]
         self.stop_deadline = time.monotonic() + self.watchdog_s
-        self.data["hold"] = "operator_stop_requires_reconciliation"
-        self.data["stop"] = deepcopy(stop)
         self._save()
         return [accepted]
 
@@ -470,10 +495,14 @@ class FieldOmxHost:
                 ):
                     stop = self.data.pop("stop")
                     self.data["active"] = None
-                    return [
-                        self._event(command, "interrupted", reason="operator_stop"),
-                        self._event(stop, "completed", {"stopped": True}),
-                    ]
+                    self.data.pop("recovery_command_id", None)
+                    events = []
+                    if self.data["commands"][command_id].get("status") not in TERMINAL:
+                        events.append(
+                            self._event(command, "interrupted", reason="operator_stop")
+                        )
+                    events.append(self._event(stop, "completed", {"stopped": True}))
+                    return events
                 if self.stop_deadline and time.monotonic() > self.stop_deadline:
                     stop = self.data.pop("stop")
                     return [

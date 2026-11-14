@@ -35,6 +35,7 @@ class VirtualOmxExecutor:
                 "safe": True,
                 "returned": not running and a not in self.unreturned,
                 "grasping": running,
+                "stopped": not running,
             }
             for a in self.arms
         }

@@ -14,6 +14,23 @@ def _expired(task):
     return datetime.fromisoformat(task["expires_at"]) <= datetime.now(UTC)
 
 
+def _stopped(sensor, since=None):
+    """A home pose or an abort request is not a measured stop."""
+    if sensor is None:
+        return False
+    try:
+        sample = sensor()
+        observed = datetime.fromisoformat(sample["observed_at"])
+        age = (datetime.now(UTC) - observed).total_seconds()
+        return (
+            sample.get("stopped") is True
+            and 0 <= age <= 3
+            and (since is None or observed >= since)
+        )
+    except Exception:  # noqa: BLE001 - missing or unreadable stop evidence is unknown
+        return False
+
+
 class WarehouseExecutor:
     """r8 command owner -> PR71 Host -> existing OMX3 Runner.
 
@@ -29,6 +46,7 @@ class WarehouseExecutor:
         model_version,
         calibration_version,
         package_sizes=None,
+        stop_status=None,
     ):
         self.versions = {
             "model_version": model_version,
@@ -39,6 +57,7 @@ class WarehouseExecutor:
         self.lock = RLock()
         self.observation = {"state": "idle"}
         self.task = None
+        self.stop_status, self.stop_requested_at = stop_status, None
         self.host = Omx3Host(runner, self._event)
 
     def _arms(self):
@@ -55,6 +74,7 @@ class WarehouseExecutor:
                 "safe": ready,
                 "returned": home,
                 "grasping": None if released is None else not released,
+                "stopped": _stopped(self.stop_status),
             }
         }
 
@@ -81,6 +101,7 @@ class WarehouseExecutor:
         if _expired(task):
             raise ValueError("expired_command")
         with self.lock:
+            self.stop_requested_at = None
             self.task = deepcopy(task)
             self.observation = {"state": "running", "step": "accepted"}
         # This ID stays inside the legacy Host; only command_id is transmitted in r8.
@@ -132,17 +153,33 @@ class WarehouseExecutor:
 
     def observe(self):
         with self.lock:
-            return deepcopy(self.observation)
+            result = deepcopy(self.observation)
+        stopped = _stopped(self.stop_status, self.stop_requested_at)
+        if self.stop_requested_at is not None and stopped:
+            return {"state": "stopped", "stopped": True}
+        for arm in result.get("arms", {}).values():
+            arm["stopped"] = stopped
+        return result
 
     def abort(self):
+        self.stop_requested_at = datetime.now(UTC)
         self.host.abort()
+        if self.host.status()["active"] is None:
+            self.runner.robot.hold()
 
 
 class PanelFieldExecutor:
     """PR66 panel executor supports cooperative actions only. Missing sensors remain unknown."""
 
     def __init__(
-        self, panel, *, model_version, calibration_version, completion=None, stop=None
+        self,
+        panel,
+        *,
+        model_version,
+        calibration_version,
+        completion=None,
+        stop=None,
+        stop_status=None,
     ):
         self.versions = {
             "model_version": model_version,
@@ -150,9 +187,14 @@ class PanelFieldExecutor:
         }
         self.panel, self.completion, self.stop = panel, completion, stop
         self.task = None
+        self.stop_status, self.stop_requested_at = stop_status, None
 
     def readiness(self):
-        return self.panel.readiness()
+        result = self.panel.readiness()
+        stopped = _stopped(self.stop_status)
+        for arm in result.get("arms", {}).values():
+            arm["stopped"] = stopped
+        return result
 
     def check(self, task):
         if task["robot_ids"] != ["omx1", "omx2"]:
@@ -166,10 +208,20 @@ class PanelFieldExecutor:
         if _expired(task):
             raise ValueError("expired_command")
         self.task = deepcopy(task)
+        self.stop_requested_at = None
         self.panel.start(task)
 
     def observe(self):
+        stopped = _stopped(self.stop_status, self.stop_requested_at)
+        if self.stop_requested_at is not None:
+            return (
+                {"state": "stopped", "stopped": True}
+                if stopped
+                else {"state": "stopping"}
+            )
         result = self.panel.observe()
+        for arm in result.get("arms", {}).values():
+            arm["stopped"] = stopped
         # The panel's return evidence alone is not an independent placement sensor.
         result.pop("placement_confirmed", None)
         result.pop("release_confirmed", None)
@@ -184,7 +236,7 @@ class PanelFieldExecutor:
                 age = float("inf")
             if (
                 isinstance(proof, dict)
-                and -1 <= age <= 3
+                and 0 <= age <= 3
                 and all(
                     proof.get(key) == self.task[key]
                     for key in (
@@ -203,6 +255,7 @@ class PanelFieldExecutor:
         return result
 
     def abort(self):
+        self.stop_requested_at = datetime.now(UTC)
         if self.stop is None:
             raise RuntimeError("physical_stop_adapter_unavailable")
         self.stop()
@@ -216,7 +269,14 @@ class IndependentArmExecutor:
     """
 
     def __init__(
-        self, arm_id, routes, *, marker_ids, model_version, calibration_version
+        self,
+        arm_id,
+        routes,
+        *,
+        marker_ids,
+        model_version,
+        calibration_version,
+        stop_status=None,
     ):
         if arm_id not in {"omx1", "omx2"} or not routes:
             raise ValueError("independent arm and calibrated routes are required")
@@ -226,7 +286,9 @@ class IndependentArmExecutor:
         }
         self.arm_id = arm_id
         self.routes = {
-            key: WarehouseExecutor(runner, marker_ids=marker_ids, **self.versions)
+            key: WarehouseExecutor(
+                runner, marker_ids=marker_ids, stop_status=stop_status, **self.versions
+            )
             for key, runner in routes.items()
         }
         self.current = None
@@ -245,7 +307,8 @@ class IndependentArmExecutor:
             "error": next((s["error"] for s in statuses if s["error"]), None),
             "arms": {
                 self.arm_id: {
-                    k: agreed(k) for k in ("connected", "safe", "returned", "grasping")
+                    k: agreed(k)
+                    for k in ("connected", "safe", "returned", "grasping", "stopped")
                 }
             },
         }
@@ -264,7 +327,15 @@ class IndependentArmExecutor:
         self.current.start(task)
 
     def observe(self):
-        result = self.current.observe() if self.current else {"state": "idle"}
+        if self.current is None:
+            stopped = all(
+                adapter.observe().get("stopped") is True
+                for adapter in self.routes.values()
+            )
+            return (
+                {"state": "stopped", "stopped": True} if stopped else {"state": "idle"}
+            )
+        result = self.current.observe()
         if "arms" in result:
             result["arms"] = {self.arm_id: result["arms"]["omx3"]}
         result.pop("package_size", None)
@@ -273,3 +344,6 @@ class IndependentArmExecutor:
     def abort(self):
         if self.current:
             self.current.abort()
+        else:
+            for adapter in self.routes.values():
+                adapter.abort()

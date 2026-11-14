@@ -26,6 +26,11 @@ from roport_omx.mqtt_link.field_wire import build_message
 from roport_omx.mqtt_link.journal import Journal
 
 
+def stationary_sample():
+    """Explicit fake motor observation for instantaneous device fixtures."""
+    return {"observed_at": datetime.now(UTC).isoformat(), "stopped": True}
+
+
 def expiry():
     return (datetime.now(UTC) + timedelta(seconds=10)).isoformat()
 
@@ -381,6 +386,76 @@ class FieldHostTest(unittest.TestCase):
         self.assertEqual([e["payload"]["status"] for e in events], ["failed", "failed"])
         self.assertTrue(self.host.data["hold"])
 
+    def stop_command(self, name="stop-1", target="shelf-01"):
+        return build_message(
+            "robot_stop_command",
+            "control-01",
+            target,
+            {
+                "expected_boot_version": self.host.boot_version,
+                "target_command_id": "command-1",
+                "reason": "operator_request",
+            },
+            command_id=name,
+            expires_at=expiry(),
+        )
+
+    def test_second_stop_keeps_first_stop_until_confirmation(self):
+        self.host.handle(self.command())
+        first = self.stop_command()
+        self.host.handle(first)
+        self.assertEqual(self.host.handle(first)[0]["payload"]["status"], "accepted")
+        second = self.host.handle(self.stop_command("stop-2"))[0]
+        self.assertEqual(second["payload"]["reason"], "stop_already_pending")
+        self.assertEqual(self.host.data["stop"]["command_id"], "stop-1")
+        events = self.host.poll()
+        self.assertEqual(events[-1]["command_id"], "stop-1")
+        self.assertEqual(events[-1]["payload"]["status"], "completed")
+
+    def test_restart_aborts_without_resuming_and_accepts_stop_for_old_command(self):
+        self.host.handle(self.command())
+        executor = self.executors["shelf-01"]
+        self.host = FieldOmxHost(self.journal, self.executors)
+        self.assertTrue(executor.aborted)
+        self.assertEqual(len(executor.tasks), 1)
+        self.assertEqual(self.host.poll(), [])
+        self.assertEqual(self.host.data["commands"]["command-1"]["status"], "failed")
+        self.assertEqual(
+            self.host.state("shelf-01")["payload"]["active_command_id"], "command-1"
+        )
+        self.assertEqual(
+            self.host.handle(self.stop_command())[0]["payload"]["status"], "accepted"
+        )
+        result = self.host.poll()
+        self.assertEqual([e["payload"]["status"] for e in result], ["completed"])
+        self.assertIsNone(self.host.data.get("recovery_command_id"))
+        self.assertTrue(self.host.data["hold"])
+
+    def test_failed_abort_keeps_command_available_for_stop_retry(self):
+        self.host.handle(self.command())
+        executor = self.executors["shelf-01"]
+        with patch.object(
+            executor, "abort", side_effect=RuntimeError("device offline")
+        ):
+            self.host.deadline = 0
+            self.assertEqual(self.host.poll()[0]["payload"]["status"], "failed")
+        self.assertEqual(
+            self.host.handle(self.stop_command())[0]["payload"]["status"], "accepted"
+        )
+        self.assertEqual(self.host.poll()[-1]["payload"]["status"], "completed")
+
+    def test_restart_during_stop_finishes_old_stop_and_allows_new_stop(self):
+        self.host.handle(self.command())
+        self.host.handle(self.stop_command())
+        self.host = FieldOmxHost(self.journal, self.executors)
+        self.assertNotIn("stop", self.host.data)
+        self.assertEqual(self.host.data["commands"]["stop-1"]["status"], "failed")
+        self.assertEqual(
+            self.host.handle(self.stop_command("stop-2"))[0]["payload"]["status"],
+            "accepted",
+        )
+        self.assertEqual(self.host.poll()[-1]["command_id"], "stop-2")
+
     def test_panel_completion_proof_must_match_actual_visit_and_be_fresh(self):
         panel = self.executors["shelf-01"]
         panel.check = lambda task: None
@@ -397,6 +472,7 @@ class FieldHostTest(unittest.TestCase):
             panel,
             model_version="sim-model",
             calibration_version="sim-cal",
+            stop_status=stationary_sample,
             completion=lambda task: wrong,
             stop=panel.abort,
         )
@@ -419,6 +495,117 @@ class FieldHostTest(unittest.TestCase):
         wrong.update(valid)
         self.assertTrue(adapter.observe()["placement_confirmed"])
 
+    def test_real_adapters_require_fresh_post_abort_stop_evidence(self):
+        robot, policy = FakeRobot(), ScriptPolicy(away=4)
+        runner, _ = make(robot, policy, box_until(robot, 4))
+        sample = stationary_sample()
+        options = dict(
+            model_version="sim-model",
+            calibration_version="sim-cal",
+            stop_status=lambda: sample,
+        )
+        adapters = [
+            WarehouseExecutor(runner, marker_ids={"package-17": 17}, **options),
+            IndependentArmExecutor(
+                "omx1",
+                {("INBOUND", "1a"): runner},
+                marker_ids={"package-17": 17},
+                **options,
+            ),
+            PanelFieldExecutor(
+                self.executors["shelf-01"],
+                stop=self.executors["shelf-01"].abort,
+                **options,
+            ),
+        ]
+        for adapter in adapters:
+            with self.subTest(adapter=type(adapter).__name__):
+                sample.clear()
+                sample.update(stationary_sample())
+                adapter.abort()
+                self.assertNotEqual(adapter.observe().get("state"), "stopped")
+                for bad in (
+                    {},
+                    {"observed_at": "invalid", "stopped": True},
+                    {
+                        "observed_at": (
+                            datetime.now(UTC) + timedelta(seconds=10)
+                        ).isoformat(),
+                        "stopped": True,
+                    },
+                    {
+                        "observed_at": (
+                            datetime.now(UTC) - timedelta(seconds=10)
+                        ).isoformat(),
+                        "stopped": True,
+                    },
+                    {"observed_at": datetime.now(UTC).isoformat(), "stopped": False},
+                ):
+                    sample.clear()
+                    sample.update(bad)
+                    self.assertNotEqual(adapter.observe().get("state"), "stopped")
+                sample.clear()
+                sample.update(stationary_sample())
+                self.assertEqual(adapter.observe().get("state"), "stopped")
+        self.assertGreater(robot.held, 0)
+
+    def test_home_pose_without_stop_sensor_is_not_ready(self):
+        robot, policy = FakeRobot(), ScriptPolicy(away=4)
+        runner, _ = make(robot, policy, box_until(robot, 4))
+        self.host.executors["omx3"] = WarehouseExecutor(
+            runner,
+            marker_ids={"package-17": 17},
+            model_version="sim-model",
+            calibration_version="sim-cal",
+        )
+        self.observe("N01")
+        state = self.host.state("omx3")["payload"]["state"]
+        self.assertTrue(state["home_reached"])
+        self.assertFalse(state["stopped"])
+        self.assertFalse(state["ready"])
+        self.assertEqual(
+            self.host.handle(self.command("omx3"))[0]["payload"]["reason"],
+            "arm_not_safely_home",
+        )
+        self.assertEqual(robot.sent, 0)
+
+    def test_real_runner_stop_confirmation_reaches_host(self):
+        robot, policy = FakeRobot(), ScriptPolicy(away=4)
+        runner, _ = make(robot, policy, box_until(robot, 4))
+        sample = stationary_sample()
+        adapter = WarehouseExecutor(
+            runner,
+            marker_ids={"package-17": 17},
+            model_version="sim-model",
+            calibration_version="sim-cal",
+            stop_status=lambda: sample,
+        )
+        self.host.executors["omx3"] = adapter
+        self.observe("N01")
+        self.host.handle(self.command("omx3"))
+        adapter.host.wait(2)
+        self.host.handle(self.stop_command(target="omx3"))
+        self.assertEqual(self.host.poll(), [])
+        sample.update(stationary_sample())
+        self.assertEqual(
+            [e["payload"]["status"] for e in self.host.poll()],
+            ["interrupted", "completed"],
+        )
+
+    def test_stop_observation_error_keeps_recoverable_stop_target(self):
+        self.host.handle(self.command())
+        self.host.handle(self.stop_command())
+        with patch.object(
+            self.executors["shelf-01"], "observe", side_effect=OSError("sensor lost")
+        ):
+            self.host.poll()
+        self.assertNotIn("stop", self.host.data)
+        self.assertEqual(self.host.data["commands"]["stop-1"]["status"], "failed")
+        self.assertEqual(
+            self.host.handle(self.stop_command("stop-2"))[0]["payload"]["status"],
+            "accepted",
+        )
+
     def test_existing_omx3_host_runner_adapter_completes(self):
         robot, policy = FakeRobot(), ScriptPolicy(away=4)
         runner, _ = make(robot, policy, box_until(robot, 4))
@@ -428,6 +615,7 @@ class FieldHostTest(unittest.TestCase):
             package_sizes={"package-17": "large"},
             model_version="sim-model",
             calibration_version="sim-cal",
+            stop_status=stationary_sample,
         )
         self.host.executors["omx3"] = adapter
         self.observe("N01")
@@ -449,6 +637,7 @@ class FieldHostTest(unittest.TestCase):
             marker_ids={"package-17": 17},
             model_version="sim-model",
             calibration_version="sim-cal",
+            stop_status=stationary_sample,
         )
         self.host.executors["omx3"] = adapter
         self.observe("N01")
@@ -465,6 +654,11 @@ class FieldHostTest(unittest.TestCase):
         with (
             patch("roport_omx.field_executors.datetime") as clock_type,
             patch.object(runner, "_precheck", delayed_precheck),
+            patch.object(
+                adapter,
+                "stop_status",
+                lambda: {"observed_at": clock.isoformat(), "stopped": True},
+            ),
         ):
             clock_type.now.side_effect = lambda tz: clock
             clock_type.fromisoformat = datetime.fromisoformat
@@ -486,6 +680,7 @@ class FieldHostTest(unittest.TestCase):
             panel,
             model_version="sim-model",
             calibration_version="sim-cal",
+            stop_status=stationary_sample,
             stop=panel.abort,
         )
         self.host.executors["shelf-01"] = adapter
@@ -504,6 +699,7 @@ class FieldHostTest(unittest.TestCase):
             marker_ids={"package-17": 17},
             model_version="sim-model",
             calibration_version="sim-cal",
+            stop_status=stationary_sample,
         )
         self.host.executors["omx1"] = adapter
         self.observe("N21")
@@ -528,6 +724,7 @@ class FieldHostTest(unittest.TestCase):
                 stop=lambda: None,
                 model_version="sim-model",
                 calibration_version="sim-cal",
+                stop_status=stationary_sample,
             )
             self.host.executors["shelf-01"] = adapter
             command = self.command(slot_id="2b")

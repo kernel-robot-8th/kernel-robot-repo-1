@@ -75,7 +75,14 @@ def runner_executor(
         lambda frame: (300.0, 300.0) if policy.n < 4 else (480.0, 70.0),
         WallClock(),
     )
-    kwargs = {"marker_ids": marker_ids or {"package-17": 17}, **(versions or VERSIONS)}
+    kwargs = {
+        "marker_ids": marker_ids or {"package-17": 17},
+        "stop_status": lambda: {
+            "observed_at": now(),
+            "stopped": runner.robot.ready() is None and not runner._lock.locked(),
+        },
+        **(versions or VERSIONS),
+    }
     if target == "omx3":
         executor = WarehouseExecutor(runner, package_sizes=package_sizes, **kwargs)
     else:
@@ -134,6 +141,10 @@ def panel_device_executor(
         actual,
         **(versions or VERSIONS),
         completion=placement,
+        stop_status=lambda: {
+            "observed_at": now(),
+            "stopped": not panel.status["job"]["running"],
+        },
         stop=lambda: panel.finish(exit_ok=False, stopped_by="중지"),
     )
     return SimpleNamespace(executor=executor, panel=panel, tick=tick, sensor=sensor)
