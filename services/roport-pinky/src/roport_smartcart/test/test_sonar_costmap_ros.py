@@ -1,4 +1,4 @@
-"""Actual Nav2 controller must recover after its first Range observation arrives late."""
+"""Actual controller: delayed Range recovers; stale/invalid Range still aborts."""
 
 import os
 from pathlib import Path
@@ -9,11 +9,12 @@ import yaml
 import pytest
 
 
+@pytest.mark.parametrize("invalid", ["missing", "stale", "nan"])
 @pytest.mark.parametrize(
     "reading,has_obstacles", [(0.95, False), (0.60, True)]
 )
 def test_delayed_range_recovers_controller_without_disabling_freshness(
-    monkeypatch, tmp_path, reading, has_obstacles
+    monkeypatch, tmp_path, reading, has_obstacles, invalid
 ):
     import rclpy
     from ament_index_python.packages import (
@@ -27,7 +28,7 @@ def test_delayed_range_recovers_controller_without_disabling_freshness(
     from rclpy.action import ActionClient
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
-    from sensor_msgs.msg import Range, LaserScan
+    from sensor_msgs.msg import Range
     from tf2_ros import StaticTransformBroadcaster
     from roport_smartcart.profiles import build_params, _clock_mode
 
@@ -49,9 +50,6 @@ def test_delayed_range_recovers_controller_without_disabling_freshness(
     odom = n.create_publisher(Odometry, "odom", 10)
     commands = []
     maps = []
-    adapted = []
-    n.create_subscription(LaserScan, "/smartcart/sonar_scan",
-                          lambda m: adapted.append(m), 10)
     n.create_subscription(Twist, "cmd_vel", lambda m: commands.append(m.linear.x), 10)
     n.create_subscription(
         OccupancyGrid, "local_costmap/costmap", lambda m: maps.append(m), 10
@@ -96,10 +94,6 @@ def test_delayed_range_recovers_controller_without_disabling_freshness(
         stdout=log,
         stderr=log,
     )
-    adapter = subprocess.Popen([
-        str(Path(get_package_prefix('roport_smartcart')) / 'lib' /
-            'roport_smartcart' / 'range_scan')],
-        env={**os.environ, 'ROS_DOMAIN_ID': '184'}, stdout=log, stderr=log)
     handle = None
     try:
         lifecycle = n.create_client(ChangeState, "controller_server/change_state")
@@ -126,6 +120,7 @@ def test_delayed_range_recovers_controller_without_disabling_freshness(
             pose.pose.orientation.w = 1.0
             goal.path.poses.append(pose)
         started = time.monotonic()
+        started_stamp = n.get_clock().now().nanoseconds/1e9
         future = None
         while time.monotonic() - started < 12:
             now = n.get_clock().now().to_msg()
@@ -144,11 +139,10 @@ def test_delayed_range_recovers_controller_without_disabling_freshness(
             msg.child_frame_id = "test_base"
             msg.pose.pose.orientation.w = 1.0
             odom.publish(msg)
-            if (future is None and adapted and maps
+            if (future is None and maps
                     and (100 in maps[-1].data) is has_obstacles
                     and (maps[-1].header.stamp.sec + maps[-1].header.stamp.nanosec / 1e9
-                         > adapted[0].header.stamp.sec
-                         + adapted[0].header.stamp.nanosec / 1e9 + .5)):
+                         > started_stamp + .5)):
                 future = client.send_goal_async(goal)
             ex.spin_once(timeout_sec=0.02)
             time.sleep(.02)  # Sensor-rate publishing, not an unbounded queued burst.
@@ -159,9 +153,27 @@ def test_delayed_range_recovers_controller_without_disabling_freshness(
             tmp_path / "controller.log"
         ).read_text()
         assert maps and (100 in maps[-1].data) is has_obstacles
-        assert c["sonar_layer"]["sonar_range"]["expected_update_rate"] == 0.5
+        assert c["sonar_layer"]["no_readings_timeout"] == 0.5
         if future and future.done():
             handle = future.result()
+            terminal = handle.get_result_async()
+            # Receipt time must not freshen stale/NaN observations. Keep odom
+            # fresh while depriving the layer of valid new Range data.
+            end = time.monotonic()+3
+            while not terminal.done() and time.monotonic()<end:
+                msg = Odometry()
+                msg.header.stamp = n.get_clock().now().to_msg()
+                msg.header.frame_id, msg.child_frame_id = 'test_world', 'test_base'
+                odom.publish(msg)
+                if invalid == 'stale':
+                    source.publish(scan)  # frozen acquisition timestamp
+                elif invalid == 'nan':
+                    scan.header.stamp = msg.header.stamp
+                    scan.range = float('nan')
+                    source.publish(scan)
+                ex.spin_once(timeout_sec=.02)
+                time.sleep(.02)
+            assert terminal.done() and terminal.result().status != 4
     finally:
         if handle and handle.accepted:
             f = handle.cancel_goal_async()
@@ -172,12 +184,6 @@ def test_delayed_range_recovers_controller_without_disabling_freshness(
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait(timeout=3)
-        adapter.send_signal(signal.SIGINT)
-        try:
-            adapter.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            adapter.kill()
-            adapter.wait(timeout=3)
         log.close()
         ex.shutdown()
         n.destroy_node()

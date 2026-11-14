@@ -750,3 +750,62 @@ main의 PR45 Host는 mock만 제공한다. 실물 제어판 어댑터는 FFT1-15
 
 UI 수동 완료와 MQTT 완료는 같은 정차 세션에서 한 번만 처리된다. 이미 작업을 보냈다면 수동 완료에도
 접수 이후의 최신 Host 대기·양팔 복귀 정보가 필요하다. `arm_return_only`는 선반 안착·재고 확정이 아니다.
+
+### Nav2 실패 보고와 같은 목적지 재시도
+
+Pinky는 복구를 최대 2회 시도하고, 복구 중 실제 위치 진전이 없으면 30초 안에 실패한다.
+현장용 `bounded_field_recovery.xml`은 후방 costmap 충돌 검사를 거친 8cm 후진 후 다시 계획한다.
+후방까지 막히면 후진도 실패하며 무조건 밀고 나가지 않는다. 실패 시 구동 lease를 `none`으로
+전환하고 기존 `navigate.failed`의 `error_code`로 보고한다. 현재 좌표가 불명확하면 완료로 보내지 않는다.
+양쪽을 최신 코드로 설치한 뒤 runner에 `ROPORT_NAV_DIAGNOSTICS=1`을 설정하면 기존 선택 필드
+`navigation`에 현재/목표 좌표, 복구 횟수, Nav2 결과와 실패 원인이 함께 온다.
+
+관제는 실패한 단계·목표·실행 ID와 점유 상태를 HOLD에 보존한다. **자동 재출발은 하지 않는다.**
+재시도 가능한 Nav2/마커 유실 오류에 한해 현장 담당자가 로봇 정지·위치·적재·통로 상태를 대조한 뒤
+관제 PC에서 다음 명령을 명시적으로 실행한다. 웹의 일반 HOLD 해제 버튼은 추가하지 않았다.
+
+```bash
+uv run python tools/retry_pinky_navigation.py --socket /path/to/trial.sock \
+  --execution-id FAILED_EXECUTION_ID --field-confirmed
+```
+
+터미널로 실행한 관제 owner에는 `retry FAILED_EXECUTION_ID reconciled`를 입력할 수도 있다.
+같은 프로세스의 boot·binding·지도와 동일한 goal/좌표/허용오차를 유지하고, 새 command/execution ID로
+기존 `navigate.requested`를 보낸다. 과거 이벤트·ACK·실패 기록은 삭제하지 않는다.
+Pinky는 취소한 Nav2 작업의 **최종 종료**, 신선한 센서·위치, 실제 정지, 단독 구동권까지 확인한다.
+이 조건을 만족하지 않거나 변경된 목적지가 오면 재시도를 거절한다. 같은 명령 재전송은 재실행하지 않는다.
+관제/로봇 재시작, MQTT/guard/lease 장애, 결과 미확인 timeout, 지도/boot 변경은 이 절차로 해제할 수 없다.
+이때는 기존 현장 대조·새 시험 준비 절차를 따른다. 재시도 명령도 실패하면 다시 HOLD로 보고한다.
+
+### 선택 기능: 게이트 ArUco 최종 주차
+
+별도 `dock.requested`를 시험 프로토콜에 섞지 않고, 기존 `navigate.requested`의 완료 직전에
+게이트 마커를 확인한다. 관제의 pose는 **최종 로봇 기준점**, 허용오차는 최종 기준점의 오차이며
+벽과의 간격이 아니다. 마커 크기·카메라 내부 보정·광학 프레임 TF·로봇 앞면 길이를 실측한 뒤,
+runner와 trial launch 양쪽에 같은 `ROPORT_GATE_DOCK_CONFIG=/private/gate-docking.yaml`을 설정한다.
+검증 전에는 설정하지 않는다. 아래 수치는 형식 예시이며 현장 보정값이 아니다.
+
+```yaml
+version: 1
+field_verified: false
+front_extent_m: 0.06
+clearance_m: 0.05
+image_topic: camera/image_raw/compressed
+camera_info_topic: camera/camera_info
+goals:
+  G2: {marker_id: 9, marker_size_m: 0.10}
+```
+
+실측 후에만 `field_verified: true`로 바꾼다. goals 키는 관제가 보내는 goal_id와 정확히 같아야 한다.
+기존 30cm/25cm 정차 좌표를 그대로 보내면 목표 불일치로 실패할 수 있으므로 관제의 최종 좌표와
+버전도 함께 갱신한다. 도킹은 최종점 20cm 전에서 정지 → 지정 ID의 새 영상 3장 확인 →
+정확한 끝점을 담은 FollowPath와 Nav2 저속 controller(최대 0.02m/s)로 접근 → 새 마커와 실제 정지 확인 순서다.
+Smac의 같은 격자 목표 생략이 최종 주차에 영향을 주지 않도록 마지막 경로는 관측점까지 직접 구성한다.
+목표 간격은 **앞면에서 벽까지 5cm**이며 접촉 주차를 뜻하지 않는다. 최종 위치 1.5cm/각도0.08rad
+이내이고 관제 원래 목표 오차도 만족해야 completed가 된다.
+
+잘못된 ID, 미보정 CameraInfo, 영상/TF 유실, 마커 위치 급변, 25초 초과, 관제 목표와 불일치는
+`gate_dock_*` 실패로 정지한다. 영상의 타임스탬프에 맞는 map TF만 쓰며 추정 거리나 목표 좌표를
+관측값으로 대신하지 않는다. 도킹도 Nav2 충돌 검사·기존 guard/속도 watchdog을 통과한다.
+실제 근접 거리에서 마커가 카메라 시야에 남는지는 별도로 실물 확인해야 한다. 현재는 합성 영상과
+ROS 모의 action 검사이며, 실물 마커 주차 검증 완료를 뜻하지 않는다.

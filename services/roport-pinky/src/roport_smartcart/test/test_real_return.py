@@ -98,6 +98,30 @@ def test_invalid_adc_does_not_refresh_valid_ir_watchdog():
     assert runner.reading is None and runner.ir_at == last and runner.ir_seq == 1
 
 
+@pytest.mark.parametrize('blocked', [False, True])
+def test_spin_processes_queued_guard_before_renewing_owner(monkeypatch, blocked):
+    from roport_smartcart.real_return import HardwareReturn
+    runner = HardwareReturn.__new__(HardwareReturn)
+    runner.node, runner.owner, runner.last_status = object(), 'nav2', 10.
+    calls, leases = [], []
+    observed = {'fresh': False}
+
+    def spin_once(node, *, timeout_sec):
+        calls.append(timeout_sec)
+        if len(calls) == 4:
+            observed['fresh'] = not blocked
+
+    monkeypatch.setattr('rclpy.spin_once', spin_once)
+    monkeypatch.setattr('roport_smartcart.real_return.time.monotonic', lambda: 10.)
+    runner.guard_ok = lambda: observed['fresh']
+    runner.lease = leases.append
+    runner.nav = SimpleNamespace(poll=lambda: None)
+    runner.bridge = SimpleNamespace(snapshot=lambda: {'stopped': True})
+    assert runner.spin() == {'stopped': True}
+    assert calls == [.01] + [0.] * 8
+    assert leases == ['none' if blocked else 'nav2']
+
+
 @pytest.mark.parametrize('blocked,boot,age', [(True, 'original', 0.),
                                            (False, 'restarted', 0.),
                                            (False, 'original', .31)])
@@ -161,11 +185,103 @@ def test_hardware_stack_has_adc_guard_and_nav2_without_other_line_controller():
     assert 'trial_guard' in executables and 'controller_server' in executables
     assert 'main_node' in executables and 'line_nav' not in executables
     assert ctx.launch_configurations['ir_node'] == 'true'
+    assert ctx.launch_configurations['planner_plugin'] == 'nav2_smac_planner::SmacPlanner2D'
+    assert ctx.launch_configurations['recovery_bt'].endswith('bounded_field_recovery.xml')
     assert 'real_return' not in executables  # stack launch sends no mission goal
     from launch_ros.utilities import evaluate_parameters
     controller = next(a for a in nodes if isinstance(a, Node) and a.node_executable == 'controller_server')
     dictionaries = [p for p in controller._Node__parameters if isinstance(p, dict)]
     assert evaluate_parameters(ctx, dictionaries)[0]['general_goal_checker.xy_goal_tolerance'] == .08
+
+
+def test_field_recovery_bounds_retreat_and_keeps_both_collision_costmaps():
+    import xml.etree.ElementTree as ET
+    tree = ET.parse(Path(__file__).parents[1]/'config/bounded_field_recovery.xml')
+    assert tree.find('.//RecoveryNode').get('number_of_retries') == '2'
+    backup = tree.find('.//BackUp')
+    assert float(backup.get('backup_dist')) == -.08
+    assert float(backup.get('backup_speed')) == .02
+    allowance = float(backup.get('time_allowance'))
+    assert .08/(.02*.3)+1 <= allowance <= 18  # retain Collision Monitor's 30% slowdown
+    assert float(tree.find('.//Timeout').get('msec'))/1000 > allowance+1
+    assert tree.find('.//Spin') is None
+    assert len(tree.findall('.//ClearEntireCostmap')) == 2
+
+
+@pytest.mark.parametrize('first_terminal_x', [.04, .015])
+def test_n12_subcell_path_keeps_exact_endpoint_and_restores_tolerance(monkeypatch, first_terminal_x):
+    from builtin_interfaces.msg import Time
+    from roport_smartcart.real_return import HardwareReturn
+    runner = HardwareReturn.__new__(HardwareReturn)
+    runner.target = Destination(.04, 0., 0.)
+    runner.reading = runner.ir_at = None
+    runner.fine_send = runner.fine_handle = runner.fine_client = None
+    runner.owner = 'none'
+    start = dict(localization_ready=True, pose=dict(x=0., y=0., yaw=0.))
+    end = dict(localization_ready=True, pose=dict(x=.04, y=0., yaw=0.))
+    intermediate = dict(localization_ready=True, pose=dict(x=first_terminal_x, y=0., yaw=0.))
+    states = iter([start, start, end, end] if first_terminal_x == .04 else
+                  [start, start, intermediate, intermediate, end, end])
+    runner.stop_confirmed = lambda: next(states)
+    runner.node = SimpleNamespace(get_clock=lambda: SimpleNamespace(
+        now=lambda: SimpleNamespace(to_msg=lambda: Time(sec=1))))
+    tolerances, goals, destroyed = [], [], []
+    runner.set_goal_tolerance = tolerances.append
+    runner.lease = lambda owner: None
+    runner.require_guard = lambda: None
+    done = lambda value: SimpleNamespace(done=lambda: True, result=lambda: value)
+    runner.parameter_result = lambda future: future.result()
+    runner.goal_parameters = SimpleNamespace(get_parameters=lambda names: done(
+        SimpleNamespace(values=[SimpleNamespace(type=3, double_value=.08)])))
+    result = SimpleNamespace(status=4, result=SimpleNamespace(error_code=0))
+    handle = SimpleNamespace(accepted=True, get_result_async=lambda: done(result))
+
+    class Client:
+        def __init__(self, *args):
+            pass
+
+        def server_is_ready(self):
+            return True
+
+        def send_goal_async(self, goal):
+            goals.append(goal)
+            return done(handle)
+
+        def destroy(self):
+            destroyed.append(True)
+
+    monkeypatch.setattr('rclpy.action.ActionClient', Client)
+    runner.align_n12()
+    assert len(goals) == (1 if first_terminal_x == .04 else 2)
+    if len(goals) == 2:
+        assert goals[1].path.poses[0].pose.position.x == first_terminal_x
+    assert goals[0].path.poses[-1].pose.position.x == .04
+    assert goals[0].path.poses[-1].pose.position.y == 0.
+    assert goals[0].controller_id == 'FollowPath'
+    assert tolerances == [.01, .08]
+    assert runner.owner == 'none' and runner.fine_client is None and destroyed
+
+
+def test_fine_alignment_cancel_works_without_fresh_guard():
+    from roport_smartcart.real_return import HardwareReturn
+    runner = HardwareReturn.__new__(HardwareReturn)
+    runner.owner = 'none'
+    events = []
+    pending = {'done': False}
+    terminal = SimpleNamespace(done=lambda: pending['done'], result=lambda: object())
+    ack = SimpleNamespace(done=lambda: True, result=lambda: object())
+    runner.fine_handle = SimpleNamespace(accepted=True,
+        cancel_goal_async=lambda: events.append('cancel') or ack,
+        get_result_async=lambda: terminal)
+    runner.fine_send = object()
+    def spin():
+        assert runner.owner == 'none'
+        events.append('spin')
+        pending['done'] = True
+    runner.spin = spin
+    runner.cancel_fine_alignment()
+    assert events == ['cancel', 'spin']
+    assert runner.fine_send is runner.fine_handle is None
 
 
 @pytest.mark.parametrize('lose_ir', [False, True])
@@ -209,6 +325,7 @@ def test_return_coordinator_orders_nav_stop_ir_and_line(monkeypatch, lose_ir, fr
         if place == 'return_n12':
             state['pose'] = dict(x=runner.target.x, y=runner.target.y, yaw=runner.target.yaw)
     runner.navigate = navigate
+    runner.align_n12 = lambda: events.append('fine_align')
     def spin():
         clock[0] += .05
         runner.guard_at = clock[0]
