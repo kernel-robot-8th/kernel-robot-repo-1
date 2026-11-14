@@ -67,8 +67,11 @@ class FollowLogic:
         elif (sonar is None or scan is None or now - sonar[1] > .4
               or now - scan[1] > .4):
             self.disarm('RANGE SENSOR STALE; STOPPED')
-        elif min(sonar[0], scan[0]) < .25:
-            self.reason = 'OBSTACLE <25 CM; STOPPED'
+        elif sonar[0] <= .10:
+            self.reason = 'SONAR <=10 CM; STOPPED'
+            return 0., 0.
+        elif scan[0] < .25:
+            self.reason = 'LIDAR <25 CM; STOPPED'
             return 0., 0.
         elif self.target is None or self.target['view'] != self.goal_view:
             if self.seen_at is None or now - self.seen_at > .8:
@@ -232,6 +235,8 @@ def main(argv=None):
                     logic.arm(now)
                 else:
                     logic.reason = 'GUARD, CAMERA, SCAN AND SONAR REQUIRED'
+    except KeyboardInterrupt:
+        pass
     finally:
         logic.disarm()
         if owned:
@@ -240,7 +245,8 @@ def main(argv=None):
                 time.sleep(.05)
         cv2.destroyAllWindows()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

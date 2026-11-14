@@ -23,8 +23,12 @@ def test_calibrated_follow_and_stop_conditions():
     logic.observe([target(30, 500)], 640, now)
     linear, angular = logic.command(now, (.6, now), (.8, now))
     assert linear == 0. and -.25 <= angular < 0.
-    assert logic.command(now, (.24, now), (.8, now)) == (0., 0.)
+    logic.observe([target(30)], 640, now)
+    assert logic.command(now, (.20, now), (.8, now)) == (.025, 0.)
+    assert logic.command(now, (.10, now), (.8, now)) == (0., 0.)
+    assert logic.reason == 'SONAR <=10 CM; STOPPED'
     assert logic.command(now, (.6, now), (.24, now)) == (0., 0.)
+    assert logic.reason == 'LIDAR <25 CM; STOPPED'
     assert logic.command(now + .5, (.6, now), (.8, now)) == (0., 0.)
     assert not logic.armed
 
