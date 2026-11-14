@@ -108,13 +108,14 @@ export async function verifyReservationNo(reservationNo: string): Promise<Verify
   return result;
 }
 
-// 응답을 못 받았을 때만 같은 요청 ID로 한 번 더 보낸다. 서버는 같은 ID를 한 번만 기록한다.
+// 응답을 못 받았을 때(연결 실패·8초 초과)만 같은 요청 ID로 한 번 더 보낸다. 서버는 같은 ID를 한 번만 기록한다.
 async function postVerification(body: string): Promise<[number, unknown]> {
   const send = () =>
     fetch('/cart-api/verifications', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Cart-Id': CART_ID },
       body,
+      signal: AbortSignal.timeout(8000),
     });
   let res: Response;
   try {
