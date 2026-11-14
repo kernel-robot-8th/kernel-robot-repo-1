@@ -320,3 +320,76 @@ def test_broker_roundtrip_is_qos0_non_retained(broker):
     finally:
         publisher.stop()
         subscriber.stop()
+
+
+def test_runner_passes_explicit_period_and_publishes_each_loop(monkeypatch):
+    from roport_control_server.adapters.mqtt import trial_runner
+
+    seen = {}
+
+    class Client:
+        transport = type("T", (), {"ready": True})()
+        halted = None
+
+        def __init__(self, *args, host_metrics_period_s=None):
+            seen["period"] = host_metrics_period_s
+            seen["published"] = 0
+            self.polls = 0
+
+        def start(self):
+            pass
+
+        def poll(self, timeout):
+            self.polls += 1
+            if self.polls > 1:
+                raise KeyboardInterrupt
+
+        def report(self, *args, **kwargs):
+            pass
+
+        def publish_motion(self):
+            pass
+
+        def publish_host_metrics(self):
+            seen["published"] += 1
+
+        def close(self):
+            pass
+
+    class Driver:
+        def __getattr__(self, name):
+            return lambda *a, **k: []
+
+    monkeypatch.setattr(trial_runner, "FieldPinkyClient", Client)
+    profile = {"robots": {"logistics": {"robot_id": "pinky1"}}}
+    trial_runner.run(profile, "logistics", None, "j", Driver())
+    assert seen == {"period": None, "published": 1}
+    trial_runner.run(
+        profile, "logistics", None, "j", Driver(), host_metrics_period_s=5.0
+    )
+    assert seen["period"] == 5.0
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "inf"])
+def test_runner_cli_rejects_invalid_period_before_config(tmp_path, value):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "roport_control_server.adapters.mqtt.trial_runner",
+            "--config",
+            str(tmp_path / "missing.json"),
+            "--role",
+            "logistics",
+            "--journal",
+            str(tmp_path / "j.json"),
+            "--host-metrics-period-s",
+            value,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--host-metrics-period-s must be a positive number" in result.stderr
+    assert not (tmp_path / "j.json").exists()

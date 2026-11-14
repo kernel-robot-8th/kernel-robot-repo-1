@@ -44,6 +44,7 @@ def build(output, *, scenarios_dir=None):
             "trial_wire.py",
             "trial_runner.py",
             "motion.py",
+            "host_metrics.py",
         )
     }
     files["README.md"] = (SERVICE / "docs/mqtt-field.md").read_bytes()

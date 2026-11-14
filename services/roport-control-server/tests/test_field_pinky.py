@@ -471,3 +471,101 @@ def test_journal_failure_still_propagates_and_close_always_releases_lock(
         with pytest.raises(ConnectionError, match="transport close"):
             client.close()
     assert client.journal._lock.closed
+
+
+def test_host_metrics_off_unless_period_given(endpoint):
+    client, _ = endpoint
+    client.publish_host_metrics()  # RecordingTransport has no sample publisher
+    assert client.transport.messages == []
+
+
+@pytest.mark.parametrize("period", [0, -1, float("nan"), float("inf")])
+def test_host_metrics_period_must_be_positive(tmp_path, period):
+    profile, _ = simulation_profile("single")
+    driver = VirtualPinky(profile, "logistics", threaded=False)
+    try:
+        with pytest.raises(ValueError):
+            FieldPinkyClient(
+                MqttConfig("127.0.0.1", "wire-unit"),
+                profile,
+                "logistics",
+                tmp_path / "pinky.json",
+                driver,
+                host_metrics_period_s=period,
+            )
+    finally:
+        driver.close()
+
+
+def test_host_metrics_unexpected_error_never_stops_motion(tmp_path, caplog):
+    profile, _ = simulation_profile("single")
+    driver = VirtualPinky(profile, "logistics", threaded=False)
+    client = FieldPinkyClient(
+        MqttConfig("127.0.0.1", "wire-unit"),
+        profile,
+        "logistics",
+        tmp_path / "pinky.json",
+        driver,
+        host_metrics_period_s=5,
+    )
+
+    class Transport(RecordingTransport):
+        def publish_host_metrics(self, destination, message, expiry_s):
+            raise RuntimeError("telemetry bug")
+
+    client.transport = Transport()
+    stops = []
+    driver.safe_stop = stops.append
+    try:
+        client.publish_host_metrics()
+        assert "host metrics not sent" in caplog.text
+        assert client.halted is None and stops == []
+    finally:
+        driver.close()
+
+
+def test_host_metrics_rate_and_failure_never_stop_motion(tmp_path, caplog):
+    profile, _ = simulation_profile("single")
+    driver = VirtualPinky(profile, "logistics", threaded=False)
+    client = FieldPinkyClient(
+        MqttConfig("127.0.0.1", "wire-unit"),
+        profile,
+        "logistics",
+        tmp_path / "pinky.json",
+        driver,
+        host_metrics_period_s=5,
+    )
+    samples = []
+
+    class Transport(RecordingTransport):
+        fail = False
+
+        def publish_host_metrics(self, destination, message, expiry_s):
+            if self.fail:
+                raise ConnectionError("broker gone")
+            wire.validate(message)
+            samples.append((destination, message, expiry_s))
+
+    client.transport = Transport()
+    stops = []
+    driver.safe_stop = stops.append
+    try:
+        client.publish_host_metrics()
+        client.publish_host_metrics()  # within the period: no second sample
+        assert len(samples) == 1
+        destination, message, expiry = samples[0]
+        assert destination == wire.topic(client.robot, "host") and expiry == 5
+        assert message["payload"]["boot_version"] == client.boot
+        assert message["payload"]["sequence"] == 1
+        client.transport.fail = True
+        client.last_host_metrics = -math.inf
+        client.publish_host_metrics()
+        assert "host metrics not sent" in caplog.text
+        assert client.halted is None and stops == []
+        client.transport.fail = False
+        client.last_host_metrics = -math.inf
+        client.publish_host_metrics()
+        assert samples[-1][1]["payload"]["sequence"] == 3
+    finally:
+        client.close()
+        driver.close()
