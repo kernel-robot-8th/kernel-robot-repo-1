@@ -49,17 +49,26 @@ class VerificationService {
 
     private final JdbcClient db;
     private final Clock clock;
+    private final VerifyAttemptLimiter limiter;
 
-    VerificationService(JdbcClient db, Clock clock) {
+    VerificationService(JdbcClient db, Clock clock, VerifyAttemptLimiter limiter) {
         this.db = db;
         this.clock = clock;
+        this.limiter = limiter;
     }
 
+    /**
+     * 처음 쓰는 요청 ID만 카트별 실패 제한(429)을 받는다. 같은 ID 재전송은 이미 기록된 결과라 제한·집계하지 않는다.
+     * 예약 없음(404)과 새 거절(REJECTED)을 실패로 센다.
+     */
     @Transactional
     Outcome verify(String cartId, VerifyRequest req) {
         String actorRef = "cart:" + cartId;
         Instant now = clock.instant();
         Optional<Stored> existing = stored(req.verificationRequestId());
+        if (existing.isEmpty()) {
+            limiter.check(cartId);
+        }
         Target target;
         try {
             target = resolve(req, now);
@@ -67,6 +76,9 @@ class VerificationService {
             // 이미 쓴 요청 ID에 없는 값을 보내도 "같은 ID, 다른 요청"이다. 존재하는 다른 값과 같은 409로 답한다.
             if (existing.isPresent() && "RESERVATION_NOT_FOUND".equals(e.code)) {
                 throw conflict();
+            }
+            if ("RESERVATION_NOT_FOUND".equals(e.code)) {
+                limiter.recordFailure(cartId);
             }
             throw e;
         }
@@ -88,6 +100,9 @@ class VerificationService {
         if (rows == 0) {
             // 같은 ID의 동시 요청이 먼저 저장했다. 그 결과를 같은 규칙으로 돌려준다.
             return replay(row, actorRef, req.method(), target);
+        }
+        if (!verified) {
+            limiter.recordFailure(cartId);
         }
         return new Outcome(toResponse(row), true);
     }

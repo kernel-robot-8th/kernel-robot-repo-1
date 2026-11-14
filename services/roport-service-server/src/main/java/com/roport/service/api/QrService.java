@@ -1,11 +1,13 @@
 package com.roport.service.api;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -13,7 +15,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 고객 예약 QR 발급(SR-18). 발급할 때마다 새 토큰을 만들고 같은 예약의 이전 토큰은 폐기한다.
- * 만료 시각(expires_at)은 팀이 정할 값이라 비워 둔다. QR 발급은 인도 승인이 아니다.
+ * 만료 시각(expires_at)은 발급 시각 + service.qr.ttl(기본 10분, 팀 합의로 조정)이다. 만료되면 고객이 다시 발급받는다.
+ * QR 발급은 인도 승인이 아니다.
  */
 @Service
 class QrService {
@@ -21,14 +24,19 @@ class QrService {
     static final Set<String> QR_ALLOWED = Set.of("REQUESTED", "CONFIRMED", "CHANGE_PENDING");
     static final String QR_ALLOWED_SQL = "('REQUESTED', 'CONFIRMED', 'CHANGE_PENDING')";
 
-    record QrToken(String pickupId, String token, Instant issuedAt) {}
+    record QrToken(String pickupId, String token, Instant issuedAt, Instant expiresAt) {}
 
     private final JdbcClient db;
     private final Clock clock;
+    private final Duration ttl;
 
-    QrService(JdbcClient db, Clock clock) {
+    QrService(JdbcClient db, Clock clock, @Value("${service.qr.ttl:PT10M}") Duration ttl) {
+        if (ttl.isNegative() || ttl.isZero()) {
+            throw new IllegalArgumentException("service.qr.ttl은 양수여야 합니다.");
+        }
         this.db = db;
         this.clock = clock;
+        this.ttl = ttl;
     }
 
     /** 잠금 순서는 orders → pickups(서비스 DB 공통 규칙). 다른 회원의 예약은 존재 여부를 드러내지 않고 404. */
@@ -51,9 +59,10 @@ class QrService {
         db.sql("UPDATE qr_credentials SET revoked_at = ?, updated_at = ? WHERE pickup_id = ? AND revoked_at IS NULL")
                 .param(now).param(now).param(pickupId).update();
         String token = QrTokens.newToken();
-        db.sql("INSERT INTO qr_credentials (credential_id, token_hash, pickup_id, issued_at) VALUES (?, ?, ?, ?)")
-                .param(UUID.randomUUID().toString()).param(QrTokens.hash(token)).param(pickupId).param(now)
+        OffsetDateTime expiresAt = now.plus(ttl);
+        db.sql("INSERT INTO qr_credentials (credential_id, token_hash, pickup_id, issued_at, expires_at) VALUES (?, ?, ?, ?, ?)")
+                .param(UUID.randomUUID().toString()).param(QrTokens.hash(token)).param(pickupId).param(now).param(expiresAt)
                 .update();
-        return new QrToken(pickupId, token, now.toInstant());
+        return new QrToken(pickupId, token, now.toInstant(), expiresAt.toInstant());
     }
 }
