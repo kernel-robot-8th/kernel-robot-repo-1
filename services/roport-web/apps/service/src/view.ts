@@ -22,6 +22,15 @@ export function progressIndex(status: string): number {
 export const hhmm = (iso: string) =>
   new Date(iso).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 
+// 오늘(KST)이면 HH:mm, 다른 날이면 M/D HH:mm. 자정을 넘는 수령 시간·항공편을 헷갈리지 않게 한다.
+export function when(iso: string, now: Date = new Date()): string {
+  const day = (d: Date) => d.toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric' });
+  const d = new Date(iso);
+  if (day(d) === day(now)) return hhmm(iso);
+  const [m, dd] = d.toLocaleDateString('en-US', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric' }).split('/');
+  return `${m}/${dd} ${hhmm(iso)}`;
+}
+
 // 탑승 알림 문구. 항공편의 탑승 시작·마감 시각만으로 계산한다(게이트 변경 실시간 반영은 관제·운항 연동 이후).
 export function boardingNotice(flight: Pick<Flight, 'boardingStart' | 'boardingEnd'>, now: Date = new Date()): { tone: 'info' | 'warn' | 'done'; text: string } {
   const t = now.getTime();

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { api, ApiError, fmt, loadErrorText as errText, loginErrorText, isActivePickupExists, reserveErrorText, shouldReloadTimes, statusLabel, timesErrorText, upcomingFlights } from './api';
 import type { Flight, Location, Member, Order, Pickup } from './api';
-import { boardingNotice, hhmm, progressIndex, PROGRESS_STEPS, splitLocations } from './view';
+import { boardingNotice, progressIndex, PROGRESS_STEPS, splitLocations, when } from './view';
 
 type View =
   | { name: 'orders' }
@@ -209,7 +209,7 @@ function Orders({ member, onError, onReserve, onShowPickups }: { member: Member;
 function LocationMap({ locations, value, onChange }: { locations: Location[]; value: string; onChange: (id: string) => void }) {
   const { gates, others } = splitLocations(locations);
   const tile = (l: Location) => (
-    <label key={l.locationId} className="map-tile">
+    <label key={l.locationId} className={`map-tile${value === l.locationId ? ' on' : ''}`}>
       <input type="radio" name="location" value={l.locationId} checked={value === l.locationId} onChange={() => onChange(l.locationId)} required />
       <span>{l.name}</span>
     </label>
@@ -286,7 +286,7 @@ function Reserve({ order, onError, onCancel, onDone, onShowPickups }: { order: O
               <span className="step-title">2. 탑승 항공편</span>
               <select value={flightId} onChange={(e) => change(() => setFlightId(e.target.value))} required>
                 <option value="">선택</option>
-                {opts.data.flights.map((f) => <option key={f.flightId} value={f.flightId}>{f.flightNo} · 게이트 {f.gateCode} · 탑승 {hhmm(f.boardingStart)}</option>)}
+                {opts.data.flights.map((f) => <option key={f.flightId} value={f.flightId}>{f.flightNo} · 게이트 {f.gateCode} · 탑승 {when(f.boardingStart)}</option>)}
               </select>
             </label>
             {opts.data.flights.length === 0 && <p className="empty">탑승 전인 항공편이 없습니다.</p>}
@@ -301,9 +301,9 @@ function Reserve({ order, onError, onCancel, onDone, onShowPickups }: { order: O
             {times?.s === 'ok' && times.data.length > 0 && (
               <div className="chips">
                 {times.data.map((t) => (
-                  <label key={t} className="chip" title={fmt(t)}>
+                  <label key={t} className={`chip${pickupAt === t ? ' on' : ''}`} title={fmt(t)}>
                     <input type="radio" name="pickupAt" value={t} checked={pickupAt === t} onChange={() => change(() => setPickupAt(t))} required />
-                    <span>{hhmm(t)}</span>
+                    <span>{when(t)}</span>
                   </label>
                 ))}
               </div>
@@ -314,7 +314,7 @@ function Reserve({ order, onError, onCancel, onDone, onShowPickups }: { order: O
 
           <div className="sticky-actions">
             <button type="submit" className="btn btn-primary btn-block" disabled={busy || !pickupAt}>
-              {busy ? '접수 중…' : pickupAt && locName ? `${locName} · ${hhmm(pickupAt)} 예약하기` : '예약하기'}
+              {busy ? '접수 중…' : pickupAt && locName ? `${locName} · ${when(pickupAt)} 예약하기` : '예약하기'}
             </button>
             <button type="button" className="btn btn-secondary btn-block" onClick={onCancel} disabled={busy}>취소</button>
           </div>
@@ -341,7 +341,7 @@ function Pickups({ onError, onTicket, onStatus }: { onError: (e: unknown) => boo
               </div>
               <dl className="facts">
                 <div><dt>수령 위치</dt><dd>{p.location.name}</dd></div>
-                <div><dt>수령 희망</dt><dd>{hhmm(p.pickupAt)}</dd></div>
+                <div><dt>수령 희망</dt><dd>{when(p.pickupAt)}</dd></div>
                 <div><dt>항공편</dt><dd>{p.flight.flightNo}</dd></div>
                 <div><dt>주문</dt><dd>{p.orderNo}</dd></div>
               </dl>
@@ -365,7 +365,7 @@ function Ticket({ pickup: p, justCreated, onStatus }: { pickup: Pickup; justCrea
       {justCreated && (
         <div className="lead-block" role="status">
           <h2>예약이 접수되었습니다.</h2>
-          <p>현장 배정 전이며 수령이 확정된 것은 아닙니다. 수령 위치에서 카트 패드에 예약번호를 보여 주세요.</p>
+          <p>현장 배정 전이며 수령이 확정된 것은 아닙니다. 수령 위치에서 QR이 준비되기 전까지는 카트 패드에 예약번호를 입력해 주세요.</p>
         </div>
       )}
       <article className="ticket">
@@ -380,13 +380,13 @@ function Ticket({ pickup: p, justCreated, onStatus }: { pickup: Pickup; justCrea
             <small>인증 방식이 정해지면 표시됩니다</small>
           </div>
           <p className="muted small">예약번호</p>
-          <p className="resv-no mono" aria-label={`예약번호 ${p.reservationNo.split('').join(' ')}`}>{p.reservationNo}</p>
+          <p className="resv-no mono">{p.reservationNo}</p>
         </div>
         <dl className="facts ticket-facts">
           <div><dt>수령 위치</dt><dd>{p.location.name}</dd></div>
-          <div><dt>수령 시간</dt><dd>{hhmm(p.pickupAt)}</dd></div>
+          <div><dt>수령 시간</dt><dd>{when(p.pickupAt)}</dd></div>
           <div><dt>항공편</dt><dd>{p.flight.flightNo}</dd></div>
-          <div><dt>탑승 시작</dt><dd>{hhmm(p.flight.boardingStart)}</dd></div>
+          <div><dt>탑승 시작</dt><dd>{when(p.flight.boardingStart)}</dd></div>
         </dl>
       </article>
       <div className="foot-row">
@@ -400,14 +400,19 @@ function Ticket({ pickup: p, justCreated, onStatus }: { pickup: Pickup; justCrea
 // 진행 상태(SR-06). 서버 계약에는 접수 상태만 있어 이후 단계는 "예정"으로 그리고, 관제 연동 전임을 밝힌다.
 function Status({ pickup: p, onTicket }: { pickup: Pickup; onTicket: () => void }) {
   const cur = progressIndex(p.status);
-  const notice = boardingNotice(p.flight);
-  const steps: ReactNode[] = PROGRESS_STEPS.map((label, i) => {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 30_000); // 탑승 알림 남은 시간 갱신
+    return () => clearInterval(timer);
+  }, []);
+  const notice = boardingNotice(p.flight, now);
+  const steps = PROGRESS_STEPS.map((label, i) => {
     const state = i < cur ? 'done' : i === cur ? 'done current' : 'todo';
     return (
       <li key={label} className={state}>
         <span className="dot" aria-hidden="true" />
-        <span className="step-label">{i === 3 ? `${p.location.name} ${label}` : label}</span>
-        <span className="step-time">{i === 0 && cur >= 0 ? hhmm(p.createdAt) : i > cur ? '예정' : ''}</span>
+        <span className="step-label">{i === 3 ? `${p.location.name} 도착` : label}</span>
+        <span className="step-time">{i === 0 && cur >= 0 ? when(p.createdAt) : i > cur ? '예정' : ''}</span>
       </li>
     );
   });
@@ -423,7 +428,7 @@ function Status({ pickup: p, onTicket }: { pickup: Pickup; onTicket: () => void 
       <div className={`boarding ${notice.tone}`} role="status">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 21l2-1.5V14l8 2.5V14.5l-8-5V4a1.5 1.5 0 0 0-3 0v5.5l-8 5V16.5l8-2.5v5.5l-2 1.5" /></svg>
         <div>
-          <b>{p.flight.flightNo} 탑승 {hhmm(p.flight.boardingStart)} · 게이트 {p.flight.gateCode}</b>
+          <b>{p.flight.flightNo} 탑승 {when(p.flight.boardingStart)} · 게이트 {p.flight.gateCode}</b>
           <p>{notice.text}</p>
         </div>
       </div>

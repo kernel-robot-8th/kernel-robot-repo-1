@@ -1,7 +1,7 @@
 // 실행(CI와 동일): services/roport-web 에서 `node --test 'apps/service/src/**/*.test.ts'`
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { splitLocations, progressIndex, boardingNotice, hhmm } from './view.ts';
+import { splitLocations, progressIndex, boardingNotice, hhmm, when } from './view.ts';
 
 const loc = (locationId: string, name: string) => ({ locationId, name });
 
@@ -35,4 +35,10 @@ test('boardingNotice: 탑승 전 남은 시간과 30분 이내 경고', () => {
 test('boardingNotice: 탑승 중·마감', () => {
   assert.equal(boardingNotice(flight, new Date('2026-11-14T03:10:00Z')).text, '탑승 중입니다. 12:40에 마감됩니다.');
   assert.equal(boardingNotice(flight, new Date('2026-11-14T03:40:00Z')).tone, 'done');
+});
+
+test('when: 오늘(KST)은 시각만, 다른 날은 날짜와 함께', () => {
+  const now = new Date('2026-11-14T13:00:00Z'); // KST 11/14 22:00
+  assert.equal(when('2026-11-14T14:30:00Z', now), '23:30');
+  assert.equal(when('2026-11-14T15:00:00Z', now), '11/15 00:00'); // KST 자정 넘김
 });
