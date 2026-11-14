@@ -7,7 +7,16 @@
 - 현재 `route.requested`, `route.progress` 2개 메시지만 있다. 나머지 메시지(`dock`, `depart`, `navigate`, `stop/resume/cancel`, `notify`, `load`, `shelf`, `ack`, `telemetry`, `motion`, `presence`, `heartbeat`)는 합의되는 대로 추가한다.
 - **현재 코드와 일치하지 않는다.** 이 문서는 필수 ID를 `message_id`, `robot_id`, `user_id`, `product_id`, `gate_id` 5개로 줄이는 설계를 담고 있다. 관제 서버 `adapters/mqtt/messages.py`와 OMX `mqtt_link/`는 아직 `task_id`, `step_id`, `command_id`, `execution_id`, `site_id`를 필수 헤더로 요구하고 `boot_id`·`command_id`를 재시작 방어·중복 실행 방지에 쓴다. 코드 적용은 별도 작업이며 이 문서가 구현을 뜻하지 않는다.
 - **코드 적용 전에 먼저 정해야 할 것(미정):** ID를 제거하면서 `command_id`·`boot_id`가 하던 방어를 `message_id`·`expires_at`만으로는 보장할 수 없다. 중복 처리 이력의 보존 범위·기간, 재시작 후 처리, 새 명령이 대체한 이전 명령의 거부 기준이 정해지지 않았다. 이 방어 설계가 구현의 선행 조건이다. 기존 ID를 모두 복원할 필요는 없다.
+- `expires_at`로 오래된 명령을 막으려면 로봇·관제의 시각이 맞아야 한다. 로봇 시계가 늦으면 만료된 명령이 유효해 보이므로 시각 동기화(NTP) 요구 또는 수신 시각 기준 판정도 함께 정해야 한다.
 - `route.progress`의 `phase`처럼 값 집합이 확정되지 않은 필드는 enum으로 선언하지 못하고 설명에 알려진 값만 적었다(상태는 enum이라는 규칙의 예외). 확정되면 enum으로 바꾼다.
+
+### 코드 적용 때 정렬할 항목
+
+- `route.progress`의 `node`는 현재 코드의 `node_id`다. 필수 ID 5개 원칙에 따라 `node`로 적었고 코드 적용 때 이름을 정렬한다. `phase` 값은 Pinky가 실제 보내는 이벤트(`route.completed` 등)와 이름을 맞춘다.
+- `site` enum(`demo`·`test`)은 현재 시험 도구가 쓰는 site 값(시나리오마다 고유 값)과 다르다. 코드 적용 때 정리한다.
+- `route.requested`의 `speed_limit_mps`는 Confluence 명세에서는 선택 필드지만 현재 Pinky 구현이 필수로 읽어 이 초안은 필수로 둔다. `start_heading_rad`도 Pinky 구현이 필수로 읽는다.
+- 목적지 노드는 별도 필드 없이 `route`의 마지막 원소다. `goal.gate_id`는 수령 위치가 목적지일 때만 채운다.
+- `DockPoint`(`P4`·`P7`)는 현재 쓰는 메시지가 없고 Pinky 그래프는 노드 ID만 쓴다. 도킹 메시지를 정할 때 노드 ID로 통일할지 판단한다.
 - 시험용 스키마 `roport-pinky-driving-trial-v1`은 포함하지 않는다.
 - `follow.requested`(고객 추종)는 시나리오 확정 전이라 넣지 않았다.
 
