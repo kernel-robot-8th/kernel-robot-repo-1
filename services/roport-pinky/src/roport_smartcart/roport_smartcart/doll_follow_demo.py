@@ -17,20 +17,12 @@ PAGE = '''<!doctype html><html lang="ko"><meta charset="utf-8">
 img{width:100%;background:#000;border-radius:12px} .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
 .card{background:#1f2937;padding:14px;border-radius:10px}.value{font-size:23px;font-weight:700}
 button{font:inherit;padding:12px 18px;margin:12px 8px 8px 0;border:0;border-radius:8px;cursor:pointer}
-button.stop{background:#ef4444;color:white} button:disabled{opacity:.45;cursor:default}
-button.emergency{position:fixed;right:16px;bottom:16px;z-index:10;box-shadow:0 2px 12px #000}
-#state{font-size:22px;font-weight:700}</style>
+button.stop{background:#ef4444;color:white} #state{font-size:22px;font-weight:700}</style>
 <h1>Pinky 인형 추종 시험</h1><p id="state">연결 중…</p>
-<div class="card"><strong>핑키 초기 준비</strong><p id="setup-message">상태 확인 중…</p>
-<button data-setup onclick="act('robot/check')">① 연결 확인</button>
-<button data-setup onclick="act('robot/sensors')">② 센서·카메라 켜기</button>
-<button data-setup onclick="act('robot/bringup')">③ 브링업 켜기 · 모터 초기화</button>
-<button id="shutdown" class="stop" onclick="act('robot/stop_all')">전체 정지 · 브링업 끄기</button>
-<p id="setup-nodes">—</p><small>핑키를 빈 바닥에 놓고 옆에서 조작하세요. 브링업을 켜도 추종은 시작하지 않습니다.</small></div>
 <img id="camera" alt="핑키 카메라 영상">
-<p><button onclick="act('calibrate')">현재 거리 기준 저장</button>
-<button id="follow-start" onclick="act('start')">따라가기 시작</button>
-<button class="stop emergency" onclick="act('stop')">즉시 정지</button></p>
+<p><button onclick="act('calibrate')">현재 거리 기준 저장 (C)</button>
+<button onclick="act('start')">따라가기 시작</button>
+<button class="stop" onclick="act('stop')">즉시 정지</button></p>
 <p>인형을 현재 위치에서 기준 저장한 뒤 10~15cm 뒤로 옮기고 시작하세요. 한 번에 최대 30초, 전진 최고 2.5cm/s.</p>
 <div class="grid"><div class="card">인형 인식<div class="value" id="target">—</div></div>
 <div class="card">주행 준비<div class="value" id="readiness">—</div></div>
@@ -61,13 +53,6 @@ const reasonText={
 async function act(name){await fetch('/'+name,{method:'POST'});refresh()}
 async function refresh(){try{const s=await(await fetch('/status')).json();
 document.getElementById('state').textContent=(reasonText[s.reason]||s.reason)+(s.armed?' · 주행 중':' · 정지 중');
-document.getElementById('camera').style.opacity=s.camera_live?'1':'.3';
-const p=s.setup||{};
-document.getElementById('setup-message').textContent=p.message||'상태 확인 중…';
-document.querySelectorAll('[data-setup]').forEach(b=>b.disabled=!p.enabled||p.busy||s.armed);
-document.getElementById('shutdown').disabled=!p.enabled;
-document.getElementById('follow-start').disabled=p.busy||s.readiness!=='준비 완료'||s.goal_range==='미설정';
-document.getElementById('setup-nodes').textContent=Object.entries({bringup:'모터·라이다',adc:'초음파',camera:'카메라',guard:'주행 가드'}).map(([k,n])=>n+': '+(p.nodes&&k in p.nodes?(p.nodes[k]?'실행 중':'꺼짐'):'미확인')).join(' / ');
 for(const k of ['target','readiness','guard','sonar','goal_range','lidar','linear','angular'])
 document.getElementById(k).textContent=s[k]??'—';}catch(e){document.getElementById('state').textContent='연결 끊김 · 핑키 전원으로 정지하세요'}}
 setInterval(refresh,300);setInterval(()=>document.getElementById('camera').src='/frame.jpg?t='+Date.now(),500);refresh();
@@ -169,7 +154,6 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--references', required=True)
     parser.add_argument('--target', required=True, choices='ABC')
-    parser.add_argument('--robot-host', help='SSH user@hostname for explicit setup buttons')
     args = parser.parse_args(argv)
 
     import cv2
@@ -180,14 +164,12 @@ def main(argv=None):
     from sensor_msgs.msg import CompressedImage, LaserScan, Range
     from std_msgs.msg import String
     from .doll_recognition import DollRecognizer
-    from .doll_robot_setup import RobotSetup
 
     cv2.setNumThreads(1)
     detector = DollRecognizer(args.references)
     reference_heights = {view: shape[0] for label, view, shape, *_ in detector.references
                          if label == args.target}
     logic = FollowLogic(args.target, reference_heights)
-    robot_setup = RobotSetup(args.robot_host)
     rclpy.init()
     node = rclpy.create_node('smartcart_doll_follow_demo')
     velocity = node.create_publisher(Twist, 'line_nav/cmd_vel', 1)
@@ -265,8 +247,6 @@ def main(argv=None):
 
     def readiness_issue():
         now = time.monotonic()
-        if robot_setup.snapshot()['busy']:
-            return '핑키 준비 작업 중'
         if guard_at is None or now - guard_at >= .3:
             return '주행 가드 상태 지연'
         if not guard.get('boot') or guard.get('blocked') or guard.get('owner') not in ('none', 'line'):
@@ -322,8 +302,7 @@ def main(argv=None):
             origin = self.headers.get('Origin')
             if origin and origin not in ('http://127.0.0.1:8082', 'http://localhost:8082'):
                 self.respond(403, 'text/plain', b'Forbidden')
-            elif self.path in ('/calibrate', '/start', '/stop', '/robot/check',
-                               '/robot/sensors', '/robot/bringup', '/robot/stop_all'):
+            elif self.path in ('/calibrate', '/start', '/stop'):
                 controls.put(self.path[1:])
                 self.respond(202, 'text/plain', b'Accepted')
             else:
@@ -344,15 +323,7 @@ def main(argv=None):
             try:
                 while True:
                     action = controls.get_nowait()
-                    if action.startswith('robot/'):
-                        logic.disarm('OPERATOR STOPPED')
-                        if boot is not None:
-                            send('none')
-                        if action == 'robot/stop_all':
-                            boot = None
-                            logic.goal_height = logic.goal_range = None
-                        robot_setup.submit(action.split('/')[1])
-                    elif action == 'calibrate':
+                    if action == 'calibrate':
                         logic.calibrate(sonar[0] if sonar and now - sonar[1] < .4 else None)
                     elif action == 'stop':
                         logic.disarm('OPERATOR STOPPED')
@@ -381,21 +352,16 @@ def main(argv=None):
                     send('none')
                 web_status = {
                     'reason': logic.reason, 'armed': logic.armed,
-                    'target': ((logic.target['label'] + ' · ' + logic.target['view']
-                                if logic.target else '미검출')
-                               if logic.frame_at is not None and now - logic.frame_at < .4
-                               else '카메라 꺼짐/지연'),
-                    'camera_live': logic.frame_at is not None and now - logic.frame_at < .4,
-                    'guard': (f"{guard.get('owner', '없음')} / {'차단' if guard.get('blocked') else '정상'}"
-                              if guard_at is not None and now - guard_at < .3 else '꺼짐/지연'),
-                    'sonar': f'{sonar[0] * 100:.1f} cm' if sonar and now - sonar[1] < .4 else '꺼짐/지연',
+                    'target': (logic.target['label'] + ' · ' + logic.target['view']
+                               if logic.target else '미검출'),
+                    'guard': f"{guard.get('owner', '없음')} / {'차단' if guard.get('blocked') else '정상'}",
+                    'sonar': f'{sonar[0] * 100:.1f} cm' if sonar else '없음',
                     'goal_range': (f'{logic.goal_range * 100:.1f} cm'
                                    if logic.goal_range is not None else '미설정'),
-                    'lidar': f'{scan[0] * 100:.1f} cm' if scan and now - scan[1] < .4 else '꺼짐/지연',
+                    'lidar': f'{scan[0] * 100:.1f} cm' if scan else '없음',
                     'linear': f'{linear * 100:.1f} cm/s',
                     'angular': f'{angular:.2f} rad/s',
                     'readiness': readiness_issue() or '준비 완료',
-                    'setup': robot_setup.snapshot(),
                 }
             if now >= next_preview:
                 next_preview = now + .2

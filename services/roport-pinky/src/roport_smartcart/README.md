@@ -663,26 +663,11 @@ colcon build --packages-ignore pinky_gz_sim --packages-select roport_smartcart
 source install/setup.bash
 export ROS_DOMAIN_ID=13  # 현장 핑키 설정과 동일하게
 ros2 run roport_smartcart doll_follow_demo \
-  --references /absolute/private/references.json --target A \
-  --robot-host pinky@example.com  # 실제 핑키 SSH 주소로 교체
+  --references /absolute/private/references.json --target A
 ```
 
 PC 브라우저에서 `http://127.0.0.1:8082`를 연다. 카메라·인형 인식·센서 거리·
-주행 가드·속도와 초기 준비 버튼이 표시된다. 먼저 PC에서 `ssh-copy-id pinky@example.com`으로
-공개키를 등록하고 `ssh -o BatchMode=yes pinky@example.com true` 접속을 확인한다.
-비밀번호와 키는 저장소나 웹 입력으로 전달하지 않는다. 핑키에 Jazzy, tmux,
-`~/pinky_pro/install`, `~/roport-baseline/repo/services/roport-pinky/install`,
-기존 `~/roport-baseline/run/two/doll_camera_stream_20261114.py`가 있어야 한다.
-
-**① 연결 확인**은 SSH와 실행 상태만 조회한다. **② 센서·카메라 켜기**는 초음파·카메라·
-주행 가드를 켠다. **③ 브링업 켜기 · 모터 초기화**는 센서 준비 후 모터·라이다를 켠다.
-모터 초기화를 수행하므로 빈 바닥에서 옆에 있는 사람이 눌러야 한다. 이미 실행 중인
-프로세스는 중복 실행하지 않는다. **전체 정지 · 브링업 끄기**는 추종을 정지하고 모터
-브링업부터 종료한 뒤 센서·카메라·가드를 내린다. 다른 터미널에서 시작한 프로세스는
-해당 터미널에서 종료하라는 오류를 표시한다. `--robot-host`가 없으면 초기 준비 버튼은
-비활성화된다. 준비 작업은 별도 스레드에서 실행하므로 즉시 정지 처리를 막지 않는다.
-
-초기 준비 후 넓고 빈 바닥에서 인형 A를 원하는 정차 거리(이번 근접 시험은 약 8cm)에
+주행 가드·속도가 표시된다. 넓고 빈 바닥에서 인형 A를 원하는 정차 거리(이번 근접 시험은 약 8cm)에
 놓고 A 표시를 확인한다. 웹의 **현재 거리 기준 저장**을 누르면 그림 크기와 초음파 거리가
 함께 저장된다. 인형을 10~15cm 멀리 옮긴다.
 **따라가기 시작**을 누르면
