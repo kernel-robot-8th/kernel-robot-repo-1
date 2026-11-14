@@ -37,5 +37,7 @@ npm run dev --workspace @roport/admin -- --port 5174
 npm run dev --workspace @roport/pad -- --port 5175
 ```
 
+카트 패드의 예약번호 확인을 로컬 서비스 서버(`127.0.0.1:8080`, `SERVICE_DEV_CART=true`)에 붙여 보려면 `VITE_PAD_API=server npm run dev --workspace @roport/pad -- --port 5175`로 실행합니다. 개발 서버가 `/cart-api`를 서비스 서버로 넘기며, 카트 ID는 `VITE_PAD_CART_ID`(기본 `pinky3`)입니다. 배포 nginx에는 아직 이 전달이 없어 배포 빌드는 데모로 둡니다.
+
 각 앱의 `dist/`를 별도로 배포할 수 있습니다. 현재 기능은 준비 화면뿐입니다.
 브라우저에 전달하는 환경변수에 비밀키를 넣지 않습니다.

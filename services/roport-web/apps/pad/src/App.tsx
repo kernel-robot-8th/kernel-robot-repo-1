@@ -8,6 +8,7 @@ const FAILURE_TEXT: Record<VerifyFailure | 'ERROR', string> = {
   NOT_FOUND: '예약을 찾을 수 없습니다. 예약번호를 다시 확인해 주세요.',
   WRONG_CART: '이 카트에 배정된 예약이 아닙니다. 안내 직원에게 문의해 주세요.',
   ALREADY_RECEIVED: '이미 수령이 완료된 예약입니다.',
+  NOT_ACTIVE: '지금 수령할 수 없는 예약입니다. 안내 직원에게 문의해 주세요.',
   ERROR: '서버와 통신하지 못했습니다. 잠시 후 다시 시도해 주세요.',
 };
 
@@ -195,7 +196,7 @@ export function App() {
         )}
 
         {step.name === 'items' && (
-          <Split visual={<><StatusIcon name="bag" /><p className="visual-note">포장 <b>{step.pickup.packageCount}개</b>가 카트에 실려 있습니다</p></>}>
+          <Split visual={<><StatusIcon name="bag" /><p className="visual-note">{step.pickup.packageCount > 0 ? <>포장 <b>{step.pickup.packageCount}개</b>가 카트에 실려 있습니다</> : '아래 물품을 카트에서 꺼내 주세요'}</p></>}>
             <h1>{step.pickup.customerName}님의 주문 물품</h1>
             <table className="items">
               <thead><tr><th>상품</th><th>수량</th></tr></thead>
