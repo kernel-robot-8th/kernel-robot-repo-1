@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -168,6 +169,12 @@ def main():
                             process.wait(5)
                 for log in logs:
                     log.close()
+                if output := os.getenv("ROPORT_TEST_OUTPUT_DIR"):
+                    destination = Path(output)
+                    destination.mkdir(parents=True, exist_ok=True)
+                    for pattern in ("*.json", "*.log"):
+                        for source in root.glob(pattern):
+                            shutil.copy2(source, destination / source.name)
 
 
 if __name__ == "__main__":

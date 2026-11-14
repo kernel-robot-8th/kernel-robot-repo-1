@@ -9,6 +9,7 @@ from roport_pinky.trial_nav2 import Nav2Bridge
 
 def test_retry_waits_for_goal_acceptance_and_cancelled_goal_terminal_result():
     bridge = object.__new__(Nav2Bridge)
+    bridge.handle = bridge.result = None
     ack, terminal = Future(), Future()
     bridge.goal_ack, bridge.cancelled_goals = ack, [terminal]
     assert not bridge.quiescent()
@@ -24,6 +25,7 @@ def test_retry_waits_for_goal_acceptance_and_cancelled_goal_terminal_result():
 
 def test_retry_waits_until_completed_goal_acceptance_callback_runs():
     bridge = object.__new__(Nav2Bridge)
+    bridge.handle = bridge.result = None
     ack = Future()
     ack.set_result('accepted')
     bridge.goal_ack, bridge.cancelled_goals = ack, []
@@ -36,6 +38,7 @@ def test_retry_waits_until_completed_goal_acceptance_callback_runs():
 @pytest.mark.parametrize('evidence', ['pending', 'terminal', 'missing', 'exception', 'cancelled'])
 def test_diagnostic_explains_unknown_cancel_result_without_unlocking_retry(evidence):
     bridge = object.__new__(Nav2Bridge)
+    bridge.handle = bridge.result = None
     bridge.lock, bridge.goal_ack = RLock(), None
     bridge.navigation = {'phase': 'failed', 'error_code': 'nav2_goal_failed'}
     terminal = Future()

@@ -395,7 +395,7 @@ class Nav2Bridge:
         if self.navigation:
             self.navigation.update(phase='failed', error_code=code)
         if self.handle is not None:
-            self.handle.cancel_goal_async()
+            self._cancel_handle(self.handle)
 
     def diagnostic(self):
         with self.lock:
@@ -418,7 +418,7 @@ class Nav2Bridge:
         handle.cancel_goal_async()
 
     def quiescent(self):
-        if getattr(self, 'pending_goal_acks', 0):
+        if getattr(self, 'pending_goal_acks', 0) or (self.handle is not None and self.result is None):
             return False
         futures = list(self.cancelled_goals)
         if self.goal_ack is not None:

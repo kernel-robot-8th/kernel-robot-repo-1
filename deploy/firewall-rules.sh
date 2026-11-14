@@ -8,7 +8,7 @@
 set -eu
 : "${LAN_IP:?LAN_IP 필요}" "${ALLOWED_CIDRS:?ALLOWED_CIDRS 필요}"
 [ "$LAN_IP" != REPLACE_ME ] && [ "$ALLOWED_CIDRS" != REPLACE_ME ] || { echo "REPLACE_ME를 실제 값으로 바꾸세요" >&2; exit 1; }
-for port in "${CONTROL_PORT:-8000}" "${AI_PORT:-8001}" "${SERVICE_PORT:-8080}" "${WEB_SERVICE_PORT:-8090}" "${WEB_ADMIN_PORT:-8091}"; do
+for port in "${CONTROL_PORT:-8000}" "${AI_PORT:-8001}" "${SERVICE_PORT:-8080}" "${WEB_SERVICE_PORT:-8090}" "${WEB_ADMIN_PORT:-8091}" "${WEB_PAD_PORT:-8092}"; do
   # DROP을 먼저 넣고, 그 위에 허용 대역 ACCEPT를 넣는다(-I는 맨 앞에 삽입).
   echo "sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctdir ORIGINAL --ctorigdst $LAN_IP --ctorigdstport $port -j DROP"
   echo "$ALLOWED_CIDRS" | tr ',' '\n' | while read -r cidr; do

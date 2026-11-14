@@ -12,6 +12,11 @@ Java 21 / Spring Boot 4.1.2 / Gradle(wrapper). 업무 데이터는 PostgreSQL(JD
 업무 code가 없는 오류는 상태별 일반 code를 씁니다: 404 `NOT_FOUND`, 405 `METHOD_NOT_ALLOWED`, 406 `NOT_ACCEPTABLE`, 409 `CONFLICT`, 415 `UNSUPPORTED_MEDIA_TYPE`, 그 밖의 4xx `BAD_REQUEST`, 5xx `INTERNAL_ERROR`(내부 정보는 응답에 넣지 않고 서버 로그에만 남깁니다).
 예약은 `REQUESTED`(예약 접수됨 – 현장 배정 전)까지만 만듭니다. 카트 확보·관제 수락·수령 완료가 아닙니다. 관제 WSS 연동은 아직 없습니다.
 
+예약 QR·카트 확인(FFT1-178): `POST /api/pickups/{pickupId}/qr-token`은 본인 활성 예약에 새 QR 토큰을 발급하고 이전 토큰을 폐기합니다(원문은 응답에만, DB에는 SHA-256 해시만, 만료 시간 미정).
+`POST /cart-api/verifications`는 QR 토큰 또는 예약번호로 예약을 찾아 `verifications`에 결과를 기록합니다(새 확인 201, 같은 `verificationRequestId` 재전송 200, 다른 내용 409 `IDEMPOTENCY_CONFLICT`, 예약 없음 404 `RESERVATION_NOT_FOUND`). 이미 쓴 요청 ID에 없는 값을 보내면 404보다 409가 우선합니다.
+**확인은 인도 승인이 아닙니다.** 카트 배정 대조(`cartAssignmentChecked=false`)·인도 승인·수령 기록은 관제 연동 후입니다. 예약번호 반복 시도 제한도 아직 없습니다.
+카트 인증도 개발 전용입니다. `X-Cart-Id` 헤더만 확인하며(비밀값 없음) 기본으로 꺼져 있어(모든 `/cart-api/**` 401) 로컬에서만 `SERVICE_DEV_CART=true`로 켭니다.
+
 **인증은 개발 전용입니다.** `login_id`만으로 로그인하는 세션 쿠키이며 비밀번호·Spring Security가 없으므로 공개 배포하지 않습니다.
 로그인은 기본으로 꺼져 있어(모든 `/api/**` 401) 로컬에서만 `SERVICE_DEV_LOGIN=true`로 켭니다.
 CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.

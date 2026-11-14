@@ -25,3 +25,4 @@ services:
     ports:
       - "${LAN_IP:?deploy/.env에 LAN_IP를 설정하세요}:${WEB_SERVICE_PORT:-8090}:8080"
       - "${LAN_IP:?deploy/.env에 LAN_IP를 설정하세요}:${WEB_ADMIN_PORT:-8091}:8081"
+      - "${LAN_IP:?deploy/.env에 LAN_IP를 설정하세요}:${WEB_PAD_PORT:-8092}:8082"
