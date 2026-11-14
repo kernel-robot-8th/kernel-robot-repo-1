@@ -77,7 +77,6 @@ test(`${scenario}/${scope}: trial UI completes real MQTT simulation, reconnects 
       return colors.size;
     });
     expect(previewColors).toBeGreaterThan(20); // Stationary model must not clear to a blank canvas.
-    await page.screenshot({path: testInfo.outputPath('trial-inbound.png'), fullPage: true});
     await page.reload();
     await expect(page.locator('#trial-phase')).toHaveText(firstWait);
     // Keys are not persisted or put in the URL; another viewer sees the same task.
@@ -105,7 +104,6 @@ test(`${scenario}/${scope}: trial UI completes real MQTT simulation, reconnects 
     if (scenario !== 'single') await page.getByRole('button', {name: 'Pinky 03 선택', exact: true}).click();
     await expect(page.locator('#telemetry')).toContainText(scope === 'line-only' ? '마지막 확인 노드' : 'Nav2 완료 응답 위치');
     await expect(page.locator('[data-action="start"]')).toBeDisabled();
-    await page.screenshot({path: testInfo.outputPath('trial-complete.png'), fullPage: true});
     await context.setOffline(true);
     await expect(page.locator('#source')).toContainText('연결 끊김', {timeout: 10000});
     await expect(page.locator('#trial-dummy')).toBeDisabled();
@@ -174,7 +172,6 @@ test(`composer/${source}: edit, validate, persist and execute through shared MQT
     await page.locator('#trial-key').fill(token);
     await page.locator('#scenario-editor > summary').click();
     await expect(page.locator('#scenario-steps > li')).toHaveCount(source === 'segment' ? 1 : 5);
-    await page.screenshot({path:testInfo.outputPath('composer-ready.png'), fullPage:true});
     await page.locator('[data-action=start]').click();
     if (source === 'delivery') {
       await expect(page.locator('#trial-phase')).toHaveText('적재 완료 수동 확인');
@@ -183,7 +180,6 @@ test(`composer/${source}: edit, validate, persist and execute through shared MQT
     }
     await expect(page.locator('#trial-phase')).toHaveText('시험 완료', {timeout:15000});
     await expect(page.locator('#scenario-progress')).not.toContainText('대기');
-    await page.screenshot({path:testInfo.outputPath('composer-complete.png'), fullPage:true});
     expect(errors).toEqual([]);
   } finally {
     lines.close(); child.kill('SIGINT');
@@ -234,7 +230,6 @@ test(`common owner/${selected}: select preset and edit nodes without scenario CL
     const snapshot = await (await page.request.get(`${url}/api/snapshot?mode=trial`)).json();
     expect(snapshot.trial.plan.steps[0].payload.route).toEqual(edited.split(' '));
     await expect(page.locator('[data-action=start]')).toBeEnabled();
-    await page.screenshot({path:testInfo.outputPath('preset-ready.png'), fullPage:true});
     await page.locator('[data-action=start]').click();
     await expect(page.locator('#scenario-preset-load')).toBeDisabled();
     if (selected === 'two') {
