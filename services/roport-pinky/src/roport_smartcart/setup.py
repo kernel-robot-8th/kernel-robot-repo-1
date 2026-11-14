@@ -28,6 +28,8 @@ setup(
                                 'opencv-python==4.11.0.86', 'numpy==1.26.4']},
     entry_points={'console_scripts': ['navigate = roport_smartcart.navigate:main',
                                      'target_preview = roport_smartcart.target_preview:main',
+                                     'doll_recognition = roport_smartcart.doll_recognition:main',
+                                     'doll_follow_demo = roport_smartcart.doll_follow_demo:main',
                                      'sim_sonar = roport_smartcart.sim_sonar:main',
                                      'range_scan = roport_smartcart.range_scan:main',
                                      'sim_obstacles = roport_smartcart.sim_obstacles:main',
