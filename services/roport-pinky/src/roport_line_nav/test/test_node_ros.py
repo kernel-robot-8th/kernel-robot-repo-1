@@ -175,6 +175,8 @@ def test_no_odom_stops(ros):
     '{"cmd": "start", "route": ["N07", "N18"], "start_facing": "S"}',
     '{"cmd": "start", "route": ["N07", "N18"], "start_cross": true, "start_facing": "S",'
     ' "start_offset_cm": 3}',
+    '{"cmd": "back"}', '{"cmd": "back", "to": "n23"}', '{"cmd": "back", "to": 23}',
+    '{"cmd": "speed", "reverse_speed": "slow"}', '{"cmd": "speed", "reverse_speed": true}',
 ])
 def test_parse_command_rejects(text):
     with pytest.raises(ValueError):
@@ -195,6 +197,11 @@ def test_parse_command_ok():
                                                         'move_cm': -2.0})
     assert parse_command('{"cmd": "dock", "node": "N11", "reset": true}') == \
         ('dock', {'node': 'N11', 'reset': True})
+    assert parse_command('{"cmd": "pause"}') == ('pause', {})
+    assert parse_command('{"cmd": "resume"}') == ('resume', {})
+    assert parse_command('{"cmd": "back", "to": "N23"}') == ('back', {'to': 'N23'})
+    assert parse_command('{"cmd": "speed", "reverse_speed": 0.03}') == \
+        ('speed', {'reverse_speed': 0.03})
 
 
 def test_speed_command(ros):
@@ -323,3 +330,52 @@ def test_start_cross_command(ros):
     ros.command({'cmd': 'start', 'route': ROUTE, 'start_cross': True, 'start_facing': 'S'})
     last = _last(ros, 'start')
     assert last['ok'] is False and 'bar' in last['detail']
+
+
+# ---------------------------------------------------------------- 라인 유실 복구(FFT1-163)
+def test_gap_parameters_and_state(tmp_path):
+    h = Harness(tmp_path / 'logs', extra=[Parameter('gap_max_cm', value=5.0),
+                                          Parameter('gap_confirm', value=3),
+                                          Parameter('search_deg', value=15.0),
+                                          Parameter('side_rise_only', value=False),
+                                          Parameter('side_rise_off_samples', value=3)])
+    try:
+        c = h.node.ex.cfg
+        assert (c.gap_max_cm, c.gap_confirm, c.search_deg) == (5.0, 3, 15.0)
+        assert (c.side_rise_only, c.side_rise_off_samples, c.side_rise_tee) == (False, 3, False)
+        h.feed(2)
+        h.wait(lambda: h.states and 'recovery' in h.states[-1])
+        assert h.states[-1]['recovery'] is None
+    finally:
+        h.close()
+
+
+def test_pause_resume_back_commands(ros):
+    """pause → 0 속도·paused, resume → 주행, 정지 확인 뒤 back(출발 노드, 가까우면 odom) → arrived."""
+    ros.feed(3)
+    ros.command({'cmd': 'start', 'route': ROUTE})
+    ros.wait(lambda: ros.node.ex.state == 'follow')
+    ros.feed(2)
+    ros.command({'cmd': 'back', 'to': 'N16'})          # 멈추지 않았으면 거부
+    ros.wait(lambda: ros.states and (ros.states[-1]['last_command'] or {}).get('cmd') == 'back')
+    assert ros.states[-1]['last_command']['ok'] is False and ros.node.ex.state == 'follow'
+    ros.command({'cmd': 'pause'})
+    ros.wait(lambda: ros.node.ex.state == 'paused')
+    ros.feed(10)                                        # odom 이 그대로 → 0.3 s 뒤 정지 확인
+    ros.wait(lambda: ros.states and (ros.states[-1].get('pause') or {}).get('settled'))
+    assert ros.cmds[-1] == (0.0, 0.0)
+    ros.command({'cmd': 'resume'})
+    ros.wait(lambda: ros.node.ex.state == 'follow')
+    ros.feed(2)
+    assert ros.cmds[-1][0] > 0
+    ros.command({'cmd': 'pause'})
+    ros.feed(10)
+    ros.wait(lambda: ros.node.ex.settled)
+    ros.command({'cmd': 'speed', 'reverse_speed': 0.03})
+    ros.wait(lambda: ros.states and ros.states[-1]['speed']['reverse_follow_speed'] == 0.03)
+    assert 'reverse 0.030' in ros.states[-1]['last_command']['detail']
+    ros.command({'cmd': 'back', 'to': 'N16'})
+    ros.wait(lambda: ros.node.ex.state == 'arrived')
+    st = ros.states[-1]
+    assert st['route'] == ['N16'] and st['reverse']['phase'] == 'done'
+    assert st['last_command'] == {'cmd': 'back', 'ok': True, 'detail': 'back to N16'}

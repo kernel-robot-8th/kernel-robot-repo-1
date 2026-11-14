@@ -12,8 +12,11 @@ import yaml
 
 NODE_ID = re.compile(r'^[A-Z][A-Z0-9]{0,7}$')
 MAX_ROUTE = 64
-COMMANDS = ('start', 'stop', 'load_done', 'speed', 'dock')
+COMMANDS = ('start', 'stop', 'load_done', 'speed', 'dock', 'pause', 'resume', 'back')
 SPEED_CAPS = {'base_speed': 0.15, 'rotate_speed': 1.5}   # 형식 검사용(실제 상한은 line_nav 설정)
+# 후진 양보(FFT1-172, 계약 05_reverse_contract.md 3·4절): speed 명령의 reverse_speed 범위 m/s
+REVERSE_SPEED_RANGE = (0.01, 0.03)
+REVERSE_SPEED_DEFAULT = 0.02
 
 # 정밀 도킹(FFT1-112, 계약 01_dock_contract.md 1·2절): 상차(LOAD) 노드별 ① 선 따라 ② 반시계 회전 ③ 직진.
 # 대상 = 경로 끝 동작이 LOAD 인 노드(운영 위치 P4·P7 또는 arrival: load). 지금 그래프 v14 기준.
@@ -108,9 +111,21 @@ def parse_route_command(data):
                     or not 0.0 < v <= cap:
                 raise RouteCommandError(f'{k} must be a number in (0, {cap}]')
             out[k] = float(v)
+        rv = data.get('reverse_speed')
+        if rv is not None:
+            lo, hi = REVERSE_SPEED_RANGE
+            if isinstance(rv, bool) or not isinstance(rv, (int, float)) or not math.isfinite(rv) \
+                    or not lo - 1e-9 <= rv <= hi + 1e-9:
+                raise RouteCommandError(f'reverse_speed must be a number in {lo:g}..{hi:g}')
+            out['reverse_speed'] = float(rv)
         if len(out) == 1:
-            raise RouteCommandError('speed needs base_speed and/or rotate_speed')
+            raise RouteCommandError('speed needs base_speed, rotate_speed and/or reverse_speed')
         return out
+    if cmd == 'back':
+        to = data.get('to')
+        if not isinstance(to, str) or not NODE_ID.match(to):
+            raise RouteCommandError('back needs "to": a node id')
+        return {'cmd': 'back', 'to': to}
     if cmd == 'dock':
         return _parse_dock(data)
     if cmd != 'start':

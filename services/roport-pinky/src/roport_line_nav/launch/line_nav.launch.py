@@ -6,6 +6,7 @@
 #   layout_file:=<roport_airport.yaml>  roport_gz_world 를 설치하지 않았을 때
 #   cmd_guard:=true(기본)  line_nav → line_nav/cmd_vel → cmd_vel_guard → cmd_vel (0.3 s 끊기면 0)
 #   dock_file:=~/roport_dock.yaml(기본)  상차 노드 정밀 도킹 값(FFT1-112), 빈 값이면 파일 안 씀
+#   reverse_follow_speed:=0.02  back 명령 라인 후진 속도(FFT1-172, 0.01~0.03)
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -18,6 +19,7 @@ FLOAT_ARGS = {
     'base_speed': ('0.03', 'm/s line following'),
     'approach_speed': ('0.03', 'm/s near nodes, pass/advance (capped by base_speed)'),
     'approach_lead_cm': ('5.0', 'slow down this many cm before the expected node position'),
+    'post_turn_slow_cm': ('10.0', 'after a node turn, approach_speed for this many cm (0 = off)'),
     'kp': ('1.0', 'rad/s per line error (x speed/gain_ref_speed above gain_ref_speed)'),
     'kd': ('0.05', 'line error rate gain'),
     'gain_ref_speed': ('0.06', 'm/s; kp grows with speed only above this'),
@@ -27,6 +29,13 @@ FLOAT_ARGS = {
     'reverse_speed': ('0.02', 'm/s reverse into P1/P2/P5/P6'),
     'ir_ahead_cm': ('3.0', 'center IR to wheel axle (measured 2026-11-03)'),
     'turn_advance_cm': ('4.2', 'drive after side line seen before rotating'),
+    'gap_max_cm': ('8.0', 'line-gap recovery: max straight drive after losing the line (0 = off)'),
+    'gap_heading_window_cm': ('4.0', 'line-gap recovery: heading from the last N cm on the line'),
+    'search_deg': ('0.0', 'line-gap recovery: in-place search width (0 = off, default)'),
+    'ir_spacing_cm': ('2.0', 'center to side IR (HW spec ~20 mm, not measured)'),
+    'reverse_follow_speed': ('0.02', 'm/s line reverse (back command), 0.01..0.03'),
+    'reverse_wn': ('0.8', 'rad/s line reverse state feedback natural frequency'),
+    'reverse_zeta': ('0.8', 'line reverse state feedback damping'),
 }
 
 

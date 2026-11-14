@@ -21,6 +21,7 @@
 경유 정차: 경로 중간의 가로선 노드(예: P5 → P4 상차 → P7)에서는 그 노드의 도착 동작(상차 대기 등)을 한 뒤
   같은 규칙(이어서 출발)으로 다음 구간을 이어 간다. 경로는 가로선 노드마다 구간 묶음으로 나눠 검사한다.
 속도: set_speed 로 직선·회전 속도를 바꾼다(주행 중에도 다음 샘플부터). 상한은 설정의 max_linear·max_angular.
+회전 직후 감속: 노드에서 회전한 뒤 이어지는 구간은 처음 post_turn_slow_cm(기본 10 cm)까지 approach_speed 이하.
 노드 앞 감속: 직선 추종 중 이동 거리가 예상 노드 위치 - approach_lead_cm(기본 5 cm)를 넘으면, 그리고 노드
   감지 뒤 회전 전 전진·후진은 approach_speed(base_speed 보다 크면 base_speed) 이하로 간다. 출발 위치를 몰라
   예상 위치가 없는 구간은 처음부터 approach_speed. 직진 통과 노드(pass_full_speed)는 감속하지 않는다. 실로봇 d660 0.06 m/s(2026-11-06)에서 노드를
@@ -32,8 +33,36 @@
   a ≠ 0 이면 시계 r° → −a 이동(기본 정지 자세로) → 반시계 90 + turn_min ~ 90 + turn_max 로 진입선 찾기 → 끝·경유.
   도킹 이동은 odom 이 멈춘 뒤(구동 지연으로 남은 움직임을 먼저 흘려보냄) 시작 자세에서 부호 있는 거리로 재고,
   approach_speed 이하·끝으로 갈수록 감속(min_speed 까지)·방향 유지. 거리 초과·시간 초과·멈추지 않음은 오류 정지.
+라인 유실 복구(FFT1-163): 추종 중 IR 3개가 모두 선을 놓치고 아직 다음 노드 감지 창(min_ok) 전이면
+  GAP = 놓치기 전 gap_heading_window_cm 동안의 odom 방향(평균)을 유지해 approach_speed 이하로 직진(최대 gap_max_cm),
+  IR 하나라도 gap_confirm 샘플 연속 선 위면 추종으로 돌아감(PD 이전 오차 지움, 옆 IR 이면 추종 PD 가 조향 —
+  GAP 기능 전에도 IR 하나라도 선 위면 추종했으므로 판정 완화가 아님). 상태 이름은 follow 그대로(recovery 필드).
+  GAP 시간 상한 = 2 + 2·gap_max_cm / min_speed(s), odom 이동 0.1 cm 미만이 lost_timeout 동안 이어지면 정지(진행 없음).
+  gap_max_cm 안에 못 찾으면 기본(search_deg 0)은 바로 정지 'line_lost: gap N cm exceeded'. search_deg > 0 이면
+  SEARCH(구간마다 한 번) = 멈춤 확인 → 놓친 지점까지 후진 → 제자리 좌 search_deg → 우 2·search_deg → 원래 방향으로
+  돌며 가운데 IR 정렬(align_error)을 찾음 → 찾으면 그 자리에서 추종, 못 찾으면 'line_lost: gap/search failed'
+  (2D 시뮬에서 재획득 0건 — 놓친 지점 회전이라 가운데 IR 옆 이동이 약 ±1 cm 뿐, 그래서 기본 끔). 감지 창 안(놓친 곳이 이미 창 안이거나 GAP 이 창에 들어감)에서는
+  같은 방향·속도로 직진하며 그 노드의 기존 판정(가로선 = IR 3개, 옆선·T자 규칙, node_confirm)으로만 노드를 찾고,
+  max_ok·gap_max_cm 를 넘으면 정지('line_lost: gap into <노드> window, node not found'). 창 안에서는 SEARCH 안 함.
+  창 전 GAP·SEARCH 중에는 노드 판정 안 함. 구간 시작 suppress_cm 안, 통과·전진·회전·후진·도킹 이동 중 유실은 예전 그대로.
 교차선 출발(start_cross): IR 3개가 route[0](가로선 노드 아님)을 지나는 선 위, 로봇은 start_facing 을 봄
   → ir_ahead_cm 전진(축을 노드 중심으로) → 첫 구간 방향이 다르면 선 찾기 회전 → 첫 구간(s0 = ir_ahead, gate_early 적용).
+일시정지·이어 가기·라인 후진(FFT1-172, 2D 시뮬만 — 실로봇 미검증):
+  pause = 0 속도·상태 PAUSED(지금 단계·구간·이동 거리·선 방향 기억 유지, 시간 제한 없음). odom 이 멈추면
+  (|v| < 0.003 m/s·|ω| < 0.03 rad/s 가 0.3 s) paused_settled. resume = 멈춘 단계를 그대로 이어 감(타이머는 멈춘 시간만큼 밀림).
+  back(to) = 지나온 노드 to 까지 왔던 길을 되감아 후진(정지 확인 뒤, 회전·GAP·SEARCH·도킹 이동·주차 후진 중 거부).
+  후진 추종 = 상태 피드백. 전진 PD 를 거꾸로 쓰면 IR 이 축 앞(ir_ahead_cm)이라 우반면 영점(+|v|/d)이 생겨 불안정.
+    θ̂ = odom yaw − ψ(선 방향, 지나온 구간의 선 위 샘플로 구함), ŷ = e_cm − d·sin θ̂ (e_cm = 오차 × ir_spacing_cm,
+    + = 선이 센서 오른쪽 = 축이 선 왼쪽), ω = +k_y·ŷ − k_θ·θ̂, k_y = ωₙ²/|v|(cm/s), k_θ = 2ζωₙ.
+    유도: 선 좌표에서 ẏ = v·sin θ, θ̇ = ω, v < 0 → θ̈ + k_θ·θ̇ + k_y·|v|·θ = 0 (k_y, k_θ > 0 이면 안정).
+    구간 시작 suppress_cm 과 지나치는 직진 노드 옆선 근처에서는 ŷ 를 쓰지 않음(옆선이 오차를 치우침, 방향만 유지).
+  목적 노드 판정 = 전진과 같은 판정(가로선·옆선·T자·node_confirm·옆선 켜짐 확인), 창 = 예상 거리 기준 같은 규칙. 판정 즉시 정지.
+  끝 자세 = IR 이 노드 위(전진 도착 감지 자세), 이어서 출발할 때 s0 = half_line_cm.
+  회전했던 노드는 판정 → 축을 노드 중심으로(ir_ahead − half_line 전진) → 그 회전을 반대로(직진 선이 있으면 선 찾기)
+  → 기억한 선 방향(odom)으로 제자리 맞춤(rv_align, 모서리는 이것만으로 되돌림) → 다음 구간. 직진 노드는 멈추지 않고 지나감.
+  출발 노드에서 reverse_short_cm 안이면 판정 대신 odom 거리만큼(센서를 노드 중심으로).
+  상차 대기(LOADING)에서는 도킹 이동을 되돌린 뒤(−b → 시계 r° → −a) 같은 방식. 실패 = reverse_lost·reverse_node_missed·
+  reverse_heading·reverse_timeout(0 속도 한 번, ERROR). 뒤쪽 장애물 감지 없음 — 관제가 후진 길·목적 노드가 빈 것을 확인한 뒤에만.
 """
 
 import math
@@ -42,7 +71,7 @@ from dataclasses import dataclass, replace
 
 from roport_line_nav.dock import DockTable
 from roport_line_nav.graph import (HANDOFF, LEFT, LOAD, PARK, RIGHT, STOP, STRAIGHT, GraphError,
-                                   BACK, STRAIGHT as GO_STRAIGHT, plan_route, turn_of)
+                                   BACK, Leg, STRAIGHT as GO_STRAIGHT, plan_route, turn_of)
 from roport_pinky_line.follower import HARD_MAX_ANGULAR, HARD_MAX_LINEAR
 
 IDLE = 'idle'
@@ -65,6 +94,28 @@ SETTLE_DEG = 0.2          # 회전이 이보다 작은 새 odom 샘플 비교가
 SETTLE_TIMEOUT_S = 1.5    # 0 명령 뒤 이 시간 안에 멈추지 않으면 오류
 MOVE_GAIN = 0.01          # m/s per 남은 cm (3 cm 남으면 0.03)
 MOVE_OVERRUN_CM = 2.0     # 목표보다 이만큼 더 가면(부호 있는 거리) 오류
+GAP_CHORD_MIN_CM = 2.0    # 선 위치 점으로 방향을 잴 최소 기억 거리
+GAP_PROGRESS_CM = 0.1     # GAP 중 이만큼도 못 가고 lost_timeout 이 지나면 정지(진행 없음)
+PAUSED = 'paused'         # 일시정지(FFT1-172): 단계·구간 기억 유지, 0 속도
+REVERSE_FOLLOW_MIN = 0.01  # m/s, 라인 후진 속도 범위(2026-11-12 사용자 결정 0.01~0.03, 기본 0.02)
+REVERSE_FOLLOW_MAX = 0.03
+STILL_V = 0.003           # m/s, 일시정지 정지 확인: 선속 |v| 이 미만
+STILL_W = 0.03            # rad/s, 각속 미만
+STILL_S = 0.3             # s, 이 시간 이어지면 정지로 봄
+# 정지 확인은 메시지 한 쌍의 속도가 아니라 STILL_S 창 안 자세 변화로 본다(2026-11-12 실로봇: 서 있어도 엔코더가
+# 가끔 1틱 튀어 메시지 간 각속이 0.03 rad/s 를 넘음 → 정지 확인이 계속 풀려 back 후보가 비었음).
+# 창 안 허용 변화 = 위 속도 × STILL_S 와 같은 크기(0.003 m/s × 0.3 s ≈ 0.1 cm, 0.03 rad/s × 0.3 s ≈ 0.52°).
+STILL_POS_CM = 0.1
+STILL_YAW_RAD = STILL_W * STILL_S
+# 후진용 선 방향: 구간의 깨끗한(노드 주변 아닌) 선 위 샘플 최근 이 거리. 12 cm 는 IR 불감대(±0.4 cm) 안에서
+# 천천히 흐르는 추종을 선 방향으로 봐 2D 시뮬에서 1.6° 틀림
+PSI_WINDOW_CM = 30.0
+BACK_MOVED_CM = 2.0       # 끝난 뒤 back: 감지(도착) 자세에서 odom 이 이보다 움직였으면 거절(옮겨졌을 수 있음)
+BACK_TURNED_DEG = 5.0     # 끝난 뒤 back: 방향이 이보다 바뀌었으면 거절
+PRE_CENTER_MARGIN_CM = 1.0       # 후진 끝 회전 출발 전 축 맞춤 이동 상한 = ir_ahead − 반폭 + 이 값
+REVERSE_ACQUIRE_MARGIN_CM = 1.5  # 직진 선 없는 노드 되돌린 뒤 선 다시 잡기 여유(센서 → 테이프 거리 + 이 값)
+RV_ALIGN_DEG = 2.0        # 후진 시작 전 odom 방향이 선 방향과 이보다 다르면 제자리로 맞춤
+REVERSE_BLIND_CM = 2.0    # 지나치는 직진 노드 옆선 ± (half_line + 이 값) 에서는 ŷ 를 쓰지 않음
 
 
 @dataclass(frozen=True)
@@ -112,6 +163,13 @@ class NavConfig:
     # 실로그 16건의 진짜 T자 감지는 모두 양쪽이 켜짐(각 1.0~2.8 cm).
     tee_both: bool = True
     tee_window_cm: float = 1.5
+    # 옆선 켜짐 확인(2026-11-09 사용자 결정): 옆선 노드는 그 옆 IR 이 감지 창 시작(min_ok) 뒤에 꺼짐 → 켜짐으로
+    # 바뀐 run 일 때만 인정. 창 전부터 켜져 있던 run(본선 가장자리 타기)은 무시. 꺼짐은 side_rise_off_samples
+    # 연속이어야 run 이 끝난 것으로 봄(깜빡임). d660 0.08 m/s 11-09 21:54 N02→N14: 회전 직후 오른쪽으로 밀려
+    # 왼쪽 IR 이 8.0 cm 부터 본선 가장자리를 계속 밟다가 창(14.8 cm)이 열리자 15.1 cm 오감지(진짜 약 18 cm).
+    side_rise_only: bool = True
+    side_rise_off_samples: int = 2
+    side_rise_tee: bool = False    # T자(tee_both)에도 같은 규칙 — 실로그 재생으로 판단(README)
     reverse_speed: float = 0.02    # m/s
     reverse_max_cm: float = 12.0
     # 노드 앞 감속(2026-11-06 d660: 0.06 m/s 에서 노드를 지나쳐 멈춤, 0.03 m/s 는 완주).
@@ -120,8 +178,28 @@ class NavConfig:
     # 예상 노드 위치 몇 cm 전부터 감속(2026-11-07 사용자: 노드 3~5 cm 전). 실로그 61건의 진짜 감지는 예상 위치
     # -3.4 ~ +2.9 cm → 5 cm 면 모두 감속 뒤 감지, 3 cm 면 일찍 오는 노드(-3.1·-3.4)를 빠른 속도로 만남
     approach_lead_cm: float = 5.0
+    # 노드에서 회전한 직후 구간 처음 이 거리(cm)는 approach_speed 이하. 0 = 끔.
+    # 근거(2026-11-10 결정): 회전 뒤 선 옆으로 0.5~1 cm 밀린 채 0.06~0.08로 가면 옆 IR이 본선 가장자리를
+    # 11.5~15.9 cm까지 밟아 감지 창과 겹침(오감지). 0.03 기록은 가장자리 타기가 8.5 cm 전에 끝남.
+    post_turn_slow_cm: float = 10.0
     # 직진 통과 노드(N15·N23 등)는 다가갈 때·지날 때 감속하지 않음(2026-11-07 사용자)
     pass_full_speed: bool = True
+    # 라인 유실 복구(FFT1-163, 시뮬만 확인 — 실로봇 미검증). gap_max_cm 0 = 끔(예전 동작)
+    gap_max_cm: float = 8.0             # 놓친 뒤 방향 유지 직진 최대 거리
+    gap_heading_window_cm: float = 4.0  # 놓치기 전 이 거리 동안의 odom 방향 평균을 유지
+    gap_confirm: int = 2                # IR 하나라도 이 샘플 수 연속 선 위면 추종 복귀(창 안은 노드 판정 먼저)
+    # SEARCH 제자리 회전 폭(좌 → 우 2배 → 원래 방향). 0 = 끔(기본): GAP 이 넘치면 후진·회전 없이 정지.
+    # 2D 시뮬에서 SEARCH 재획득 0건(2026-11-09 검토 M1)이라 기본 끔
+    search_deg: float = 0.0
+    # 가운데 ↔ 옆 IR 간격(GAP 방향용 선 위치 추정). Pinky Pro HW Spec 약 20 mm, 실측 아님
+    ir_spacing_cm: float = 2.0
+    # 라인 후진(FFT1-172). 주차 후진 reverse_speed(P5·P6 0.02)와 따로. 실로봇 미검증
+    reverse_follow_speed: float = 0.02   # m/s, REVERSE_FOLLOW_MIN ~ min(REVERSE_FOLLOW_MAX, max_linear)
+    reverse_wn: float = 0.8              # rad/s, 후진 상태 피드백 고유진동수 ωₙ
+    reverse_zeta: float = 0.8            # 감쇠비 ζ
+    reverse_lost_cm: float = 2.0         # IR 3개 모두 놓침이 이 거리 이어지면 reverse_lost
+    reverse_max_heading_deg: float = 15.0  # |θ̂| 가 넘으면 reverse_heading
+    reverse_short_cm: float = 6.0        # IR 이 출발 노드에서 이 거리 미만이면 노드 판정 대신 odom 거리 후진
 
     def __post_init__(self):
         if not 0.0 < self.max_linear <= HARD_MAX_LINEAR:
@@ -139,6 +217,8 @@ class NavConfig:
             raise ValueError(f'need min_speed <= approach_speed <= {HARD_MAX_LINEAR}')
         if not (math.isfinite(self.approach_lead_cm) and 0.0 <= self.approach_lead_cm <= 50.0):
             raise ValueError('need 0 <= approach_lead_cm <= 50')
+        if not (math.isfinite(self.post_turn_slow_cm) and 0.0 <= self.post_turn_slow_cm <= 50.0):
+            raise ValueError('need 0 <= post_turn_slow_cm <= 50')
         if not 0.0 < self.rotate_min_speed <= self.rotate_speed <= self.max_angular:
             raise ValueError('need 0 < rotate_min_speed <= rotate_speed <= max_angular')
         if not (math.isfinite(self.gate_early_cm) and 0.0 <= self.gate_early_cm <= 50.0):
@@ -157,6 +237,34 @@ class NavConfig:
             raise ValueError('need kp > 0, kd >= 0')
         if not (math.isfinite(self.tee_window_cm) and 0.0 < self.tee_window_cm <= 5.0):
             raise ValueError('need 0 < tee_window_cm <= 5')
+        if not (math.isfinite(self.gap_max_cm) and 0.0 <= self.gap_max_cm <= 15.0):
+            raise ValueError('need 0 <= gap_max_cm <= 15')
+        if not (math.isfinite(self.gap_heading_window_cm)
+                and 0.5 <= self.gap_heading_window_cm <= 20.0):
+            raise ValueError('need 0.5 <= gap_heading_window_cm <= 20')
+        if not (math.isfinite(self.search_deg) and 0.0 <= self.search_deg <= 45.0):
+            raise ValueError('need 0 <= search_deg <= 45')
+        if not 1 <= self.side_rise_off_samples <= 10:
+            raise ValueError('need 1 <= side_rise_off_samples <= 10')
+        if not (math.isfinite(self.ir_spacing_cm) and 0.5 <= self.ir_spacing_cm <= 5.0):
+            raise ValueError('need 0.5 <= ir_spacing_cm <= 5')
+        if not (math.isfinite(self.reverse_follow_speed) and REVERSE_FOLLOW_MIN
+                <= self.reverse_follow_speed <= min(REVERSE_FOLLOW_MAX, self.max_linear)):
+            raise ValueError(f'need {REVERSE_FOLLOW_MIN} <= reverse_follow_speed <= '
+                             f'min({REVERSE_FOLLOW_MAX}, max_linear)')
+        if not (math.isfinite(self.reverse_wn) and 0.2 <= self.reverse_wn <= 2.0):
+            raise ValueError('need 0.2 <= reverse_wn <= 2.0')
+        if not (math.isfinite(self.reverse_zeta) and 0.3 <= self.reverse_zeta <= 1.5):
+            raise ValueError('need 0.3 <= reverse_zeta <= 1.5')
+        if not (math.isfinite(self.reverse_lost_cm) and 0.5 <= self.reverse_lost_cm <= 5.0):
+            raise ValueError('need 0.5 <= reverse_lost_cm <= 5')
+        if not (math.isfinite(self.reverse_max_heading_deg)
+                and 5.0 <= self.reverse_max_heading_deg <= 30.0):
+            raise ValueError('need 5 <= reverse_max_heading_deg <= 30')
+        if not (math.isfinite(self.reverse_short_cm) and 0.0 <= self.reverse_short_cm <= 15.0):
+            raise ValueError('need 0 <= reverse_short_cm <= 15')
+        if self.gap_confirm < 1:
+            raise ValueError('need gap_confirm >= 1')
         if self.node_confirm < 1 or self.reverse_max_cm <= 0 or self.lost_timeout <= 0:
             raise ValueError('node_confirm >= 1, reverse_max_cm > 0, lost_timeout > 0')
 
@@ -182,6 +290,10 @@ class RouteExecutor:
         self.dock = dock if dock is not None else DockTable(graph)
         self._dock_phase = None  # 상차 도착 동작 중 어디인지(표시용): a·r·b·load·-b·unr·-a·back·back_a
         self._dock_disp = (0.0, 0.0)   # 표시용 도킹 이동 (접근 방향 cm, 새 방향 cm)
+        self._gap = None          # GAP 중: {'d', 'yaw', 'pose', 'hits'}
+        self._recovery = None     # SEARCH 중: {'d', 'window', 'yaw'}
+        self._searched = False    # 이 구간에서 SEARCH 를 이미 했는지(구간마다 한 번)
+        self._yaw_hist = deque()  # 추종 중 (이동 거리, odom yaw) — GAP 방향
         self.state = IDLE
         self.reason = ''
         self.route = []
@@ -201,9 +313,27 @@ class RouteExecutor:
         self._leg_s0 = 0.0       # 구간 시작 때 출발 노드 → 센서 거리(표시용 위치 추정)
         self._progress = 0.0     # 현재 구간 진행률 0~1 (정지·오류 뒤에도 마지막 값 유지)
         self._seg_ends = set()   # 경유 정차 구간 묶음의 끝 Leg 번호
-        self._end = None         # 직전 경로가 끝난 곳 {'node', 'facing', 's0'} (이어서 출발용)
+        self._end = None         # 직전 경로가 끝난 곳 {'node', 'facing', 's0', 'pose'} (이어서 출발용)
+        self._base = 0           # 이어 붙인 직전 경로 구간 수(legs[:_base] = 지나온 길, legs[_base] = 이번 첫 구간)
         self._expected = None    # 지금 구간의 예상 노드 위치(센서 이동 거리 cm). 모르면 None
+        self._slow_until = 0.0   # 이 구간에서 이 이동 거리(cm)까지 감속(회전 직후)
         self._pre = None         # 출발 전 제자리 회전의 시작 방향(도, 표시용)
+        # 일시정지·라인 후진(FFT1-172)
+        self._paused_from = None  # PAUSED 직전 상태
+        self._pause_t0 = 0.0
+        self._pause_noted = False  # paused_settled 이벤트를 남겼는지
+        self._still_last = None   # 정지 확인: (시각, 자세)
+        self._still_since = None  # 멈춘 상태가 시작된 시각
+        self._still_hist = deque()  # 정지 확인 창: (시각, 자세), 최근 STILL_S 남짓
+        self._back = None         # 후진 진행·결과 표시 {'to', 'phase', 'leg', ...}
+        self._leg_ref = 0.0       # 구간 시작 때 _odo (구간 위치 = _leg_s0 + _odo − _leg_ref)
+        self._leg_guess = True    # 구간 시작 위치가 가정값인지
+        self._leg_begun = -1      # begin_leg 를 한 구간 번호
+        self._leg_psi = {}        # 구간 번호 → 선 방향(odom yaw, rad)
+        self._map_off = None      # odom yaw − 지도 방향(마지막으로 구한 구간 기준)
+        self._arrive_info = None  # 지금 구간 끝 노드 감지 때 {'index', 'pos', 'pose'}
+        self._psi_hist = deque()  # 이 구간의 깨끗한 선 위치 점 (d, x, y)
+        self._rv_det = None       # 후진 중 마지막 노드 판정 때 odom 자세
         self._reset_primitive()
 
     # ------------------------------------------------------------ 명령
@@ -219,23 +349,156 @@ class RouteExecutor:
             self._check_cross(str(route[0]), start_facing, start_offset_cm)
         elif start_facing is not None:
             raise GraphError('start_facing is only for start_cross')
-        self.route = [str(r) for r in route]
+        else:
+            self._check_pre_center(legs[0])
+        route = [str(r) for r in route]
+        # 끝난 뒤 odom 이 2 cm·5° 넘게 바뀌었거나 odom 을 모르면 끝 기억(s0·gate_early·pre_center·이어 붙이기)을 버리고
+        # 손으로 놓은 출발과 같게(2026-11-12 결정 1). 회전 출발 거절(R1, 위 _check_pre_center)은 그대로
+        dropped = None
+        if self._end is not None and self._end_moved() is not False:
+            dropped = self._end['node']
+            self._end = None
+        # 끝 기억 노드에서 이어 출발: 직전 경로의 지나온 길을 앞에 붙여 back 이 그 노드들까지 되감을 수 있게(FFT1-172 후속)
+        chain = None if start_cross or start_offset_cm is not None else self._chain_prefix(legs[0])
+        base, psi, map_off = 0, {}, None
+        if chain is not None:
+            p_route, p_legs, p_ends, psi = chain
+            base = len(p_legs)
+            legs = p_legs + legs
+            seg_ends = p_ends | {base + e for e in seg_ends}
+            map_off = self._map_off       # 끝난 뒤 옮겨지지 않았으므로(_chain_ok) odom − 지도 차이 그대로
+            self.route = p_route + route[1:]
+        else:
+            self.route = route
         self.legs = legs
         self._seg_ends = seg_ends
-        self.index = 0
+        self.index = base
+        self._base = base
         self.reason = ''
         self._loaded = False
         self._steps.clear()
         self._pre = None
+        self._paused_from = None
+        self._back = None
+        self._leg_psi = psi
+        self._map_off = map_off
+        self._arrive_info = None
+        self._leg_begun = -1
         self.route_seq0 = self.event_seq
-        self._log('start', ' → '.join(self.route))
+        self._log('start', ' → '.join(route))
+        if dropped is not None:
+            self._log('end_dropped', f'{dropped}: moved or odom unknown since the end')
+        if chain is not None:
+            self._log('chain', ' → '.join(chain[0]))
         self._dock_phase = None
         end = self._end
         self._end = None
         if start_cross:
-            self._depart_cross(legs[0], start_facing)
+            self._depart_cross(legs[base], start_facing)
             return
-        self._depart(legs[0], end, start_offset_cm)
+        self._depart(legs[base], end, start_offset_cm)
+
+    def _end_moved(self):
+        """끝 기억 자세(_end['pose'])에서 odom 이 BACK_MOVED_CM 또는 BACK_TURNED_DEG 넘게 바뀌었는지. 모르면 None."""
+        end = self._end
+        ref = None if end is None else end.get('pose')
+        pose = self._still_last[1] if self._still_last is not None else None   # odom 끊김 = 모름
+        if ref is None or pose is None:
+            return None
+        moved = math.hypot(pose[0] - ref[0], pose[1] - ref[1])
+        turned = abs(_wrap(pose[2] - ref[2]))
+        return moved > BACK_MOVED_CM or turned > math.radians(BACK_TURNED_DEG)
+
+    def _chain_ok(self):
+        """직전 경로를 이어 붙일 수 있는 끝 기억인지(부작용 없음).
+
+        ARRIVED 이고(끝난 뒤 stop 이면 _end 가 없음) 끝 노드가 가로선 정차 노드가 아니며(= 라인 후진으로 끝남, 경유 정차는
+        되감기가 넘지 않음) 그 노드로 들어온 구간이 통과·회전 구간이고, 끝난 자세에서 2 cm·5° 안일 때만.
+        """
+        end = self._end
+        if end is None or self.state != ARRIVED or not self.legs:
+            return False
+        if len(self.route) != len(self.legs) + 1 or self.route[-1] != end['node']:
+            return False
+        if self.graph.nodes[end['node']].bar or self.legs[-1].to != end['node']:
+            return False
+        if self.legs[-1].action not in (STRAIGHT, LEFT, RIGHT):
+            return False
+        return self._end_moved() is False
+
+    def _chain_prefix(self, leg0):
+        """이어 붙일 직전 경로. → (route, legs, 경유 정차 끝 번호, 선 방향 기억) 또는 None(부작용 없음).
+
+        이음 노드에서의 회전 = (직전 경로가 그 노드로 들어온 방향 → 새 첫 구간 방향). U턴이면 붙이지 않음.
+        """
+        if not self._chain_ok() or leg0.frm != self._end['node']:
+            return None
+        last = self.legs[-1]
+        turn = turn_of(last.heading, leg0.heading)
+        if turn not in (GO_STRAIGHT, LEFT, RIGHT):
+            return None
+        n = len(self.legs)
+        legs = self.legs[:-1] + [replace(last, action=turn)]
+        ends = {k for k in self._seg_ends if k < n - 1}
+        psi = {k: v for k, v in self._leg_psi.items() if k < n}
+        return list(self.route), legs, ends, psi
+
+    def _shown_base(self):
+        """상태 보고의 route·index 기준. 이어 붙인 앞부분은 back 을 시작하기 전까지 보고하지 않음(명령한 경로 그대로)."""
+        return 0 if self._back is not None else self._base
+
+    @property
+    def route_shown(self):
+        """상태에 보고하는 경로(명령한 경로, back 뒤에는 이어 붙인 앞부분 포함)."""
+        return self.route[self._shown_base():]
+
+    def _end_dict(self):
+        """상태 보고 end: {node, facing, moved, passed}. passed = 이 노드에서 이어 출발하면 붙는 지나온 노드
+        (경로 순서, 마지막 경유 정차 노드까지 — back 이 넘지 않는 곳). 붙일 수 없으면 []. U턴 출발이면 붙이지 않음."""
+        e = self._end
+        if e is None:
+            return None
+        passed = []
+        if self._chain_ok():
+            n = len(self.legs)
+            for k in range(n - 1, -1, -1):
+                if k < n - 1 and k in self._seg_ends:
+                    break
+                passed.append(self.legs[k].frm)
+            passed.reverse()
+        return {'node': e['node'], 'facing': e['facing'], 'moved': self._end_moved(),
+                'passed': passed}
+
+    def _check_pre_center(self, leg):
+        """후진 끝 기억에서 좌·우 회전 출발(pre_center)을 쓸 수 있는지. 아니면 기억을 버리고 GraphError(움직이지 않음).
+
+        back 과 같은 기준: 후진 도착 자세에서 odom 이 BACK_MOVED_CM·BACK_TURNED_DEG 안. 이동 거리(노드 중심까지
+        방향 투영)는 ir_ahead − 반폭 + PRE_CENTER_MARGIN_CM 이하.
+        """
+        end = self._end
+        if end is None or end.get('center') is None or end['node'] != leg.frm \
+                or turn_of(end['facing'], leg.heading) not in (LEFT, RIGHT):
+            return
+        c = self.cfg
+        pose = self._still_last[1] if self._still_last is not None else self._pose
+        ref = end.get('pose')
+        why = None
+        if pose is None or ref is None:
+            why = 'odom unknown'
+        else:
+            moved = math.hypot(pose[0] - ref[0], pose[1] - ref[1])
+            turned = abs(_wrap(pose[2] - ref[2]))
+            cx, cy = end['center']
+            cm = (cx - pose[0]) * math.cos(pose[2]) + (cy - pose[1]) * math.sin(pose[2])
+            limit = c.ir_ahead_cm - c.half_line_cm + PRE_CENTER_MARGIN_CM
+            if moved > BACK_MOVED_CM or turned > math.radians(BACK_TURNED_DEG):
+                why = f'moved {moved:.1f} cm / {math.degrees(turned):.1f} deg since reverse arrival'
+            elif abs(cm) > limit:
+                why = f'center move {cm:+.1f} cm exceeds {limit:.1f} cm'
+        if why is not None:
+            self._end = None
+            raise GraphError(f'start rejected: {why}; place the robot and stop, then start again')
+        self._update_odom(pose)            # 끝난 동안 쌓지 않은 odom 을 첫 이동에 섞지 않게
 
     def _check_cross(self, nid, facing, offset):
         if facing not in FACINGS:
@@ -264,18 +527,27 @@ class RouteExecutor:
         self._steps.append(('begin', c.ir_ahead_cm))
         self._next_step()
 
-    def set_speed(self, base_speed=None, rotate_speed=None):
-        """직선(m/s)·회전(rad/s) 속도. 범위 밖이면 ValueError(그대로 유지). → 적용된 (직선, 회전)."""
+    def set_speed(self, base_speed=None, rotate_speed=None, reverse_speed=None):
+        """직선(m/s)·회전(rad/s)·라인 후진(m/s) 속도. 범위 밖이면 ValueError(그대로 유지).
+
+        → 적용된 (직선, 회전). reverse_speed 는 라인 후진(reverse_follow_speed)이고 주차 후진(reverse_speed
+        설정, P5·P6)은 바꾸지 않는다. 범위 = REVERSE_FOLLOW_MIN ~ min(REVERSE_FOLLOW_MAX, max_linear).
+        """
         c = self.cfg
         base = c.base_speed if base_speed is None else float(base_speed)
         rot = c.rotate_speed if rotate_speed is None else float(rotate_speed)
+        rv = c.reverse_follow_speed if reverse_speed is None else float(reverse_speed)
         if not (math.isfinite(base) and c.min_speed <= base <= c.max_linear):
             raise ValueError(f'base_speed must be in {c.min_speed}..{c.max_linear} m/s')
         if not (math.isfinite(rot) and c.rotate_min_speed <= rot <= c.max_angular):
             raise ValueError(
                 f'rotate_speed must be in {c.rotate_min_speed}..{c.max_angular} rad/s')
-        self.cfg = replace(c, base_speed=base, rotate_speed=rot)
-        self._log('speed', f'{base:.3f} m/s, {rot:.2f} rad/s')
+        rv_max = min(REVERSE_FOLLOW_MAX, c.max_linear)
+        if not (math.isfinite(rv) and REVERSE_FOLLOW_MIN <= rv <= rv_max):
+            raise ValueError(f'reverse_speed must be in {REVERSE_FOLLOW_MIN}..{rv_max} m/s')
+        self.cfg = replace(c, base_speed=base, rotate_speed=rot, reverse_follow_speed=rv)
+        self._log('speed', f'{base:.3f} m/s, {rot:.2f} rad/s'
+                  + ('' if reverse_speed is None else f', reverse {rv:.3f} m/s'))
         return base, rot
 
     def set_dock(self, node, advance_cm, rotate_deg, move_cm):
@@ -324,6 +596,13 @@ class RouteExecutor:
         direction, lo, hi = pre
         self._log('pre_rotate', f'{facing} → {leg.heading}')
         self._pre = self._HEADING_DEG[facing]
+        if end is not None and end.get('center') is not None \
+                and turn_of(facing, leg.heading) in (LEFT, RIGHT):
+            # 라인 후진으로 끝난 자세(축이 노드 중심 약 2 cm 뒤)에서 좌·우 회전 출발: 회전 전에 축을 노드 중심으로
+            # (전진 도착의 turn_advance 와 같은 역할). 축이 중심이므로 첫 구간 센서 위치 = ir_ahead
+            self._log('pre_center', f'{leg.frm}')
+            self._steps.append((ADVANCE, 0.0, 'rv_pre', end['center']))
+            s0 = self.cfg.ir_ahead_cm
         self._steps.extend([(ROTATE, direction, lo, hi, True), ('begin', s0)])
         self._next_step()
 
@@ -364,6 +643,227 @@ class RouteExecutor:
             return
         self._finish(ERROR, reason)
 
+    # ------------------------------------------------------------ 일시정지·라인 후진(FFT1-172)
+    def pause(self):
+        """주행 중 일시정지: 0 속도, 지금 단계·구간·이동 거리 기억 유지. 끝난 뒤면 ValueError. → 결과 문자열."""
+        if self.state == PAUSED:
+            return 'already paused'
+        if self.state in TERMINAL:
+            raise ValueError(f'pause rejected: not driving ({self.state})')
+        prev = self.state
+        leg = self.legs[self.index]
+        self._paused_from = prev
+        self._pause_t0 = self._now
+        self._pause_noted = False
+        self.state = PAUSED
+        self._log('pause', f'{prev} on {leg.frm}→{leg.to} at {self._odo - self._ref_odo:.1f} cm')
+        return f'paused ({prev})'
+
+    def resume(self):
+        """PAUSED 에서만: 멈춘 단계를 그대로 이어 감(감지 창·누적 거리 그대로, 타이머는 멈춘 시간만큼 밀림)."""
+        if self.state != PAUSED:
+            raise ValueError(f'resume rejected: not paused ({self.state})')
+        dt = max(0.0, self._now - self._pause_t0)
+        self._shift_time(dt)
+        self.state = self._paused_from
+        self._paused_from = None
+        self._prev_error = None
+        self._prev_t = None
+        self._hits = 0
+        self._log('resume', f'{self.state} after {dt:.1f} s')
+        return f'resumed ({self.state})'
+
+    @property
+    def settled(self):
+        """odom 이 멈춤(|v| < STILL_V, |ω| < STILL_W 가 STILL_S 이어짐)."""
+        return (self._still_since is not None and self._still_last is not None
+                and self._still_last[0] - self._still_since >= STILL_S - 1e-9)
+
+    def back(self, to):
+        """지나온 노드 to 까지 라인 후진. 거절이면 ValueError(움직이지 않음). → 결과 문자열.
+
+        받는 때: PAUSED(정지 확인 뒤, 직선 추종·통과·회전 전 전진·상차 대기에서 멈춤), 정지 확인 뒤의 LOADING,
+        가로선 정지(STOP)로 끝난 ARRIVED(끝난 뒤 stop 으로 기억을 지우지 않았고, 감지 자세에서 2 cm·5° 안).
+        HANDOFF(N12, Nav2 소유)·상차/주차 뒤 ARRIVED 는 거절.
+        """
+        to = str(to)
+        src, pose = self._back_source()
+        plan, j = self._back_plan(to, src, pose)
+        if self.state in TERMINAL:
+            self._update_odom(pose)       # 끝난 뒤에는 odom 을 안 쌓았으므로 최신 자세로
+        i = self.index
+        leg_i = self.legs[i]
+        self._back = {'to': to, 'phase': 'undo_dock' if src == LOADING else 'start', 'from': src,
+                      'leg': [self.legs[j].frm, leg_i.to], 'est': None}
+        self._paused_from = None
+        self._end = None
+        self._steps.clear()
+        self._steps.extend(plan)
+        self._log('back', f'{src} {leg_i.frm}→{leg_i.to} → {to} '
+                  f'({sum(1 for s in plan if s[0] == "rv_line")} reverse stretch)')
+        self._next_step()
+        return f'back to {to}'
+
+    def back_targets(self):
+        """지금 back 으로 받을 수 있는 노드(최근 지난 순). 받을 수 없으면 []."""
+        try:
+            src, pose = self._back_source()
+        except ValueError:
+            return []
+        out = []
+        for k in range(self.index, -1, -1):
+            if k < self.index and k in self._seg_ends:
+                break
+            nid = self.legs[k].frm
+            if nid in out:
+                continue
+            try:
+                self._back_plan(nid, src, pose)
+            except ValueError:
+                continue
+            out.append(nid)
+        return out
+
+    def back_why(self):
+        """back 후보가 없을 때 그 이유(화면 표시용). 후보가 있거나 일시정지·도착·상차 대기가 아니면 None."""
+        if self.state not in (PAUSED, LOADING, ARRIVED):
+            return None
+        try:
+            src, pose = self._back_source()
+        except ValueError as e:
+            return str(e)
+        if self.back_targets():
+            return None
+        for k in range(self.index, -1, -1):
+            try:
+                self._back_plan(self.legs[k].frm, src, pose)
+            except ValueError as e:
+                return str(e)
+        return 'back rejected: no passed node'
+
+    def _back_source(self):
+        """back 을 받을 수 있는 상태인지 검사. → (시작 상태, 지금 odom 자세). 아니면 ValueError(부작용 없음)."""
+        st = self.state
+        if self._back is not None:
+            raise ValueError('back rejected: back already done or in progress '
+                             '(resume/stop, or start a new route)')
+        if st == PAUSED:
+            src = self._paused_from
+        elif st in (LOADING, ARRIVED):
+            src = st
+        elif st == HANDOFF_STATE:
+            raise ValueError('back rejected: after handoff the robot belongs to Nav2')
+        else:
+            raise ValueError(f'back rejected: needs paused, loading or arrived ({st})')
+        if src == ROTATE:
+            raise ValueError('back rejected: paused while rotating (resume or stop)')
+        if self._gap is not None or self._recovery is not None:
+            raise ValueError('back rejected: paused in line-gap recovery (resume or stop)')
+        if src == ADVANCE and self._prim.get('signed'):
+            raise ValueError('back rejected: paused in a dock move (resume or stop)')
+        if src == REVERSE:
+            raise ValueError('back rejected: paused in park reverse (resume or stop)')
+        if self._pre is not None:
+            raise ValueError('back rejected: paused before the first leg (start turn)')
+        if not self.legs:
+            raise ValueError('back rejected: no route')
+        if not self.settled:
+            raise ValueError('back rejected: robot still moving (wait for paused_settled)')
+        pose = self._still_last[1] if st in TERMINAL else self._pose
+        i = self.index
+        if src == ARRIVED:
+            leg_i = self.legs[i]
+            if leg_i.action != STOP:
+                raise ValueError(f'back rejected: after {leg_i.action} the robot faces away '
+                                 'from the route; start a route instead')
+            if self._end is None:
+                raise ValueError('back rejected: position forgotten (stopped after arrival)')
+            info = self._arrive_info
+            if info is None or info['index'] != i:
+                raise ValueError('back rejected: arrival position unknown')
+            ax, ay, ayaw = info['pose']
+            moved = math.hypot(pose[0] - ax, pose[1] - ay)
+            turned = abs(_wrap(pose[2] - ayaw))
+            if moved > BACK_MOVED_CM or turned > math.radians(BACK_TURNED_DEG):
+                raise ValueError(f'back rejected: moved {moved:.1f} cm / '
+                                 f'{math.degrees(turned):.1f} deg since arrival')
+        elif src in (FOLLOW, PASS, ADVANCE) and self._leg_begun != i:
+            raise ValueError('back rejected: leg not started')
+        return src, pose
+
+    def _back_plan(self, to, src, pose):
+        """되감기 단계 목록(부작용 없음). → (단계, 목적 구간 번호 j). 못 하면 ValueError."""
+        c = self.cfg
+        i = self.index
+        leg_i = self.legs[i]
+        j = None
+        for k in range(i, -1, -1):
+            if k < i and k in self._seg_ends:     # 경유 정차(상차·주차)를 거꾸로 지나지 않음
+                break
+            if self.legs[k].frm == to:
+                j = k
+                break
+        if j is None:
+            raise ValueError(f'back rejected: {to} is not a node passed on this route '
+                             '(since the last stop)')
+        if src in (FOLLOW, PASS, ADVANCE):
+            pos = self._leg_pos()
+        elif src == ARRIVED:
+            pos = self._arrival_pos(i, pose)
+        else:
+            pos = None                          # LOADING: 도킹 되돌림 뒤에 잰다
+        plan = []
+        if src == LOADING:
+            plan += self._undo_dock_steps(leg_i)
+        k, first, acquire = i, True, 0.0
+        while True:
+            k0, extra = k, 0.0
+            while k > j and self.legs[k - 1].action == STRAIGHT:   # 직진 노드는 멈추지 않고 지나감
+                extra += self.legs[k - 1].length
+                k -= 1
+            marks, cum = [], 0.0       # 지나치는 노드(직진 노드·출발 구간 끝)의 위치: 이 구간 목표 노드에서 cm
+            for m in range(k, k0 + 1):
+                cum += self.legs[m].length
+                marks.append(cum)
+            final = k == j
+            pseudo = self._reverse_target(k)
+            if pseudo is None:
+                raise ValueError(f'back rejected: {self.legs[k].frm} has no line to detect '
+                                 'when reversing')
+            psi = self._psi_of(k0)
+            short = pos is not None and pos + extra < c.reverse_short_cm
+            if psi is None and not short:
+                raise ValueError(f'back rejected: line direction of {self.legs[k0].frm}→'
+                                 f'{self.legs[k0].to} unknown')
+            if not short:
+                plan.append(('rv_align', psi))
+            plan.append(('rv_line', {
+                'k0': k0, 'k': k, 'node': self.legs[k].frm, 'pos': pos, 'extra': extra,
+                'marks': marks, 'guess': self._leg_guess if first else False, 'psi': psi,
+                'final': final, 'pseudo': pseudo, 'arrival': i if pos is None else None,
+                'acquire_cm': acquire}))
+            if final:
+                break
+            t = self.legs[k - 1]                 # 이 노드에서 돌았던 회전을 반대로
+            node = t.to
+            direction = -1.0 if t.action == LEFT else 1.0
+            ahead = any(self.graph.heading(node, o) == t.heading
+                        for o in self.graph.nodes[node].links)
+            # 직진 방향 선이 있으면 선 찾기 회전. 이어서 rv_align 이 지나온 구간의 선 방향(odom)으로 맞춤
+            # (선 찾기는 70~93° 에서 끝날 수 있어 — 2D 시뮬 76° — 그대로 후진하면 14° 비스듬).
+            # 직진 선이 없으면(모서리·분기에서 들어와 돈 T자) rv_align 이 선 방향까지 돌리고, 센서가 테이프 끝 너머
+            # (ir_ahead − 반폭 ≈ 1.8 cm)에서 시작하므로 다음 구간 처음 acquire_cm 은 방향만 유지하며 선을 다시 잡음
+            if ahead:
+                plan.append((ROTATE, direction, c.turn_min_deg, c.turn_max_deg, True, 'rv_unturn'))
+                acquire = 0.0
+            else:
+                acquire = c.ir_ahead_cm - c.half_line_cm + REVERSE_ACQUIRE_MARGIN_CM
+            pos = t.length + c.ir_ahead_cm       # 축이 노드 중심 → 센서는 노드에서 ir_ahead
+            k -= 1
+            first = False
+        plan.append(('rv_done', j))
+        return plan, j
+
     @property
     def active(self):
         return self.state not in TERMINAL
@@ -382,6 +882,7 @@ class RouteExecutor:
         """
         self._now = now
         self._pose_stamp = pose_stamp
+        self._watch_still(pose, now, pose_stamp)
         if self.state in TERMINAL:
             if self._zero_once:
                 self._zero_once = False
@@ -394,6 +895,7 @@ class RouteExecutor:
         handler = {
             FOLLOW: self._follow, PASS: self._drive, ADVANCE: self._drive,
             ROTATE: self._rotate, LOADING: self._loading, REVERSE: self._reverse,
+            PAUSED: self._paused,
         }[self.state]
         cmd = handler(reading)
         if self.state in TERMINAL:   # 이 샘플에서 끝남
@@ -405,8 +907,8 @@ class RouteExecutor:
     def as_dict(self):
         leg = self.legs[self.index] if self.legs and self.index < len(self.legs) else None
         out = {
-            'state': self.state, 'reason': self.reason, 'route': self.route,
-            'index': self.index,
+            'state': self.state, 'reason': self.reason, 'route': self.route_shown,
+            'index': self.index - self._shown_base(),
             'leg': None if leg is None else {
                 'from': leg.frm, 'to': leg.to, 'heading': leg.heading, 'action': leg.action,
                 'detect': leg.detect, 'sides': sorted(leg.sides)},
@@ -418,25 +920,49 @@ class RouteExecutor:
             'event_seq': self.event_seq,
             'route_event_seq0': self.route_seq0,
             'dock': self.dock.as_dict(),
+            'recovery': self._recovery_dict(),
+            'pause': None if self.state != PAUSED else {
+                'from': self._paused_from, 'settled': self.settled},
+            'reverse': self._reverse_dict(),
+            'back_targets': self.back_targets(),
+            'back_why': self.back_why(),
+            'end': self._end_dict(),
             'speed': {'base_speed': self.cfg.base_speed, 'rotate_speed': self.cfg.rotate_speed,
                       'min_speed': self.cfg.min_speed, 'max_linear': self.cfg.max_linear,
                       'rotate_min_speed': self.cfg.rotate_min_speed,
                       'max_angular': self.cfg.max_angular,
                       'approach_speed': self.approach_speed,
                       'approach_lead_cm': self.cfg.approach_lead_cm,
+                      'post_turn_slow_cm': self.cfg.post_turn_slow_cm,
                       'pass_full_speed': self.cfg.pass_full_speed,
                       'kp': self.cfg.kp, 'kd': self.cfg.kd,
                       'kp_at_base': round(self.kp_for(self.cfg.base_speed), 3),
                       'kp_speed_scale': self.cfg.kp_speed_scale,
-                      'gain_ref_speed': self.cfg.gain_ref_speed},
+                      'gain_ref_speed': self.cfg.gain_ref_speed,
+                      'reverse_follow_speed': self.cfg.reverse_follow_speed,
+                      'reverse_follow_min': REVERSE_FOLLOW_MIN,
+                      'reverse_follow_max': min(REVERSE_FOLLOW_MAX, self.cfg.max_linear)},
         }
         out.update(self._estimate(leg))
         return out
 
     _HEADING_DEG = {'E': 0.0, 'N': 90.0, 'W': 180.0, 'S': -90.0}
 
+    def _recovery_dict(self):
+        if self._gap is not None and self.state == FOLLOW:
+            g = self._gap
+            return {'mode': 'gap', 'lost_at_cm': round(g['d'], 1),
+                    'gap_cm': round(self._odo - self._ref_odo - g['d'], 1),
+                    'in_window': g['window']}
+        if self._recovery is not None and self.active:
+            return {'mode': 'search', 'lost_at_cm': round(self._recovery['d'], 1)}
+        return None
+
     def _estimate(self, leg):
         """화면 표시용 바퀴 축 위치 추정(실측 cm). 그래프 + 이동 거리로 계산, 제어에는 쓰지 않는다."""
+        est = self._back_estimate()
+        if est is not None:
+            return est
         if leg is None:
             return {'leg_progress': None, 'pose_est': None}
         if self._pre is not None and self.state in (ROTATE, ADVANCE):   # 출발 전 전진·제자리 회전
@@ -456,6 +982,9 @@ class RouteExecutor:
                                                       'heading_deg': round(heading, 1)}}
         if self.state == FOLLOW:
             axle = self._leg_s0 + (self._odo - self._ref_odo) - self.cfg.ir_ahead_cm
+            self._progress = min(1.0, max(0.0, axle / leg.length)) if leg.length > 0 else 1.0
+        elif self._recovery is not None and self.state in (ADVANCE, ROTATE):   # SEARCH: 놓친 지점
+            axle = self._leg_s0 + self._recovery['d'] - self.cfg.ir_ahead_cm
             self._progress = min(1.0, max(0.0, axle / leg.length)) if leg.length > 0 else 1.0
         elif self.state in (PASS, ADVANCE, ROTATE, LOADING, REVERSE, ARRIVED, HANDOFF_STATE):
             self._progress = 1.0
@@ -522,6 +1051,9 @@ class RouteExecutor:
         self._max_ok = 0.0
         self._prim = {}
         self._tee_seen = {0: None, 2: None}   # T자: 왼쪽·오른쪽 센서가 마지막으로 선을 본 이동 거리
+        # 옆 IR run: on = 지금 켜진 run 안, off = 연속 꺼진 샘플 수, valid = 창 시작 뒤 꺼짐→켜짐으로 시작한 run
+        self._side_run = {ch: {'on': False, 'off': 0, 'valid': False, 'start': None, 'noted': False}
+                          for ch in (0, 2)}
 
     def _update_odom(self, pose):
         if self._pose is not None:
@@ -532,6 +1064,9 @@ class RouteExecutor:
             self._hold_yaw = pose[2]
 
     def _finish(self, state, reason=''):
+        self._gap = None
+        self._recovery = None
+        self._paused_from = None
         self.state = state
         self.reason = reason
         self._steps.clear()
@@ -539,6 +1074,8 @@ class RouteExecutor:
         self._pre = None
         self._end = (self._end_of_leg(self.legs[self.index])
                      if state in (ARRIVED, HANDOFF_STATE) else None)
+        if self._end is not None:
+            self._end['pose'] = self._pose     # 끝난 자세(이어 붙이기·끝 기억 보고의 이동 검사)
         self._log(state, reason)
 
     def _end_of_leg(self, leg):
@@ -558,8 +1095,15 @@ class RouteExecutor:
         guess: s0 가 가정값(사람이 놓은 출발 위치)이면 True → 비율 창만 쓰고 gate_early 는 안 씀.
         """
         leg = self.legs[self.index]
+        c = self.cfg
+        # 노드 회전(ROTATE)이 끝나 바로 이 구간을 시작하면 처음 post_turn_slow_cm 은 감속
+        self._slow_until = c.post_turn_slow_cm if self.state == ROTATE else 0.0
         self.state = FOLLOW
         self._reset_primitive()
+        self._gap = None
+        self._recovery = None
+        self._searched = False
+        self._yaw_hist.clear()
         self._leg_s0 = 0.0 if s0_cm is None else s0_cm
         self._progress = 0.0
         c = self.cfg
@@ -575,7 +1119,42 @@ class RouteExecutor:
             if c.gate_early_cm > 0 and not guess:
                 self._min_ok = max(self._min_ok, expected - c.gate_early_cm)
             self._max_ok = c.gate_max * expected + c.gate_slack_cm
+        self._leg_ref = self._odo
+        self._leg_guess = s0_cm is None or guess
+        self._leg_begun = self.index
+        self._psi_hist.clear()
+        self._arrive_info = None
         self._log('leg', f'{leg.frm}→{leg.to} {leg.action}')
+
+    def _track_sides(self, reading, d):
+        """추종(GAP 포함) 샘플마다 옆 IR run 을 갱신. 창 시작 전 run 은 valid 가 아님."""
+        k = self.cfg.side_rise_off_samples
+        for ch in (0, 2):
+            r = self._side_run[ch]
+            if reading.on_line[ch]:
+                if not r['on']:
+                    r.update(on=True, valid=r['off'] >= k and d >= self._min_ok, start=d,
+                             noted=False)
+                r['off'] = 0
+            else:
+                r['off'] += 1
+                if r['off'] >= k:
+                    r['on'] = False
+                    r['valid'] = False
+
+    def _side_ok(self, ch, leg, d, tee=False):
+        """옆 IR ch 를 노드 판정에 써도 되는지(켜짐 확인 규칙)."""
+        c = self.cfg
+        if not c.side_rise_only or (tee and not c.side_rise_tee):
+            return True
+        r = self._side_run[ch]
+        if r['valid']:
+            return True
+        if r['on'] and not r['noted']:      # 창 전부터 켜져 있던 run: 한 번만 기록
+            r['noted'] = True
+            self._log('side_ignored', f'{leg.to} {"left" if ch == 0 else "right"} on since '
+                      f'{r["start"]:.1f} cm (window {self._min_ok:.1f}), at {d:.1f} cm')
+        return False
 
     def _hit(self, reading, leg, d=0.0):
         if leg.detect == 'bar':
@@ -584,18 +1163,30 @@ class RouteExecutor:
         if not on[1]:
             return False
         if self.cfg.tee_both and LEFT in leg.sides and RIGHT in leg.sides:
-            for ch in (0, 2):
-                if on[ch]:
-                    self._tee_seen[ch] = d
+            seen = [ch for ch in (0, 2) if on[ch] and self._side_ok(ch, leg, d, tee=True)]
+            for ch in seen:
+                self._tee_seen[ch] = d
             a, b = self._tee_seen[0], self._tee_seen[2]
-            return (on[0] or on[2]) and a is not None and b is not None \
+            return bool(seen) and a is not None and b is not None \
                 and abs(a - b) <= self.cfg.tee_window_cm
-        return (LEFT in leg.sides and on[0]) or (RIGHT in leg.sides and on[2])
+        return ((LEFT in leg.sides and on[0] and self._side_ok(0, leg, d))
+                or (RIGHT in leg.sides and on[2] and self._side_ok(2, leg, d)))
 
     def _follow(self, reading):
         c = self.cfg
         leg = self.legs[self.index]
         d = self._odo - self._ref_odo
+        self._track_sides(reading, d)
+        if self._gap is not None:
+            cmd = self._gap_step(reading, leg, d)
+            if self._gap is not None or self.state != FOLLOW:
+                return cmd
+            # 선을 다시 잡음: 이 샘플부터 평소 추종(감지 창 전이라 노드 판정은 아직 안 걸림)
+        elif reading.lost and c.gap_max_cm > 0 and d >= c.suppress_cm:
+            if d > self._max_ok:          # 예상 거리를 이미 넘음: 예전처럼 노드 놓침(GAP 하지 않음)
+                self.fail(f'node_missed: {leg.to} not found within {self._max_ok:.1f} cm')
+                return None
+            return self._gap_start(leg, d)
         if d >= c.suppress_cm and d >= self._min_ok and self._hit(reading, leg, d):
             self._hits += 1
         else:
@@ -615,6 +1206,8 @@ class RouteExecutor:
             self._prev_error = None
             return Command(0.0, 0.0)
         self._lost_since = None
+        self._remember_yaw(d, reading)
+        self._remember_psi(d, reading, leg)
         e = reading.error
         de = 0.0
         if self._prev_error is not None and self._prev_t is not None and self._now > self._prev_t:
@@ -627,10 +1220,169 @@ class RouteExecutor:
             speed = self.approach_speed
         else:
             speed = self.approach_speed if d >= self._expected - c.approach_lead_cm else c.base_speed
+        if d < self._slow_until:         # 회전 직후: 선 가운데로 돌아올 때까지 감속(가장자리 타기 방지)
+            speed = min(speed, self.approach_speed)
         angular = _clamp(-(self.kp_for(speed) * e + c.kd * de), c.max_angular)
         linear = speed * (1.0 - c.slow_gain * abs(e))
         linear = min(c.max_linear, max(c.min_speed, linear))
         return Command(linear, angular)
+
+    def _remember_yaw(self, d, reading):
+        """선 위 추종 샘플: odom 방향과 선 위치 추정점을 최근 gap_heading_window_cm 만큼만 기억.
+
+        선 위치 = 가운데 IR 위치 − 왼쪽 법선 × (오차 × IR 간격). 오차 +1 = 선이 오른쪽 IR 아래.
+        """
+        c = self.cfg
+        x, y, yaw = self._pose
+        sx, sy = x + c.ir_ahead_cm * math.cos(yaw), y + c.ir_ahead_cm * math.sin(yaw)
+        off = -reading.error * c.ir_spacing_cm
+        h = self._yaw_hist
+        h.append((d, yaw, sx - off * math.sin(yaw), sy + off * math.cos(yaw)))
+        while h and h[0][0] < d - c.gap_heading_window_cm:
+            h.popleft()
+
+    def _gap_heading(self):
+        """GAP 방향. 기억한 거리가 GAP_CHORD_MIN_CM 이상이면 선 위치 점들의 앞·뒤 절반 평균을 이은 방향
+        (회전 직후처럼 로봇이 선과 비스듬히 추종 중이어도 선 방향), 짧으면 odom 방향 평균."""
+        h = list(self._yaw_hist)
+        if not h:
+            return self._pose[2]
+        if h[-1][0] - h[0][0] >= GAP_CHORD_MIN_CM and len(h) >= 4:
+            k = len(h) // 2
+            ax = sum(p[2] for p in h[:k]) / k
+            ay = sum(p[3] for p in h[:k]) / k
+            bx = sum(p[2] for p in h[k:]) / (len(h) - k)
+            by = sum(p[3] for p in h[k:]) / (len(h) - k)
+            return math.atan2(by - ay, bx - ax)
+        return math.atan2(sum(math.sin(p[1]) for p in h), sum(math.cos(p[1]) for p in h))
+
+    def _gap_start(self, leg, d):
+        yaw = self._gap_heading()
+        self._gap = {'d': d, 'yaw': yaw, 'pose': self._pose[:2], 'hits': 0, 'window': False,
+                     't0': self._now, 'prog_d': d, 'prog_t': self._now}
+        self._prev_error = None
+        self._lost_since = None
+        self._hits = 0
+        self._log('gap', f'{leg.frm}→{leg.to} at {d:.1f} cm, heading {math.degrees(yaw):.1f}°')
+        return self._gap_cmd()
+
+    def _gap_cmd(self):
+        c = self.cfg
+        w = _clamp(c.heading_kp * _wrap(self._gap['yaw'] - self._pose[2]), c.max_angular)
+        return Command(self.approach_speed, w)
+
+    def _gap_guard(self, leg, d):
+        """GAP 시간·진행 감시. 넘으면 정지하고 True.
+
+        시간 상한 = 2 + 2·gap_max_cm / min_speed(s, 도킹 이동 timeout 과 같은 꼴, 기본 약 12.7 s).
+        진행 없음 = odom 이동이 GAP_PROGRESS_CM 미만인 채 lost_timeout 이 지남(odom 은 오는데 값이 그대로 등).
+        """
+        c = self.cfg
+        g = self._gap
+        if d - g['prog_d'] >= GAP_PROGRESS_CM:
+            g['prog_d'], g['prog_t'] = d, self._now
+        elif self._now - g['prog_t'] > c.lost_timeout:
+            self.fail(f'line_lost: gap no progress ({d - g["d"]:.1f} cm) on {leg.frm}→{leg.to}')
+            return True
+        if self._now - g['t0'] > 2.0 + 2.0 * c.gap_max_cm / (c.min_speed * 100.0):
+            self.fail(f'line_lost: gap timeout ({d - g["d"]:.1f} cm) on {leg.frm}→{leg.to}')
+            return True
+        return False
+
+    def _gap_recover(self, reading, leg, d, where=''):
+        """IR 하나라도 gap_confirm 샘플 연속 선 위면 추종으로(옆 IR 이면 추종 PD 가 조향). → 복귀했으면 True."""
+        g = self._gap
+        g['hits'] = g['hits'] + 1 if not reading.lost else 0
+        if g['hits'] < self.cfg.gap_confirm:
+            return False
+        self._log('gap_recovered', f'{d - g["d"]:.1f} cm{where}')
+        self._gap = None
+        self._prev_error = None
+        self._prev_t = None
+        self._lost_since = None
+        self._hits = 0
+        return True
+
+    def _gap_step(self, reading, leg, d):
+        """GAP 한 샘플. self._gap 이 None 이 되고 상태가 follow 면 선을 다시 잡은 것(호출부가 추종을 이어 감)."""
+        c = self.cfg
+        g = self._gap
+        if self._gap_guard(leg, d):
+            return None
+        if d >= self._min_ok:
+            return self._gap_window_step(reading, leg, d)
+        if self._gap_recover(reading, leg, d):
+            return None
+        if d - g['d'] > c.gap_max_cm:
+            if c.search_deg <= 0:
+                self.fail(f'line_lost: gap {d - g["d"]:.1f} cm exceeded {c.gap_max_cm:g} cm '
+                          f'on {leg.frm}→{leg.to}')
+                return None
+            return self._search_start(reading, leg, d)
+        return self._gap_cmd()
+
+    def _gap_window_step(self, reading, leg, d):
+        """감지 창 안 GAP: 같은 방향·속도로 직진하며 그 노드의 기존 판정으로만 노드를 찾음.
+
+        진입로 테이프가 끊겨도 노드 테이프에 닿으면 평소처럼 도착. 창 안에서는 SEARCH(후진·회전)를 하지 않음
+        (노드 근처에서 다른 선을 잡을 수 있어서). 노드 판정(_hit)을 먼저 보고, 노드가 아닌데 IR 이 선을 보면
+        창 전과 같은 규칙으로 추종에 돌아감(추종의 노드 판정은 그대로라 판정 완화가 아님).
+        """
+        c = self.cfg
+        g = self._gap
+        if not g['window']:
+            g['window'] = True
+            self._log('gap_window', f'{leg.to} at {d:.1f} cm')
+        if self._hit(reading, leg, d):
+            self._hits += 1
+        else:
+            self._hits = 0
+        if self._hits >= c.node_confirm:
+            self._log('gap_node', f'{leg.to} after {d - g["d"]:.1f} cm')
+            self._gap = None
+            self._arrive(leg)
+            return self._dispatch(reading)
+        if d > self._max_ok or d - g['d'] > c.gap_max_cm:
+            self.fail(f'line_lost: gap into {leg.to} window, node not found on {leg.frm}→{leg.to}')
+            return None
+        if self._gap_recover(reading, leg, d, f' (in {leg.to} window)'):
+            return None
+        return self._gap_cmd()
+
+    def _search_start(self, reading, leg, d):
+        """GAP 거리 초과: 놓친 지점으로 후진 → 좌·우·원래 방향으로 돌며 선 찾기. 구간마다 한 번."""
+        c = self.cfg
+        g = self._gap
+        self._gap = None
+        if self._searched:
+            self.fail(f'line_lost: gap/search failed on {leg.frm}→{leg.to} (second gap after search)')
+            return None
+        self._searched = True
+        self._recovery = {'d': g['d'], 'window': (self._min_ok, self._max_ok), 'yaw': g['yaw']}
+        self._log('search', f'{leg.frm}→{leg.to} gap {d - g["d"]:.1f} cm > {c.gap_max_cm:g}')
+        s = c.search_deg
+        self._steps.clear()
+        self._steps.extend([(ADVANCE, 0.0, 'search', g['pose']),
+                            (ROTATE, 1.0, 0.0, s, 'search'),
+                            (ROTATE, -1.0, 0.0, 2 * s, 'search'),
+                            (ROTATE, 1.0, 0.0, s, 'search'),
+                            ('search_fail',)])
+        self._next_step()
+        return self._dispatch(reading)
+
+    def _search_found(self, turned):
+        """SEARCH 회전 중 선 정렬: 남은 회전을 버리고 놓친 지점 이동 거리로 추종을 이어 감."""
+        rec = self._recovery
+        leg = self.legs[self.index]
+        self._steps.clear()
+        self._log('search_found', f'{leg.frm}→{leg.to} {math.degrees(turned):.0f}°')
+        self.state = FOLLOW
+        self._reset_primitive()
+        self._min_ok, self._max_ok = rec['window']
+        self._ref_odo = self._odo - rec['d']      # 후진·회전으로 늘어난 누적 거리를 빼고 놓친 지점부터
+        self._leg_ref = self._ref_odo
+        self._recovery = None
+        self._yaw_hist.clear()
 
     def kp_for(self, speed):
         """직선 추종 kp. kp_speed_scale 이면 gain_ref_speed 를 넘는 속도에서 속도에 비례해 키움."""
@@ -641,6 +1393,9 @@ class RouteExecutor:
 
     def _arrive(self, leg):
         c = self.cfg
+        self._save_leg_psi(self.index, leg)
+        self._arrive_info = {'index': self.index, 'pose': self._pose,
+                             'pos': self._leg_s0 + (self._odo - self._ref_odo)}
         self._log('node', f'{leg.to} ({leg.action})')
         steps = self._steps
         steps.clear()
@@ -724,20 +1479,43 @@ class RouteExecutor:
             self._pre = None
             self._begin_leg(st[1])
             return
+        if kind == 'rv_line':
+            self._rv_line_begin(st[1])
+            return
+        if kind == 'rv_center':
+            self._rv_center()
+            return
+        if kind == 'rv_align':
+            self._rv_align(st[1])
+            return
+        if kind == 'rv_done':
+            self._rv_done(st[1])
+            return
+        if kind == 'search_fail':
+            leg = self.legs[self.index]
+            self._log('search_failed', f'{leg.frm}→{leg.to}')
+            self.fail(f'line_lost: gap/search failed on {leg.frm}→{leg.to}')
+            return
         self._dock_step_done()
         self.state = kind
         self._reset_primitive()
-        if kind == ADVANCE and len(st) > 2:      # 도킹 이동: 부호 있는 거리, 멈춘 뒤 시작
+        if kind == ADVANCE and len(st) > 2:      # 도킹·SEARCH 이동: 부호 있는 거리, 멈춘 뒤 시작
             self._prim = {'cm': st[1], 'signed': True, 'phase': st[2], 'settled': False,
                           'still': 0, 'last': None, 'last_stamp': None, 't0': self._now,
-                          'proj': 0.0}
-            self._dock_phase = st[2]
+                          'proj': 0.0, 'to': st[3] if len(st) > 3 else None}
+            if str(st[2]).startswith('rv'):        # 라인 후진의 짧은 이동: 후진 속도 이하
+                self._prim['vmax'] = self._rv_speed()
+                self._rv_phase(st[2])
+            elif st[2] != 'search':
+                self._dock_phase = st[2]
         elif kind in (PASS, ADVANCE):
             self._prim = {'cm': st[1]}
         elif kind == ROTATE:
             self._prim = {'dir': st[1], 'min': math.radians(st[2]), 'max': math.radians(st[3]),
                           'acquire': st[4]}
-            if len(st) > 5:
+            if len(st) > 5 and str(st[5]).startswith('rv'):
+                self._rv_phase(st[5])
+            elif len(st) > 5:
                 self._dock_phase = st[5]
         elif kind == REVERSE:
             self._prim = {'cm': st[1]}
@@ -748,7 +1526,9 @@ class RouteExecutor:
     def _dock_step_done(self):
         """끝난 도킹 이동을 표시용 누적값에 더한다."""
         p = self._prim
-        if p.get('signed'):
+        if p.get('signed') and p['phase'] != 'search' and not str(p['phase']).startswith('rv') \
+                and not p.get('counted'):
+            p['counted'] = True
             a, b = self._dock_disp
             if p['phase'] in ('a', '-a'):
                 a += p['proj']
@@ -763,7 +1543,8 @@ class RouteExecutor:
         if self.state == FOLLOW:
             return Command(0.0, 0.0)  # 다음 샘플부터 추종
         return {PASS: self._drive, ADVANCE: self._drive, ROTATE: self._rotate,
-                LOADING: self._loading, REVERSE: self._reverse}[self.state](reading)
+                LOADING: self._loading, REVERSE: self._reverse,
+                PAUSED: self._paused}[self.state](reading)
 
     def _hold(self):
         return _clamp(self.cfg.heading_kp * _wrap(self._hold_yaw - self._pose[2]),
@@ -797,8 +1578,18 @@ class RouteExecutor:
             if p['still'] >= c.node_confirm:
                 p.update(settled=True, origin=(x, y), t0=self._now)
                 self._hold_yaw = yaw
+                if p['to'] is not None:      # SEARCH: 멈춘 자리에서 놓친 지점까지(방향 투영, 보통 음수)
+                    tx, ty = p['to']
+                    p['cm'] = (tx - x) * math.cos(yaw) + (ty - y) * math.sin(yaw)
+                    limit = c.ir_ahead_cm - c.half_line_cm + PRE_CENTER_MARGIN_CM
+                    if p['phase'] == 'rv_pre' and abs(p['cm']) > limit:
+                        self.fail(f'pre_center: move {p["cm"]:+.1f} cm exceeds {limit:.1f} cm')
+                        return None
+                    if abs(p['cm']) < 0.05:
+                        self._next_step()
+                        return self._dispatch(reading)
             elif self._now - p['t0'] > SETTLE_TIMEOUT_S:
-                self.fail('dock_move: odom did not settle')
+                self.fail(f'{self._move_label()}: odom did not settle')
                 return None
             return Command(0.0, 0.0)
         ox, oy = p['origin']
@@ -813,13 +1604,21 @@ class RouteExecutor:
         # 반대쪽으로 밀리거나(remaining 이 목표 + 여유보다 큼) 경로 길이가 넘치면 정지
         if remaining > abs(target) + MOVE_OVERRUN_CM or \
                 self._odo - self._ref_odo > abs(target) + 2 * MOVE_OVERRUN_CM:
-            self.fail(f'dock_move overrun ({proj:.1f} of {target:.1f} cm)')
+            self.fail(f'{self._move_label()} overrun ({proj:.1f} of {target:.1f} cm)')
             return None
         if self._now - p['t0'] > 2.0 + 2.0 * abs(target) / (c.min_speed * 100.0):
-            self.fail(f'dock_move timeout ({proj:.1f} of {target:.1f} cm)')
+            self.fail(f'{self._move_label()} timeout ({proj:.1f} of {target:.1f} cm)')
             return None
         speed = min(self.approach_speed, max(c.min_speed, MOVE_GAIN * remaining))
+        if 'vmax' in p:
+            speed = min(speed, p['vmax'])
         return Command(sign * speed, self._hold())
+
+    def _move_label(self):
+        phase = str(self._prim.get('phase'))
+        if phase.startswith('rv'):
+            return 'reverse_move'
+        return 'gap_search back' if phase == 'search' else 'dock_move'
 
     def _rotate(self, reading):
         c = self.cfg
@@ -832,10 +1631,16 @@ class RouteExecutor:
             else:
                 self._hits = 0
             if self._hits >= c.node_confirm:
+                if p['acquire'] == 'search':
+                    self._search_found(turned)
+                    return Command(0.0, 0.0)
                 self._log('line_found', f'{math.degrees(turned):.0f}°')
                 self._next_step()
                 return self._dispatch(reading)
             if turned > p['max']:
+                if p['acquire'] == 'search':     # 이 방향에 없음 → 다음 SEARCH 회전
+                    self._next_step()
+                    return self._dispatch(reading)
                 self.fail(f'line_not_found after {math.degrees(turned):.0f}°')
                 return None
             if turned < p['min']:
@@ -854,6 +1659,8 @@ class RouteExecutor:
         return Command(0.0, 0.0)
 
     def _reverse(self, reading):
+        if self._prim.get('mode') == 'line':      # 라인 후진(FFT1-172)
+            return self._reverse_follow(reading)
         c = self.cfg
         if reading.node:
             self._hits += 1
@@ -867,7 +1674,377 @@ class RouteExecutor:
             return None
         return Command(-min(c.reverse_speed, self.approach_speed), self._hold())
 
+    # ------------------------------------------------------------ 일시정지·라인 후진 내부(FFT1-172)
+    def _paused(self, reading):
+        if self._paused_from == FOLLOW and self._gap is None and reading is not None:
+            self._track_sides(reading, self._odo - self._ref_odo)   # 멈춘 동안 옆 IR run 기록만
+        if not self._pause_noted and self.settled:
+            self._pause_noted = True
+            self._log('paused_settled', self._paused_from)
+        return Command(0.0, 0.0)
+
+    def _shift_time(self, dt):
+        """일시정지한 시간만큼 시간 기준(시간 초과·놓침 시작)을 민다."""
+        if self._lost_since is not None:
+            self._lost_since += dt
+        for k in ('t0', 'lost_t'):
+            if self._prim.get(k) is not None:
+                self._prim[k] += dt
+        if self._gap is not None:
+            self._gap['t0'] += dt
+            self._gap['prog_t'] += dt
+
+    def _watch_still(self, pose, now, stamp):
+        """odom 정지 확인(모든 상태에서 기록만). 같은 odom(stamp 같음)은 건너뜀."""
+        if pose is None:
+            self._still_last = self._still_since = None
+            self._still_hist.clear()
+            return
+        t = now if stamp is None else stamp
+        last = self._still_last
+        if last is not None and t - last[0] <= 1e-6:
+            return
+        hist = self._still_hist
+        if last is None:
+            hist.clear()
+        hist.append((t, pose))
+        while len(hist) > 2 and hist[1][0] <= t - STILL_S:   # 창 시작보다 오래된 것 하나만 남김
+            hist.popleft()
+        self._still_last = (t, pose)
+        # 창 안 모든 자세가 지금 자세에서 STILL_POS_CM·STILL_YAW_RAD 안이면 창 시작부터 멈춘 것으로 본다
+        still = all(math.hypot(pose[0] - p[0], pose[1] - p[1]) < STILL_POS_CM
+                    and abs(_wrap(pose[2] - p[2])) < STILL_YAW_RAD for _, p in hist)
+        self._still_since = hist[0][0] if still and len(hist) > 1 else None
+
+    def _remember_psi(self, d, reading, leg):
+        """후진용 선 방향 샘플: 구간 시작 suppress_cm 뒤 ~ 감지 창 시작 전(노드 옆선이 오차를 치우치지 않는 곳)."""
+        c = self.cfg
+        if reading.node or d < c.suppress_cm or not self._yaw_hist:
+            return
+        cut = self._min_ok if self._expected is not None else \
+            c.gate_min * leg.length - c.gate_slack_cm
+        if d >= cut:
+            return
+        _, _, lx, ly = self._yaw_hist[-1]
+        h = self._psi_hist
+        h.append((d, lx, ly))
+        while h and h[0][0] < d - PSI_WINDOW_CM:
+            h.popleft()
+
+    @staticmethod
+    def _line_dir(h):
+        """선 위치 점 (d, x, y) 의 앞·뒤 절반 평균을 이은 방향(_gap_heading 과 같은 방식). 2 cm 미만이면 None."""
+        if len(h) < 4 or h[-1][0] - h[0][0] < GAP_CHORD_MIN_CM:
+            return None
+        k = len(h) // 2
+        ax = sum(p[1] for p in list(h)[:k]) / k
+        ay = sum(p[2] for p in list(h)[:k]) / k
+        bx = sum(p[1] for p in list(h)[k:]) / (len(h) - k)
+        by = sum(p[2] for p in list(h)[k:]) / (len(h) - k)
+        return math.atan2(by - ay, bx - ax)
+
+    def _save_leg_psi(self, index, leg):
+        v = self._line_dir(self._psi_hist)
+        if v is not None:
+            self._leg_psi[index] = v
+            self._map_off = _wrap(v - math.radians(self._HEADING_DEG[leg.heading]))
+
+    def _psi_of(self, k):
+        """구간 k 의 선 방향(odom yaw). 기억 → (지금 구간) 선 위 샘플 → 지도 방향 + 다른 구간에서 구한 차이
+        → (지금 구간) GAP 방향(odom 평균) 순. 모르면 None."""
+        if k in self._leg_psi:
+            return self._leg_psi[k]
+        current = k == self.index and self._leg_begun == k
+        if current:
+            v = self._line_dir(self._psi_hist)
+            if v is not None:
+                return v
+        if self._map_off is not None:
+            return _wrap(math.radians(self._HEADING_DEG[self.legs[k].heading]) + self._map_off)
+        if current and self._yaw_hist:
+            return self._gap_heading()
+        return None
+
+    def _leg_pos(self):
+        """지금 구간 출발 노드 → 센서 거리(cm, 구간 시작 위치 + 이동 거리)."""
+        return self._leg_s0 + (self._odo - self._leg_ref)
+
+    def _arrival_pos(self, k, pose=None):
+        """구간 k 끝 노드 감지 때 센서 위치 + 그 뒤 축 이동(선 방향 투영). 모르면 None."""
+        info = self._arrive_info
+        pose = pose or self._pose
+        if info is None or info['index'] != k or pose is None:
+            return None
+        psi = self._psi_of(k)
+        if psi is None:
+            psi = info['pose'][2]
+        ax, ay = info['pose'][0], info['pose'][1]
+        return info['pos'] + ((pose[0] - ax) * math.cos(psi)
+                              + (pose[1] - ay) * math.sin(psi))
+
+    def _rv_speed(self):
+        return min(self.cfg.reverse_follow_speed, REVERSE_FOLLOW_MAX, self.cfg.max_linear)
+
+    def _rv_phase(self, phase):
+        if self._back is not None:
+            self._back['phase'] = phase
+
+    def _reverse_target(self, k):
+        """구간 k 를 보고 선 채(방향 legs[k].heading) 후진해 legs[k].frm 을 찾을 때의 판정용 Leg. 못 찾으면 None."""
+        leg = self.legs[k]
+        nid = leg.frm
+        n = self.graph.nodes[nid]
+        if n.bar:
+            return Leg(leg.to, nid, leg.heading, leg.length, 'reverse', 'bar', frozenset())
+        sides = {turn_of(leg.heading, self.graph.heading(nid, o)) for o in n.links if o != leg.to}
+        sides &= {LEFT, RIGHT}
+        if not sides:
+            return None
+        return Leg(leg.to, nid, leg.heading, leg.length, 'reverse', 'side', frozenset(sides))
+
+    def _undo_dock_steps(self, leg):
+        """상차 대기 자세 → 가로선 정지 자세(③ −b → ② 시계 r° → ① −a). 기존 도킹 단계 이름을 써서 화면 추정도 같음."""
+        dv = self.dock.get(leg.to)
+        steps = []
+        if dv.move_cm:
+            steps.append((ADVANCE, -dv.move_cm, '-b'))
+        steps.append((ROTATE, -1.0, dv.rotate_deg, dv.rotate_deg, False, 'unr'))
+        if dv.advance_cm:
+            steps.append((ADVANCE, -dv.advance_cm, '-a'))
+        return steps
+
+    def _node_xy(self, nid, heading, along):
+        n = self.graph.nodes[nid]
+        h = math.radians(self._HEADING_DEG[heading])
+        return n.x + along * math.cos(h), n.y + along * math.sin(h)
+
+    def _rv_line_begin(self, spec):
+        """후진 한 구간 시작: 센서 위치를 정하고, 짧으면 odom 이동, 아니면 라인 후진(상태 피드백)."""
+        c = self.cfg
+        self._dock_step_done()        # (다′) 마지막 −a 이동을 도킹 표시 누적값에 더함
+        self._dock_phase = None
+        self._rv_det = None
+        pos = spec['pos']
+        if pos is None:
+            pos = self._arrival_pos(spec['arrival'])
+            if pos is None:
+                self.fail('reverse_plan: position on the leg unknown')
+                return
+        total = pos + spec['extra']
+        leg = self.legs[spec['k']]
+        self.index = spec['k']
+        if self._back is not None:
+            self._back['leg'] = [leg.frm, self.legs[spec['k0']].to]
+        if total < c.reverse_short_cm:
+            # (가′) 출발 노드에서 가까움: 옆선 켜짐이 다시 안 생길 수 있어 판정 대신 odom 거리만큼.
+            # 목표 = 센서가 노드 중심(끝) 또는 축이 노드 중심(회전 되돌리기 전). 구간 시작 위치는 감지를 테이프
+            # 가장자리로 본 값이라 실제보다 약 0.5 cm 작음(2D 시뮬) → 반폭 대신 중심을 겨눠 테이프 위에 남게 함
+            target = 0.0 if spec['final'] else c.ir_ahead_cm
+            cm = -(total - target)
+            self._log('reverse_short', f'{spec["node"]} {cm:+.1f} cm (sensor {total:.1f} cm)')
+            ax = target - c.ir_ahead_cm
+            x, y = self._node_xy(spec['node'], leg.heading, ax)
+            if self._back is not None:
+                self._back['est'] = (x, y, self._HEADING_DEG[leg.heading])
+            if abs(cm) >= 0.05 and (not spec['final'] or cm < -0.3):
+                self._steps.appendleft((ADVANCE, cm, 'rv_short'))
+            self._next_step()
+            return
+        if spec['psi'] is None:
+            self.fail('reverse_plan: line direction unknown')
+            return
+        expected = total - c.half_line_cm
+        guess = spec['guess']
+        self.state = REVERSE
+        self._reset_primitive()
+        self._min_ok = max(0.0, c.gate_min * expected - c.gate_slack_cm)
+        if c.gate_early_cm > 0 and not guess:
+            self._min_ok = max(self._min_ok, expected - c.gate_early_cm)
+        self._max_ok = c.gate_max * expected + c.gate_slack_cm
+        self._prim = {'mode': 'line', 'spec': spec, 'pos0': total, 'expected': expected,
+                      'psi': spec['psi'], 'lost_d': None, 'lost_t': None, 't0': self._now,
+                      'timeout': 2.0 + 2.0 * self._max_ok / (REVERSE_FOLLOW_MIN * 100.0),
+                      'y': None, 'theta': 0.0, 'blind': [total - m for m in spec['marks']],
+                      'acquire': spec.get('acquire_cm', 0.0)}
+        self._rv_phase('reverse')
+        if not spec['final']:
+            self._steps.appendleft(('rv_center',))
+        self._log('reverse', f'{leg.to}→{spec["node"]} expected {expected:.1f} cm '
+                  f'window {self._min_ok:.1f}..{self._max_ok:.1f}'
+                  f'{" (guess)" if guess else ""}')
+
+    def _rv_align(self, psi):
+        """후진 전 제자리 회전으로 odom 방향을 선 방향 ψ 에 맞춤(RV_ALIGN_DEG 이하면 건너뜀)."""
+        self._dock_step_done()
+        delta = _wrap(psi - self._pose[2])
+        if abs(delta) > math.radians(RV_ALIGN_DEG):
+            ang = math.degrees(abs(delta))
+            self._steps.appendleft((ROTATE, 1.0 if delta > 0 else -1.0, ang, ang, False,
+                                    'rv_align'))
+        self._next_step()
+
+    def _rv_center(self):
+        """후진으로 노드 판정(센서 ≈ 노드 + half_line) → 축을 노드 중심으로(멈춘 뒤 판정 자세 기준 투영 거리)."""
+        c = self.cfg
+        x, y, yaw = self._rv_det
+        k = c.ir_ahead_cm - c.half_line_cm
+        to = (x + k * math.cos(yaw), y + k * math.sin(yaw))
+        self._steps.appendleft((ADVANCE, 0.0, 'rv_center', to))
+        self._next_step()
+
+    def _rv_done(self, j):
+        c = self.cfg
+        leg = self.legs[j]
+        nid = leg.frm
+        x, y = self._node_xy(nid, leg.heading, c.half_line_cm - c.ir_ahead_cm)
+        self._back.update(phase='done', est=(x, y, self._HEADING_DEG[leg.heading]))
+        self._log('reverse_arrived', f'{nid} facing {leg.heading}')
+        # 노드 중심(odom): 판정으로 멈췄으면 감지 때 축 + (ir_ahead − 반폭), odom 이동이면 센서 목표 = 중심
+        if self._rv_det is not None:
+            ox, oy, oyaw = self._rv_det
+            k = c.ir_ahead_cm - c.half_line_cm
+        else:
+            ox, oy, oyaw = self._pose
+            k = c.ir_ahead_cm
+        center = (ox + k * math.cos(oyaw), oy + k * math.sin(oyaw))
+        self.index = j
+        self._finish(ARRIVED, f'reverse done at {nid}')
+        # 끝 자세 = 그 노드에 이 방향으로 전진 도착해 감지한 자세(센서가 노드 위) → 이어서 출발 s0 = half_line.
+        # center: 이어서 출발이 좌·우 회전이면 회전 전에 축을 여기로(전진 보정, 계약 2 의 끝 자세는 그대로)
+        self._end = {'node': nid, 'facing': leg.heading, 's0': c.half_line_cm, 'center': center,
+                     'pose': self._pose}
+        # 경로를 지나온 앞부분으로 줄임: route[-1] = 지금 노드, leg = 그 노드로 들어온 구간(출발 노드면 없음)
+        self.route = self.route[:j + 1]
+        self.legs = self.legs[:j]
+        self._base = 0                     # 줄인 경로 = 지나온 길 전체(이어 붙인 앞부분 포함)
+        if self.legs and self.legs[-1].action not in (STRAIGHT, LEFT, RIGHT):
+            # 경유 정차 노드(상차·주차)까지 되감음: 그 노드의 도착 동작은 하지 않았으므로 정차(stop)로 표시
+            self.legs[-1] = replace(self.legs[-1], action=STOP)
+        self._seg_ends = {k for k in self._seg_ends if k < j - 1} | ({j - 1} if j > 0 else set())
+        self.index = max(0, j - 1)
+
+    def _rv_fail(self, kind, detail):
+        self._log(kind, detail)
+        self.fail(f'{kind}: {detail}')
+
+    def _reverse_omega(self, reading, y_hat, theta, speed):
+        """후진 상태 피드백 ω = +k_y·ŷ − k_θ·θ̂ (k_y = ωₙ²/|v| per cm, k_θ = 2ζωₙ). ŷ None 이면 방향만."""
+        c = self.cfg
+        w = -2.0 * c.reverse_zeta * c.reverse_wn * theta
+        if y_hat is not None:
+            w += c.reverse_wn ** 2 / (speed * 100.0) * y_hat
+        return w
+
+    def _reverse_follow(self, reading):
+        c = self.cfg
+        p = self._prim
+        spec = p['spec']
+        target = spec['pseudo']
+        d = self._odo - self._ref_odo
+        self._track_sides(reading, d)
+        if d >= c.suppress_cm and d >= self._min_ok and self._hit(reading, target, d):
+            self._hits += 1
+        else:
+            self._hits = 0
+        if self._hits >= c.node_confirm:
+            self._rv_det = self._pose
+            self._log('reverse_node', f'{target.to} at {d:.1f} cm (expected {p["expected"]:.1f})')
+            if not spec['final'] and self._back is not None:
+                x, y = self._node_xy(target.to, target.heading, c.half_line_cm - c.ir_ahead_cm)
+                self._back['est'] = (x, y, self._HEADING_DEG[target.heading])
+            self._next_step()
+            return self._dispatch(reading)
+        if d > self._max_ok:
+            self._rv_fail('reverse_node_missed',
+                          f'{target.to} not found within {self._max_ok:.1f} cm')
+            return None
+        if self._now - p['t0'] > p['timeout']:
+            self._rv_fail('reverse_timeout', f'{target.to} at {d:.1f} cm')
+            return None
+        theta = _wrap(self._pose[2] - p['psi'])
+        p['theta'] = theta
+        if abs(theta) > math.radians(c.reverse_max_heading_deg):
+            self._rv_fail('reverse_heading', f'{math.degrees(theta):.1f} deg at {d:.1f} cm')
+            return None
+        y = None
+        if p['acquire'] and not reading.lost:
+            p['acquire'] = 0.0                  # 선을 다시 잡음 → 이제부터 놓침을 셈
+        if reading.lost and p['acquire']:
+            # 직진 선 없는 노드를 되돌린 직후: 센서가 테이프 끝 너머에서 시작. 방향만 유지하며 acquire_cm 안에 잡아야 함
+            if d > p['acquire']:
+                self._rv_fail('reverse_lost', f'line not reacquired within {p["acquire"]:.1f} cm '
+                              f'to {target.to}')
+                return None
+        elif reading.lost:
+            if p['lost_d'] is None:
+                p['lost_d'], p['lost_t'] = d, self._now
+            elif (d - p['lost_d'] >= c.reverse_lost_cm or self._now - p['lost_t']
+                  > c.lost_timeout + c.reverse_lost_cm / (REVERSE_FOLLOW_MIN * 100.0)):
+                self._rv_fail('reverse_lost', f'{d - p["lost_d"]:.1f} cm at {d:.1f} cm '
+                              f'to {target.to}')
+                return None
+        else:
+            p['lost_d'] = p['lost_t'] = None
+            y = reading.error * c.ir_spacing_cm - c.ir_ahead_cm * math.sin(theta)
+        p['y'] = y
+        # ŷ 를 쓰지 않는 곳(방향 θ̂ 만 유지): 구간 시작, 지나치는 노드 옆선 근처, 목적 노드 앞
+        # max(창 시작, 예상 − gate_early_cm) 뒤·목적 노드 테이프를 밟은 뒤. 옆 IR 이 노드 선에 걸리기 시작하면
+        # (판정 전에도 정규화 값이 먼저 올라) 오차가 치우쳐 마지막 샘플들에 차체를 돌림 — 2D 시뮬 끝 방향 1.3~1.9°
+        near = d >= max(self._min_ok, p['expected'] - c.gate_early_cm)
+        blind = (d < c.suppress_cm or near
+                 or any(abs(d - b) < c.half_line_cm + REVERSE_BLIND_CM for b in p['blind'])
+                 or (d >= self._min_ok and (reading.node or self._target_side_on(reading, target))))
+        speed = self._rv_speed()
+        w = self._reverse_omega(reading, None if blind else y, theta, speed)
+        return Command(-speed, _clamp(w, c.max_angular))
+
+    @staticmethod
+    def _target_side_on(reading, target):
+        on = reading.on_line
+        return (LEFT in target.sides and on[0]) or (RIGHT in target.sides and on[2]) or \
+            (target.detect == 'bar' and (on[0] or on[2]) and on[1])
+
+    def _reverse_dict(self):
+        b = self._back
+        if b is None:
+            return None
+        out = {'to': b['to'], 'phase': b['phase'], 'from': b['from'], 'leg': b['leg'],
+               'expected_cm': None, 'done_cm': None, 'y_cm': None, 'theta_deg': None,
+               'window_cm': None}
+        p = self._prim
+        if self.state == REVERSE and p.get('mode') == 'line':
+            out.update(expected_cm=round(p['expected'], 1),
+                       done_cm=round(self._odo - self._ref_odo, 1),
+                       y_cm=None if p['y'] is None else round(p['y'], 1),
+                       theta_deg=round(math.degrees(p['theta']), 1),
+                       window_cm=[round(self._min_ok, 1), round(self._max_ok, 1)])
+        return out
+
+    def _back_estimate(self):
+        """후진 중·후진 도착 뒤 화면 표시용 바퀴 축 추정. 도킹 되돌림 중이면 None(기존 추정)."""
+        b = self._back
+        if b is None or b['phase'] == 'undo_dock':
+            return None
+        p = self._prim
+        if self.state == REVERSE and p.get('mode') == 'line' and b['phase'] != 'done':
+            spec = p['spec']
+            leg = self.legs[spec['k']]
+            axle = p['pos0'] - (self._odo - self._ref_odo) - self.cfg.ir_ahead_cm
+            x, y = self._node_xy(spec['node'], leg.heading, axle)
+            f = min(1.0, max(0.0, axle / leg.length)) if leg.length > 0 else 0.0
+            return {'leg_progress': round(f, 3), 'pose_est': {
+                'x_cm': round(x, 1), 'y_cm': round(y, 1),
+                'heading_deg': round(self._HEADING_DEG[leg.heading], 1)}}
+        if b['est'] is None:
+            return None
+        x, y, h = b['est']
+        if self.state == ROTATE and p and b['phase'] != 'done':
+            h += p['dir'] * math.degrees(abs(self._yaw_acc - self._ref_yaw))
+        h = (h + 180.0) % 360.0 - 180.0
+        return {'leg_progress': None, 'pose_est': {
+            'x_cm': round(x, 1), 'y_cm': round(y, 1), 'heading_deg': round(h, 1)}}
+
 
 __all__ = ['NavConfig', 'Command', 'RouteExecutor', 'GraphError', 'IDLE', 'FOLLOW', 'PASS',
            'ADVANCE', 'ROTATE', 'LOADING', 'REVERSE', 'ARRIVED', 'HANDOFF_STATE', 'STOPPED',
-           'ERROR', 'STOP', 'TERMINAL']
+           'ERROR', 'STOP', 'TERMINAL', 'PAUSED', 'REVERSE_FOLLOW_MIN', 'REVERSE_FOLLOW_MAX']

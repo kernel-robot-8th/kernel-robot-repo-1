@@ -69,8 +69,15 @@
         <button id="btnStart" class="btn btn-primary" type="button" disabled>▶ 시작</button>
         <button id="btnLoad" class="btn btn-outline" type="button" disabled>상차 완료</button>
         <button id="btnStop" class="btn btn-danger" type="button" disabled>■ 정지</button>
+        <button id="btnPause" class="btn btn-outline" type="button" disabled title="그 자리에서 멈춤(경로 기억 유지). 주행 중일 때만">⏸ 일시정지</button>
+        <button id="btnResume" class="btn btn-outline" type="button" disabled title="멈춘 자리에서 같은 구간 전진을 이어 감">⏵ 이어 가기</button>
         <button id="btnHome" class="btn btn-outline" type="button" disabled title="등록한 충전·대기 칸으로 최단 경로">⌂ 복귀</button>
       </div>
+      <div class="form-line"><label for="backTo">후진</label>
+        <span class="row">
+          <select id="backTo" class="text-input ir-select" title="선택한 로봇이 이번 경로에서 이미 지난 노드(가장 최근이 기본). 일시정지 중이거나 경로가 끝난 뒤에만"></select>
+          <button id="btnBack" class="btn btn-outline" type="button" disabled title="지나온 길을 라인 따라 후진. 뒤쪽 감지 없음 — 후진 경로·목적 노드가 비었는지 먼저 확인">◀ 후진</button>
+        </span></div>
       <div class="form-line"><label for="spLin">직선 속도</label>
         <span class="row"><input id="spLin" type="range" min="1.5" max="6" step="0.5" value="3"><b id="spLinV">-</b></span></div>
       <div class="form-line"><label for="spRot">회전 속도</label>
@@ -78,6 +85,12 @@
       <div class="row">
         <button id="btnSpeed" class="btn btn-outline btn-small" type="button" title="주행 중에도 바로 바뀜(상한 = line_nav max_linear·max_angular)">속도 적용</button>
         <span class="tiny-note" id="spNow">현재 -</span>
+      </div>
+      <div class="form-line"><label for="spRev">후진 속도</label>
+        <span class="row"><input id="spRev" type="range" min="1" max="3" step="0.5" value="2"><b id="spRevV">-</b></span></div>
+      <div class="row">
+        <button id="btnRevSpeed" class="btn btn-outline btn-small" type="button" title="후진 속도만 보냄(0.01~0.03 m/s). 위 직선 속도와 별개">후진 속도 적용</button>
+        <span class="tiny-note" id="spRevNow">후진 기본 2.0 cm/s</span>
       </div>
       <div class="status-msg" id="cmdMsg" role="status"></div>
       <div class="tiny-note">출발 위치에 로봇을 첫 구간 방향(칸 바깥)으로 세운 뒤 시작. 노드에서 끝나면 「현재 위치」에서 바로 다음 경로를 고를 수 있음(N12처럼 선 끝을 보고 섰으면 먼저 반 바퀴 돎). 복귀 = 끝난 노드 → 등록한 충전·대기 칸(Pinky 설정의 「복귀 칸」). 정지·오류 뒤에는 위치를 모르므로 복귀 안 됨.</div>
@@ -107,6 +120,7 @@
       <div class="info-line"><span>state</span><span class="value" id="sState">-</span></div>
       <div class="info-line"><span>reason</span><span class="value" id="sReason">-</span></div>
       <div class="info-line"><span>구간</span><span class="value" id="sLeg">-</span></div>
+      <div class="info-line"><span>후진</span><span class="value" id="sReverse">-</span></div>
       <div class="info-line"><span>이동 / 감지 창 (cm)</span><span class="value" id="sTravel">-</span></div>
       <div class="info-line"><span>IR on_line</span><span class="value" id="sOn">-</span></div>
       <div class="info-line"><span>odom</span><span class="value" id="sOdom">-</span></div>

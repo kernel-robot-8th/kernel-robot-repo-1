@@ -35,6 +35,17 @@ def test_classify(state, name):
     assert classify(state).name == name
 
 
+def test_classify_pause_and_line_back():
+    """FFT1-172: 일시정지 = PAUSED, 라인 후진(back, state reverse·advance·rotate) = MOVING(주차 후진과 구분)."""
+    assert classify(st('paused', 'right', 'N23', 'N19')).name == 'PAUSED'
+    for state in ('reverse', 'advance', 'rotate'):
+        s = dict(st(state, 'load'), reverse={'to': 'N23', 'phase': 'reverse'})
+        assert classify(s).name == 'MOVING' and classify(s).detail == 'back -> N23'
+    done = dict(st('arrived', 'straight', 'N07', 'N23'), reverse={'to': 'N23', 'phase': 'done'})
+    assert classify(done).name == 'READY'
+    assert STYLES['PAUSED'][1] == STYLES['READY'][1] and STYLES['PAUSED'][3] == 0.0
+
+
 def test_styles_match_request():
     # 2026-11-07 사용자 요청: 파란 바탕 흰 글자, MOVING 파랑 점멸, DOCKING 주황 점멸
     assert STYLES['MOVING'][1] == STYLES['DOCKING'][1] == STYLES['READY'][1]

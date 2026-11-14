@@ -11,7 +11,7 @@ import re
 
 FIELDS = ('t', 'state', 'index', 'leg_from', 'leg_to', 'traveled_cm', 'rotated_deg',
           'ir0', 'ir1', 'ir2', 'on0', 'on1', 'on2', 'error', 'cmd_linear', 'cmd_angular',
-          'odom_x_cm', 'odom_y_cm', 'odom_yaw_deg', 'events')
+          'odom_x_cm', 'odom_y_cm', 'odom_yaw_deg', 'events', 'rv_y_cm', 'rv_theta_deg')
 FILE_RE = re.compile(r'^route_\d{8}_\d{6}_[A-Z0-9]{1,8}-[A-Z0-9]{1,8}\.csv$')
 
 
@@ -62,6 +62,7 @@ class RouteRecorder:
         new = events[-fresh:] if fresh else []
         self._events_seen = seq
         leg = state.get('leg') or {}
+        rv = state.get('reverse') or {}       # 라인 후진(FFT1-172) 중 ŷ·θ̂, 아니면 빈 칸
         raw = reading.raw if reading is not None else (None, None, None)
         on = reading.on_line if reading is not None else (None, None, None)
         od = (None, None, None) if odom is None else (
@@ -73,7 +74,8 @@ class RouteRecorder:
                None if cmd is None else round(cmd[0], 3),
                None if cmd is None else round(cmd[1], 3),
                *od,
-               ' | '.join(f"{e.get('event')}:{e.get('detail', '')}" for e in new)]
+               ' | '.join(f"{e.get('event')}:{e.get('detail', '')}" for e in new),
+               rv.get('y_cm'), rv.get('theta_deg')]
         try:
             self._w.writerow(row)
         except OSError as e:

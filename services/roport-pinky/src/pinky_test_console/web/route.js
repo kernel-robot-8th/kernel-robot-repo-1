@@ -13,12 +13,27 @@ const map = new RM.RouteMap($("routeCanvas"), (ids) => {
   updateButtons();
 });
 
+// 출발 기본값 = 「현재」: 경로가 비어 있고 로봇이 끝 기억 노드를 보고하면 그 노드를 첫 노드로 미리 찍어 둠.
+// 같은 노드로는 한 번만(사용자가 지우면 다시 안 채움).
+let seededEnd = null;
+function seedStartFromEnd(s) {
+  const e = RM.endMemory(s);
+  if (!e) { seededEnd = null; return; }
+  if (seededEnd === e.node || routeIds.length) return;
+  seededEnd = e.node;
+  map.setRoute([e.node]);
+}
+
 function updateButtons() {
   const st = lastState ? lastState.state : null;
   const busy = st && !["idle", "arrived", "handoff", "stopped", "error"].includes(st);
   $("btnStart").disabled = routeIds.length < 2 || !!busy;
   $("btnLoad").disabled = st !== "loading";
   $("btnHome").disabled = !!busy && st !== "loading";
+  // 일시정지·후진 (FFT1-172). 주행 중 = 전진 추종·통과·전진·회전. 거절은 로봇의 line_nav 가 한다.
+  $("btnPause").disabled = !["follow", "pass", "advance", "rotate"].includes(st);
+  $("btnResume").disabled = st !== "paused";
+  $("btnBack").disabled = lastStale || !$("backTo").value;   // 후보가 없으면 value 가 비어 꺼짐
   map.editable = !busy;
 }
 
@@ -26,6 +41,7 @@ async function command(body) {
   const r = await RM.postJson("api/route/command", body);
   RM.setMsg($("cmdMsg"), r.success ? `보냄: ${body.cmd}` : `실패: ${r.msg || r.httpStatus}`,
     r.success ? "ok" : "err");
+  return !!r.success;
 }
 
 
@@ -57,7 +73,50 @@ function speedBody() {
 }
 $("btnSpeed").addEventListener("click", () => { speedDirty = false; command(speedBody()); });
 
-$("btnStart").addEventListener("click", () => {
+// 후진 속도(0.01~0.03 m/s): 직선·회전 속도와 따로 적용. 로봇이 reverse_follow_speed 를 보고하면 그 값을 따라감.
+let revDirty = false;
+function showRevLabel() { $("spRevV").textContent = `${Number($("spRev").value).toFixed(1)} cm/s`; }
+$("spRev").addEventListener("input", () => { revDirty = true; showRevLabel(); });
+$("btnRevSpeed").addEventListener("click", () => {
+  revDirty = false;
+  command({ cmd: "speed", reverse_speed: Number($("spRev").value) / 100 });
+});
+function syncReverseSpeed(sp) {
+  const v = sp && typeof sp.reverse_follow_speed === "number" ? sp.reverse_follow_speed : null;
+  $("spRevNow").textContent = v === null ? "후진 기본 2.0 cm/s (로봇 값 보고 없음)" : `현재 후진 ${(v * 100).toFixed(1)} cm/s`;
+  if (v !== null && !revDirty) $("spRev").value = String(v * 100);
+  showRevLabel();
+}
+showRevLabel();
+
+$("btnPause").addEventListener("click", () => command({ cmd: "pause" }));
+$("btnResume").addEventListener("click", () => command({ cmd: "resume" }));
+$("btnBack").addEventListener("click", () => {
+  const to = $("backTo").value;
+  if (to) command({ cmd: "back", to });
+});
+
+$("btnStart").addEventListener("click", async () => {
+  // 끝 기억 노드와 다른 곳에서 출발하면 확인 → 먼저 stop(기억 지움) 뒤 start. 취소하면 출발 안 함.
+  const warn = RM.startMismatchMsg(lastState, routeIds[0]);
+  if (warn) {
+    // 1) 기본 제안: 로봇이 기억하는 노드에서 같은 목적지로 다시 계획해 출발(기억 유지)
+    const here = RM.endMemory(lastState).node;
+    const goal = routeIds[routeIds.length - 1];
+    if (goal !== here && confirm(`로봇이 ${here} 에 있다고 기억 중입니다.\n[확인] ${here} → ${goal} 경로로 다시 계획해 출발\n[취소] 다른 선택`)) {
+      const r = await RM.getJson(`api/route/plan?from=${encodeURIComponent(here)}&to=${encodeURIComponent(goal)}`);
+      if (!Array.isArray(r.route) || r.route.length < 2) {
+        RM.setMsg($("cmdMsg"), `경로 계획 실패: ${here} → ${goal}`, "err");
+        return;
+      }
+      map.setRoute(r.route);
+      routeIds = r.route;
+    } else {
+      // 2) 로봇을 지도 경로의 첫 노드로 옮겨 놓았으면: 기억을 지우고(stop) 그 경로로 출발
+      if (!confirm(warn)) return;
+      if (!(await command({ cmd: "stop" }))) return;   // stop 실패면 start 하지 않음(실패 문구 유지)
+    }
+  }
   const body = { cmd: "start", route: routeIds };
   const off = $("offset").value.trim();
   if (off !== "") body.start_offset_cm = Number(off);
@@ -81,7 +140,7 @@ $("btnHome").addEventListener("click", async () => {
   const r = await RM.postJson("api/route/return", body);
   RM.setMsg($("cmdMsg"), r.success ? r.msg : `복귀 실패: ${r.msg || r.httpStatus}`, r.success ? "ok" : "err");
 });
-$("btnClear").addEventListener("click", () => map.setRoute([]));
+$("btnClear").addEventListener("click", () => { map.setRoute([]); seededEnd = null; seedStartFromEnd(lastState); });
 $("presets").addEventListener("change", (ev) => {
   const v = ev.target.value;
   if (v) map.setRoute(v.split(","));
@@ -119,7 +178,10 @@ function render(snap) {
   showBattery(snap.battery);
   const s = snap.state;
   syncSpeed(s && s.speed);
+  syncReverseSpeed(s && s.speed);
   lastState = s;
+  seedStartFromEnd(s);
+  RM.fillBackSelect($("backTo"), RM.backCandidates(s));
   lastStale = !!snap.stale;
   $("robotChip").textContent = "robot " + (snap.robot || "-");
   $("stateChip").textContent = "state " + (s ? s.state : "-");
@@ -128,6 +190,8 @@ function render(snap) {
   $("sState").textContent = s.state;
   $("sReason").textContent = s.reason || "-";
   $("sLeg").textContent = s.leg ? `${s.leg.from} → ${s.leg.to} (${s.leg.action}, ${s.leg.detect})` : "-";
+  { const rt = RM.reverseText(s);
+  $("sReverse").textContent = rt === "-" && s && s.back_why ? `후진 불가: ${s.back_why}` : rt; }
   $("sTravel").textContent = `${fmt(s.traveled_cm)}` + (s.window_cm ? ` / ${s.window_cm[0]}~${s.window_cm[1]}` : "");
   $("sRot").textContent = fmt(s.rotated_deg);
   $("sIr").textContent = s.ir ? s.ir.raw.join(", ") : "-";

@@ -46,9 +46,16 @@
         <button id="btnStart" class="btn btn-primary" type="button" disabled>▶ 경로 시작</button>
         <button id="btnLoad" class="btn btn-outline" type="button" disabled>상차 완료</button>
         <button id="btnStop" class="btn btn-danger" type="button">■ 경로 정지</button>
+        <button id="btnPause" class="btn btn-outline" type="button" disabled title="그 자리에서 멈춤(경로·구간 기억 유지). 주행 중일 때만">⏸ 일시정지</button>
+        <button id="btnResume" class="btn btn-outline" type="button" disabled title="멈춘 자리에서 같은 구간 전진을 이어 감. 일시정지일 때만">⏵ 이어 가기</button>
         <button id="btnHome" class="btn btn-outline" type="button" title="지금 노드 → P5. 도착·상차 대기면 그 위치에서, 정지·오류 뒤에는 「지금 위치」를 골라야 함. 상차 대기 중이면 상차 완료 뒤 출발">⌂ P5 복귀</button>
         <select id="homeFrom" class="text-input ir-select" title="정지·오류 뒤 복귀할 때 로봇이 지금 서 있는 노드"><option value="">지금 위치(정지·오류 뒤)…</option></select>
       </div>
+      <div class="form-line"><label for="backTo">후진</label>
+        <span class="row">
+          <select id="backTo" class="text-input ir-select" title="이번 경로에서 이미 지난 노드(가장 최근이 기본). 일시정지 중이거나 경로가 끝난 뒤(도착·상차 대기)에만"></select>
+          <button id="btnBack" class="btn btn-outline" type="button" disabled title="지나온 길을 라인 따라 후진해 선택한 노드까지. 뒤쪽 감지 없음 — 후진 경로·목적 노드가 비었는지 먼저 확인">◀ 후진</button>
+        </span></div>
       <div class="form-line"><label for="spLin">직선 속도</label>
         <span class="row"><input id="spLin" type="range" min="1.5" max="6" step="0.5" value="3"><b id="spLinV">-</b></span></div>
       <div class="form-line"><label for="spRot">회전 속도</label>
@@ -56,6 +63,12 @@
       <div class="row">
         <button id="btnSpeed" class="btn btn-outline btn-small" type="button" title="주행 중에도 바로 바뀜(상한 = line_nav max_linear·max_angular)">속도 적용</button>
         <span class="tiny-note" id="spNow">현재 -</span>
+      </div>
+      <div class="form-line"><label for="spRev">후진 속도</label>
+        <span class="row"><input id="spRev" type="range" min="1" max="3" step="0.5" value="2"><b id="spRevV">-</b></span></div>
+      <div class="row">
+        <button id="btnRevSpeed" class="btn btn-outline btn-small" type="button" title="후진 중에도 바로 바뀜(0.01~0.03 m/s). 위 직선 속도와 별개">후진 속도 적용</button>
+        <span class="tiny-note" id="spRevNow">후진 기본 2.0 cm/s</span>
       </div>
       <div class="row">
         <label class="tiny-note" for="offset">출발 노드 → 센서 거리(cm, 비우면 자동)</label>
@@ -69,6 +82,7 @@
       <div class="info-line"><span>state</span><span class="value" id="sState">-</span></div>
       <div class="info-line"><span>reason</span><span class="value" id="sReason">-</span></div>
       <div class="info-line"><span>구간</span><span class="value" id="sLeg">-</span></div>
+      <div class="info-line"><span>후진</span><span class="value" id="sReverse">-</span></div>
       <div class="info-line"><span>이동 / 감지 창 (cm)</span><span class="value" id="sTravel">-</span></div>
       <div class="info-line"><span>회전 (°)</span><span class="value" id="sRot">-</span></div>
       <div class="info-line"><span>IR raw [왼, 가, 오]</span><span class="value" id="sIr">-</span></div>

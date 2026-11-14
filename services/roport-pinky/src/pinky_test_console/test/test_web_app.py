@@ -405,8 +405,13 @@ def test_route_api(client, node):
     r = client.post('/api/route/command', json={'cmd': 'start', 'route': ['N14', 'N16']})
     assert r.status_code == 200 and node.calls[-1] == ('route', {'cmd': 'start',
                                                                  'route': ['N14', 'N16']})
+    for c in ({'cmd': 'pause'}, {'cmd': 'resume'}, {'cmd': 'back', 'to': 'N23'},
+              {'cmd': 'speed', 'reverse_speed': 0.02}):
+        assert client.post('/api/route/command', json=c).status_code == 200
+        assert node.calls[-1] == ('route', c)
     for body in ({'cmd': 'fly'}, {'cmd': 'start', 'route': ['N14']},
-                 {'cmd': 'start', 'route': ['N14', 'x; rm']}):
+                 {'cmd': 'start', 'route': ['N14', 'x; rm']}, {'cmd': 'back'},
+                 {'cmd': 'back', 'to': 'bad id'}, {'cmd': 'speed', 'reverse_speed': 0.05}):
         assert client.post('/api/route/command', json=body).status_code == 400, body
     assert client.post('/api/route/command', data='cmd=stop',
                        content_type='application/x-www-form-urlencoded').status_code == 400
@@ -453,6 +458,10 @@ def test_fleet_api(fleet_client):
     assert r.status_code == 200 and r.get_json()['result'] == {'success': True}
     assert c.post('/api/fleet/route', headers=h,
                   json={'name': 'pinky1', 'cmd': 'start', 'route': ['N1']}).status_code == 400
+    assert c.post('/api/fleet/route', headers=h,
+                  json={'name': 'pinky1', 'cmd': 'back', 'to': 'N23'}).status_code == 200
+    assert c.post('/api/fleet/route', headers=h,
+                  json={'name': 'pinky1', 'cmd': 'back', 'to': 'x'}).status_code == 400
     assert c.post('/api/fleet/stop_all', headers=h, json={}).get_json()['success']
     mgr.client.fail = True
     r = c.post('/api/fleet/route', headers=h, json={'name': 'pinky1', 'cmd': 'stop'})

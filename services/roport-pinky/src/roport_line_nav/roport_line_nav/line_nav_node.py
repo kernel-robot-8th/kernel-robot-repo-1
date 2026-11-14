@@ -9,6 +9,8 @@
         {"cmd": "stop"}        {"cmd": "load_done"}   (상차 완료: N01·N11 에서 대기 중일 때)
         {"cmd": "dock", "node": "N11", "advance_cm": 1.5, "rotate_deg": 96, "move_cm": 2}
         {"cmd": "dock", "node": "N11", "reset": true}   (정밀 도킹 값 적용·저장, 주행 중 거부)
+        {"cmd": "speed", "base_speed": 0.03, "rotate_speed": 0.4, "reverse_speed": 0.02}  (키 하나 이상)
+        {"cmd": "pause"}  {"cmd": "resume"}  {"cmd": "back", "to": "N23"}   (FFT1-172 일시정지·라인 후진)
 발행  cmd_vel (geometry_msgs/Twist) — 주행 중일 때만. dry_run 이면 발행하지 않음
       line_nav/state (std_msgs/String, JSON) — 상태·현재 구간·이벤트·IR·마지막 명령 결과
 
@@ -71,8 +73,13 @@ def parse_command(text):
     if not isinstance(data, dict) or not isinstance(data.get('cmd'), str):
         raise ValueError('command must be an object with "cmd"')
     cmd = data['cmd']
-    if cmd in ('stop', 'load_done'):
+    if cmd in ('stop', 'load_done', 'pause', 'resume'):
         return cmd, {}
+    if cmd == 'back':           # 지나온 노드인지·받을 수 있는 상태인지는 실행부가 검사
+        to = data.get('to')
+        if not isinstance(to, str) or not NODE_ID.match(to):
+            raise ValueError('back needs "to" (node id)')
+        return cmd, {'to': to}
     if cmd == 'dock':           # 범위·상차 노드 여부는 실행부(DockTable)가 검사
         node = data.get('node')
         if not isinstance(node, str) or not NODE_ID.match(node):
@@ -91,7 +98,7 @@ def parse_command(text):
         return cmd, args
     if cmd == 'speed':          # 범위는 실행부가 설정 상한으로 검사
         args = {}
-        for k in ('base_speed', 'rotate_speed'):
+        for k in ('base_speed', 'rotate_speed', 'reverse_speed'):
             v = data.get(k)
             if v is None:
                 continue
@@ -99,7 +106,7 @@ def parse_command(text):
                 raise ValueError(f'{k} must be a number')
             args[k] = float(v)
         if not args:
-            raise ValueError('speed needs base_speed and/or rotate_speed')
+            raise ValueError('speed needs base_speed, rotate_speed and/or reverse_speed')
         return cmd, args
     if cmd != 'start':
         raise ValueError(f'unknown cmd {cmd!r}')
@@ -158,8 +165,13 @@ class LineNavNode(Node):
             for name in ('base_speed', 'max_linear', 'max_angular', 'kp', 'kd', 'ir_ahead_cm',
                          'turn_advance_cm', 'rotate_speed', 'reverse_speed', 'reverse_max_cm',
                          'gate_min', 'gate_max', 'gate_early_cm', 'lost_timeout',
-                         'approach_speed', 'approach_lead_cm', 'pass_full_speed', 'tee_both',
-                         'tee_window_cm', 'kp_speed_scale', 'gain_ref_speed')})
+                         'approach_speed', 'approach_lead_cm', 'post_turn_slow_cm',
+                         'pass_full_speed', 'tee_both',
+                         'tee_window_cm', 'kp_speed_scale', 'gain_ref_speed',
+                         'gap_max_cm', 'gap_heading_window_cm', 'gap_confirm', 'search_deg',
+                         'ir_spacing_cm', 'side_rise_only', 'side_rise_off_samples',
+                         'side_rise_tee', 'reverse_follow_speed', 'reverse_wn', 'reverse_zeta',
+                         'reverse_lost_cm', 'reverse_max_heading_deg', 'reverse_short_cm')})
 
         self.graph = Graph.load(layout_file)
         self.sensor = LineSensor(load_calibration(cal_file, robot))
@@ -192,7 +204,10 @@ class LineNavNode(Node):
             f'dock={self.ex.dock.as_dict() or "defaults"} '
             f'base={cfg.base_speed} m/s approach={cfg.approach_speed} m/s '
             f'(from {cfg.approach_lead_cm} cm before node, straight pass {"full" if cfg.pass_full_speed else "slow"}) ir_ahead={cfg.ir_ahead_cm} cm '
-            f'kp={cfg.kp} kd={cfg.kd} (x speed/{cfg.gain_ref_speed} above it: {cfg.kp_speed_scale})')
+            f'kp={cfg.kp} kd={cfg.kd} (x speed/{cfg.gain_ref_speed} above it: {cfg.kp_speed_scale}) '
+            f'gap_max={cfg.gap_max_cm} cm search={cfg.search_deg} deg '
+            f'side_rise={cfg.side_rise_only}(off {cfg.side_rise_off_samples}, tee {cfg.side_rise_tee}) '
+            f'reverse_follow={cfg.reverse_follow_speed} m/s (wn {cfg.reverse_wn}, zeta {cfg.reverse_zeta})')
 
     # ---------------- 입력 ----------------
     def _on_odom(self, msg):
@@ -218,6 +233,16 @@ class LineNavNode(Node):
             elif cmd == 'speed':
                 base, rot = self.ex.set_speed(**args)
                 ok, detail = True, f'{base:.3f} m/s, {rot:.2f} rad/s'
+                if 'reverse_speed' in args:
+                    detail += f', reverse {self.ex.cfg.reverse_follow_speed:.3f} m/s'
+            elif cmd == 'pause':
+                ok, detail = True, self.ex.pause()
+            elif cmd == 'resume':
+                ok, detail = True, self.ex.resume()
+            elif cmd == 'back':
+                if self._reading is None:
+                    raise ValueError('no IR yet')
+                ok, detail = True, self.ex.back(args['to'])
             elif cmd == 'dock':
                 ok, detail = True, self._apply_dock(args)
             else:
@@ -273,7 +298,7 @@ class LineNavNode(Node):
 
     def _record(self, now, reading, cmd, pose):
         if self.ex.active and not self.recorder.active:
-            path = self.recorder.open(self.ex.route, now)
+            path = self.recorder.open(self.ex.route_shown, now)
             if path:
                 self.get_logger().info(f'route log: {path}')
             elif self.recorder.error:
