@@ -1,5 +1,23 @@
 # RO:PORT (로포트)
 
+## 팀원 통합 시험 브랜치
+
+`feature/inyup-baek/control-test-current`는 PR 병합을 기다리는 동안 로컬 구현을 함께 시험하기 위한 브랜치입니다. 최신 main과 PR #79의 MQTT·OMX 수정, 미제출 Fleet·웹 UI·서비스 WSS·운영 저장소 코드를 포함합니다. main 릴리스나 실물 인수 완료 버전은 아닙니다. 시험 결과에는 `git rev-parse HEAD` 값을 함께 기록하세요.
+
+Ubuntu 24.04, Python 3.12, uv, Node.js 24, Mosquitto가 설치된 PC에서:
+
+```bash
+git clone --branch feature/inyup-baek/control-test-current https://github.com/kernel-robot-8th/kernel-robot-repo-1.git roport-control-test
+cd roport-control-test/services/roport-control-server
+npm ci --ignore-scripts
+npm run prepare:assets
+bash tools/start_virtual_ui.sh
+```
+
+터미널에 표시되는 URL과 마지막 조작 키로 접속합니다. 기본 URL은 `http://127.0.0.1:8000/ui/?mode=fleet`입니다. 가상 시험은 로컬 브로커와 가상 장치를 사용하며 별도 운영 DB나 실물 로봇 없이 실행됩니다. 종료는 Ctrl+C입니다. 실행 기록과 키는 공유하지 마세요.
+
+작업을 수정하지 않은 테스트 복사본의 업데이트는 저장소에서 `git pull --ff-only` 후 위 실행 명령을 다시 사용합니다. 직접 수정 중인 작업공간에는 덮어쓰지 말고 별도 clone을 사용하세요. 실물 설치·센서·제어판 설정은 [통합 관제 가이드](services/roport-control-server/docs/field-control.md)를 따릅니다.
+
 **공항 면세품 물류와 고객 안내를 연결하는 로봇 서비스 프로젝트**
 
 커널아카데미 로보틱스 심화 캠프 주말 야간반 1기 1팀 **GATE CREW (게이트크루)**의 개발 저장소입니다.
@@ -37,7 +55,7 @@ OMX 로봇팔과 Pinky 이동로봇을 연동해 면세품 보관·운송·인�
 - 구성요소별 초기 코드·실행 안내·CI가 등록되어 있습니다. 업무 기능·실로봇 연동은 아직 구현·검증 전입니다.
 - 시나리오와 설계 문서의 작성 상태를 기능 구현·통합 검증 상태와 구분합니다.
 
-통합관제의 2026-11-03 변경: PR #24 계층 구조를 바탕으로 PyQt를 3D 웹 UI + FastAPI로 전환했습니다. 현재 OFFLINE/DEMO 표시·조회·상태 스트림과 독립 MQTT/UDP 모듈을 제공하며, 원본 UI에 Unix socket으로 연결한 Pinky MQTT 시험 실행부를 제공합니다. 운영 DB 연결은 보류하며 공유 등록 계약·PostgreSQL 저장소만 별도로 제공하고 API/UI에는 연결하지 않았습니다. 운영 실행부·영상 웹 중계는 후속입니다. [실행 및 현재 범위](services/roport-control-server/README.md)를 확인하세요. 위의 프로젝트 전체 진행 이력과 구분합니다.
+통합관제는 원본 3D 웹 UI + FastAPI + 별도 실행부 1개를 사용합니다. 실행부가 MQTT 기체 상태, 3대 Pinky 역할, 6칸 선반, 입출고·N12 왕복을 판단하며 운영 PostgreSQL과 서비스 WSS를 소유합니다. UI는 Unix socket으로 같은 상태를 조회·조작합니다. 기존 구간별 주행 시험과 새 요청 기반 가상 시험을 함께 제공합니다. 점유 해제 기반 동시 주행을 지원하며, 시간 최적화·현장 장치 보정·운영 복구는 후속입니다. [실행 및 현재 범위](services/roport-control-server/README.md), [요청 기반 통합 관제](services/roport-control-server/docs/field-control.md)를 확인하세요.
 
 ## 팀
 
@@ -77,6 +95,7 @@ kernel-robot-repo-1/
 
 ## 문서와 협업
 
+- [Pinky·OMX 공통 시험 버전과 PC별 설치·실행 순서](docs/pinky-omx-baseline.md): 코드/키트 버전 검사부터 시작·종료·복구까지의 배포 기준. 실물 OMX 실행부는 별도 인수 전입니다.
 - [디렉토리·기술 스택·CI 안내](docs/repositories.md)
 - [설계·요구사항·검증 문서 안내](docs/README.md)
 - [현재 Git-flow 및 PR 운영 규칙](.agents/rules/git-flow.md): `develop` 없이 `main`과 선택적 `task/**`를 사용합니다.

@@ -21,7 +21,28 @@ from roport_control_server.executor.pinky_trial import TrialControl
 from roport_control_server.executor.plans import trial_presets
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+from run_virtual_fleet import profiles
 from run_virtual_trial import simulation_profile
+
+
+def test_virtual_fleet_and_robot_profiles_share_requested_speed():
+    fleet, robots = profiles()
+    assert fleet["speed_limit_mps"] == 0.08
+    for profile in (fleet, *(p for _, p in robots.values())):
+        assert {r["speed_limit_mps"] for r in profile["routes"].values()} == {0.08}
+    for role, profile in robots.values():
+        driver = VirtualPinky(profile, role, threaded=False)
+        try:
+            assert driver.ex.cfg.base_speed == 0.08
+            assert driver.nav.speed_mps == 0.08
+            before = dict(driver.nav.pose)
+            driver.nav.start(
+                {"goal_id": "speed-check", "pose": {**before, "x": before["x"] + 1}}
+            )
+            driver.nav.tick(1)
+            assert driver.nav.pose["x"] - before["x"] == pytest.approx(0.08)
+        finally:
+            driver.close()
 
 
 @pytest.mark.parametrize("scenario", ["single", "two", "smartcart"])

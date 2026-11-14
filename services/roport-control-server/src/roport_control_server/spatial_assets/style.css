@@ -89,7 +89,7 @@ header b {
 .layout {
   display: grid;
   grid-template-columns: 164px minmax(400px, 1fr) 250px;
-  min-height: calc(100vh - 88px);
+  min-height: calc(100vh - 142px);
 }
 .fleet {
   background: var(--soft);
@@ -269,6 +269,7 @@ canvas {
   gap: 8px;
   flex: 1;
   color: var(--muted);
+  white-space: nowrap;
 }
 #demo-controls input {
   min-width: 30px;
@@ -389,9 +390,6 @@ footer {
     gap: 12px;
   }
 }
-#demo-controls label {
-  white-space: nowrap;
-}
 
 nav { display:flex; align-items:center; gap:6px; padding:0 18px; min-height:54px; background:#fff; border-bottom:1px solid var(--line); }
 .brand { background:var(--ink); color:white; padding:14px 18px; margin-right:18px; letter-spacing:.08em; }
@@ -401,7 +399,6 @@ nav a { margin-left:auto; color:var(--muted); padding:10px; }
 .detail-page { min-height:70vh; padding:36px; }
 .detail-page p { margin-top:16px; color:var(--muted); }
 .actions { display:flex; gap:6px; padding:8px 12px; }
-.layout { min-height:calc(100vh - 142px); }
 @media (max-width:760px) {
   .layout { grid-template-columns:120px minmax(0, 1fr); }
   .info { grid-column:1 / -1; }
@@ -428,10 +425,10 @@ nav a { margin-left:auto; color:var(--muted); padding:10px; }
 #ps-msg[data-kind="err"] { color: #a33; }
 .ps-jobs { color: var(--muted); padding-left: 18px; }
 /* The trial panel uses the existing neutral palette and explicit state labels. */
-#trial-panel { border-top: 1px solid var(--line); margin-top: 12px; padding: 12px; }
-#trial-panel p { line-height: 1.5; }
-#trial-panel input { border: 1px solid #cbd2d7; border-radius: 6px; padding: 7px 10px; max-width: 100%; }
-#trial-panel .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+:is(#trial-panel, #fleet-panel) { border-top: 1px solid var(--line); margin-top: 12px; padding: 12px; }
+:is(#trial-panel, #fleet-panel) p { line-height: 1.5; }
+:is(#trial-panel, #fleet-panel) input { border: 1px solid #cbd2d7; border-radius: 6px; padding: 7px 10px; max-width: 100%; }
+:is(#trial-panel, #fleet-panel) .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 #trial-panel details { font-size: 12px; color: var(--muted); margin-top: 10px; }
 #trial-events { padding-left: 18px; overflow-wrap: anywhere; }
 .route-label { position: absolute; transform: translate(-50%, 8px); background: #f8faf9dd; border-radius: 3px; padding: 1px 3px; font-size: 10px; color: #235f55; pointer-events: none; }
@@ -440,21 +437,10 @@ nav a { margin-left:auto; color:var(--muted); padding:10px; }
 #trial-slots article { flex: 1; min-width: 160px; border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
 #pinky-trial-details { max-width: 1000px; }
 
-.map-node {
-  position: absolute;
-  transform: translate(-50%, 5px);
-  padding: 1px 3px;
-  border-radius: 3px;
-  font-size: 9px;
-  color: #41525d;
-  background: #fffffff0;
-  white-space: nowrap;
-}
-
 #scenario-editor { margin-block: 16px; border-top: 1px solid #d5dbde; padding-top: 12px; }
 #scenario-editor summary { cursor: pointer; font-weight: 600; }
-#scenario-fields, #service-fields { border: 0; padding: 8px 0; min-width: 0; }
-#scenario-fields label, #service-fields label { display: block; margin-block: 8px; }
+#scenario-fields, #service-fields, #fleet-fields { border: 0; padding: 8px 0; min-width: 0; }
+#scenario-fields label, #service-fields label, #fleet-fields label { display: block; margin-block: 8px; }
 #scenario-fields input:not([type=checkbox]), #scenario-fields select, #service-fields select { max-width: 100%; box-sizing: border-box; padding: 6px; }
 #scenario-steps { list-style: none; padding-left: 0; max-height: 420px; overflow: auto; }
 #scenario-steps li { border-bottom: 1px solid #d5dbde; padding-block: 10px; }
@@ -462,3 +448,10 @@ nav a { margin-left:auto; color:var(--muted); padding:10px; }
 #scenario-preview { display: block; width: 100%; height: 220px; background: #f4f6f6; border: 1px solid #d5dbde; }
 #scenario-feedback, #service-feedback { overflow-wrap: anywhere; }
 #scenario-progress, #service-progress { max-height: 180px; overflow: auto; }
+
+#fleet-shelf { display: grid; grid-template-columns: 1fr 1.3fr 1fr; gap: .5rem; }
+#fleet-shelf > div { padding: .6rem; border: 1px solid #dce1e6; border-radius: 6px; }
+
+#fleet-panel { padding: 16px; }
+#fleet-work { padding-left: 20px; max-height: 240px; overflow: auto; }
+#fleet-work li { padding: 6px 0; }
