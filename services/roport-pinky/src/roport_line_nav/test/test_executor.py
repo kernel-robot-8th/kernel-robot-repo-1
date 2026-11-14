@@ -1,5 +1,6 @@
 import math
 import os
+from types import SimpleNamespace
 
 import pytest
 from sim import Sim
@@ -42,6 +43,21 @@ def test_confirmed_start_rejects_unmeasured_offsets(graph, offset):
     assert runner.state == 'idle'
 
 
+@pytest.mark.parametrize('centered', [None, False])
+@pytest.mark.parametrize('heading', ['N', 'S', 'W'])
+def test_reverse_junction_memory_does_not_assume_centered_axle(graph, centered, heading):
+    runner = RouteExecutor(graph)
+    # Reverse arrival keeps the sensor at the line and needs its own pre_center handling.
+    end = {'node': 'N23', 'facing': 'E', 's0': runner.cfg.half_line_cm,
+           'center': (0., 0.)}
+    if centered is not None:
+        end['centered'] = centered
+    _, pre, s0 = runner._start_plan(SimpleNamespace(frm='N23', heading=heading), end)
+    assert pre is not None
+    expected = 2 * runner.cfg.ir_ahead_cm + runner.cfg.half_line_cm if heading == 'W' else None
+    assert s0 == expected
+
+
 def _axle_to(sim, node_id):
     n = sim.graph.nodes[node_id]
     return math.hypot(sim.x - n.x, sim.y - n.y)
@@ -72,6 +88,7 @@ def test_junction_hold_centers_then_continues(graph, first, heading, continuatio
     assert sim.run(ex, _done)
     assert ex.state == ARRIVED, ex.as_dict()
     assert _axle_to(sim, first[-1]) < 3.0
+    assert ex._end['centered'] is True
     position = (sim.x, sim.y, sim.yaw)
     for _ in range(20):
         sim.tick(ex)

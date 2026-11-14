@@ -347,8 +347,8 @@ class RouteExecutor:
         turn = turn_of(facing, leg.heading)
         if turn == GO_STRAIGHT:
             return facing, None, end['s0']
-        if not self.graph.nodes[leg.frm].bar:
-            # 교차점 정차는 축이 중심에 있다. 회전 뒤에도 센서는 중심에서 ir_ahead만큼 앞.
+        if not self.graph.nodes[leg.frm].bar and end.get('centered') is True:
+            # 축을 중심에 맞춘 정차만 적용한다. 후진 도착은 센서 위치가 다르다.
             if turn == BACK:
                 pre = (1.0, c.back_min_deg, c.back_max_deg)
             else:
@@ -566,7 +566,7 @@ class RouteExecutor:
         if leg.action == PARK:    # 후진해 가로선 가장자리에서 멈춤
             return {'node': leg.to, 'facing': back, 's0': c.half_line_cm}
         if leg.action == STOP and not self.graph.nodes[leg.to].bar:
-            return {'node': leg.to, 'facing': leg.heading, 's0': c.ir_ahead_cm}
+            return {'node': leg.to, 'facing': leg.heading, 's0': c.ir_ahead_cm, 'centered': True}
         return {'node': leg.to, 'facing': leg.heading, 's0': None}
 
     def _begin_leg(self, s0_cm, guess=False):
