@@ -46,6 +46,9 @@ test('설정·충돌·형식 오류와 해석할 수 없는 응답은 통신 오
   assert.equal(toVerifyResult(404, null), null); // 서버가 아닌 곳의 404
   assert.equal(toVerifyResult(200, null), null); // 프록시 미설정으로 HTML이 온 경우
   assert.equal(toVerifyResult(201, { result: 'VERIFIED', pickup: null }), null);
+  const { items: _items, ...noItems } = pickup;
+  assert.equal(toVerifyResult(201, { result: 'VERIFIED', pickup: noItems }), null); // 화면이 깨질 응답
+  assert.equal(toVerifyResult(201, { result: 'VERIFIED', pickup: { ...pickup, flight: null } }), null);
   assert.equal(toVerifyResult(201, { result: 'REJECTED', reasonCode: 'QR_REVOKED' }), null); // QR 확인은 아직 연결 전
 });
 

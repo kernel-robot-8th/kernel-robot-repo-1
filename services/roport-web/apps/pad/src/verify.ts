@@ -22,11 +22,24 @@ export function toVerifyResult(status: number, body: unknown): VerifyResult | nu
   if (status === 404 && code(body) === 'RESERVATION_NOT_FOUND') return { ok: false, reason: 'NOT_FOUND' };
   if (status !== 200 && status !== 201) return null;
   const v = (body ?? {}) as Verification;
-  if (v.result === 'VERIFIED') return v.pickup ? { ok: true, pickup: v.pickup } : null;
+  if (v.result === 'VERIFIED') return isPickup(v.pickup) ? { ok: true, pickup: v.pickup } : null;
   if (v.result !== 'REJECTED') return null;
   if (v.reasonCode === 'ALREADY_RECEIVED') return { ok: false, reason: 'ALREADY_RECEIVED' };
   if (v.reasonCode === 'PICKUP_NOT_ACTIVE') return { ok: false, reason: 'NOT_ACTIVE' };
   return null;
+}
+
+// 화면이 바로 쓰는 필드만 확인한다. 빠지면 물품 화면이 깨지므로 통신 오류로 둔다.
+function isPickup(p: unknown): p is VerifiedPickup {
+  if (!p || typeof p !== 'object') return false;
+  const v = p as Partial<VerifiedPickup>;
+  return (
+    typeof v.pickupId === 'string' &&
+    typeof v.customerName === 'string' &&
+    Array.isArray(v.items) &&
+    typeof v.flight?.gateCode === 'string' &&
+    typeof v.location?.locationId === 'string'
+  );
 }
 
 function code(body: unknown): string | null {

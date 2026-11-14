@@ -10,6 +10,9 @@ const USE_SERVER = import.meta.env.VITE_PAD_API === 'server';
 // 서버 모드에서도 QR 확인·수령 확인·서비스 요청은 아직 데모 응답이라 데모 표시를 유지한다.
 export const IS_DEMO = true;
 
+// 서버에서 확인한 예약의 수령 완료는 저장되지 않는다. 완료 화면에 그 사실을 적는다.
+export const RECEIPT_IS_DEMO = USE_SERVER;
+
 // 이 패드가 붙은 카트(서버 X-Cart-Id, 개발 전용 카트 인증). 비밀값이 아니다.
 export const CART_ID = import.meta.env.VITE_PAD_CART_ID || 'pinky3';
 export const CART_LABEL = '스마트카트 3호기';

@@ -307,6 +307,7 @@ export function App() {
             <StatusIcon name="check" tone="done" />
             <h1>수령이 완료되었습니다</h1>
             <p className="lead">이용해 주셔서 감사합니다. 카트는 대기 장소로 돌아갑니다.</p>
+            {api.RECEIPT_IS_DEMO && <p className="demo-note">데모: 수령 기록은 아직 서버에 연결 전이라 저장되지 않았습니다.</p>}
             <p className="tagline">로봇이 만드는 더 편리한 여행의 시작, RO:PORT</p>
           </div>
         )}

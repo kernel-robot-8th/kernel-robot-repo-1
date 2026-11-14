@@ -136,7 +136,8 @@ h1 { font-size: 2.3rem; line-height: 1.3; margin: 0; font-weight: 700; color: va
 /* ── 완료 ── */
 .finale { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding-bottom: 60px; text-align: center; background: var(--white); }
 .finale h1 { font-size: 2.6rem; }
-.tagline { margin: 24px 0 0; padding-top: 20px; border-top: 1px solid var(--line); font-size: 1rem; color: var(--muted); }
+.demo-note { margin: 16px 0 0; font-size: 0.95rem; color: #b8620c; }
+.tagline {margin: 24px 0 0; padding-top: 20px; border-top: 1px solid var(--line); font-size: 1rem; color: var(--muted); }
 
 /* ── 안내·데모 ── */
 .notice { position: absolute; left: 50%; bottom: 76px; transform: translateX(-50%); margin: 0; padding: 12px 22px; max-width: 80%; font-size: 1.05rem; color: var(--navy); background: var(--orange-soft); border: 1px solid var(--orange); border-left-width: 5px; border-radius: 6px; }
