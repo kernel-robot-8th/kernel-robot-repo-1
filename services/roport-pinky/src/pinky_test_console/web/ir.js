@@ -102,7 +102,7 @@ async function startRecord() {
   const label = $("label").value.trim();
   const duration = Number($("duration").value);
   try {
-    const r = await postJson("/api/ir/record", { label, duration });
+    const r = await postJson("api/ir/record", { label, duration });
     if (!r.success) setMsg($("recMsg"), r.msg || `오류 (${r.httpStatus})`, "err");
   } catch (e) {
     setMsg($("recMsg"), "요청 실패: " + e, "err");
@@ -110,7 +110,7 @@ async function startRecord() {
 }
 
 async function cancelRecord() {
-  await postJson("/api/ir/cancel", {});
+  await postJson("api/ir/cancel", {});
   setMsg($("recMsg"), "취소했습니다.");
 }
 
@@ -154,7 +154,7 @@ function renderSuggestion(sg) {
 
 async function refreshRecords() {
   try {
-    const res = await fetch("/api/ir/records");
+    const res = await fetch("api/ir/records");
     const data = await res.json();
     $("irDir").textContent = "저장 위치(로봇): " + data.ir_dir;
     const tbody = $("records").tBodies[0];
@@ -166,7 +166,7 @@ async function refreshRecords() {
       for (let c = 0; c < 3; c++) tr.appendChild(cell(fmtCh(r.stats.channels[c])));
       const td = document.createElement("td");
       const a = document.createElement("a");
-      a.href = "/api/ir/records/" + encodeURIComponent(r.file);
+      a.href = "api/ir/records/" + encodeURIComponent(r.file);
       a.textContent = "↓";
       a.title = r.file;
       td.appendChild(a);
@@ -181,7 +181,7 @@ async function refreshRecords() {
 // ---------------- 주기 갱신 ----------------
 async function poll() {
   try {
-    const res = await fetch("/api/ir");
+    const res = await fetch("api/ir");
     const s = await res.json();
     markConnection(true);
     renderLive(s);

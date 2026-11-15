@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>roport_pinky_line</name>
+  <version>0.1.0</version>
+  <description>RO:PORT Pinky IR line follower (3-channel IR, PD steering, stop on line loss/node/IR timeout)</description>
+  <maintainer email="102033640+minjee92@users.noreply.github.com">GATE CREW</maintainer>
+  <license>LicenseRef-Proprietary</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <!-- launch 의 ir_node:=true 는 pinky_sensor_adc(ARM 전용, 로봇 ~/pinky_pro)를 쓴다.
+       CI 의 packages-select 빌드를 막지 않도록 의존으로 적지 않는다 -->
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

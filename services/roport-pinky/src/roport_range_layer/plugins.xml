@@ -1,0 +1,5 @@
+<library path="fresh_range_layer">
+  <class type="roport_range_layer::FreshRangeLayer" base_class_type="nav2_costmap_2d::Layer">
+    <description>Native Jazzy Range sensor model with validated fresh input and current recovery.</description>
+  </class>
+</library>

@@ -107,6 +107,16 @@ def test_included_launch_nav(map_yaml):
         'bringup_launch.xml', {'map': map_yaml, 'use_sim_time': 'True'})
 
 
+def test_amcl_mode_needs_map_and_includes_localization_only(map_yaml):
+    with pytest.raises(LaunchArgError, match='mode:=amcl requires map'):
+        resolve_plan('amcl')
+    plan = resolve_plan('amcl', map_path=map_yaml)
+    name, args = included_launch(plan)
+    # map_server + amcl 만: Nav2 경로 계획·주행 제어(bringup/navigation)는 띄우지 않음
+    assert name == 'localization_launch.xml'
+    assert args == {'map': map_yaml, 'use_sim_time': 'False'}
+
+
 def test_ir_mode_plan():
     plan = resolve_plan('ir', map_path='/ignored.yaml')
     assert plan.mode == 'ir' and plan.map_yaml == '' and plan.ir_node is True
@@ -182,6 +192,25 @@ def test_launch_nav(monkeypatch, map_yaml):
     assert inc.launch_arguments == {'map': map_yaml, 'use_sim_time': 'True'}
 
 
+def test_launch_amcl_passes_layout(monkeypatch, map_yaml):
+    pytest.importorskip('launch_ros')
+    import launch_ros.actions
+    captured = []
+
+    class CaptureNode(launch_ros.actions.Node):
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(launch_ros.actions, 'Node', CaptureNode)
+    _, inc = _parts(_run_setup(monkeypatch, mode='amcl', map=map_yaml,
+                               layout='~/roport_airport.yaml'))
+    assert inc.source == '/fake/share/pinky_navigation/launch/localization_launch.xml'
+    params = captured[0]['parameters'][0]
+    assert params['layout_yaml'] == os.path.expanduser('~/roport_airport.yaml')
+    assert params['amcl_dir'] == '~/roport_amcl' and params['mode'] == 'amcl'
+
+
 def test_launch_rejects_bad_mode(monkeypatch):
     with pytest.raises(LaunchArgError, match='mode must be one of'):
         _run_setup(monkeypatch, mode='explore')
@@ -245,3 +274,29 @@ def test_camera_env_only_for_picamera_marker():
     assert camera_env('marker', 'picamera2', env, exists=lambda p: False) == {}
     only = camera_env('marker', 'picamera2', {}, exists=yes)
     assert only == {'LD_LIBRARY_PATH': PICAMERA_LIB_DIR}
+
+
+def test_route_requires_robot_and_runs_ir_node():
+    with pytest.raises(LaunchArgError, match='robot'):
+        resolve_plan('route')
+    with pytest.raises(LaunchArgError, match='robot'):
+        resolve_plan('route', robot='d660; rm')
+    plan = resolve_plan('route', robot='pinky_d660')
+    assert plan.robot == 'pinky_d660' and plan.ir_node and plan.ip == '0.0.0.0'
+    assert included_launch(plan) == (None, {})
+
+
+def test_fleet_binds_loopback_by_default():
+    plan = resolve_plan('fleet')
+    assert plan.ip == '127.0.0.1' and not plan.ir_node and plan.robot == ''
+    assert resolve_plan('fleet', ip='0.0.0.0').ip == '0.0.0.0'
+    with pytest.raises(LaunchArgError, match='IPv4'):
+        resolve_plan('fleet', ip='localhost; x')
+    assert resolve_plan('slam', robot='pinky_d660').robot == ''
+
+
+def test_test_mode_is_route_plus_ir():
+    plan = resolve_plan('test', robot='pinky_d660')
+    assert plan.ir_node and plan.robot == 'pinky_d660' and included_launch(plan) == (None, {})
+    with pytest.raises(LaunchArgError, match='robot'):
+        resolve_plan('test')

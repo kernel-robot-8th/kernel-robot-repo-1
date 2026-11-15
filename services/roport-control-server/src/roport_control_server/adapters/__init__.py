@@ -1,1 +1,1 @@
-"""External boundaries: MQTT, UDP, FastAPI and PyQt adapters."""
+"""External boundaries: MQTT, UDP and the FastAPI web display API."""

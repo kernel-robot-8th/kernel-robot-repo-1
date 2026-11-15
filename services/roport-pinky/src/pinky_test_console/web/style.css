@@ -89,6 +89,14 @@ body {
   background: rgba(15, 23, 42, 0.7);
 }
 
+/* 배터리 칩(경로 화면·테스트 관제): 20% 미만 빨강, 40% 미만 노랑, 오래된 값 흐리게 */
+.chip.batt-low { color: var(--err); border-color: var(--err); }
+.chip.batt-mid { color: var(--warn); border-color: var(--warn); }
+.chip.batt-stale, td.batt-stale { opacity: 0.55; }
+td.batt-low { color: var(--err); font-weight: 600; }
+td.batt-mid { color: var(--warn); }
+td.batt-ok { color: var(--ok); }
+
 .chip-dot {
   width: 8px;
   height: 8px;
@@ -444,3 +452,78 @@ canvas {
 /* ---------- 마커 테스트 화면 (marker.html) ---------- */
 .mk-frame { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #000; border-radius: 12px; }
 .ir-table tr.mk-seen td { color: var(--ok); }
+
+/* AMCL 테스트 (amcl.html) */
+.am-canvas { display: block; width: 100%; max-width: none; height: auto; aspect-ratio: 920 / 530; margin-inline: auto; background: #111827; border-radius: 12px; }
+.am-map-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.am-map-viewport { overflow: auto; max-height: 75vh; }
+.amcl-page #left { min-width: 0; justify-content: flex-start; }
+.amcl-page.am-map-expanded #right,
+.amcl-page.am-map-expanded .am-instructions { display: none; }
+.amcl-page.am-map-expanded #left { padding: 10px; }
+.amcl-page.am-map-expanded .am-map-viewport { max-height: calc(100dvh - 190px); }
+@media (max-width: 900px) {
+  .amcl-page #main { display: block; overflow: auto; }
+  .amcl-page #left { overflow: visible; }
+}
+.am-nodes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.am-nodes .am-switch { border-color: #2563eb; color: #93c5fd; }
+
+/* 경로 주행·테스트 관제·Pinky 설정 (route.html, fleet.html, settings.html) */
+.fleet-page #left { justify-content: flex-start; }
+.form-line { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center;
+  margin-bottom: 8px; font-size: 12px; color: var(--text-muted); }
+.fleet-page details summary { cursor: pointer; font-size: 13px; margin: 4px 0; }
+.fleet-page pre.cmd-box { white-space: pre-wrap; max-height: 220px; overflow: auto; font-size: 11px; }
+.fl-row { cursor: pointer; }
+.fl-legend { display: flex; gap: 10px; font-size: 12px; }
+.ir-table td.fl-swatch[data-color="0"], .fl-key[data-color="0"] { color: #d9480f; }
+.ir-table td.fl-swatch[data-color="1"], .fl-key[data-color="1"] { color: #2e4fd8; }
+.ir-table td.fl-swatch[data-color="2"], .fl-key[data-color="2"] { color: #9c36b5; }
+.ir-table td.fl-swatch[data-color="3"], .fl-key[data-color="3"] { color: #0b7285; }
+.fl-log { max-height: 280px; overflow: auto; }
+.fl-log td { font-size: 11px; white-space: nowrap; }
+.fl-log td:last-child { white-space: normal; }
+.fl-log-fleet td, .fl-log-job td { color: #2e4fd8; }
+.fl-log-state td { font-weight: 600; }
+.fl-log-console td { color: #b4441c; }
+.fl-files { max-height: 200px; overflow: auto; }
+
+/* 통합 테스트 화면 (test.html) */
+.tt-page { overflow: hidden; }
+.tt-tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tt-tab[aria-pressed="true"] { background: var(--accent, #547e87); color: #fff; border-color: transparent; }
+.tt-sep { opacity: 0.5; }
+.tt-frames { position: relative; height: calc(100vh - 110px); }
+.tt-frame { width: 100%; height: 100%; border: 0; display: block; }
+.tt-frame[hidden] { display: none; }
+/* 통합 화면 안에서 연 테스트 관제·설정: 위쪽 헤더(전체 정지 중복)를 숨김 */
+body.tt-embedded > #topbar { display: none; }
+.tt-note { padding: 4px 16px; }
+
+/* ---------- 정밀 도킹 탭 (dock.html, mode:=fleet) ---------- */
+.dk-page { overflow: auto; }
+.dk-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 12px; padding: 12px 16px; }
+@media (max-width: 1000px) { .dk-wrap { grid-template-columns: 1fr; } }
+.dk-card { background: var(--card-bg); border: 1px solid var(--border-subtle); border-radius: 12px;
+  padding: 10px 12px; margin-bottom: 10px; }
+.dk-card h3 { margin: 0 0 8px; font-size: 13px; color: var(--accent); }
+.dk-stage { position: relative; background: #000; border-radius: 10px; overflow: hidden; }
+.dk-stage canvas { display: block; width: 100%; height: auto; max-width: none; aspect-ratio: auto;
+  border-radius: 0; border: 0; }
+.dk-live { position: absolute; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.dk-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.dk-select { flex: 0 1 280px; }
+.dk-big { font-size: 18px; font-weight: 600; }
+.dk-t { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+.dk-t td, .dk-t th { padding: 3px 4px; border-bottom: 1px solid var(--border-subtle); text-align: left; }
+.dk-leg { margin: 0 0 6px; }
+.dk-sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin: 0 3px -1px 8px; }
+.dk-sw-pred { background: #d97706; }
+.dk-sw-want { background: #16a34a; }
+.dk-sw-applied { background: #38bdf8; }
+.dk-sw-est { background: #c084fc; }
+.dk-sw-meas { background: #ef4444; }
+.dk-ev { max-height: 150px; overflow: auto; font-size: 11px; font-family: ui-monospace, monospace;
+  color: var(--text-muted); }
+.dk-err { color: var(--err); }

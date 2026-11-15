@@ -64,9 +64,9 @@ def test_objects_inside_room(layout):
 
 
 def test_zone03_and_entrance(layout):
-    # 03 공용 내부공간 세로 f 129: 아래 벽 y = 221 - 129
+    # 03 아래 벽: 통로 벽 → 03 아래 벽 ㅂ 94.5(두 벽 두께 포함) → 벽 중심 y 94
     w = _by_name(layout.walls, 'zone03_bottom')
-    assert layout.frame.to_measured(w.cx, w.cy)[1] == pytest.approx(92.0, abs=1e-6)
+    assert layout.frame.to_measured(w.cx, w.cy)[1] == pytest.approx(94.0, abs=1e-6)
     # I = H 306.5 - 입구 65 = 241.5 → 아래 벽 끝 x = 379.5
     end_x = layout.frame.to_measured(w.cx, w.cy)[0] + (w.sx * 100 - 0.5) / 2
     assert end_x == pytest.approx(379.5, abs=1e-6)
@@ -83,20 +83,28 @@ def test_line_dimensions_from_measurement(layout):
     assert n05.x - n10.x + 2 * half == pytest.approx(93.2)         # D
     assert n05.y - n10.y + 2 * half == pytest.approx(91.3)         # c
     n12 = _node(layout, 'N12')
-    assert n12.x + half - (n10.x - half) == pytest.approx(359.0)   # O
-    # 간선 끝은 03 입구 시작과 같은 x
-    assert n12.x + half == pytest.approx(379.5)
-    assert _node(layout, 'N15').x - _node(layout, 'N14').x == pytest.approx(44.5)   # S
+    # 2026-11-03 저녁 재측정 기록지: 벽·칸막이 면 → 세로선 왼쪽 가장자리
+    wall_face = layout.raw['defaults']['wall_thickness'] / 2
+    # 벽-왼쪽은 폼보드 없는 강의실 벽 → 면 = x 0 (2026-11-06 사용자 확인)
+    assert _node(layout, 'N16').x - half == pytest.approx(44.5)                    # [24]
+    assert _node(layout, 'N17').x - half == pytest.approx(91.5)                    # [25]
+    # 02 인도장 세로선: 벽-왼쪽 면 → 왼쪽 가장자리 b · c · d (2026-11-06)
+    for nid, dist in (('N21', 160), ('N11', 208.2), ('N22', 256.8)):
+        assert _node(layout, nid).x - half == pytest.approx(dist), nid
     for stop, length in (('N16', 25), ('N17', 25)):                                # R
         assert _node(layout, stop).y + half - (n05.y + half) == pytest.approx(length)
-    for stop, length in (('N01', 29.9), ('N11', 41), ('H1', 40), ('H2', 40)):      # Q W U
+    for stop, length in (('N01', 29.9), ('H1', 40), ('H2', 40)):                   # Q U
         assert (n10.y - half) - (_node(layout, stop).y - half) == pytest.approx(length)
-    assert _node(layout, 'N08').x - _node(layout, 'N09').x == pytest.approx(31.5)  # ㅈ
-    assert n12.x - _node(layout, 'N08').x == pytest.approx(38.8)                   # ㄱ
+    h1, h2 = _node(layout, 'H1'), _node(layout, 'H2')
+    assert h1.x - half - (280 + wall_face) == pytest.approx(25)                    # [21]
+    assert h2.x - h1.x == pytest.approx(33)                                        # [22]
+    assert n12.x + half - (h2.x - half) == pytest.approx(38.5)                     # [23]
     # 분기 x: 바깥선 → 바깥선
     assert _node(layout, 'N18').x + half - (n10.x - half) == pytest.approx(43.6)
-    n07 = _node(layout, 'N07')
-    assert _node(layout, 'N19').x + half - (n07.x - half) == pytest.approx(94.0)
+    # 분기는 정차 노드 세로선과 같은 x
+    for branch, stop in (('N19', 'N11'), ('N23', 'N21'), ('N24', 'N22')):
+        assert _node(layout, branch).x == _node(layout, stop).x
+        assert _node(layout, branch).y == _node(layout, 'N07').y
 
 
 def test_delivery_and_warehouse_dimensions(layout):
@@ -116,6 +124,49 @@ def test_delivery_and_warehouse_dimensions(layout):
     half = layout.bar_length / 2
     assert objs['omx12_left']['max'][0] < _node(layout, 'N11').x - half
     assert _node(layout, 'N11').x + half < objs['omx12_right']['min'][0]
+    ol, orr = objs['omx12_left'], objs['omx12_right']
+    assert orr['min'][0] - ol['max'][0] == pytest.approx(25.8)                     # [6] 11-05
+    assert orr['max'][0] - ol['min'][0] == pytest.approx(72.6)                     # [5]+[6]+[7]
+    lw = layout.line_width
+    assert _node(layout, 'N11').x - lw / 2 - ol['max'][0] == pytest.approx(11.4)   # N11 ↔ OMX1
+    assert orr['min'][0] - (_node(layout, 'N11').x + lw / 2) == pytest.approx(11.8, abs=0.3)  # ↔ OMX2
+    # 새 세로선은 받침 바깥 약 11 cm(손그림 A1 11.7 · C1 11)
+    assert ol['min'][0] - (_node(layout, 'N21').x + lw / 2) == pytest.approx(11.0, abs=0.8)
+    assert _node(layout, 'N22').x - lw / 2 - orr['max'][0] == pytest.approx(11.0, abs=0.8)
+    for nid in ('N21', 'N22'):                                      # 가로선이 받침에 안 닿음
+        n = _node(layout, nid)
+        assert n.x + half < ol['min'][0] or n.x - half > orr['max'][0], nid
+    # 칸막이 면 기준 값은 N11 기준으로 놓은 받침과 0.5 cm 안(a 139.8 은 1.9 cm 어긋나 안 씀)
+    face = 138 + layout.raw['defaults']['wall_thickness'] / 2      # 칸막이-좌 면(가정)
+    assert objs['shelf_02']['min'][0] - face == pytest.approx(45.9, abs=0.5)       # [2]
+    assert objs['shelf_02']['max'][0] - objs['shelf_02']['min'][0] == pytest.approx(50)  # [3]
+    assert ol['min'][0] - face == pytest.approx(35.5, abs=0.5)                     # [4]
+    right = 280 + layout.raw['defaults']['wall_thickness'] / 2     # 칸막이-우 면
+    assert right - orr['max'][0] == pytest.approx(34, abs=0.5)                     # D1
+
+
+def test_omx12_from_walls(layout):
+    # 2026-11-03 저녁 재측정 기록지: 벽-선반(통로 벽) 면 기준, 벽-03 면 기준은 0.5 cm 안에서 확인
+    raw = {w['name']: w for w in layout.raw['walls']}
+    half_t = layout.raw['defaults']['wall_thickness'] / 2
+    face03 = raw['zone03_bottom']['from'][1] - half_t
+    aisle_face = half_t
+    objs = {o['name']: o for o in layout.raw['objects']}
+    n11 = _node(layout, 'N11')
+    bar_end = n11.y - layout.line_width / 2           # 가로선의 선반 쪽 가장자리
+    for name in ('omx12_left', 'omx12_right'):
+        assert objs[name]['max'][1] - aisle_face == pytest.approx(50.5)          # [8]
+        assert face03 - objs[name]['max'][1] == pytest.approx(42.5, abs=0.6)     # [11]
+    back = objs['omx12_back']['max'][1]
+    assert back - aisle_face == pytest.approx(31.5)                              # [10]
+    assert face03 - back == pytest.approx(61.5, abs=0.6)                         # [12]
+    assert bar_end - aisle_face == pytest.approx(35.7)                           # [15]
+    # [13] V 3.8(11-05)은 [15]·[10]으로 계산한 4.2와 0.4 차이
+    assert bar_end - back == pytest.approx(3.8, abs=0.5)                         # [13] V
+    assert face03 - aisle_face == pytest.approx(93.5)                            # Ⓓ 벽 → 벽
+    # 바닥 P7 마커(2 cm)는 가로선과 오목 바닥 사이
+    p7 = next(m for m in layout.raw['markers']['items'] if m['name'] == 'P7')
+    assert objs['omx12_back']['max'][1] + 1 < p7['center'][1] < bar_end - 1
 
 
 def test_node_graph(layout):
@@ -190,7 +241,7 @@ def test_spawn_point_is_free(layout):
 
 def test_provisional_values_are_marked(layout):
     names = layout.provisional_names()
-    for expected in ('omx12_left', 'omx12_right', 'shelf_02', 'marker_P5', 'marker_P7'):
+    for expected in ('omx12_left', 'omx12_right', 'omx12_back', 'marker_P5', 'marker_P7'):
         assert expected in names
     for measured in ('box_03', 'outer_aisle', 'zone03_bottom', 'partition_delivery', 'omx3_base',
                      'camera_tripod', 'tape_N18_N01', 'tape_N19_N11', 'bar_N11', 'bar_N16'):

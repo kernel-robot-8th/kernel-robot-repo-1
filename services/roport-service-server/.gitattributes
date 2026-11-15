@@ -1,0 +1,2 @@
+# Windows 배치 파일은 저장된 CRLF 그대로 둔다(변환 안 함). CI의 git diff --check가 줄 끝 CR을 오류로 보지 않게 한다.
+gradlew.bat -text whitespace=cr-at-eol
