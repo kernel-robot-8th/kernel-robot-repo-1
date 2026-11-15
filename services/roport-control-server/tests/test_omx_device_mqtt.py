@@ -377,6 +377,26 @@ def test_device_executor_command_to_saved_result_over_mqtt(
         assert (robot.sent if robot else len(panel.starts)) == original_calls.get(
             "robot_send", 1
         )
+        # Replanning with a new ID must not consume the same physical visit twice.
+        replacement = wire.build_message(
+            kind,
+            "control-01",
+            target,
+            command_payload,
+            command_id=command_id + "-replacement",
+            expires_at=(datetime.now(UTC) + timedelta(seconds=15)).isoformat(),
+        )
+        controller.publish(wire.topic(target, "cmd"), replacement)
+        pump(lambda: any(e["command_id"] == replacement["command_id"] for e in events))
+        rejected = next(
+            e for e in events if e["command_id"] == replacement["command_id"]
+        )
+        assert rejected["payload"]["status"] == "rejected"
+        assert rejected["payload"]["reason"] == "arrival_already_used"
+        pump(lambda: not host.pending())
+        assert (robot.sent if robot else len(panel.starts)) == original_calls.get(
+            "robot_send", 1
+        )
         output = os.environ.get("ROPORT_DEVICE_EVIDENCE_DIR")
         if output:
             path = Path(output)
