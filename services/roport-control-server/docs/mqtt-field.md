@@ -17,7 +17,7 @@
 3. 기존 준비된 `line_nav`, Nav2, 독립 drive guard를 사용한다. ROS driver·`line_nav_node`도 이번 버전으로 갱신해야 N12 역전환이 가능하다. 이 문서는 bringup이나 모터를 자동 실행하지 않는다.
 4. `python -m pinky_mqtt.trial_runner --config /path/trial.json --role logistics --journal /path/new-journal.json --driver roport_pinky.trial_driver:create_driver --hardware-authorized`로 연결한다. 스마트카트 역할은 `--role smartcart`다. 먼저 같은 인자에 `--check`를 추가하면 장비·브로커에 접속하지 않고 설정만 검사한다. `field_verified=true`는 현장 확인 후 설정한다.
 
-호스트 지표는 기본 꺼짐이다. `--host-metrics-period-s 5`처럼 주기를 명시하면 `roport/robot/{pinky}/host`로 `host_metrics`(CPU 수·loadavg·메모리 kB·CPU 온도 °C)를 QoS0·retain=false로 보낸다. 읽지 못한 값은 null이며 0으로 바꾸지 않는다. 표시 전용이라 발행 실패는 로그만 남기고 정지·HOLD·출발 판정에 쓰지 않는다. 온도는 thermal zone type `cpu-thermal`/`x86_pkg_temp`에서 읽는다. 관제는 시험 설정 `host_metrics: {"hosts": [...], "stale_after_s": 15}`가 있을 때만 별도 client(`<client_id>-host`)로 구독하고 `GET /api/hosts/metrics`로 보여 준다.
+호스트 지표는 기본 꺼짐이다. `--host-metrics-period-s 5`처럼 주기를 명시하면 `roport/robot/{pinky}/host`로 `host_metrics`(CPU 수·loadavg·메모리 kB·CPU 온도 °C)를 QoS0·retain=false로 보낸다. 읽지 못한 값은 null이며 0으로 바꾸지 않는다. 표시 전용이라 발행 실패는 로그만 남기고 정지·HOLD·출발 판정에 쓰지 않는다. 온도는 thermal zone type `cpu-thermal`/`x86_pkg_temp`에서 읽으며, 현장 기체의 zone 이름이 다르면 `--host-metrics-temp-path <밀리°C 값이 든 파일>`로 덮어쓴다(주기와 함께 지정). 관제는 시험 설정 `host_metrics: {"hosts": [...], "stale_after_s": 15}`가 있을 때만 별도 client(`<client_id>-host`)로 구독하고 `GET /api/hosts/metrics`로 보여 준다.
 
 기존 v1 journal을 v2 endpoint에 재사용하지 않는다. 이전 파일은 보관하고 새 파일로 시작한다. 미완료 실행이 있는 v2 journal을 다시 열면 자동 재주행하지 않고 복구 확인을 요구한다. 프로세스가 재시작되면 `boot_version`이 바뀌므로 관제도 새 상태를 확인해야 한다.
 

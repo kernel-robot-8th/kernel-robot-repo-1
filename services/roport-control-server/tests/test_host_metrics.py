@@ -331,8 +331,9 @@ def test_runner_passes_explicit_period_and_publishes_each_loop(monkeypatch):
         transport = type("T", (), {"ready": True})()
         halted = None
 
-        def __init__(self, *args, host_metrics_period_s=None):
+        def __init__(self, *args, host_metrics_period_s=None, host_temp_path=None):
             seen["period"] = host_metrics_period_s
+            seen["temp"] = host_temp_path
             seen["published"] = 0
             self.polls = 0
 
@@ -363,11 +364,44 @@ def test_runner_passes_explicit_period_and_publishes_each_loop(monkeypatch):
     monkeypatch.setattr(trial_runner, "FieldPinkyClient", Client)
     profile = {"robots": {"logistics": {"robot_id": "pinky1"}}}
     trial_runner.run(profile, "logistics", None, "j", Driver())
-    assert seen == {"period": None, "published": 1}
+    assert seen == {"period": None, "temp": None, "published": 1}
     trial_runner.run(
         profile, "logistics", None, "j", Driver(), host_metrics_period_s=5.0
     )
-    assert seen["period"] == 5.0
+    assert seen["period"] == 5.0 and seen["temp"] is None
+    trial_runner.run(
+        profile,
+        "logistics",
+        None,
+        "j",
+        Driver(),
+        host_metrics_period_s=5.0,
+        host_temp_path="/sys/class/hwmon/hwmon0/temp1_input",
+    )
+    assert seen["temp"] == "/sys/class/hwmon/hwmon0/temp1_input"
+
+
+def test_runner_cli_rejects_temp_path_without_period(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "roport_control_server.adapters.mqtt.trial_runner",
+            "--config",
+            str(tmp_path / "missing.json"),
+            "--role",
+            "logistics",
+            "--journal",
+            str(tmp_path / "j.json"),
+            "--host-metrics-temp-path",
+            "/sys/class/hwmon/hwmon0/temp1_input",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--host-metrics-temp-path requires --host-metrics-period-s" in result.stderr
 
 
 @pytest.mark.parametrize("value", ["0", "-5", "nan", "inf"])

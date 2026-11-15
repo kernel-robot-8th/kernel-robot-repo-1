@@ -79,6 +79,7 @@ class FieldPinkyClient:
         journal_path,
         driver,
         host_metrics_period_s=None,
+        host_temp_path=None,
     ):
         # Host telemetry is display-only and off unless a period is given explicitly.
         if host_metrics_period_s is not None and not (
@@ -87,6 +88,7 @@ class FieldPinkyClient:
         ):
             raise ValueError("host_metrics_period_s must be a positive number")
         self.host_metrics_period_s = host_metrics_period_s
+        self.host_temp_path = host_temp_path  # field override when zone names differ
         self.host_sequence, self.last_host_metrics = 0, -math.inf
         self.profile, self.driver = profile, driver
         self.robot = profile["robots"][role]["robot_id"]
@@ -525,7 +527,7 @@ class FieldPinkyClient:
                 self.control,
                 self.boot,
                 self.host_sequence,
-                read_host_metrics(),
+                read_host_metrics(temp_path=self.host_temp_path),
             )
             self.transport.publish_host_metrics(
                 wire.topic(self.robot, "host"), message, period

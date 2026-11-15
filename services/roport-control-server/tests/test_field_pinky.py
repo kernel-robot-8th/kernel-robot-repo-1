@@ -497,6 +497,34 @@ def test_host_metrics_period_must_be_positive(tmp_path, period):
         driver.close()
 
 
+def test_host_metrics_uses_configured_temp_path(tmp_path):
+    profile, _ = simulation_profile("single")
+    driver = VirtualPinky(profile, "logistics", threaded=False)
+    temp = tmp_path / "temp1_input"
+    temp.write_text("48500\n")
+    client = FieldPinkyClient(
+        MqttConfig("127.0.0.1", "wire-unit"),
+        profile,
+        "logistics",
+        tmp_path / "pinky.json",
+        driver,
+        host_metrics_period_s=5,
+        host_temp_path=str(temp),
+    )
+    samples = []
+
+    class Transport(RecordingTransport):
+        def publish_host_metrics(self, destination, message, expiry_s):
+            samples.append(message)
+
+    client.transport = Transport()
+    try:
+        client.publish_host_metrics()
+        assert samples[0]["payload"]["cpu_temp_c"] == 48.5
+    finally:
+        driver.close()
+
+
 def test_host_metrics_unexpected_error_never_stops_motion(tmp_path, caplog):
     profile, _ = simulation_profile("single")
     driver = VirtualPinky(profile, "logistics", threaded=False)

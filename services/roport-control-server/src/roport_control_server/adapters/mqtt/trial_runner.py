@@ -41,7 +41,15 @@ def select_robot(profile, role, *, hardware_authorized=False):
     return robot
 
 
-def run(profile, role, connection, journal_path, driver, host_metrics_period_s=None):
+def run(
+    profile,
+    role,
+    connection,
+    journal_path,
+    driver,
+    host_metrics_period_s=None,
+    host_temp_path=None,
+):
     for name in (
         "observe",
         "validate_action",
@@ -59,6 +67,7 @@ def run(profile, role, connection, journal_path, driver, host_metrics_period_s=N
         journal_path,
         driver,
         host_metrics_period_s=host_metrics_period_s,
+        host_temp_path=host_temp_path,
     )
     try:
         client.start()
@@ -104,10 +113,17 @@ def main():
         type=float,
         help="publish display-only host metrics every N seconds (off if omitted)",
     )
+    parser.add_argument(
+        "--host-metrics-temp-path",
+        help="file holding CPU temperature in millidegrees C, when the default "
+        "thermal zone names (cpu-thermal, x86_pkg_temp) do not match this host",
+    )
     args = parser.parse_args()
     period = args.host_metrics_period_s
     if period is not None and not 0 < period < math.inf:
         parser.error("--host-metrics-period-s must be a positive number")
+    if args.host_metrics_temp_path and period is None:
+        parser.error("--host-metrics-temp-path requires --host-metrics-period-s")
     try:
         profile = json.loads(Path(args.config).read_text())
         robot = select_robot(
@@ -137,6 +153,7 @@ def main():
             args.journal,
             driver,
             host_metrics_period_s=period,
+            host_temp_path=args.host_metrics_temp_path,
         )
     except (ValueError, KeyError, TypeError) as exc:
         parser.error(str(exc))
