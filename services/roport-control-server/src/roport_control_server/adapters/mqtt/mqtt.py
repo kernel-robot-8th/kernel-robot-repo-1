@@ -285,7 +285,9 @@ class MqttTransport:
             if message["type"] not in {"event.ack", "event_stored"}:
                 raise ValueError("ack channel requires event.ack")
         elif not destination.endswith("/event"):
-            raise ValueError("only task cmd/event/ack and workcell permit publishing are implemented")
+            raise ValueError(
+                "only task cmd/event/ack and workcell permit publishing are implemented"
+            )
         info = self._client.publish(
             destination, raw, qos=1, retain=False, properties=properties
         )

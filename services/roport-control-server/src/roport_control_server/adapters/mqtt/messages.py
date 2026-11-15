@@ -22,7 +22,12 @@ _HEADERS = (
 def topic(site: str, kind: str, device: str, channel: str) -> str:
     if not all(isinstance(v, str) and _ID.fullmatch(v) for v in (site, device)):
         raise ValueError("invalid topic identifier")
-    if kind not in {"robot", "workcell"} or channel not in {"cmd", "event", "ack", "permit"}:
+    if kind not in {"robot", "workcell"} or channel not in {
+        "cmd",
+        "event",
+        "ack",
+        "permit",
+    }:
         raise ValueError("only task cmd/event/ack and workcell permit are implemented")
     if channel == "permit" and kind != "workcell":
         raise ValueError("permit belongs to the shared workcell")
