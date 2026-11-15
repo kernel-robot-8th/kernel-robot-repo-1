@@ -26,8 +26,8 @@ RULES = {
     ),
     "adapters.mqtt": ({"paho"}, set()),
     "adapters.udp": (set(), set()),
-    "adapters.ui": ({"PyQt6"}, {P + "contracts"}),
-    "adapters.api": ({"fastapi"}, {P + "contracts"}),
+    "adapters.db": ({"psycopg"}, {P + "contracts"}),
+    "adapters.api": ({"fastapi", "PIL", "yaml"}, {P + "contracts", P + "adapters.db"}),
 }
 
 
@@ -86,6 +86,9 @@ def test_layer_imports(module, path, is_package):
     [
         (P + "contracts.snapshot", "import psycopg"),
         (P + "contracts.snapshot", "import fastapi"),
+        (P + "adapters.api.registry", "import psycopg"),
+        (P + "adapters.db.registry", "import fastapi"),
+        (P + "adapters.mqtt.mqtt", f"from {P}adapters.db import registry"),
         (P + "adapters.udp.udp_frame_sender", "from ..mqtt import messages"),
         (P + "adapters.mqtt.mqtt", "import sqlite3"),
         (P + "adapters.ui.window", f"from {P}adapters.mqtt import mqtt"),
@@ -107,8 +110,8 @@ def test_checker_flags_package_relative_import_across_adapters():
 
 
 def test_checker_allows_expected_imports():
-    assert not violations(P + "adapters.ui.window", f"from {P}contracts import x")
+    assert not violations(P + "adapters.api.app", f"from {P}contracts import x")
     assert not violations(P + "adapters.udp.udp_frame_sender", "from .x import y")
     assert not violations(P + "executor.run", f"from {P}domain.state import Step")
-    ui_init = P + "adapters.ui"
-    assert not violations(ui_init, "from .window import main", is_package=True)
+    ui_init = P + "adapters.api"
+    assert not violations(ui_init, "from .app import app", is_package=True)

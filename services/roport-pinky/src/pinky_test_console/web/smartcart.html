@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RO:PORT 스마트카트</title><link rel="stylesheet" href="style.css">
+</head>
+<body class="ir-page">
+<header id="topbar">
+  <div class="brand">RO:PORT <span>스마트카트</span></div>
+  <span class="chip" id="connection" role="status">연결 확인 중</span>
+  <a class="btn btn-outline btn-small" href="amcl.html">실시간 지도 · 라이다 열기 ↗</a>
+  <a class="btn btn-outline btn-small" href="./">테스트 콘솔</a>
+  <button id="stop" class="btn btn-danger" type="button">■ 정지 요청</button>
+</header>
+<div id="main">
+  <div id="left">
+    <section class="panel-card">
+      <div class="section-title">01 · 현재 로봇 상태</div>
+      <p class="tiny-note">실제 수신값입니다. 이 화면을 여는 것만으로 로봇이 출발하지 않습니다.</p>
+      <table class="ir-table"><tbody>
+        <tr><th>지도 /map</th><td id="map">확인 중</td></tr>
+        <tr><th>라이다 /scan</th><td id="scan">확인 중</td></tr>
+        <tr><th>바퀴 /odom</th><td id="odom">확인 중</td></tr>
+        <tr><th>위치 변환 TF</th><td id="tf">확인 중</td></tr>
+        <tr><th>위치 추정 AMCL</th><td id="amcl">확인 중</td></tr>
+        <tr><th>정지 관측</th><td id="stationary">확인 중</td></tr>
+        <tr><th>현재 위치 (map)</th><td id="position">위치 대기</td></tr>
+        <tr><th>Nav2 상태</th><td id="navigation">확인 중</td></tr>
+      </tbody></table>
+      <p><a class="btn btn-outline" href="amcl.html">지도에서 로봇 · 라이다 겹침 확인 →</a></p>
+      <p class="tiny-note">지도 화면의 파란 화살표와 실제 로봇 방향을 비교하세요. AMCL 수신이 오래되면 「제자리 갱신」으로 다시 관측할 수 있습니다.</p>
+    </section>
+    <section class="panel-card">
+      <div class="section-title">03 · 작업 흐름</div>
+      <ol class="ir-steps">
+        <li><b>H1 / H2</b> · 스마트카트 대기·충전 칸</li>
+        <li><b>N11 / P7</b> · 상차장으로 라인 이동, 상차 확인</li>
+        <li><b>H1 / H2</b> · 적재 후 복귀, 관제 호출 대기</li>
+        <li><b>G1 · G2 · G3</b> · 호출된 게이트로 Nav2 배송</li>
+        <li><b>하차 확인 · 복귀 허가</b> · 대기 장소로 복귀</li>
+      </ol>
+      <p class="status-msg" id="deliveryReason">배송 상태 확인 중</p>
+      <button class="btn" disabled>G1 배송</button>
+      <button class="btn" disabled>G2 배송</button>
+      <button class="btn" disabled>G3 배송</button>
+      <p class="tiny-note">상차·대기 복귀·관제 호출 버튼은 실행부 연결 전이라 제공하지 않습니다. 위치를 설정해도 주행은 시작되지 않습니다.</p>
+    </section>
+  </div>
+  <div id="right">
+    <section class="panel-card">
+      <div class="section-title">02 · 지금 놓인 위치 설정</div>
+      <p>로봇을 <b>H1</b>에 놓았다면 칸과 실제 바라보는 방향을 함께 지정하세요. 방향을 추측해 적용하지 않습니다.</p>
+      <label for="initialNode">놓인 칸</label>
+      <select id="initialNode" class="text-input"><option value="H1">H1 · P1 대기 칸</option><option value="H2">H2 · P2 대기 칸</option></select>
+      <p><label for="heading">실제 방향 (실측 도면 기준 °)</label>
+        <input id="heading" class="text-input" type="number" min="-180" max="180" step="1" placeholder="직접 입력" autocomplete="off"></p>
+      <p class="tiny-note">0° = +x (길이 방향), 90° = +y (창가 방향), −90° = 통로 방향, ±180° = −x. 모르면 지도/로봇을 보고 먼저 확인하세요.</p>
+      <p><label><input id="placement" type="checkbox"> 실제 로봇이 선택한 칸에 정지해 있고 방향을 확인했습니다.</label></p>
+      <button id="apply" class="btn" type="button" disabled>위치 · 방향 적용</button>
+      <button id="nomotion" class="btn btn-outline" type="button">제자리 관측 갱신</button>
+      <p id="initialHint" class="tiny-note">최신 라이다·odom·연속 정지·지도 확인 후 적용할 수 있습니다.</p>
+      <p id="message" class="status-msg" role="status" aria-live="polite"></p>
+      <p class="tiny-note">적용은 AMCL 초기 위치만 전달합니다. 모터·bringup·Nav2를 실행하지 않습니다. 정지 요청은 기존 콘솔 기능이며 독립 안전장치가 아닙니다.</p>
+    </section>
+  </div>
+</div>
+<script src="smartcart.js"></script>
+</body></html>

@@ -6,6 +6,10 @@
 #   mode:=nav  -> pinky_navigation/launch/bringup_launch.xml (map_server, amcl, Nav2)
 #   mode:=ir   -> no include; pinky_sensor_adc main_node (IR/ultrasonic ADC read only)
 #   mode:=marker -> no include; camera preview + ArUco recognition in the console process
+#   mode:=amcl -> pinky_navigation/launch/localization_launch.xml (map_server, amcl only)
+#   mode:=route|test -> no include; roport_line_nav line_nav + pinky_sensor_adc (node-route
+#     driving; test also documents the IR page as part of the combined robot test)
+#   mode:=fleet -> no include; laptop only (Pinky settings, test control over HTTP/SSH, 127.0.0.1)
 # pinky_bringup/bringup_robot.launch.xml is NOT included: start it separately first.
 """Pinky test console.
 
@@ -13,6 +17,14 @@
   ros2 launch pinky_test_console console.launch.py mode:=nav map:=$HOME/roport_maps/room.yaml
   ros2 launch pinky_test_console console.launch.py mode:=ir   (IR: http://<robot>:8080/ir.html)
   ros2 launch pinky_test_console console.launch.py mode:=marker markers_yaml:=~/markers.yaml
+  ros2 launch pinky_test_console console.launch.py mode:=amcl map:=<airport_map.yaml> \
+      layout:=<roport_airport.yaml>   (AMCL: http://<robot>:8080/amcl.html)
+  ros2 launch pinky_test_console console.launch.py mode:=test robot:=pinky_d660
+      (test = route + IR page: http://<robot>:8080/route.html, /ir.html)
+  ros2 launch pinky_test_console console.launch.py mode:=route robot:=pinky_d660
+      (route: http://<robot>:8080/route.html, bringup separately)
+  ros2 launch pinky_test_console console.launch.py mode:=fleet
+      (laptop: http://127.0.0.1:8080/fleet.html)
   (Gazebo) ... use_sim_time:=true
 """
 
@@ -26,7 +38,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 from pinky_test_console.launch_plan import (
-    camera_env, included_launch, resolve_plan, resolve_rotate_180)
+    ROUTE_MODES, camera_env, included_launch, resolve_plan, resolve_rotate_180)
 
 
 def launch_setup(context):
@@ -36,6 +48,8 @@ def launch_setup(context):
         port=LaunchConfiguration('port').perform(context),
         use_sim_time=LaunchConfiguration('use_sim_time').perform(context),
         ir_node=LaunchConfiguration('ir_node').perform(context),
+        ip=LaunchConfiguration('ip').perform(context),
+        robot=LaunchConfiguration('robot').perform(context),
     )
     launch_file, launch_args = included_launch(plan)
     camera = LaunchConfiguration('camera').perform(context)
@@ -43,7 +57,7 @@ def launch_setup(context):
     actions = [
         LogInfo(msg=f'[pinky_test_console] mode={plan.mode} map={plan.map_yaml or "-"} '
                     f'port={plan.port} use_sim_time={plan.use_sim_time} '
-                    f'include={launch_file or "-"} ir_node={plan.ir_node}'),
+                    f'include={launch_file or "-"} ir_node={plan.ir_node} ip={plan.ip}'),
         Node(
             package='pinky_test_console',
             executable='web_server',
@@ -51,7 +65,7 @@ def launch_setup(context):
             output='screen',
             additional_env=camera_env(plan.mode, camera, os.environ),
             parameters=[{
-                'ip': LaunchConfiguration('ip').perform(context),
+                'ip': plan.ip,
                 'port': plan.port,
                 'mode': plan.mode,
                 'map_dir': LaunchConfiguration('map_dir').perform(context),
@@ -61,10 +75,37 @@ def launch_setup(context):
                     camera, LaunchConfiguration('rotate_180').perform(context)),
                 'markers_yaml': LaunchConfiguration('markers_yaml').perform(context),
                 'camera_hfov_deg': float(LaunchConfiguration('camera_hfov_deg').perform(context)),
+                'layout_yaml': os.path.expanduser(LaunchConfiguration('layout').perform(context)),
+                'amcl_dir': LaunchConfiguration('amcl_dir').perform(context),
                 'use_sim_time': plan.use_sim_time,
+                'robot': plan.robot,
+                'fleet_file': LaunchConfiguration('fleet_file').perform(context),
+                'repo_dir': LaunchConfiguration('repo_dir').perform(context),
+                'ssh_key': LaunchConfiguration('ssh_key').perform(context),
+                'fleet_log_dir': LaunchConfiguration('fleet_log_dir').perform(context),
+                'nav_log_dir': LaunchConfiguration('nav_log_dir').perform(context),
+                'dock_dir': LaunchConfiguration('dock_dir').perform(context),
             }],
         ),
     ]
+    if plan.mode in ROUTE_MODES:
+        # 경로 주행 노드. bringup(모터·odom)은 사용자가 먼저 따로 실행.
+        # line_nav → line_nav/cmd_vel → cmd_vel_guard → cmd_vel (line_nav 가 0.3 s 끊기면 0)
+        actions.append(Node(
+            package='roport_line_nav', executable='line_nav', output='screen',
+            parameters=[{
+                'robot': plan.robot,
+                'layout_file': os.path.expanduser(LaunchConfiguration('layout').perform(context)),
+                'log_dir': LaunchConfiguration('nav_log_dir').perform(context),
+                # 직선 속도 상한·노드 앞 감속 거리(화면 슬라이더 최대 = line_max_linear)
+                'max_linear': float(LaunchConfiguration('line_max_linear').perform(context)),
+                'approach_lead_cm': float(LaunchConfiguration('approach_lead_cm').perform(context)),
+                # 라인 추종 게인(시험판): gain_ref_speed 를 넘는 속도에서 kp × 속도/gain_ref_speed
+                **{k: float(LaunchConfiguration(f'line_{k}').perform(context))
+                   for k in ('kp', 'kd', 'gain_ref_speed')},
+            }], remappings=[('cmd_vel', 'line_nav/cmd_vel')]))
+        actions.append(Node(package='roport_line_nav', executable='cmd_vel_guard',
+                            output='screen'))
     if launch_file:
         # pinky_navigation 이 없으면 여기서 PackageNotFoundError 로 바로 알려준다
         launch_path = os.path.join(
@@ -81,11 +122,28 @@ def launch_setup(context):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument('mode', default_value='slam', description='slam | nav | ir | marker'),
+        DeclareLaunchArgument('mode', default_value='slam',
+                              description='slam | nav | ir | marker | amcl | route | fleet'),
         DeclareLaunchArgument('map', default_value='',
-                              description='map .yaml path (required for mode:=nav)'),
+                              description='map .yaml path (required for mode:=nav|amcl)'),
         DeclareLaunchArgument('port', default_value='8080', description='web port'),
-        DeclareLaunchArgument('ip', default_value='0.0.0.0', description='bind address'),
+        DeclareLaunchArgument('ip', default_value='',
+                              description='bind address (default 0.0.0.0, fleet 127.0.0.1)'),
+        DeclareLaunchArgument('robot', default_value='',
+                              description='mode:=route IR calibration name (pinky_d660 ...)'),
+        DeclareLaunchArgument('fleet_file', default_value='~/.roport/fleet.json',
+                              description='mode:=fleet robot registry'),
+        DeclareLaunchArgument('repo_dir', default_value='~/dev_ws/roport/kernel-robot-repo-1',
+                              description='mode:=fleet git checkout used for git archive'),
+        DeclareLaunchArgument('ssh_key', default_value='~/.ssh/pinky_ed25519',
+                              description='mode:=fleet SSH key (no passwords)'),
+        DeclareLaunchArgument('fleet_log_dir', default_value='~/roport_fleet_logs',
+                              description='mode:=fleet daily log CSV folder'),
+        DeclareLaunchArgument('nav_log_dir', default_value='~/roport_logs',
+                              description='mode:=route|test per-route detail CSV folder (robot)'),
+        DeclareLaunchArgument('dock_dir', default_value='~/roport_dock',
+                              description='mode:=fleet precision docking: cameras.json and '
+                                          'calib_*.json folder (top-view cameras over SSH)'),
         DeclareLaunchArgument('use_sim_time', default_value='false',
                               description='true for Gazebo/MuJoCo simulation'),
         DeclareLaunchArgument('map_dir', default_value='~/roport_maps',
@@ -105,5 +163,24 @@ def generate_launch_description():
                               description='ArUco ID table (docs/aruco/markers.yaml) for names'),
         DeclareLaunchArgument('camera_hfov_deg', default_value='0',
                               description='camera horizontal FOV for rough distance (0 = off)'),
+        DeclareLaunchArgument('line_max_linear', default_value='0.06',
+                              description='mode:=route|test line_nav straight speed cap m/s '
+                                          '(hard cap 0.15). 0.08 시험: line_max_linear:=0.08'),
+        DeclareLaunchArgument('approach_lead_cm', default_value='5.0',
+                              description='mode:=route|test slow to approach speed this many cm '
+                                          'before the expected node (0.08 m/s 에서 회전이 늦으면 7)'),
+        DeclareLaunchArgument('line_kp', default_value='1.0',
+                              description='mode:=route|test line following kp (rad/s per error); '
+                                          'grows x speed/line_gain_ref_speed above that speed'),
+        DeclareLaunchArgument('line_kd', default_value='0.05',
+                              description='mode:=route|test line following kd'),
+        DeclareLaunchArgument('line_gain_ref_speed', default_value='0.06',
+                              description='mode:=route|test kp stays as is up to this m/s '
+                                          '(0.15 = speed scaling off)'),
+        DeclareLaunchArgument('layout', default_value='',
+                              description='mode:=amcl|route|fleet layout yaml (default for '
+                                          'route/fleet: roport_gz_world share)'),
+        DeclareLaunchArgument('amcl_dir', default_value='~/roport_amcl',
+                              description='folder for AMCL check records (CSV)'),
         OpaqueFunction(function=launch_setup),
     ])

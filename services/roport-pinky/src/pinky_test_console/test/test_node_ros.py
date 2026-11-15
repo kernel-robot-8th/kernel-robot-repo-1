@@ -23,6 +23,9 @@ if not _MISSING:
 
 from pinky_test_console.teleop import MAX_ANGULAR, MAX_LINEAR  # noqa: E402
 
+LAYOUT = __import__('os').path.join(
+    __import__('os').path.dirname(__file__), '..', '..', 'roport_gz_world', 'layout',
+    'roport_airport.yaml')
 TEST_DOMAIN_ID = 199  # 강의실 로봇이 쓰지 않을 높은 번호 (ROS 2 허용 범위 0-232)
 NS = '/pinky_console_pytest'
 
@@ -136,3 +139,93 @@ def test_save_map_without_slam_reports_failure(ros):
     node, _ = ros
     r = node.slam_save_map('room')
     assert r['success'] is False and 'not available' in r['msg']
+
+
+def test_route_mode_commands_and_estop(tmp_path):
+    """mode:=route: 화면 명령이 line_nav/command 로 나가고, 정지 버튼은 경로 주행도 멈춘다."""
+    import json
+    from std_msgs.msg import String
+    from pinky_test_console.web_server import ConsoleNode
+    ctx = Context()
+    rclpy.init(context=ctx, domain_id=TEST_DOMAIN_ID)
+    node = ConsoleNode(context=ctx, namespace=NS, parameter_overrides=[
+        rclpy.parameter.Parameter('map_dir', value=str(tmp_path)),
+        rclpy.parameter.Parameter('mode', value='route'),
+        rclpy.parameter.Parameter('layout_yaml', value=LAYOUT)])
+    probe = rclpy.create_node('probe', context=ctx, namespace=NS)
+    got = []
+    probe.create_subscription(String, 'line_nav/command', lambda m: got.append(json.loads(m.data)),
+                              10)
+    state_pub = probe.create_publisher(String, 'line_nav/state', 10)
+    ex = SingleThreadedExecutor(context=ctx)
+    ex.add_node(node)
+    ex.add_node(probe)
+    th = threading.Thread(target=ex.spin, daemon=True)
+    th.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while node.route_cmd_pub.get_subscription_count() == 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert node.route_snapshot()['stale']
+        node.route_command({'cmd': 'start', 'route': ['N14', 'N16']})
+        node.emergency_stop()
+        deadline = time.monotonic() + 3.0
+        while len(got) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert got == [{'cmd': 'start', 'route': ['N14', 'N16']}, {'cmd': 'stop'}]
+        for _ in range(5):
+            state_pub.publish(String(data=json.dumps({'state': 'follow'})))
+            time.sleep(0.05)
+        snap = node.route_snapshot()
+        assert snap['state'] == {'state': 'follow'} and not snap['stale']
+        assert node.route_graph()['nodes']
+    finally:
+        ex.shutdown(timeout_sec=1.0)
+        node.destroy_node()
+        probe.destroy_node()
+        rclpy.shutdown(context=ctx)
+
+
+def test_monitor_mode_has_no_cmd_vel_publisher_and_refuses_drive(tmp_path, monkeypatch):
+    from pinky_test_console.web_server import ConsoleNode
+    from pinky_test_console.web_app import create_app, default_web_dir
+
+    monkeypatch.setenv('ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST')
+    context = Context()
+    rclpy.init(context=context, domain_id=TEST_DOMAIN_ID)
+    namespace = NS + '/monitor_only'
+    node = ConsoleNode(context=context, namespace=namespace, parameter_overrides=[
+        rclpy.parameter.Parameter('map_dir', value=str(tmp_path)),
+        rclpy.parameter.Parameter('teleop_enabled', value=False)])
+    probe = rclpy.create_node('monitor_probe', context=context, namespace=namespace)
+    received = []
+    probe.create_subscription(Twist, 'cmd_vel', lambda msg: received.append(msg), 10)
+    executor = SingleThreadedExecutor(context=context)
+    executor.add_node(node)
+    executor.add_node(probe)
+    try:
+        assert node.cmd_vel_pub is None
+        assert node.get_info()['teleop_enabled'] is False
+        for call in (lambda: node.teleop(.03, 0.), node.teleop_stop, node.emergency_stop,
+                     lambda: node.publish_twist(0., 0.), lambda: node.send_goal(0., 0., 0.),
+                     node.cancel_goal, lambda: node.route_command({'cmd': 'start'})):
+            with pytest.raises(PermissionError, match='teleop_enabled=false'):
+                call()
+        client = create_app(node, default_web_dir()).test_client()
+        for route, body in [('/api/teleop', {'linear': .03, 'angular': 0}),
+                            ('/api/teleop/stop', {}), ('/api/estop', {}),
+                            ('/api/nav/stop', {}), ('/api/goal', {'x': 0, 'y': 0})]:
+            response = client.post(route, json=body)
+            assert response.status_code == 403 and response.json['success'] is False
+        node.publish_stop_on_exit()
+        until = time.monotonic() + .6
+        while time.monotonic() < until:
+            executor.spin_once(timeout_sec=.02)
+        assert probe.count_publishers(namespace + '/cmd_vel') == 0
+        assert received == []
+        assert node.initial_pose_pub is not None  # Localization setup is preserved.
+    finally:
+        executor.shutdown(timeout_sec=1.)
+        node.destroy_node()
+        probe.destroy_node()
+        context.shutdown()

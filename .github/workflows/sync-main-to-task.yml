@@ -1,0 +1,50 @@
+name: Sync main to task branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_branch:
+        description: Target task branch, for example task/robot-navigation
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+
+      - name: Open sync pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_BRANCH: ${{ inputs.task_branch }}
+        run: |
+          if [[ ! "$TASK_BRANCH" =~ ^task/[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+            echo "Target must be a task/<lowercase-name> branch" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin main "refs/heads/${TASK_BRANCH}:refs/remotes/origin/${TASK_BRANCH}"
+
+          if git merge-base --is-ancestor origin/main "origin/${TASK_BRANCH}"; then
+            echo "${TASK_BRANCH} already contains the latest main commit."
+            exit 0
+          fi
+
+          existing_pr=$(gh pr list --head main --base "$TASK_BRANCH" --json url --jq '.[0].url // empty')
+          if [[ -n "$existing_pr" ]]; then
+            echo "Sync pull request already exists: $existing_pr"
+            exit 0
+          fi
+
+          gh pr create \
+            --base "$TASK_BRANCH" \
+            --head main \
+            --title "chore: sync main into ${TASK_BRANCH}" \
+            --body "Synchronize the latest main changes into ${TASK_BRANCH}. Merge this pull request with a merge commit to preserve the branch history."

@@ -1,0 +1,696 @@
+[
+  {
+    "label": "01 상태 조회",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-001",
+      "type": "robot_state_request",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "payload": {}
+    }
+  },
+  {
+    "label": "02 Pinky 상태",
+    "topic": "roport/robot/pinky1/event",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-002",
+      "type": "robot_state",
+      "source": "pinky1",
+      "target": "control-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "payload": {
+        "boot_version": "boot-pinky1-007",
+        "observed_at": "2026-11-11T10:00:00+09:00",
+        "sequence": 10,
+        "active_command_id": null,
+        "state": {
+          "node": "N16",
+          "mode": "line",
+          "stopped": true,
+          "line_enabled": false,
+          "nav2_ready": false,
+          "localization_ready": false,
+          "drive_owner": "none",
+          "graph_version": "line-v13-20261103",
+          "map_version": "map-demo-v1",
+          "heading_rad": -1.569,
+          "fault": null,
+          "arrival_command_id": null
+        }
+      }
+    }
+  },
+  {
+    "label": "03 명령 완료",
+    "topic": "roport/robot/pinky1/event",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-003",
+      "type": "command_status",
+      "source": "pinky1",
+      "target": "control-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "command_id": "cmd-route-001",
+      "payload": {
+        "boot_version": "boot-pinky1-007",
+        "observed_at": "2026-11-11T10:00:00+09:00",
+        "status": "completed",
+        "sequence": 3,
+        "result": {
+          "node": "N11",
+          "stopped": true,
+          "mode": "line"
+        }
+      }
+    }
+  },
+  {
+    "label": "04 화면용 좌표",
+    "topic": "roport/robot/pinky1/motion",
+    "qos": 0,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-004",
+      "type": "robot_pose",
+      "source": "pinky1",
+      "target": "control-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "payload": {
+        "boot_version": "boot-pinky1-007",
+        "observed_at": "2026-11-11T10:00:00+09:00",
+        "sequence": 42,
+        "map_version": "map-demo-v1",
+        "frame_id": "map",
+        "pose_source": "amcl",
+        "pose": {
+          "x": 0.1614,
+          "y": 0.0284,
+          "yaw": 0.0
+        }
+      }
+    }
+  },
+  {
+    "label": "05 결과 저장 확인",
+    "topic": "roport/robot/pinky1/ack",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-005",
+      "type": "event_stored",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "payload": {
+        "acked_message_id": "msg-003"
+      }
+    }
+  },
+  {
+    "label": "06 라인 주행",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-006",
+      "type": "line_route_command",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "cmd-route-001",
+      "payload": {
+        "expected_boot_version": "boot-pinky1-007",
+        "graph_version": "line-v13-20261103",
+        "start_node": "N16",
+        "start_heading_rad": -1.569,
+        "start_maneuver": "none",
+        "route": [
+          "N16",
+          "N18",
+          "N19",
+          "N11"
+        ],
+        "goal": {
+          "node": "N11",
+          "on_arrival": "hold"
+        },
+        "speed_limit_mps": 0.06
+      }
+    }
+  },
+  {
+    "label": "07 주행 모드 전환",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-007",
+      "type": "set_drive_mode_command",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "cmd-mode-001",
+      "payload": {
+        "expected_boot_version": "boot-pinky1-007",
+        "node": "N12",
+        "from_mode": "line",
+        "to_mode": "nav2",
+        "graph_version": "line-v13-20261103",
+        "map_version": "map-demo-v1"
+      }
+    }
+  },
+  {
+    "label": "08 Nav2 목표 이동",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-008",
+      "type": "nav_goal_command",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "cmd-nav-001",
+      "payload": {
+        "expected_boot_version": "boot-pinky1-007",
+        "map_version": "map-demo-v1",
+        "frame_id": "map",
+        "pose": {
+          "x": 0.1614,
+          "y": 0.0284,
+          "yaw": 0.0
+        },
+        "position_tolerance_m": 0.05,
+        "yaw_tolerance_rad": 0.15
+      }
+    }
+  },
+  {
+    "label": "09 OMX1·2 공동 이송",
+    "topic": "roport/workcell/shelf-01/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-009",
+      "type": "shelf_transfer_command",
+      "source": "control-01",
+      "target": "shelf-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "cmd-shelf-001",
+      "payload": {
+        "expected_boot_version": "boot-omx-host-003",
+        "operation": "store",
+        "package_id": "package-demo-001",
+        "slot_id": "slot-01",
+        "pinky_id": "pinky1",
+        "arrival_command_id": "cmd-route-001",
+        "arms": [
+          {
+            "robot_id": "omx1",
+            "expected_boot_version": "boot-omx-host-003"
+          },
+          {
+            "robot_id": "omx2",
+            "expected_boot_version": "boot-omx-host-003"
+          }
+        ],
+        "model_version": "model-demo-v1",
+        "calibration_version": "calibration-demo-v1",
+        "expected_pinky_boot_version": "boot-pinky1-007"
+      }
+    }
+  },
+  {
+    "label": "10 OMX1 개별 이송",
+    "topic": "roport/robot/omx1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-010",
+      "type": "arm_action_command",
+      "source": "control-01",
+      "target": "omx1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "cmd-arm1-001",
+      "payload": {
+        "expected_boot_version": "boot-omx-host-003",
+        "operation": "transfer",
+        "workcell_id": "shelf-01",
+        "package_id": "package-demo-002",
+        "source_location": {
+          "kind": "pinky",
+          "robot_id": "pinky1",
+          "position": "deck"
+        },
+        "destination_location": {
+          "kind": "shelf",
+          "slot_id": "slot-02"
+        },
+        "arrival_command_id": "cmd-route-002",
+        "model_version": "model-demo-v1",
+        "calibration_version": "calibration-demo-v1",
+        "expected_pinky_boot_version": "boot-pinky1-007"
+      }
+    }
+  },
+  {
+    "label": "11 실행 명령 정지",
+    "topic": "roport/workcell/shelf-01/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-011",
+      "type": "robot_stop_command",
+      "source": "control-01",
+      "target": "shelf-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "cmd-stop-001",
+      "payload": {
+        "expected_boot_version": "boot-omx-host-003",
+        "target_command_id": "cmd-shelf-001",
+        "reason": "operator_request"
+      }
+    }
+  },
+  {
+    "label": "13 OMX3 창고 상차",
+    "topic": "roport/robot/omx3/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-013",
+      "type": "warehouse_load_command",
+      "source": "control-01",
+      "target": "omx3",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "cmd-load-001",
+      "payload": {
+        "expected_boot_version": "boot-omx3-002",
+        "package_id": "package-demo-003",
+        "pickup_location_id": "pickup-01",
+        "pinky_id": "pinky1",
+        "load_position": "deck",
+        "arrival_command_id": "cmd-route-warehouse-001",
+        "model_version": "model-demo-v1",
+        "calibration_version": "calibration-demo-v1",
+        "expected_pinky_boot_version": "boot-pinky1-007"
+      }
+    }
+  },
+  {
+    "label": "14 OMX2 개별 복귀",
+    "topic": "roport/robot/omx2/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-014",
+      "type": "arm_action_command",
+      "source": "control-01",
+      "target": "omx2",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "cmd-arm2-001",
+      "payload": {
+        "expected_boot_version": "boot-omx-host-003",
+        "operation": "return_home",
+        "workcell_id": "shelf-01",
+        "calibration_version": "calibration-demo-v1"
+      }
+    }
+  },
+  {
+    "label": "15 OMX1 개별 상태",
+    "topic": "roport/robot/omx1/event",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-015",
+      "type": "robot_state",
+      "source": "omx1",
+      "target": "control-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "payload": {
+        "boot_version": "boot-omx-host-003",
+        "observed_at": "2026-11-11T10:00:00+09:00",
+        "sequence": 20,
+        "active_command_id": null,
+        "state": {
+          "stopped": true,
+          "ready": true,
+          "home_reached": true,
+          "holding_package_id": null,
+          "fault": null,
+          "holding_state": "empty"
+        }
+      }
+    }
+  },
+  {
+    "label": "16 공동 작업구역 상태",
+    "topic": "roport/workcell/shelf-01/event",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-016",
+      "type": "robot_state",
+      "source": "shelf-01",
+      "target": "control-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "payload": {
+        "boot_version": "boot-omx-host-003",
+        "observed_at": "2026-11-11T10:00:00+09:00",
+        "sequence": 30,
+        "active_command_id": null,
+        "state": {
+          "stopped": true,
+          "ready": true,
+          "fault": null,
+          "arms": [
+            {
+              "robot_id": "omx1",
+              "boot_version": "boot-omx-host-003",
+              "active_command_id": null,
+              "stopped": true,
+              "ready": true,
+              "home_reached": true,
+              "holding_package_id": null,
+              "fault": null,
+              "holding_state": "empty"
+            },
+            {
+              "robot_id": "omx2",
+              "boot_version": "boot-omx-host-003",
+              "active_command_id": null,
+              "stopped": true,
+              "ready": true,
+              "home_reached": true,
+              "holding_package_id": null,
+              "fault": null,
+              "holding_state": "empty"
+            }
+          ],
+          "docking": {
+            "pinky_id": "pinky1",
+            "arrival_command_id": "cmd-route-001",
+            "observed_at": "2026-11-11T10:00:00+09:00",
+            "alignment": "confirmed",
+            "pinky_boot_version": "boot-pinky1-007"
+          }
+        }
+      }
+    }
+  },
+  {
+    "label": "17 공동 이송 완료",
+    "topic": "roport/workcell/shelf-01/event",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-017",
+      "type": "command_status",
+      "source": "shelf-01",
+      "target": "control-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "command_id": "cmd-shelf-001",
+      "payload": {
+        "boot_version": "boot-omx-host-003",
+        "observed_at": "2026-11-11T10:00:00+09:00",
+        "status": "completed",
+        "sequence": 5,
+        "result": {
+          "package_id": "package-demo-001",
+          "slot_id": "slot-01",
+          "pinky_id": "pinky1",
+          "arrival_command_id": "cmd-route-001",
+          "placement_confirmed": true,
+          "release_confirmed": true,
+          "arms": [
+            {
+              "robot_id": "omx1",
+              "boot_version": "boot-omx-host-003",
+              "stopped": true,
+              "home_reached": true,
+              "holding_package_id": null,
+              "holding_state": "empty"
+            },
+            {
+              "robot_id": "omx2",
+              "boot_version": "boot-omx-host-003",
+              "stopped": true,
+              "home_reached": true,
+              "holding_package_id": null,
+              "holding_state": "empty"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "label": "18 OMX2 개별 복귀 완료",
+    "topic": "roport/robot/omx2/event",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-018",
+      "type": "command_status",
+      "source": "omx2",
+      "target": "control-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "command_id": "cmd-arm2-001",
+      "payload": {
+        "boot_version": "boot-omx-host-003",
+        "observed_at": "2026-11-11T10:00:00+09:00",
+        "status": "completed",
+        "sequence": 2,
+        "result": {
+          "stopped": true,
+          "home_reached": true,
+          "holding_package_id": null,
+          "holding_state": "empty"
+        }
+      }
+    }
+  },
+  {
+    "label": "19 활성 명령 유지 확인",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-019",
+      "type": "robot_state_request",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "payload": {
+        "expected_boot_version": "boot-pinky1-007",
+        "keep_running_command_id": "cmd-route-001"
+      },
+      "expires_at": "2026-11-11T10:00:03+09:00"
+    }
+  },
+  {
+    "label": "20 OMX 작업 후 출발",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-020",
+      "type": "line_route_command",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "cmd-depart-001",
+      "payload": {
+        "expected_boot_version": "boot-pinky1-007",
+        "graph_version": "line-v13-20261103",
+        "start_node": "N11",
+        "start_heading_rad": 0.0017453292519943296,
+        "start_maneuver": "none",
+        "route": [
+          "N11",
+          "N19",
+          "N12"
+        ],
+        "goal": {
+          "node": "N12",
+          "on_arrival": "hold"
+        },
+        "speed_limit_mps": 0.06,
+        "departure": {
+          "arrival_command_id": "cmd-route-001",
+          "transfer_command_id": "cmd-shelf-001"
+        }
+      }
+    }
+  },
+  {
+    "label": "21 선반 공동 출고",
+    "topic": "roport/workcell/shelf-01/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-021",
+      "type": "shelf_transfer_command",
+      "source": "control-01",
+      "target": "shelf-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "cmd-shelf-out-001",
+      "payload": {
+        "expected_boot_version": "boot-omx-host-003",
+        "operation": "retrieve",
+        "package_id": "package-demo-001",
+        "slot_id": "slot-01",
+        "pinky_id": "pinky3",
+        "arrival_command_id": "cmd-cart-arrival-001",
+        "arms": [
+          {
+            "robot_id": "omx1",
+            "expected_boot_version": "boot-omx-host-003"
+          },
+          {
+            "robot_id": "omx2",
+            "expected_boot_version": "boot-omx-host-003"
+          }
+        ],
+        "model_version": "model-demo-v1",
+        "calibration_version": "calibration-demo-v1",
+        "expected_pinky_boot_version": "boot-pinky3-004"
+      }
+    }
+  },
+  {
+    "label": "22 명령 거절",
+    "topic": "roport/robot/omx1/event",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-022",
+      "type": "command_status",
+      "source": "omx1",
+      "target": "control-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "command_id": "cmd-conflict-001",
+      "payload": {
+        "boot_version": "boot-omx-host-003",
+        "observed_at": "2026-11-11T10:00:00+09:00",
+        "status": "rejected",
+        "sequence": 1,
+        "reason": "resource_busy"
+      }
+    }
+  },
+  {
+    "label": "23 작업 중단",
+    "topic": "roport/workcell/shelf-01/event",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-023",
+      "type": "command_status",
+      "source": "shelf-01",
+      "target": "control-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "command_id": "cmd-shelf-001",
+      "payload": {
+        "boot_version": "boot-omx-host-003",
+        "observed_at": "2026-11-11T10:00:00+09:00",
+        "status": "interrupted",
+        "sequence": 6,
+        "reason": "operator_stop",
+        "result": {
+          "stopped": true,
+          "holding_state": "unknown",
+          "holding_package_id": null
+        }
+      }
+    }
+  },
+  {
+    "label": "24 N12 라인 복귀",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-024",
+      "type": "set_drive_mode_command",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "cmd-return-mode-001",
+      "payload": {
+        "expected_boot_version": "boot-pinky1-007",
+        "node": "N12",
+        "from_mode": "nav2",
+        "to_mode": "line",
+        "graph_version": "line-v13-20261103",
+        "map_version": "map-demo-v1"
+      }
+    }
+  }
+]

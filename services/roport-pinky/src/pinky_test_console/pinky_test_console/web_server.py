@@ -12,9 +12,15 @@
 #   - zero velocity published on shutdown or spin exception
 #   - IR raw value view and timed CSV recording (ir_sensor/range)
 #   - ArUco marker recognition check (camera preview, ID checklist)
+#   - AMCL map match check (scan vs map score, node initial poses, CSV record)
+#   - node-route driving page (line_nav/state·command), fleet settings/test control (laptop)
+#   - precision docking tab (laptop): top-view camera relay over SSH, calibration, results
 # See LICENSE in this package for the full license text.
 
 import _thread
+import collections
+import ipaddress
+import json
 import logging
 import math
 import os
@@ -42,13 +48,16 @@ from action_msgs.srv import CancelGoal
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.msg import Costmap
-from nav_msgs.msg import OccupancyGrid, Path
-from sensor_msgs.msg import Image
+from nav_msgs.msg import OccupancyGrid, Path, Odometry
+from sensor_msgs.msg import Image, LaserScan
 from slam_toolbox.srv import Reset, SaveMap
+from rcl_interfaces.msg import Log
 from std_msgs.msg import Float32, String, UInt16MultiArray
+from std_srvs.srv import Empty
 from tf2_ros import Buffer, TransformListener
 
-from . import ir_record, map_store, marker_detect
+from . import amcl_check, dock_camera, fleet, ir_record, map_store, marker_detect, route_view
+from .smartcart import SmartcartMonitor
 from .sysstats import read_system_stats
 from .teleop import DEADMAN_TIMEOUT, MAX_ANGULAR, MAX_LINEAR, TeleopGuard
 from .web_app import create_app, default_web_dir
@@ -57,6 +66,20 @@ TELEOP_PERIOD = 0.1     # s, /cmd_vel 발행 주기 10 Hz
 WATCHDOG_PERIOD = 0.02  # s, deadman 검사 주기 (만료 후 최대 20 ms 안에 0 발행)
 BATTERY_STALE_SEC = 15.0  # battery_publisher 는 5 s 주기
 SAVE_MAP_TIMEOUT = 20.0   # s, map_saver_cli 실행 대기
+SCAN_STALE_SEC = 1.0      # 라이다 스캔이 이보다 오래되면 정합 점수를 내지 않음
+ROUTE_STALE_SEC = 1.0     # line_nav/state(약 20 Hz)가 이보다 오래되면 끊김으로 표시
+ROS_LOG_KEEP = 2000       # /rosout 최근 줄 수(테스트 관제 로그 창용)
+LOG_LEVELS = {10: 'DEBUG', 20: 'INFO', 30: 'WARN', 40: 'ERROR', 50: 'FATAL'}
+
+
+def default_layout_yaml():
+    """roport_gz_world 의 배치 yaml(노드 그래프). 설치되지 않았으면 ''."""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        return os.path.join(get_package_share_directory('roport_gz_world'), 'layout',
+                            'roport_airport.yaml')
+    except Exception:  # noqa: BLE001 - PackageNotFoundError
+        return ''
 
 
 ############################################################
@@ -89,6 +112,7 @@ class ConsoleNode(Node):
         self.declare_parameter('ip', '0.0.0.0')
         self.declare_parameter('port', 8080)
         self.declare_parameter('mode', 'slam')
+        self.declare_parameter('teleop_enabled', True)
         self.declare_parameter('map_dir', map_store.DEFAULT_MAP_DIR)
         self.declare_parameter('ir_dir', ir_record.DEFAULT_IR_DIR)
         self.declare_parameter('camera', 'picamera2')
@@ -96,8 +120,19 @@ class ConsoleNode(Node):
         self.declare_parameter('markers_yaml', '')
         self.declare_parameter('camera_hfov_deg', 0.0)
         self.declare_parameter('marker_record_dir', marker_detect.DEFAULT_RECORD_DIR)
+        self.declare_parameter('layout_yaml', '')
+        self.declare_parameter('amcl_dir', amcl_check.DEFAULT_AMCL_DIR)
+        self.declare_parameter('robot', '')
+        self.declare_parameter('fleet_file', '~/.roport/fleet.json')
+        self.declare_parameter('repo_dir', '~/dev_ws/roport/kernel-robot-repo-1')
+        self.declare_parameter('ssh_key', '~/.ssh/pinky_ed25519')
+        self.declare_parameter('robot_port', 8080)
+        self.declare_parameter('fleet_log_dir', '~/roport_fleet_logs')
+        self.declare_parameter('nav_log_dir', '~/roport_logs')
+        self.declare_parameter('dock_dir', dock_camera.DEFAULT_DOCK_DIR)
 
         self.mode = self.get_parameter('mode').value
+        self.teleop_enabled = self.get_parameter('teleop_enabled').value
         self.map_dir = map_store.resolve_map_dir(self.get_parameter('map_dir').value)
         self.ir = ir_record.IrRecorder(self.get_parameter('ir_dir').value)
         self.marker = None
@@ -107,6 +142,9 @@ class ConsoleNode(Node):
             self._start_marker()
 
         self.lock = threading.Lock()
+        # 「복귀」 대기 작업 번호. 사용자 경로 명령·정지가 올리면 대기 중 복귀는 출발하지 않음(PR #43 리뷰 P1)
+        self._return_lock = threading.RLock()
+        self._return_gen = 0
 
         # 레이어별 최신 메시지와 버전 (버전이 바뀐 경우에만 데이터 전송)
         self.layers = {
@@ -114,6 +152,9 @@ class ConsoleNode(Node):
             'global': {'msg': None, 'version': 0},
             'local': {'msg': None, 'version': 0},
         }
+        self.smartcart_monitor = SmartcartMonitor()
+        self.create_subscription(Odometry, 'odom', self._smartcart_odom,
+                                 QoSProfile(depth=10, reliability=QoSReliabilityPolicy.BEST_EFFORT))
         self.path_msg = None
         self.tf_pose = None  # (x, y, yaw)
         self.battery = {'percent': None, 'voltage': None}  # (value, monotonic time)
@@ -161,18 +202,44 @@ class ConsoleNode(Node):
         self.initial_pose_pub = self.create_publisher(
             PoseWithCovarianceStamped, 'initialpose', 10)
 
+        # ---- AMCL 정합 확인 (mode:=amcl 에서만) ----
+        self.amcl_frame = None      # 배치 yaml 의 실측 ↔ map 변환
+        self.amcl_nodes = []
+        self.amcl_error = None
+        self.amcl_pose = None       # {x, y, yaw, std, stamp(monotonic)}
+        self.scan_points = None     # (points, monotonic time)
+        self._field = (None, None)  # (map version, DistanceField)
+        self.amcl_recorder = amcl_check.AmclRecorder(self.get_parameter('amcl_dir').value)
+        if self.mode == 'amcl':
+            self._start_amcl()
+
+        # ---- 노드 경로 주행 (mode:=route: 로봇의 line_nav 노드와 주고받음) ----
+        self.route_state = None     # (dict, monotonic time)
+        self._route_graph = None
+        self.route_cmd_pub = None
+        if self.mode in ('route', 'test'):
+            self.route_cmd_pub = self.create_publisher(String, 'line_nav/command', 10)
+            self.create_subscription(String, 'line_nav/state', self._route_state_cb, 10)
+
+        # ---- ROS 로그(/rosout): 테스트 관제 로그 창에서 Pinky 쪽 로그를 보려고 최근 줄만 보관 ----
+        self.ros_logs = collections.deque(maxlen=ROS_LOG_KEEP)
+        self._ros_log_seq = 0
+        self.create_subscription(Log, '/rosout', self._rosout_cb, 100)
+
         # ---- SLAM Toolbox ----
         self.save_map_client = self.create_client(SaveMap, '/slam_toolbox/save_map')
         self.reset_client = self.create_client(Reset, '/slam_toolbox/reset')
 
         # ---- Teleop ----
         # pinky_bringup 의 cmd_vel 구독은 depth 10 기본 QoS(RELIABLE).
-        self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        self.cmd_vel_pub = (self.create_publisher(Twist, 'cmd_vel', 10)
+                            if self.teleop_enabled else None)
         self.teleop_guard = TeleopGuard(MAX_LINEAR, MAX_ANGULAR, DEADMAN_TIMEOUT)
         # 안전 타이머는 STEADY 시계: use_sim_time 이고 시뮬레이터가 멈춰도 deadman 동작
         steady = Clock(clock_type=ClockType.STEADY_TIME)
-        self.create_timer(TELEOP_PERIOD, self._teleop_tick, clock=steady)
-        self.create_timer(WATCHDOG_PERIOD, self._watchdog_tick, clock=steady)
+        if self.teleop_enabled:
+            self.create_timer(TELEOP_PERIOD, self._teleop_tick, clock=steady)
+            self.create_timer(WATCHDOG_PERIOD, self._watchdog_tick, clock=steady)
 
         self.get_logger().info(
             f'pinky_test_console started (mode={self.mode}, map_dir={self.map_dir}, '
@@ -213,9 +280,15 @@ class ConsoleNode(Node):
         t = trans.transform
         with self.lock:
             self.tf_pose = (t.translation.x, t.translation.y, quat_to_yaw(t.rotation))
+            self.smartcart_monitor.observe('tf', trans)
 
     # ---------------- Teleop ----------------
+    def _require_web_drive(self):
+        if not self.teleop_enabled:
+            raise PermissionError('수동 구동·웹 정지 사용 불가: teleop_enabled=false. 현장 정지 수단을 사용하세요')
+
     def publish_twist(self, linear, angular):
+        self._require_web_drive()
         msg = Twist()
         msg.linear.x = float(linear)
         msg.angular.z = float(angular)
@@ -234,6 +307,7 @@ class ConsoleNode(Node):
 
     def teleop(self, linear, angular):
         """웹 조종 입력. Nav2 주행 중이면 먼저 목표를 취소한다."""
+        self._require_web_drive()
         nav_cancelled = False
         if self.is_navigating():
             self.get_logger().info('[TELEOP] input during Nav2 goal -> cancel goal first')
@@ -242,12 +316,18 @@ class ConsoleNode(Node):
         return {'linear': lin, 'angular': ang, 'nav_cancelled': nav_cancelled}
 
     def teleop_stop(self):
+        self._require_web_drive()
         if self.teleop_guard.stop():
             self.publish_twist(0.0, 0.0)
 
     def emergency_stop(self):
-        """화면 상단 정지 버튼: 속도 0 먼저, 그 다음 Nav2 취소."""
+        """화면 상단 정지 버튼: 경로 주행 정지·속도 0 먼저, 그 다음 Nav2 취소."""
+        self._require_web_drive()
         self.teleop_guard.stop()
+        if self.route_cmd_pub is not None:
+            with self._return_lock:            # 대기 중 복귀 취소 + 정지를 복귀 start 와 순서 고정
+                self._return_gen += 1
+                self.route_cmd_pub.publish(String(data=json.dumps({'cmd': 'stop'})))
         self.publish_twist(0.0, 0.0)
         nav_cancelled = self.cancel_goal(wait_sec=0.3)
         self.get_logger().warn('[WEB] EMERGENCY STOP: zero velocity published, '
@@ -256,6 +336,8 @@ class ConsoleNode(Node):
 
     def publish_stop_on_exit(self):
         """종료 처리: 속도 0 한 번 발행하고 전달될 때까지 잠깐 기다린다."""
+        if not self.teleop_enabled:
+            return
         try:
             subs = self.cmd_vel_pub.get_subscription_count()
             self.publish_twist(0.0, 0.0)
@@ -320,13 +402,163 @@ class ConsoleNode(Node):
     def get_info(self):
         return {
             'mode': self.mode,
+            'use_sim_time': self.get_parameter('use_sim_time').value,
+            'teleop_enabled': self.teleop_enabled,
             'map_dir': self.map_dir,
             'ir_dir': self.ir.ir_dir,
+            'amcl_dir': self.amcl_recorder.amcl_dir,
             'max_linear': MAX_LINEAR,
             'max_angular': MAX_ANGULAR,
             'deadman_sec': DEADMAN_TIMEOUT,
             'teleop_hz': round(1.0 / TELEOP_PERIOD),
         }
+
+    # ---------------- 노드 경로 주행 ----------------
+    def _route_state_cb(self, msg):
+        try:
+            data = json.loads(msg.data)
+        except ValueError:
+            return
+        if isinstance(data, dict):
+            with self.lock:
+                self.route_state = (data, time.monotonic())
+
+    def _rosout_cb(self, msg):
+        with self.lock:
+            self._ros_log_seq += 1
+            self.ros_logs.append({
+                'seq': self._ros_log_seq,
+                'stamp': round(msg.stamp.sec + msg.stamp.nanosec * 1e-9, 3),
+                'level': LOG_LEVELS.get(msg.level, str(msg.level)),
+                'node': msg.name, 'msg': msg.msg[:500]})
+
+    def ros_log_snapshot(self, after=0, limit=500):
+        with self.lock:
+            rows = [r for r in self.ros_logs if r['seq'] > after]
+            last = self._ros_log_seq
+        return {'entries': rows[-limit:], 'last': last}
+
+    def log_files(self):
+        """로봇에 남은 경로 상세 기록(route_*.csv)·ROS 실행 로그 폴더(~/.ros/log) 목록."""
+        nav_dir = str(self.get_parameter('nav_log_dir').value)
+        return {'route_logs': route_view.list_route_logs(nav_dir),
+                'ros_logs': route_view.list_ros_log_dirs('~/.ros/log')}
+
+    def route_snapshot(self):
+        now = time.monotonic()
+        with self.lock:
+            st = self.route_state
+            battery = dict(self.battery)
+        age = None if st is None else round(now - st[1], 2)
+        return {
+            'mode': self.mode,
+            'robot': str(self.get_parameter('robot').value),
+            'available': self.mode in ('route', 'test'),
+            'state': None if st is None else st[0],
+            'age_sec': age,
+            'stale': st is None or age > ROUTE_STALE_SEC,
+            # 경로 화면·테스트 관제의 배터리 표시(battery_publisher 5 s 주기, 15 s 넘으면 stale)
+            'battery': {k: None if v is None else round(v[0], 2) for k, v in battery.items()} | {
+                'stale': all(v is None or now - v[1] > BATTERY_STALE_SEC
+                             for v in battery.values())},
+        }
+
+    def route_return(self, goal=None, start=None, wait_sec=40.0):
+        """「복귀」: 지금 노드 → goal(기본 P5). 경로 끝 상차 대기면 상차 완료를 먼저 보내고
+        도착(arrived)을 기다렸다가 출발한다(별도 스레드). → {'success', 'msg', 'route'}"""
+        with self.lock:
+            st = self.route_state
+        state = None if st is None or time.monotonic() - st[1] > ROUTE_STALE_SEC else st[0]
+        plan = route_view.plan_return(self.route_graph(), state, goal=goal, start=start)
+        if not plan['route']:
+            return {'success': True, 'msg': plan['msg'], 'route': []}
+        start_cmd = {'cmd': 'start', 'route': plan['route']}
+        if not plan['load_done_first']:
+            self.route_command(start_cmd)
+            return {'success': True, 'msg': plan['msg'], 'route': plan['route']}
+        with self._return_lock:                # load_done 과 이 복귀의 번호를 함께 정함
+            self.route_command({'cmd': 'load_done'})
+            gen = self._return_gen
+        seq0 = (state or {}).get('event_seq')
+
+        def wait_then_start():
+            deadline = time.monotonic() + wait_sec
+            s = {}
+            while time.monotonic() < deadline:
+                time.sleep(0.1)
+                if self._return_gen != gen:    # 그 사이 정지·다른 명령 → 복귀 취소
+                    self.get_logger().info('[WEB] return: cancelled by a newer command')
+                    return
+                with self.lock:
+                    cur = self.route_state
+                s = cur[0] if cur else {}
+                if s.get('state') == 'arrived' and s.get('event_seq') != seq0:
+                    if not self.route_command(start_cmd, return_gen=gen):
+                        self.get_logger().info('[WEB] return: cancelled by a newer command')
+                    return
+                if s.get('state') in ('error', 'stopped'):
+                    break
+            self.get_logger().warn(f'[WEB] return: no arrival after load_done ({s.get("state")}); '
+                                   'route not started')
+
+        threading.Thread(target=wait_then_start, daemon=True).start()
+        return {'success': True, 'msg': plan['msg'], 'route': plan['route']}
+
+    def route_graph(self):
+        if self._route_graph is None:
+            path = os.path.expanduser(str(self.get_parameter('layout_yaml').value)) \
+                or default_layout_yaml()
+            if not path:
+                raise route_view.RouteCommandError(
+                    'layout not found (install roport_gz_world or set layout:=<yaml>)')
+            self._route_graph = route_view.graph_view(path)
+        return self._route_graph
+
+    def route_command(self, cmd, return_gen=None):
+        """cmd = route_view.parse_route_command 결과. line_nav 가 받아 검사·실행한다.
+
+        사용자 명령(return_gen=None)은 대기 중인 「복귀」를 취소한다. 복귀 스레드는 자기 번호를 넘기고,
+        그 사이 다른 명령이 있었으면 보내지 않고 False. 확인과 발행을 같은 잠금 안에서 해서
+        정지 뒤에 복귀 start 가 나가지 않는다.
+        """
+        self._require_web_drive()
+        if self.route_cmd_pub is None:
+            raise route_view.RouteCommandError('route commands need mode:=route or mode:=test')
+        with self._return_lock:
+            if return_gen is None:
+                self._return_gen += 1
+            elif return_gen != self._return_gen:
+                return False
+            self.route_cmd_pub.publish(String(data=json.dumps(cmd)))
+        self.get_logger().info(f'[WEB] line_nav command: {cmd}')
+        return True
+
+    def make_fleet(self):
+        """mode:=fleet 의 FleetManager. 다른 모드는 None."""
+        if self.mode != 'fleet':
+            return None
+        store = fleet.FleetStore(str(self.get_parameter('fleet_file').value))
+        cmds = fleet.Commands(str(self.get_parameter('repo_dir').value),
+                              str(self.get_parameter('ssh_key').value))
+        mgr = fleet.FleetManager(
+            store, cmds, client=fleet.RobotClient(int(self.get_parameter('robot_port').value)),
+            log=fleet.FleetLog(str(self.get_parameter('fleet_log_dir').value)))
+        mgr.start_polling()
+        return mgr
+
+    def make_dock(self):
+        """mode:=fleet 정밀 도킹 탭: (카메라 중계, 결과 기록). 다른 모드는 None."""
+        if self.mode != 'fleet':
+            return None
+        cams = dock_camera.DockCameras(str(self.get_parameter('dock_dir').value))
+        if cams.config_error:
+            self.get_logger().warn(f'[DOCK] {cams.config_error} (기본 카메라 2대 사용)')
+        results = dock_camera.DockResults(
+            os.path.join(os.path.expanduser(str(self.get_parameter('fleet_log_dir').value)),
+                         'dock'))
+        if results.error:
+            self.get_logger().warn(f'[DOCK] {results.error}')
+        return cams, results
 
     def get_status(self):
         stats = read_system_stats()
@@ -347,6 +579,7 @@ class ConsoleNode(Node):
 
     # ---------------- Goal 전송 ----------------
     def send_goal(self, x, y, yaw):
+        self._require_web_drive()
         if not self.nav_client.wait_for_server(timeout_sec=1.0):
             self.get_logger().error('navigate_to_pose Action Server not available.')
             return False
@@ -370,8 +603,8 @@ class ConsoleNode(Node):
         return True
 
     # ---------------- AMCL 초기 위치 설정 ----------------
-    def set_initial_pose(self, x, y, yaw):
-        """RViz의 '2D Pose Estimate'와 동일하게 /initialpose 퍼블리시."""
+    def set_initial_pose(self, x, y, yaw, var_xy=0.25, var_yaw=0.06853891909122467):
+        """RViz의 '2D Pose Estimate'와 동일하게 /initialpose 퍼블리시 (공분산 기본값도 RViz)."""
         msg = PoseWithCovarianceStamped()
         msg.header.frame_id = 'map'
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -379,10 +612,10 @@ class ConsoleNode(Node):
         msg.pose.pose.position.y = y
         msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
         msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
-        # RViz 기본값과 동일한 공분산 (x, y, yaw)
-        msg.pose.covariance[0] = 0.25
-        msg.pose.covariance[7] = 0.25
-        msg.pose.covariance[35] = 0.06853891909122467
+        # 공분산 (x, y, yaw)
+        msg.pose.covariance[0] = var_xy
+        msg.pose.covariance[7] = var_xy
+        msg.pose.covariance[35] = var_yaw
         self.initial_pose_pub.publish(msg)
         self.get_logger().info(f'[WEB] set initial pose: x={x:.2f}, y={y:.2f}, yaw={yaw:.2f}')
         return True
@@ -394,6 +627,7 @@ class ConsoleNode(Node):
 
     def cancel_goal(self, wait_sec=1.0):
         """Nav2 주행을 취소(정지). goal 출처와 무관하게 모든 goal 취소."""
+        self._require_web_drive()
         if not self.cancel_client.wait_for_service(timeout_sec=wait_sec):
             self.get_logger().warn('navigate_to_pose cancel service not available.')
             return False
@@ -467,6 +701,170 @@ class ConsoleNode(Node):
 
     def ir_record_path(self, name):
         return self.ir.record_path(name)
+
+    # ---------------- AMCL 정합 확인 ----------------
+    def _start_amcl(self):
+        path = str(self.get_parameter('layout_yaml').value).strip()
+        if path:
+            try:
+                self.amcl_frame, self.amcl_nodes = amcl_check.load_layout(path)
+            except (OSError, amcl_check.AmclCheckError) as e:
+                self.amcl_error = f'layout: {e}'
+                self.get_logger().error(f'[AMCL] {self.amcl_error}')
+        sensor_qos = QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, depth=1,
+                                reliability=QoSReliabilityPolicy.BEST_EFFORT)
+        self.create_subscription(LaserScan, 'scan', self._scan_cb, sensor_qos)
+        self.create_subscription(PoseWithCovarianceStamped, 'amcl_pose', self._amcl_pose_cb, 10)
+        self.nomotion_client = self.create_client(Empty, 'request_nomotion_update')
+        self.get_logger().info(f'[AMCL] layout={path or "-"} nodes={len(self.amcl_nodes)} '
+                               f'record={self.amcl_recorder.amcl_dir}')
+
+    def _scan_cb(self, msg):
+        """스캔을 받은 시점의 map → 라이다 TF로 점을 map 좌표로 바꿔 둔다."""
+        with self.lock:
+            self.smartcart_monitor.observe('scan', msg)
+        try:
+            t = self.tf_buffer.lookup_transform('map', msg.header.frame_id, Time()).transform
+        except Exception:  # noqa: BLE001 - AMCL 이 아직 map TF 를 안 냈을 수 있음
+            return
+        pose = (t.translation.x, t.translation.y, quat_to_yaw(t.rotation))
+        points = amcl_check.scan_to_points(
+            msg.ranges, msg.angle_min, msg.angle_increment, msg.range_min, msg.range_max, pose)
+        with self.lock:
+            self.scan_points = (points, time.monotonic())
+
+    def _smartcart_odom(self, msg):
+        t = msg.twist.twist
+        values = (t.linear.x, t.linear.y, t.linear.z, t.angular.x, t.angular.y, t.angular.z)
+        stopped = all(math.isfinite(v) and abs(v) <= .01 for v in values)
+        with self.lock:
+            self.smartcart_monitor.observe('odom', msg, stopped=stopped)
+
+    def smartcart_snapshot(self):
+        now = self.get_clock().now().nanoseconds / 1e9
+        with self.lock:
+            status = self.smartcart_monitor.snapshot(now)
+            amcl = dict(self.amcl_pose) if self.amcl_pose else None
+            pose = self.tf_pose
+            has_map = self.layers['map']['msg'] is not None
+        if amcl:
+            amcl['age_sec'] = round(time.monotonic() - amcl.pop('stamp'), 2)
+        return {'sensors': status, 'amcl': amcl, 'pose': pose, 'map_loaded': has_map,
+                'navigating': self.is_navigating(), 'nodes': self.amcl_nodes,
+                'mode': self.mode, 'teleop_enabled': self.teleop_enabled, 'delivery_enabled': False,
+                'delivery_reason': '실기 정차 좌표 미측정 · 배송 실행부 미연결'}
+
+    def smartcart_initial_pose(self, node_id, yaw_deg, confirmed):
+        with self.lock:
+            if self.layers['map']['msg'] is None:
+                raise amcl_check.AmclCheckError('지도를 먼저 수신해야 초기 위치를 적용할 수 있습니다')
+            self.smartcart_monitor.require_initial_pose(
+                self.get_clock().now().nanoseconds / 1e9, node_id, yaw_deg,
+                confirmed, self._is_navigating)
+        node = self.amcl_node(node_id)
+        return self.amcl_initial_pose_cm(node['x_cm'], node['y_cm'], yaw_deg)
+
+    def _amcl_pose_cb(self, msg):
+        p = msg.pose.pose
+        with self.lock:
+            self.smartcart_monitor.observe('amcl', msg)
+            self.amcl_pose = {'x': p.position.x, 'y': p.position.y,
+                              'yaw': quat_to_yaw(p.orientation),
+                              'std': amcl_check.pose_std(msg.pose.covariance),
+                              'stamp': time.monotonic()}
+
+    def _distance_field(self, map_msg, version):
+        cached_version, field = self._field
+        if cached_version != version:
+            info = map_msg.info
+            field = amcl_check.DistanceField(info.width, info.height, info.resolution,
+                                             info.origin.position.x, info.origin.position.y,
+                                             map_msg.data)
+            self._field = (version, field)
+        return field
+
+    def _amcl_score(self):
+        with self.lock:
+            map_msg, version = self.layers['map']['msg'], self.layers['map']['version']
+            scan = self.scan_points
+        if map_msg is None or scan is None or time.monotonic() - scan[1] > SCAN_STALE_SEC:
+            return None, scan
+        return amcl_check.match_score(scan[0], self._distance_field(map_msg, version)), scan
+
+    def amcl_snapshot(self, map_version):
+        score, scan = self._amcl_score()
+        with self.lock:
+            map_msg, version = self.layers['map']['msg'], self.layers['map']['version']
+            amcl = dict(self.amcl_pose) if self.amcl_pose else None
+        now = time.monotonic()
+        out = {
+            'map': None if map_msg is None else self._grid_json(
+                map_msg, version, include_data=map_version != version),
+            'scan': None if scan is None else {
+                'points': [[round(x, 3), round(y, 3)] for x, y in scan[0]],
+                'classes': score['classes'] if score else [],
+                'age_sec': round(now - scan[1], 2)},
+            'score': None if score is None else {k: v for k, v in score.items()
+                                                 if k != 'classes'},
+            'thresholds_cm': [round(t * 100) for t in amcl_check.THRESHOLDS],
+            'amcl': None,
+            'frame': None,
+            'nodes': [],
+            'error': self.amcl_error,
+            'records': self.amcl_recorder.rows(10),
+        }
+        if amcl is not None:
+            out['amcl'] = {'x': amcl['x'], 'y': amcl['y'], 'yaw': amcl['yaw'],
+                           'std': list(amcl['std']), 'age_sec': round(now - amcl['stamp'], 1)}
+            if self.amcl_frame is not None:
+                x, y, yaw = self.amcl_frame.to_measured(amcl['x'], amcl['y'], amcl['yaw'])
+                out['amcl'].update({'x_cm': round(x, 1), 'y_cm': round(y, 1),
+                                    'yaw_deg': round(yaw, 1)})
+        if self.amcl_frame is not None:
+            f = self.amcl_frame
+            out['frame'] = {'x_m': f.x_m, 'y_m': f.y_m, 'yaw_deg': f.yaw_deg}
+            for n in self.amcl_nodes:
+                mx, my, _ = f.to_map(n['x_cm'], n['y_cm'])
+                out['nodes'].append(dict(n, map_x=round(mx, 4), map_y=round(my, 4)))
+        return out
+
+    def amcl_initial_pose_cm(self, x_cm, y_cm, yaw_deg):
+        """실측 좌표(cm, 배치 yaml frame) 로 초기 위치. AmclCheckError: 배치 yaml 없음."""
+        if self.amcl_frame is None:
+            raise amcl_check.AmclCheckError('layout_yaml not loaded (layout:=<path>)')
+        x, y, yaw = self.amcl_frame.to_map(x_cm, y_cm, yaw_deg)
+        # 로봇을 노드·잰 위치에 정확히 놓는 시험이라 RViz 기본(σ 0.5 m)보다 좁게 준다.
+        # 넓으면 제자리 갱신으로 수렴이 느리다(Gazebo N12: 갱신 15번 뒤에도 12 cm).
+        return self.set_initial_pose(x, y, yaw, var_xy=amcl_check.INIT_STD_XY ** 2,
+                                     var_yaw=math.radians(amcl_check.INIT_STD_YAW_DEG) ** 2)
+
+    def amcl_node(self, node_id):
+        for n in self.amcl_nodes:
+            if n['id'] == node_id:
+                return n
+        raise amcl_check.AmclCheckError(f'unknown node {node_id!r}')
+
+    def amcl_nomotion_update(self):
+        """로봇을 움직이지 않고 AMCL 측정 갱신 한 번 (nav2_amcl request_nomotion_update)."""
+        if not self.nomotion_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn('request_nomotion_update not available (mode:=amcl ?)')
+            return False
+        self.nomotion_client.call_async(Empty.Request())
+        return True
+
+    def amcl_record(self, label, truth):
+        score, _scan = self._amcl_score()
+        if score is None:
+            raise amcl_check.AmclCheckError(f'no scan within {SCAN_STALE_SEC:g} s')
+        with self.lock:
+            amcl = dict(self.amcl_pose) if self.amcl_pose else None
+        frame = self.amcl_frame or amcl_check.Frame()
+        row = self.amcl_recorder.record(frame, amcl, score, label, truth)
+        self.get_logger().info(f'[AMCL] record {label or "-"}: {row}')
+        return row
+
+    def amcl_records_path(self):
+        return self.amcl_recorder.path
 
     # ---------------- 마커 인식 확인 ----------------
     def _start_marker(self):
@@ -575,13 +973,20 @@ def main(args=None):
     # SSH 접속이 끊기면 SIGHUP: 기본 동작은 정리 없이 종료라 0 속도를 못 보낸다
     signal.signal(signal.SIGHUP, _raise_keyboard_interrupt)
     spin_thread = threading.Thread(target=_spin, args=(executor, node), daemon=True)
+    dock = None
 
     try:
         spin_thread.start()
 
         ip = str(node.get_parameter('ip').value)
         port = int(node.get_parameter('port').value)
-        app = create_app(node, default_web_dir())
+        fleet_mgr = node.make_fleet()
+        dock = node.make_dock()
+        allowed = None
+        if fleet_mgr is not None and ipaddress.IPv4Address(ip).is_loopback:
+            allowed = {f'127.0.0.1:{port}', f'localhost:{port}'}
+        app = create_app(node, default_web_dir(), fleet=fleet_mgr, allowed_hosts=allowed,
+                         dock=dock)
         # 10 Hz teleop + 2 Hz 상태 요청 로그가 화면을 덮지 않도록
         logging.getLogger('werkzeug').setLevel(logging.WARNING)
         node.get_logger().info(f'Web console: http://{ip}:{port}  (classroom Wi-Fi only)')
@@ -597,6 +1002,8 @@ def main(args=None):
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         node.publish_stop_on_exit()
         node.close_marker()
+        if dock is not None:      # 이 서버가 띄운 카메라 ssh 만 끈다
+            dock[0].close()
         executor.shutdown(timeout_sec=1.0)
         # spin 스레드가 wait 중인 채로 노드를 없애면 C++ terminate(abort)가 난다
         if spin_thread.is_alive() and spin_thread is not threading.current_thread():

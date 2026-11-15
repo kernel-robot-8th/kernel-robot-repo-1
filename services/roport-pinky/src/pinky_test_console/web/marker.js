@@ -57,7 +57,7 @@ function renderChecklist(s) {
 
 async function poll() {
   try {
-    const res = await fetch("/api/marker");
+    const res = await fetch("api/marker");
     const s = await res.json();
     markConnection(true);
     $("fpsChip").textContent = s.fps === null ? "- fps" : s.fps + " fps";
@@ -81,7 +81,7 @@ let frameTimer = null;
 
 function requestFrame() {
   clearTimeout(frameTimer);
-  $("frame").src = "/api/marker/frame.jpg?t=" + Date.now();
+  $("frame").src = "api/marker/frame.jpg?t=" + Date.now();
   frameTimer = setTimeout(requestFrame, FRAME_STALL_MS);
 }
 
@@ -122,7 +122,7 @@ async function startRecord() {
   const id = $("markerId").value.trim();
   if (id !== "") body.marker_id = Number(id);
   try {
-    const res = await fetch("/api/marker/record", {
+    const res = await fetch("api/marker/record", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     const r = await res.json();
@@ -134,7 +134,7 @@ async function startRecord() {
 
 async function refreshRanges() {
   try {
-    const data = await (await fetch("/api/marker/records")).json();
+    const data = await (await fetch("api/marker/records")).json();
     const tbody = $("ranges").tBodies[0];
     tbody.textContent = "";
     for (const r of data.records.slice().reverse()) {
@@ -154,7 +154,7 @@ $("btnRecord").addEventListener("click", startRecord);
 refreshRanges();
 
 $("btnReset").addEventListener("click", async () => {
-  await fetch("/api/marker/reset", {
+  await fetch("api/marker/reset", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
   });
 });
