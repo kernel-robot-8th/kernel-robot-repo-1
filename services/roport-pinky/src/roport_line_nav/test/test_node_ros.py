@@ -6,13 +6,14 @@
 
 import importlib.util
 import json
+import math
 from pathlib import Path
 import threading
 import time
 
 import pytest
 
-_NEEDED = ('rclpy', 'geometry_msgs', 'std_msgs', 'nav_msgs', 'roport_pinky_line')
+_NEEDED = ('rclpy', 'geometry_msgs', 'std_msgs', 'nav_msgs', 'sensor_msgs', 'roport_pinky_line')
 _MISSING = [m for m in _NEEDED if importlib.util.find_spec(m) is None]
 pytestmark = pytest.mark.skipif(bool(_MISSING), reason=f'missing: {_MISSING}')
 
@@ -175,8 +176,8 @@ def test_no_odom_stops(ros):
     '{"cmd": "start", "route": ["N07", "N18"], "start_facing": "S"}',
     '{"cmd": "start", "route": ["N07", "N18"], "start_cross": true, "start_facing": "S",'
     ' "start_offset_cm": 3}',
-    '{"cmd": "back"}', '{"cmd": "back", "to": "n23"}', '{"cmd": "back", "to": 23}',
-    '{"cmd": "speed", "reverse_speed": "slow"}', '{"cmd": "speed", "reverse_speed": true}',
+    '{"cmd": "back"}', '{"cmd": "back", "to": "N23"}',          # 수동 후진은 없앰(2026-11-15)
+    '{"cmd": "speed", "reverse_speed": "slow"}', '{"cmd": "speed", "reverse_speed": 0.03}',
 ])
 def test_parse_command_rejects(text):
     with pytest.raises(ValueError):
@@ -199,9 +200,8 @@ def test_parse_command_ok():
         ('dock', {'node': 'N11', 'reset': True})
     assert parse_command('{"cmd": "pause"}') == ('pause', {})
     assert parse_command('{"cmd": "resume"}') == ('resume', {})
-    assert parse_command('{"cmd": "back", "to": "N23"}') == ('back', {'to': 'N23'})
-    assert parse_command('{"cmd": "speed", "reverse_speed": 0.03}') == \
-        ('speed', {'reverse_speed': 0.03})
+    assert parse_command('{"cmd": "speed", "base_speed": 0.03, "reverse_speed": 0.03}') == \
+        ('speed', {'base_speed': 0.03, '_ignored': 'reverse_speed'})   # 양보 후진 삭제: 무시하고 알림
 
 
 def test_speed_command(ros):
@@ -350,32 +350,115 @@ def test_gap_parameters_and_state(tmp_path):
         h.close()
 
 
-def test_pause_resume_back_commands(ros):
-    """pause → 0 속도·paused, resume → 주행, 정지 확인 뒤 back(출발 노드, 가까우면 odom) → arrived."""
+def test_pause_resume_commands(ros):
+    """pause → 0 속도·paused(정지 확인), resume → 주행. back 은 알 수 없는 명령으로 거절."""
     ros.feed(3)
     ros.command({'cmd': 'start', 'route': ROUTE})
     ros.wait(lambda: ros.node.ex.state == 'follow')
     ros.feed(2)
-    ros.command({'cmd': 'back', 'to': 'N16'})          # 멈추지 않았으면 거부
-    ros.wait(lambda: ros.states and (ros.states[-1]['last_command'] or {}).get('cmd') == 'back')
-    assert ros.states[-1]['last_command']['ok'] is False and ros.node.ex.state == 'follow'
+    ros.command({'cmd': 'back', 'to': 'N16'})
+    ros.wait(lambda: ros.states and (ros.states[-1]['last_command'] or {}).get('cmd') == '?')
+    last = ros.states[-1]['last_command']
+    assert last['ok'] is False and 'unknown cmd' in last['detail'] and ros.node.ex.state == 'follow'
     ros.command({'cmd': 'pause'})
     ros.wait(lambda: ros.node.ex.state == 'paused')
     ros.feed(10)                                        # odom 이 그대로 → 0.3 s 뒤 정지 확인
     ros.wait(lambda: ros.states and (ros.states[-1].get('pause') or {}).get('settled'))
-    assert ros.cmds[-1] == (0.0, 0.0)
+    assert ros.cmds[-1] == (0.0, 0.0) and ros.states[-1]['pause_reason'] == 'manual'
+    assert 'back_targets' not in ros.states[-1] and ros.states[-1]['obstacle']['mode'] == 'off'
     ros.command({'cmd': 'resume'})
     ros.wait(lambda: ros.node.ex.state == 'follow')
     ros.feed(2)
     assert ros.cmds[-1][0] > 0
-    ros.command({'cmd': 'pause'})
-    ros.feed(10)
-    ros.wait(lambda: ros.node.ex.settled)
-    ros.command({'cmd': 'speed', 'reverse_speed': 0.03})
-    ros.wait(lambda: ros.states and ros.states[-1]['speed']['reverse_follow_speed'] == 0.03)
-    assert 'reverse 0.030' in ros.states[-1]['last_command']['detail']
-    ros.command({'cmd': 'back', 'to': 'N16'})
-    ros.wait(lambda: ros.node.ex.state == 'arrived')
-    st = ros.states[-1]
-    assert st['route'] == ['N16'] and st['reverse']['phase'] == 'done'
-    assert st['last_command'] == {'cmd': 'back', 'ok': True, 'detail': 'back to N16'}
+    ros.command({'cmd': 'speed', 'base_speed': 0.03, 'reverse_speed': 0.03})
+    last = _last(ros, 'speed')
+    assert last['ok'] and 'reverse_speed ignored' in last['detail']
+    assert 'reverse' not in ros.states[-1] and 'reverse_follow_speed' not in ros.states[-1]['speed']
+    ros.command({'cmd': 'stop'})
+    ros.wait(lambda: ros.node.ex.state == 'stopped')
+
+
+# ---------------------------------------------------------------- 장애물 정지(FFT1-172)
+SCAN_FRAME = 'pytest_rplidar_link'
+
+
+def _laser(points_base_cm, frame=SCAN_FRAME, mount=(-0.017, 0.0, math.pi), step_deg=1.0):
+    """base_link 점(cm) → 라이다(yaw π 장착) LaserScan. 각 점은 가장 가까운 광선 하나."""
+    from sensor_msgs.msg import LaserScan
+    n = int(round(360 / step_deg))
+    inc = math.radians(step_deg)
+    ranges = [math.inf] * n
+    mx, my, myaw = mount
+    for px, py in points_base_cm:
+        dx, dy = px / 100.0 - mx, py / 100.0 - my
+        a = math.atan2(dy, dx) - myaw
+        a = (a + math.pi) % (2 * math.pi) - math.pi
+        ranges[int(round((a + math.pi) / inc)) % n] = math.hypot(dx, dy)
+    msg = LaserScan()
+    msg.header.frame_id = frame
+    msg.angle_min, msg.angle_increment = -math.pi, inc
+    msg.angle_max = -math.pi + inc * (n - 1)
+    msg.range_min, msg.range_max = 0.15, 12.0
+    msg.ranges = ranges
+    return msg
+
+
+def _static_tf(probe, frame=SCAN_FRAME):
+    """URDF 와 같은 장착: base_link → rplidar_link (x −0.017, z 0.097, yaw π)."""
+    from geometry_msgs.msg import TransformStamped
+    from tf2_ros import StaticTransformBroadcaster
+    b = StaticTransformBroadcaster(probe)
+    t = TransformStamped()
+    t.header.stamp = probe.get_clock().now().to_msg()
+    t.header.frame_id = 'base_link'
+    t.child_frame_id = frame
+    t.transform.translation.x = -0.017
+    t.transform.translation.z = 0.097
+    t.transform.rotation.z = 1.0          # yaw π
+    t.transform.rotation.w = 0.0
+    b.sendTransform(t)
+    return b
+
+
+@pytest.mark.skipif(importlib.util.find_spec('tf2_ros') is None, reason='tf2_ros missing')
+def test_scan_tf_rotated_front_rear(tmp_path):
+    """라이다 yaw = π: TF 로 돌린 앞 30 cm·뒤 20 cm 점 → front 25.8·rear 12.5(원시 각도면 앞뒤가 바뀜). monitor 는 동작 그대로."""
+    from sensor_msgs.msg import LaserScan
+    h = Harness(tmp_path / 'logs', extra=[Parameter('obstacle_mode', value='monitor')])
+    try:
+        keep = _static_tf(h.probe)
+        pub = h.probe.create_publisher(LaserScan, 'scan', 10)
+        h.wait(lambda: pub.get_subscription_count() > 0)
+
+        def ob():
+            return (h.states[-1].get('obstacle') or {}) if h.states else {}
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline and ob().get('front_cm') is None:
+            pub.publish(_laser([(30.0, 0.0), (-20.0, 0.0)]))
+            h.feed(2)
+        assert ob()['mode'] == 'monitor', ob()
+        assert ob()['front_cm'] == pytest.approx(25.8, abs=0.1)
+        assert ob()['rear_cm'] == pytest.approx(12.5, abs=0.1)
+        assert h.cmds == [] and keep is not None
+    finally:
+        h.close()
+
+
+def test_stop_mode_without_scan_holds(tmp_path):
+    """stop 모드에서 scan 이 없으면 첫 추종 샘플에서 scan_stale 정지(0 속도), 경로는 끝내지 않음."""
+    h = Harness(tmp_path / 'logs', extra=[Parameter('obstacle_mode', value='stop')])
+    try:
+        h.feed(3)
+        h.command({'cmd': 'start', 'route': ROUTE})
+        h.wait(lambda: h.node.ex.state == 'paused')
+        h.feed(3)
+        st = h.states[-1]
+        assert st['pause_reason'] == 'scan_stale' and st['obstacle']['phase'] == 'blocked'
+        assert h.cmds and h.cmds[-1] == (0.0, 0.0) and all(v <= 0.0 for v, _ in h.cmds)
+        h.command({'cmd': 'resume'})
+        last = _last(h, 'resume')
+        assert last['ok'] is False and 'obstacle stop' in last['detail']
+        h.command({'cmd': 'stop'})
+        h.wait(lambda: h.node.ex.state == 'stopped')
+    finally:
+        h.close()

@@ -11,16 +11,48 @@ gaps: 테이프 끊김 [(노드 a, 노드 b, a 중심에서 시작 cm, 길이 cm
 cmd_delay_s: 명령이 바퀴에 반영되기까지 걸리는 시간(구동 지연 흉내, 기본 0 = 바로 반영).
   실로봇 d660 0.06 m/s 기록(2026-11-06)에서 전진 → 회전 전환 뒤 0.9 cm 더 간 것(0.03 m/s 는 0.5 cm)에 맞춰
   0.15~0.2 s 로 시험한다. odom 은 실제 움직임을 그대로 따른다(odom 지연은 흉내 내지 않음).
+라이다(FFT1-172 장애물 정지, enable_lidar): 세계 좌표 원형 물체(점 장애물, 반지름 cm)와 바깥 벽(사각형)에 광선을 쏴
+  LaserScan 같은 거리(m, scan frame 각도)를 만든 뒤, 노드와 같은 obstacle.edge_distances 로 TF(라이다 장착
+  x −1.7 cm, yaw = π — URDF rplidar_link)를 거쳐 몸체 끝 거리를 계산해 executor.set_scan 에 넣는다.
+  range_min 안의 점은 무효(실제 라이다처럼 inf). 실제 RPLIDAR 반사·잡음·각도 해상도는 흉내 내지 않음.
 """
 
 import math
 from collections import deque
 
+from roport_line_nav.obstacle import edge_distances, planar_tf
 from roport_pinky_line.line_sensor import Calibration, LineSensor
 
 D660 = Calibration(carpet=(2308, 2376, 2233), tape=(299, 388, 281),
                    threshold=(1300, 1380, 1260), hysteresis=100)
 DIRV = {'E': (1, 0), 'N': (0, 1), 'W': (-1, 0), 'S': (0, -1)}
+LIDAR_MOUNT = (-1.7, 0.0, math.pi)   # base_link 기준 rplidar_link (cm, cm, rad), URDF
+ROOM = (0.0, 0.0, 444.5, 221.0)      # 시연 공간 외곽 벽(layout walls outer_*), 라이다 광선의 벽. 안쪽 가벽·물체는 없음
+
+
+def _ray_circle(ox, oy, dx, dy, cx, cy, r):
+    bx, by = ox - cx, oy - cy
+    b = dx * bx + dy * by
+    disc = b * b - (bx * bx + by * by - r * r)
+    if disc < 0:
+        return None
+    t = -b - math.sqrt(disc)
+    return t if t >= 0 else None
+
+
+def _ray_box_inside(ox, oy, dx, dy, box):
+    """방 안에서 벽까지 거리."""
+    x0, y0, x1, y1 = box
+    best = math.inf
+    if dx > 1e-12:
+        best = min(best, (x1 - ox) / dx)
+    elif dx < -1e-12:
+        best = min(best, (x0 - ox) / dx)
+    if dy > 1e-12:
+        best = min(best, (y1 - oy) / dy)
+    elif dy < -1e-12:
+        best = min(best, (y0 - oy) / dy)
+    return best
 
 
 def _cut(rect, a, b, start, length):
@@ -88,6 +120,56 @@ class Sim:
         self.cmd_delay_s = cmd_delay_s
         self._pending = deque()         # (반영 시각, 명령)
         self.trace = []
+        self.lidar = None               # enable_lidar 로 켬
+
+    def enable_lidar(self, obstacles=(), hz=10.0, step_deg=1.0, range_min_cm=15.0,
+                     range_max_cm=1200.0, mount=LIDAR_MOUNT, room=ROOM):
+        """obstacles: [(x, y, 반지름 cm), ...] 또는 시각 → 그 목록 함수. lidar['on'] = False 면 scan 을 안 보냄."""
+        self.lidar = {'obstacles': obstacles, 'period': 1.0 / hz, 'next': 0.0,
+                      'step': math.radians(step_deg), 'rmin': range_min_cm, 'rmax': range_max_cm,
+                      'mount': mount, 'room': room, 'on': True, 'last': None}
+
+    def obstacles_now(self):
+        obs = self.lidar['obstacles']
+        return list(obs(self.t) if callable(obs) else obs)
+
+    def scan(self):
+        """→ (ranges m, angle_min, angle_increment, range_min m, range_max m), scan frame(라이다) 기준."""
+        L = self.lidar
+        mx, my, myaw = L['mount']
+        c, s = math.cos(self.yaw), math.sin(self.yaw)
+        ox, oy = self.x + mx * c - my * s, self.y + mx * s + my * c
+        base = self.yaw + myaw
+        n = int(round(2 * math.pi / L['step']))
+        obs = self.obstacles_now()
+        ranges = []
+        for i in range(n):
+            a = -math.pi + i * L['step']
+            dx, dy = math.cos(base + a), math.sin(base + a)
+            best = _ray_box_inside(ox, oy, dx, dy, L['room']) if L['room'] else math.inf
+            for cx, cy, r in obs:
+                t = _ray_circle(ox, oy, dx, dy, cx, cy, r)
+                if t is not None and t < best:
+                    best = t
+            ranges.append(best / 100.0 if L['rmin'] <= best <= L['rmax'] else math.inf)
+        return ranges, -math.pi, L['step'], L['rmin'] / 100.0, L['rmax'] / 100.0
+
+    def edges(self, sector_deg=20.0, front_edge_cm=4.2, rear_edge_cm=7.5):
+        """노드와 같은 계산: scan → TF(base_link ← 라이다) → 몸체 끝 거리 (front_cm, rear_cm)."""
+        ranges, amin, inc, rmin, rmax = self.scan()
+        mx, my, myaw = self.lidar['mount']
+        return edge_distances(ranges, amin, inc, rmin, rmax, planar_tf(mx / 100.0, my / 100.0, myaw),
+                              sector_deg, front_edge_cm, rear_edge_cm)
+
+    def _feed_scan(self, executor):
+        L = self.lidar
+        if L is None or not L['on'] or self.t + 1e-9 < L['next']:
+            return
+        L['next'] = self.t + L['period'] - 1e-9
+        c = executor.cfg
+        front, rear = self.edges(c.sector_deg, c.front_edge_cm, c.rear_edge_cm)
+        L['last'] = (front, rear)
+        executor.set_scan(front, rear, self.t)
 
     def place(self, node_id, heading, sensor_offset=0.0):
         """센서 중심이 node_id 에서 heading 쪽으로 sensor_offset cm 에 오게 둔다."""
@@ -124,6 +206,7 @@ class Sim:
         return self.odom
 
     def tick(self, executor):
+        self._feed_scan(executor)
         reading = self.sensor.update(self.raw())
         cmd = executor.step(reading, self.pose(), self.t)
         if cmd is not None:

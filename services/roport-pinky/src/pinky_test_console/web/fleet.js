@@ -125,27 +125,8 @@ function speedBody() {
 }
 $("btnSpeed").addEventListener("click", () => { speedDirty = false; command(speedBody()); });
 
-// 후진 속도(0.01~0.03 m/s): 직선·회전 속도와 따로 적용 (FFT1-172)
-let revDirty = false;
-function showRevLabel() { $("spRevV").textContent = `${Number($("spRev").value).toFixed(1)} cm/s`; }
-$("spRev").addEventListener("input", () => { revDirty = true; showRevLabel(); });
-$("btnRevSpeed").addEventListener("click", () => {
-  revDirty = false;
-  command({ cmd: "speed", reverse_speed: Number($("spRev").value) / 100 });
-});
-function syncReverseSpeed(sp) {
-  const v = sp && typeof sp.reverse_follow_speed === "number" ? sp.reverse_follow_speed : null;
-  $("spRevNow").textContent = v === null ? "후진 기본 2.0 cm/s (로봇 값 보고 없음)" : `현재 후진 ${(v * 100).toFixed(1)} cm/s`;
-  if (v !== null && !revDirty) $("spRev").value = String(v * 100);
-  showRevLabel();
-}
-showRevLabel();
 $("btnPause").addEventListener("click", () => command({ cmd: "pause" }));
 $("btnResume").addEventListener("click", () => command({ cmd: "resume" }));
-$("btnBack").addEventListener("click", () => {
-  const to = $("backTo").value;
-  if (to) command({ cmd: "back", to });
-});
 
 function updateButtons() {
   const r = robots.find((x) => x.name === selected);
@@ -156,10 +137,8 @@ function updateButtons() {
   $("btnLoad").disabled = !r || !st || st.state !== "loading";
   $("btnStop").disabled = !r;
   $("btnSpeed").disabled = !r || !st;
-  $("btnRevSpeed").disabled = !r || !st;
-  $("btnPause").disabled = !r || !st || !["follow", "pass", "advance", "rotate"].includes(st.state);
-  $("btnResume").disabled = !r || !st || st.state !== "paused";
-  $("btnBack").disabled = !r || !st || !$("backTo").value;   // 후보가 없으면 value 가 비어 꺼짐
+  $("btnPause").disabled = !r || !RM.canPause(st);   // 주행 중·장애물 자동 정지 중(수동 일시정지 중이면 끔)
+  $("btnResume").disabled = !r || !st || st.state !== "paused" || RM.autoPaused(st);   // 장애물 정지는 수동 재개 안 됨
   $("btnHome").disabled = !r || !r.home || !st || !["arrived", "handoff"].includes(st.state);
 }
 
@@ -229,6 +208,19 @@ function cell(tr, text) {
   return td;
 }
 
+// 장애물 정지(계약 09). 필드가 없으면(옛 line_nav) "-"·「보고 없음」.
+function showObstacle(st) {
+  const o = RM.obstacleView(st);
+  $("sPause").textContent = st ? o.pause : "-";
+  $("sObst").textContent = st ? o.sensor : "-";
+  $("sObstPhase").textContent = o.phase;
+  $("sObstWhy").textContent = o.why;
+  for (const id of ["sPause", "sObstPhase"]) {
+    $(id).classList.toggle("warn", o.cls === "warn");
+    $(id).classList.toggle("err", o.cls === "err");
+  }
+}
+
 function render(snap) {
   robots = snap.robots || [];
   $("logFile").textContent = snap.log_error || snap.log_file || "-";
@@ -254,12 +246,16 @@ function render(snap) {
       bc.classList.add(b.stale ? "batt-stale" : b.percent < 20 ? "batt-low" : b.percent < 40 ? "batt-mid" : "batt-ok");
     }
     cell(tr, consoleMode(r));
-    cell(tr, st ? st.state : "-");
+    { // state + 일시정지 사유(장애물·스캔 끊김), 오래 막힘 경고는 빨강
+      const o = RM.obstacleView(st);
+      const why = st && (st.pause_reason === "obstacle" || st.pause_reason === "scan_stale") ? ` · ${o.pause}` : "";
+      const sc = cell(tr, st ? `${st.state}${why}` : "-");
+      if (o.cls) sc.classList.add(o.cls === "err" ? "obst-err" : "obst-warn");
+    }
     cell(tr, st && st.leg ? `${st.leg.from}→${st.leg.to}` : "-");
     tr.addEventListener("click", () => {
       selected = r.name;
       speedDirty = false;
-      revDirty = false;
       $("selName").textContent = r.name;
       fillStarts();
       plan();
@@ -294,10 +290,7 @@ function render(snap) {
   }
   $("sState").textContent = st ? st.state : "-";
   syncSpeed(st && st.speed);
-  syncReverseSpeed(st && st.speed);
-  RM.fillBackSelect($("backTo"), RM.backCandidates(st));
-  { const rt = RM.reverseText(st);
-  $("sReverse").textContent = rt === "-" && st && st.back_why ? `후진 불가: ${st.back_why}` : rt; }
+  showObstacle(st);
   $("sReason").textContent = st && st.reason ? st.reason : "-";
   $("sLeg").textContent = st && st.leg ? `${st.leg.from} → ${st.leg.to} (${st.leg.action})` : "-";
   $("sTravel").textContent = st ? `${st.traveled_cm}` + (st.window_cm ? ` / ${st.window_cm[0]}~${st.window_cm[1]}` : "") : "-";
@@ -334,10 +327,12 @@ function renderLogs() {
     if (src && e.source !== src) continue;
     const tr = document.createElement("tr");
     tr.className = "fl-log-" + e.source;
+    const ec = e.source === "robot" ? RM.eventClass(e.event) : "";
+    if (ec) tr.classList.add(ec);
     cell(tr, e.time.slice(11, 23));
     cell(tr, e.robot);
     cell(tr, e.source);
-    cell(tr, e.event);
+    cell(tr, e.source === "robot" ? RM.eventText(e.event) : e.event);
     cell(tr, e.detail);
     tb.appendChild(tr);
   }

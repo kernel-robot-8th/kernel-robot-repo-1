@@ -81,57 +81,71 @@ const RM = (() => {
     return `로봇이 ${e.node} 에서 끝났다고 기억 중입니다. 로봇을 ${startNode} 에 옮겨 놓았나요?`;
   }
 
-  // 후진 양보(FFT1-172): 「후진」으로 돌아갈 수 있는 지나온 노드(가장 최근 먼저, 현재 노드 제외).
-  // paused = route[0..index] (index 구간의 출발 노드 포함), arrived·loading = 마지막(현재) 노드만 뺀 앞쪽.
-  // 그 밖의 상태는 후진을 시작할 수 없어 빈 목록. 최종 판단(지나온 경로 여부·자세)은 로봇의 line_nav 가 한다.
-  // state.back_targets(line_nav 가 지금 back 으로 받는 노드, 최근 순)가 배열이면 그것만 쓴다(빈 배열 = 후진 불가).
-  // 필드가 없을 때(옛 line_nav)만 아래 경로 기반 계산으로 대신한다.
-  function backCandidates(st) {
-    if (st && Array.isArray(st.back_targets)) {
-      const out = [];
-      for (const id of st.back_targets) if (typeof id === "string" && id && !out.includes(id)) out.push(id);
-      return out;
+  // 장애물 정지 표시(FFT1-172 범위 변경, 계약 09_obstacle_yield_contract.md 「line_nav/state 추가 필드」).
+  // 수동 후진 back{to} 과 장애물 접근 시 후진(yield)은 없어졌다(2026-11-15 사용자 결정). 필드가 없는 옛 line_nav·null 거리는 "-".
+  // 옛 line_nav 가 보내는 phase "yield"·yield_* 이벤트는 모르는 값으로 원문 그대로 보인다.
+  const PAUSE_REASON_KO = { manual: "수동 일시정지", obstacle: "장애물 정지", scan_stale: "스캔 끊김(안전 정지)" };
+  const OBST_MODE_KO = { off: "끔", monitor: "감시만", stop: "정지 사용" };
+  const OBST_PHASE_KO = { clear: "없음", blocked: "장애물 정지", resume_wait: "재개 대기" };
+  const OBST_EVENT_KO = {
+    obstacle_stop: "장애물 정지", obstacle_clear: "장애물 해제·재개", obstacle_warn: "오래 막힘 경고",
+  };
+
+  function num(v, d) { return typeof v === "number" && isFinite(v) ? v.toFixed(d) : "-"; }
+  function label(map, v) {
+    if (v === null || v === undefined || v === "") return "-";
+    return Object.prototype.hasOwnProperty.call(map, v) ? map[v] : String(v);
+  }
+
+  // line_nav/state → 화면 문자열. {pause, sensor, phase, why, warn, cls, has}
+  // cls = "err"(warn 참) | "warn"(정지·재개 대기·자동 정지 사유) | "" — info-line 값 칸 색.
+  // rear_cm 은 line_nav 가 보고하지 않으면 "-".
+  function obstacleView(st) {
+    const pr = st && "pause_reason" in st ? st.pause_reason : undefined;
+    const ob = st && st.obstacle && typeof st.obstacle === "object" ? st.obstacle : null;
+    const out = { pause: pr === undefined ? "-" : label(PAUSE_REASON_KO, pr),
+      sensor: "보고 없음", phase: "-", why: "-", warn: false, cls: "", has: !!ob };
+    if (ob) {
+      const age = typeof ob.scan_age_s === "number" && isFinite(ob.scan_age_s) ? ` · 스캔 ${ob.scan_age_s.toFixed(2)} s` : "";
+      out.sensor = `${label(OBST_MODE_KO, ob.mode)} · 앞 ${num(ob.front_cm, 1)} cm · 뒤 ${num(ob.rear_cm, 1)} cm${age}`;
+      const parts = [label(OBST_PHASE_KO, ob.phase)];
+      if (typeof ob.blocked_s === "number" && ob.blocked_s > 0) parts.push(`막힘 ${num(ob.blocked_s, 1)} s`);
+      out.warn = ob.warn === true;
+      if (out.warn) parts.push("경고: 오래 막힘");
+      out.phase = parts.join(" · ");
+      out.why = typeof ob.why === "string" && ob.why ? ob.why : "-";
+      if (["blocked", "resume_wait"].includes(ob.phase)) out.cls = "warn";
     }
-    if (!st || !Array.isArray(st.route) || st.route.length < 2) return [];
-    const r = st.route;
-    let passed;
-    if (st.state === "paused") passed = r.slice(0, Math.max(0, Math.min(st.index || 0, r.length - 1)) + 1);
-    else if (st.state === "arrived" || st.state === "loading") passed = r.slice(0, -1);
-    else return [];
-    const here = st.state === "paused" ? null : r[r.length - 1];
-    const out = [];
-    for (let i = passed.length - 1; i >= 0; i--) {
-      if (passed[i] !== here && !out.includes(passed[i])) out.push(passed[i]);
-    }
+    if (!out.cls && (pr === "obstacle" || pr === "scan_stale")) out.cls = "warn";
+    if (out.warn) out.cls = "err";
     return out;
   }
 
-  // state.reverse {to, leg:[A,B], expected_cm, done_cm, y_cm, theta_deg} → 표시 문자열(없으면 "-")
-  function reverseText(st) {
-    const rv = st && st.reverse;
-    if (!rv || typeof rv !== "object") return "-";
-    const n = (v, d) => (typeof v === "number" && isFinite(v) ? v.toFixed(d) : "-");
-    const leg = Array.isArray(rv.leg) ? `${rv.leg[1]}→${rv.leg[0]}` : "-";
-    const sign = (v) => (typeof v === "number" && v > 0 ? "+" : "");
-    return `목표 ${rv.to || "-"} · 구간 ${leg} · ${n(rv.done_cm, 1)} / ${n(rv.expected_cm, 1)} cm`
-      + ` · 옆 ${typeof rv.y_cm === "number" ? sign(rv.y_cm) : ""}${n(rv.y_cm, 1)} cm`
-      + ` · 방향 ${typeof rv.theta_deg === "number" ? sign(rv.theta_deg) : ""}${n(rv.theta_deg, 1)}°`;
+  // 장애물 정지 중이면 수동 「이어 가기」를 막음(line_nav 도 거부, 계약 6번). pause_reason 없으면(옛 line_nav) 막지 않음.
+  function autoPaused(st) {
+    return !!st && (st.pause_reason === "obstacle" || st.pause_reason === "scan_stale");
   }
 
-  // 후진 노드 선택 상자를 후보로 다시 채운다(같은 목록이면 그대로, 고른 값이 남아 있으면 유지, 아니면 가장 최근).
-  function fillBackSelect(sel, cands) {
-    const key = cands.join(",");
-    if (sel.dataset.key === key) return;
-    const keep = cands.includes(sel.value) ? sel.value : "";
-    sel.replaceChildren();
-    for (const id of cands) {
-      const o = document.createElement("option");
-      o.value = id;
-      o.textContent = id;
-      sel.appendChild(o);
-    }
-    sel.dataset.key = key;
-    sel.value = keep || (cands.length ? cands[0] : "");
+  // 「일시정지」 버튼을 켤지(R1·R2). 주행 중(전진 추종·통과·전진·회전), 장애물·스캔 끊김 자동 정지 중(paused)에 켬
+  // — line_nav 가 받아 자동 재개를 막음. 이미 수동 일시정지(pause_reason manual 또는 pause.manual === true)면 끔.
+  // pause.manual 이 없으면(옛 line_nav) pause_reason 만으로 판단. reverse(주차 후진)·끝난 상태는 끔.
+  function canPause(st) {
+    if (!st) return false;
+    if (st.pause && typeof st.pause === "object" && st.pause.manual === true) return false;
+    if (["follow", "pass", "advance", "rotate"].includes(st.state)) return true;
+    if (st.state === "paused") return autoPaused(st);
+    return false;
+  }
+
+  // 이벤트 이름 → 표시(장애물 이벤트는 한국어 뜻을 붙임). 이름은 그대로 남겨 CSV·로그와 맞춤.
+  function eventText(name) {
+    const ko = OBST_EVENT_KO[name];
+    return ko ? `${name} (${ko})` : (name === null || name === undefined ? "-" : String(name));
+  }
+  // 이벤트 행 색: obstacle_warn = "ev-obst-warn", 그 밖의 장애물 이벤트 = "ev-obst", 나머지 = ""
+  function eventClass(name) {
+    if (name === "obstacle_warn") return "ev-obst-warn";
+    return Object.prototype.hasOwnProperty.call(OBST_EVENT_KO, name) ? "ev-obst" : "";
   }
 
   const COLORS = {
@@ -389,6 +403,6 @@ const RM = (() => {
   }
 
   return { getJson, postJson, setMsg, markConnection, RouteMap, traversed, mapToCm, ROBOT_COLORS,
-    backCandidates, reverseText, fillBackSelect, endMemory, startMismatchMsg };
+    endMemory, startMismatchMsg, obstacleView, autoPaused, canPause, eventText, eventClass };
 })();
 if (typeof module !== "undefined") module.exports = RM;

@@ -33,7 +33,11 @@ def graph():
     return Graph.load(LAYOUT)
 
 
+GAP_ON = 8.0    # 2026-11-15 기본은 끔(0). 이 파일은 켠 동작을 시험하므로 예전 기본값을 직접 준다
+
+
 def _cfg(speed, **kw):
+    kw.setdefault('gap_max_cm', GAP_ON)
     return NavConfig(base_speed=speed, max_linear=max(0.06, speed), **kw)
 
 
@@ -74,7 +78,7 @@ def _kinds(events):
 def test_no_gap_identical_to_disabled(graph, route, start):
     """테이프가 끊기지 않으면 복구 켬(기본)과 끔(gap_max_cm 0, 예전 동작)의 궤적·이벤트가 같다."""
     runs = []
-    for gap_max in (8.0, 0.0):
+    for gap_max in (GAP_ON, 0.0):
         sim = Sim(graph, cmd_delay_s=0.2)
         sim.place(start[0], start[1], 0.0)
         ex = RouteExecutor(graph, NavConfig(gap_max_cm=gap_max))
@@ -394,9 +398,9 @@ def test_gap_config_limits():
                 {'gap_confirm': 0}, {'ir_spacing_cm': 0.1}, {'ir_spacing_cm': float('inf')}):
         with pytest.raises(ValueError):
             NavConfig(**bad)
-    c = NavConfig()
+    c = NavConfig()     # 2026-11-15 사용자 결정: 유실 복구 기본 끔
     assert (c.gap_max_cm, c.gap_heading_window_cm, c.gap_confirm, c.search_deg,
-            c.ir_spacing_cm) == (8.0, 4.0, 2, 0.0, 2.0)
+            c.ir_spacing_cm) == (0.0, 4.0, 2, 0.0, 2.0)
 
 
 def test_sim_gap_cuts_only_that_segment(graph):
@@ -423,6 +427,7 @@ CENTER = (False, True, False)
 
 def _to_gap(graph, **cfg):
     """N05→N07(88.9 cm) 가짜 입력: 선 위로 20 cm 간 뒤 유실 → GAP. → (실행부, 자세, 시각)."""
+    cfg.setdefault('gap_max_cm', GAP_ON)
     ex = RouteExecutor(graph, NavConfig(**cfg))
     ex.start(['N05', 'N07', 'N18', 'N01'], start_cross=True, start_facing='S')
     n05 = graph.nodes['N05']
@@ -492,7 +497,7 @@ def test_single_lost_sample_recovers_quickly(graph):
 
 def test_lost_after_max_ok_is_node_missed(graph):
     """L3: 예상 거리(max_ok)를 넘은 샘플에서 처음 유실 → GAP 명령 없이 바로 node_missed(예전과 같음)."""
-    ex = RouteExecutor(graph)
+    ex = RouteExecutor(graph, NavConfig(gap_max_cm=GAP_ON))
     ex.start(['N05', 'N07', 'N18', 'N01'], start_cross=True, start_facing='S')
     n05 = graph.nodes['N05']
     x, y, yaw, t = n05.x, n05.y + 3.0, -math.pi / 2, 0.0

@@ -35,14 +35,20 @@ def test_classify(state, name):
     assert classify(state).name == name
 
 
-def test_classify_pause_and_line_back():
-    """FFT1-172: 일시정지 = PAUSED, 라인 후진(back, state reverse·advance·rotate) = MOVING(주차 후진과 구분)."""
-    assert classify(st('paused', 'right', 'N23', 'N19')).name == 'PAUSED'
-    for state in ('reverse', 'advance', 'rotate'):
-        s = dict(st(state, 'load'), reverse={'to': 'N23', 'phase': 'reverse'})
-        assert classify(s).name == 'MOVING' and classify(s).detail == 'back -> N23'
-    done = dict(st('arrived', 'straight', 'N07', 'N23'), reverse={'to': 'N23', 'phase': 'done'})
-    assert classify(done).name == 'READY'
+def test_classify_pause_and_obstacle():
+    """FFT1-172: 일시정지·장애물 정지(scan 끊김·앞 점 없음 포함) = PAUSED 노랑 고정. 주차 후진은 그대로 PARKING."""
+    manual = dict(st('paused', 'right', 'N23', 'N19'), pause_reason='manual')
+    assert classify(manual).name == 'PAUSED' and classify(manual).detail == 'N23 -> N19'
+    blocked = dict(st('paused', 'right', 'N23', 'N19'), pause_reason='obstacle',
+                   obstacle={'phase': 'blocked', 'front_cm': 23.4})
+    assert classify(blocked) == Status('PAUSED', 'obstacle 23 cm')
+    nopts = dict(st('paused', 'right', 'N23', 'N19'), pause_reason='scan_stale',
+                 obstacle={'phase': 'blocked', 'front_cm': None, 'why': 'front_no_points'})
+    assert classify(nopts) == Status('PAUSED', 'lidar no points')
+    stale = dict(st('paused', 'right', 'N23', 'N19'), pause_reason='scan_stale')
+    assert classify(stale) == Status('PAUSED', 'lidar scan stale')
+    park = dict(st('reverse', 'park', 'N14', 'N16'), pause_reason=None)
+    assert classify(park).name == 'PARKING'
     assert STYLES['PAUSED'][1] == STYLES['READY'][1] and STYLES['PAUSED'][3] == 0.0
 
 

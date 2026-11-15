@@ -9,13 +9,19 @@
         {"cmd": "stop"}        {"cmd": "load_done"}   (상차 완료: N01·N11 에서 대기 중일 때)
         {"cmd": "dock", "node": "N11", "advance_cm": 1.5, "rotate_deg": 96, "move_cm": 2}
         {"cmd": "dock", "node": "N11", "reset": true}   (정밀 도킹 값 적용·저장, 주행 중 거부)
-        {"cmd": "speed", "base_speed": 0.03, "rotate_speed": 0.4, "reverse_speed": 0.02}  (키 하나 이상)
-        {"cmd": "pause"}  {"cmd": "resume"}  {"cmd": "back", "to": "N23"}   (FFT1-172 일시정지·라인 후진)
+        {"cmd": "speed", "base_speed": 0.03, "rotate_speed": 0.4}  (키 하나 이상. reverse_speed 는 양보 후진을
+                               없애 무시 — 결과 detail 에 알림, 그 키만 있으면 거절)
+        {"cmd": "pause"}  {"cmd": "resume"}   (FFT1-172 일시정지. 수동 후진 back 은 2026-11-15 없앰)
+      scan (sensor_msgs/LaserScan, sensor-data QoS) — obstacle_mode 가 off 가 아닐 때만(FFT1-172 장애물 정지).
+        점을 TF(base_frame ← scan frame, 라이다 yaw = π)로 옮겨 몸체 앞·뒤 끝 거리를 계산해 실행부에 넣는다.
+        TF 를 못 구하면 scan 을 쓰지 않음 → stop 모드에서는 scan_stale 로 멈춤(fail-safe). 시연용 소프트웨어 정지,
+        안전 인증 장치 아님.
 발행  cmd_vel (geometry_msgs/Twist) — 주행 중일 때만. dry_run 이면 발행하지 않음
       line_nav/state (std_msgs/String, JSON) — 상태·현재 구간·이벤트·IR·마지막 명령 결과
 
 line_follower(roport_pinky_line)와 동시에 실행하지 않는다(둘 다 cmd_vel 을 발행).
 정지: stop 명령, 오류(노드 놓침·라인 놓침 지속·회전 중 선 못 찾음·후진 초과), IR 끊김(ir_timeout_sec),
+장애물·scan 끊김(obstacle_mode stop, 경로는 끝내지 않고 PAUSED),
 odom 끊김(odom_timeout_sec), SIGINT/SIGTERM/SIGHUP 종료 때 0 속도. kill -9·전원 차단에는 보낼 수 없고
 pinky_bringup 에는 cmd_vel 타임아웃이 없어 마지막 속도가 남는다.
 도킹 값 파일: 파라미터 dock_file(기본 ~/roport_dock.yaml, 빈 값 = 파일 안 씀). 시작 때 읽고(없거나 깨지면 경고 후
@@ -35,12 +41,16 @@ from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
+from rclpy.time import Time
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String, UInt16MultiArray
 
 from roport_line_nav.dock import load_file as load_dock_file, save_file as save_dock_file
 from roport_line_nav.executor import FACINGS, NavConfig, RouteExecutor
 from roport_line_nav.graph import Graph, GraphError
+from roport_line_nav.obstacle import edge_distances, tf_from_quaternion
 from roport_line_nav.recorder import RouteRecorder
 from roport_pinky_line.calibration import load_calibration
 from roport_pinky_line.line_sensor import LineSensor
@@ -75,11 +85,6 @@ def parse_command(text):
     cmd = data['cmd']
     if cmd in ('stop', 'load_done', 'pause', 'resume'):
         return cmd, {}
-    if cmd == 'back':           # 지나온 노드인지·받을 수 있는 상태인지는 실행부가 검사
-        to = data.get('to')
-        if not isinstance(to, str) or not NODE_ID.match(to):
-            raise ValueError('back needs "to" (node id)')
-        return cmd, {'to': to}
     if cmd == 'dock':           # 범위·상차 노드 여부는 실행부(DockTable)가 검사
         node = data.get('node')
         if not isinstance(node, str) or not NODE_ID.match(node):
@@ -98,7 +103,7 @@ def parse_command(text):
         return cmd, args
     if cmd == 'speed':          # 범위는 실행부가 설정 상한으로 검사
         args = {}
-        for k in ('base_speed', 'rotate_speed', 'reverse_speed'):
+        for k in ('base_speed', 'rotate_speed'):
             v = data.get(k)
             if v is None:
                 continue
@@ -106,7 +111,10 @@ def parse_command(text):
                 raise ValueError(f'{k} must be a number')
             args[k] = float(v)
         if not args:
-            raise ValueError('speed needs base_speed, rotate_speed and/or reverse_speed')
+            raise ValueError('speed needs base_speed and/or rotate_speed '
+                             '(reverse_speed removed with the yield reverse)')
+        if 'reverse_speed' in data:
+            args['_ignored'] = 'reverse_speed'
         return cmd, args
     if cmd != 'start':
         raise ValueError(f'unknown cmd {cmd!r}')
@@ -170,8 +178,12 @@ class LineNavNode(Node):
                          'tee_window_cm', 'kp_speed_scale', 'gain_ref_speed',
                          'gap_max_cm', 'gap_heading_window_cm', 'gap_confirm', 'search_deg',
                          'ir_spacing_cm', 'side_rise_only', 'side_rise_off_samples',
-                         'side_rise_tee', 'reverse_follow_speed', 'reverse_wn', 'reverse_zeta',
-                         'reverse_lost_cm', 'reverse_max_heading_deg', 'reverse_short_cm')})
+                         'side_rise_tee',
+                         'obstacle_mode', 'stop_cm', 'clear_margin_cm', 'resume_delay_s',
+                         'blind_near_cm', 'sector_deg', 'front_edge_cm', 'rear_edge_cm',
+                         'scan_max_age_s', 'warn_after_s')})
+        self.scan_topic = str(p('scan_topic', 'scan').value)
+        self.base_frame = str(p('base_frame', 'base_link').value)
 
         self.graph = Graph.load(layout_file)
         self.sensor = LineSensor(load_calibration(cal_file, robot))
@@ -197,6 +209,14 @@ class LineNavNode(Node):
         self.create_subscription(UInt16MultiArray, 'ir_sensor/range', self._on_ir, 10)
         self.create_subscription(Odometry, 'odom', self._on_odom, 10)
         self.create_subscription(String, 'line_nav/command', self._on_command, 10)
+        self._scan_tf = {}       # scan frame → TF (라이다 장착은 고정이라 한 번 구하면 그대로)
+        self.tf_buffer = None
+        if cfg.obstacle_mode != 'off':
+            from tf2_ros import Buffer, TransformListener
+            self.tf_buffer = Buffer()
+            self.tf_listener = TransformListener(self.tf_buffer, self)
+            self.create_subscription(LaserScan, self.scan_topic, self._on_scan,
+                                     qos_profile_sensor_data)
         self.create_timer(0.1, self._watchdog)
         self.get_logger().info(
             f'robot={robot} layout={layout_file} graph={self.graph.version} '
@@ -207,13 +227,42 @@ class LineNavNode(Node):
             f'kp={cfg.kp} kd={cfg.kd} (x speed/{cfg.gain_ref_speed} above it: {cfg.kp_speed_scale}) '
             f'gap_max={cfg.gap_max_cm} cm search={cfg.search_deg} deg '
             f'side_rise={cfg.side_rise_only}(off {cfg.side_rise_off_samples}, tee {cfg.side_rise_tee}) '
-            f'reverse_follow={cfg.reverse_follow_speed} m/s (wn {cfg.reverse_wn}, zeta {cfg.reverse_zeta})')
+            f'obstacle={cfg.obstacle_mode} (stop {cfg.stop_cm} cm, resume {cfg.resume_delay_s} s, '
+            f'scan {self.scan_topic} -> {self.base_frame})')
 
     # ---------------- 입력 ----------------
     def _on_odom(self, msg):
         pos = msg.pose.pose.position
         self._odom = (pos.x * 100.0, pos.y * 100.0, yaw_of(msg.pose.pose.orientation))
         self._odom_t = time.monotonic()
+
+    def _lookup_scan_tf(self, frame):
+        tf = self._scan_tf.get(frame)
+        if tf is not None:
+            return tf
+        try:
+            t = self.tf_buffer.lookup_transform(self.base_frame, frame, Time())
+        except Exception as e:  # noqa: BLE001 - tf2 예외 종류가 여러 개(LookupException 등)
+            self.get_logger().warn(f'no TF {self.base_frame} <- {frame}: {e}; scan ignored',
+                                   throttle_duration_sec=5.0)
+            return None
+        tr, q = t.transform.translation, t.transform.rotation
+        tf = tf_from_quaternion(tr.x, tr.y, q.x, q.y, q.z, q.w)
+        self._scan_tf[frame] = tf
+        self.get_logger().info(f'scan TF {self.base_frame} <- {frame}: '
+                               f'x={tr.x:.3f} y={tr.y:.3f} q=({q.x:.3f},{q.y:.3f},{q.z:.3f},{q.w:.3f})')
+        return tf
+
+    def _on_scan(self, msg):
+        tf = self._lookup_scan_tf(msg.header.frame_id)
+        if tf is None:
+            return
+        c = self.ex.cfg
+        front, rear = edge_distances(msg.ranges, msg.angle_min, msg.angle_increment,
+                                     msg.range_min, msg.range_max, tf, c.sector_deg,
+                                     c.front_edge_cm, c.rear_edge_cm)
+        # 받은 시각(IR 샘플과 같은 monotonic 시계). 로봇 시계가 틀릴 수 있어 header.stamp 는 쓰지 않음
+        self.ex.set_scan(front, rear, time.monotonic())
 
     def _pose(self, now):
         if self._odom_t is not None and now - self._odom_t <= self.odom_timeout_sec:
@@ -231,18 +280,15 @@ class LineNavNode(Node):
                 ok = self.ex.load_done()
                 detail = 'resumed' if ok else f'not loading ({self.ex.state})'
             elif cmd == 'speed':
+                ignored = args.pop('_ignored', None)
                 base, rot = self.ex.set_speed(**args)
                 ok, detail = True, f'{base:.3f} m/s, {rot:.2f} rad/s'
-                if 'reverse_speed' in args:
-                    detail += f', reverse {self.ex.cfg.reverse_follow_speed:.3f} m/s'
+                if ignored:
+                    detail += f' ({ignored} ignored: yield reverse removed)'
             elif cmd == 'pause':
                 ok, detail = True, self.ex.pause()
             elif cmd == 'resume':
                 ok, detail = True, self.ex.resume()
-            elif cmd == 'back':
-                if self._reading is None:
-                    raise ValueError('no IR yet')
-                ok, detail = True, self.ex.back(args['to'])
             elif cmd == 'dock':
                 ok, detail = True, self._apply_dock(args)
             else:

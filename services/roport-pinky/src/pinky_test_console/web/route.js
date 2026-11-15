@@ -30,10 +30,10 @@ function updateButtons() {
   $("btnStart").disabled = routeIds.length < 2 || !!busy;
   $("btnLoad").disabled = st !== "loading";
   $("btnHome").disabled = !!busy && st !== "loading";
-  // 일시정지·후진 (FFT1-172). 주행 중 = 전진 추종·통과·전진·회전. 거절은 로봇의 line_nav 가 한다.
-  $("btnPause").disabled = !["follow", "pass", "advance", "rotate"].includes(st);
-  $("btnResume").disabled = st !== "paused";
-  $("btnBack").disabled = lastStale || !$("backTo").value;   // 후보가 없으면 value 가 비어 꺼짐
+  // 일시정지 (FFT1-172). 주행 중·장애물 자동 정지 중 켬(RM.canPause). 장애물 정지 중에는 이어 가기 안 됨.
+  // 거절은 로봇의 line_nav 가 한다.
+  $("btnPause").disabled = !RM.canPause(lastState);
+  $("btnResume").disabled = st !== "paused" || RM.autoPaused(lastState);
   map.editable = !busy;
 }
 
@@ -73,28 +73,8 @@ function speedBody() {
 }
 $("btnSpeed").addEventListener("click", () => { speedDirty = false; command(speedBody()); });
 
-// 후진 속도(0.01~0.03 m/s): 직선·회전 속도와 따로 적용. 로봇이 reverse_follow_speed 를 보고하면 그 값을 따라감.
-let revDirty = false;
-function showRevLabel() { $("spRevV").textContent = `${Number($("spRev").value).toFixed(1)} cm/s`; }
-$("spRev").addEventListener("input", () => { revDirty = true; showRevLabel(); });
-$("btnRevSpeed").addEventListener("click", () => {
-  revDirty = false;
-  command({ cmd: "speed", reverse_speed: Number($("spRev").value) / 100 });
-});
-function syncReverseSpeed(sp) {
-  const v = sp && typeof sp.reverse_follow_speed === "number" ? sp.reverse_follow_speed : null;
-  $("spRevNow").textContent = v === null ? "후진 기본 2.0 cm/s (로봇 값 보고 없음)" : `현재 후진 ${(v * 100).toFixed(1)} cm/s`;
-  if (v !== null && !revDirty) $("spRev").value = String(v * 100);
-  showRevLabel();
-}
-showRevLabel();
-
 $("btnPause").addEventListener("click", () => command({ cmd: "pause" }));
 $("btnResume").addEventListener("click", () => command({ cmd: "resume" }));
-$("btnBack").addEventListener("click", () => {
-  const to = $("backTo").value;
-  if (to) command({ cmd: "back", to });
-});
 
 $("btnStart").addEventListener("click", async () => {
   // 끝 기억 노드와 다른 곳에서 출발하면 확인 → 먼저 stop(기억 지움) 뒤 start. 취소하면 출발 안 함.
@@ -162,6 +142,19 @@ document.addEventListener("keydown", (ev) => {
 
 function fmt(v) { return v === null || v === undefined ? "-" : String(v); }
 
+// 장애물 정지(계약 09). 필드가 없으면(옛 line_nav) "-"·「보고 없음」.
+function showObstacle(s) {
+  const o = RM.obstacleView(s);
+  $("sPause").textContent = o.pause;
+  $("sObst").textContent = o.sensor;
+  $("sObstPhase").textContent = o.phase;
+  $("sObstWhy").textContent = o.why;
+  for (const id of ["sPause", "sObstPhase"]) {
+    $(id).classList.toggle("warn", o.cls === "warn");
+    $(id).classList.toggle("err", o.cls === "err");
+  }
+}
+
 function showBattery(b) {
   const chip = $("battChip");
   if (!b || b.percent === null || b.percent === undefined) {
@@ -178,10 +171,8 @@ function render(snap) {
   showBattery(snap.battery);
   const s = snap.state;
   syncSpeed(s && s.speed);
-  syncReverseSpeed(s && s.speed);
   lastState = s;
   seedStartFromEnd(s);
-  RM.fillBackSelect($("backTo"), RM.backCandidates(s));
   lastStale = !!snap.stale;
   $("robotChip").textContent = "robot " + (snap.robot || "-");
   $("stateChip").textContent = "state " + (s ? s.state : "-");
@@ -190,8 +181,7 @@ function render(snap) {
   $("sState").textContent = s.state;
   $("sReason").textContent = s.reason || "-";
   $("sLeg").textContent = s.leg ? `${s.leg.from} → ${s.leg.to} (${s.leg.action}, ${s.leg.detect})` : "-";
-  { const rt = RM.reverseText(s);
-  $("sReverse").textContent = rt === "-" && s && s.back_why ? `후진 불가: ${s.back_why}` : rt; }
+  showObstacle(s);
   $("sTravel").textContent = `${fmt(s.traveled_cm)}` + (s.window_cm ? ` / ${s.window_cm[0]}~${s.window_cm[1]}` : "");
   $("sRot").textContent = fmt(s.rotated_deg);
   $("sIr").textContent = s.ir ? s.ir.raw.join(", ") : "-";
@@ -203,7 +193,9 @@ function render(snap) {
   tb.replaceChildren();
   for (const e of (s.events || []).slice().reverse().slice(0, 30)) {
     const tr = document.createElement("tr");
-    for (const v of [e.t, e.event, e.detail]) {
+    const ec = RM.eventClass(e.event);
+    if (ec) tr.classList.add(ec);
+    for (const v of [e.t, RM.eventText(e.event), e.detail]) {
       const td = document.createElement("td");
       td.textContent = fmt(v);
       tr.appendChild(td);

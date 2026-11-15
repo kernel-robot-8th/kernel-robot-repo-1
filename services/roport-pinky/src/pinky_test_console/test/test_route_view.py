@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from pinky_test_console.route_view import (PRESETS, RouteCommandError, graph_view,
+from pinky_test_console.route_view import (COMMANDS, PRESETS, RouteCommandError, graph_view,
                                            list_ros_log_dirs, list_route_logs,
                                            parse_route_command, plan_to)
 
@@ -365,75 +365,161 @@ def test_dock_nodes_match_layout_load_nodes():
     assert g['bar_length'] == 12.0 and g['line_width'] == 2.4
 
 
-def test_parse_pause_resume_back():
+def test_parse_pause_resume_and_back_removed():
     assert parse_route_command({'cmd': 'pause', 'x': 1}) == {'cmd': 'pause'}
     assert parse_route_command({'cmd': 'resume'}) == {'cmd': 'resume'}
-    assert parse_route_command({'cmd': 'back', 'to': 'N23', 'x': 1}) == {'cmd': 'back', 'to': 'N23'}
-    for bad in ({'cmd': 'back'}, {'cmd': 'back', 'to': 'n23'}, {'cmd': 'back', 'to': 'N23; ls'},
-                {'cmd': 'back', 'to': 23}, {'cmd': 'back', 'to': None}, {'cmd': 'back', 'to': ['N23']}):
+    # 수동 후진 back{to} 은 FFT1-172 범위 변경(계약 09)으로 없앰 → 형식이 맞아도 거부
+    assert 'back' not in COMMANDS
+    for bad in ({'cmd': 'back', 'to': 'N23'}, {'cmd': 'back'}, {'cmd': 'back', 'to': 'n23'}):
         with pytest.raises(RouteCommandError):
             parse_route_command(bad)
 
 
-def test_parse_reverse_speed():
-    assert parse_route_command({'cmd': 'speed', 'reverse_speed': 0.02}) == \
-        {'cmd': 'speed', 'reverse_speed': 0.02}
-    assert parse_route_command({'cmd': 'speed', 'reverse_speed': 0.01})['reverse_speed'] == 0.01
-    assert parse_route_command({'cmd': 'speed', 'reverse_speed': 0.03})['reverse_speed'] == 0.03
-    assert parse_route_command({'cmd': 'speed', 'base_speed': 0.04, 'reverse_speed': 0.015}) == \
-        {'cmd': 'speed', 'base_speed': 0.04, 'reverse_speed': 0.015}
-    for bad in (0.009, 0.031, 0, -0.02, True, 'x', float('nan'), float('inf')):
+def test_parse_speed_drops_reverse_speed():
+    """R2b: line_nav 가 reverse_speed 를 없앰 → 콘솔도 받지도 보내지도 않음(다른 키와 오면 빼고 보냄)."""
+    for body in ({'cmd': 'speed', 'reverse_speed': 0.02}, {'cmd': 'speed', 'reverse_speed': 0.05}):
         with pytest.raises(RouteCommandError):
-            parse_route_command({'cmd': 'speed', 'reverse_speed': bad})
-    assert 'foo' not in parse_route_command({'cmd': 'speed', 'reverse_speed': 0.02, 'foo': 1})
+            parse_route_command(body)
+    assert parse_route_command({'cmd': 'speed', 'base_speed': 0.04, 'reverse_speed': 0.015}) == \
+        {'cmd': 'speed', 'base_speed': 0.04}
 
 
-# ---- web/routemap.js 후진 보조 함수(node 로 실행, 없으면 건너뜀) ----
+# ---- web/routemap.js 장애물 표시 보조 함수(node 로 실행, 없으면 건너뜀) ----
 import shutil
 import subprocess
 
 _RM = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'web', 'routemap.js')
 _SCRIPT = r"""
 const RM = require(process.argv[1]);
-const route = ['N07', 'N23', 'N19', 'N11'];
 const o = {};
-o.paused_mid = RM.backCandidates({state: 'paused', route, index: 2});    // N19→N11 도중
-o.paused_first = RM.backCandidates({state: 'paused', route, index: 0});
-o.arrived = RM.backCandidates({state: 'arrived', route});
-o.loading = RM.backCandidates({state: 'loading', route, index: 2});
-o.loop = RM.backCandidates({state: 'arrived', route: ['A', 'B', 'A', 'B', 'A']});
-o.follow = RM.backCandidates({state: 'follow', route, index: 1});
-o.none = [RM.backCandidates(null), RM.backCandidates({state: 'paused'}), RM.backCandidates({state: 'idle', route})];
-o.text = RM.reverseText({reverse: {to: 'N23', leg: ['N19', 'N11'], expected_cm: 40, done_cm: 12.34,
-                                   y_cm: -0.46, theta_deg: 1.2}});
-o.text_none = [RM.reverseText(null), RM.reverseText({}), RM.reverseText({reverse: 'x'})];
-o.text_part = RM.reverseText({reverse: {to: 'N23'}});
-o.bt = RM.backCandidates({state: 'paused', route, index: 2, back_targets: ['N23', 'N07']});
-o.bt_empty = RM.backCandidates({state: 'paused', route, index: 2, back_targets: []});
-o.bt_clean = RM.backCandidates({state: 'idle', back_targets: ['N23', 'N23', '', 5, 'N07']});
-o.bt_null = RM.backCandidates({state: 'paused', route, index: 0, back_targets: null});
+o.old = RM.obstacleView({state: 'follow'});                     // 옛 line_nav: 필드 없음
+o.none = RM.obstacleView(null);
+o.manual = RM.obstacleView({state: 'paused', pause_reason: 'manual', obstacle: {mode: 'stop', front_cm: 80.04,
+  rear_cm: null, scan_age_s: 0.1, phase: 'clear', blocked_s: 0, warn: false, why: null}});
+o.blocked = RM.obstacleView({state: 'paused', pause_reason: 'obstacle', obstacle: {mode: 'stop', front_cm: 12.34,
+  rear_cm: 40, scan_age_s: null, phase: 'blocked', blocked_s: 3.21, warn: false,
+  why: 'rear blocked 9.0 cm < 15'}});
+// R2: 양보 후진 없앰. 옛 line_nav 의 phase yield·yielded_cm 은 라벨 없이 원문, 양보 거리는 안 보임
+o.yield = RM.obstacleView({state: 'reverse', pause_reason: 'obstacle', obstacle: {mode: 'stop', front_cm: 10,
+  rear_cm: 30, phase: 'yield', blocked_s: 5, yielded_cm: 4.26, warn: false, why: null}});
+// rear_cm 을 보고하지 않는 line_nav → 뒤 "-"
+o.no_rear = RM.obstacleView({state: 'paused', pause_reason: 'obstacle', obstacle: {mode: 'stop', front_cm: 20.5,
+  phase: 'blocked', blocked_s: 2, warn: false, why: null}});
+o.warn = RM.obstacleView({state: 'paused', pause_reason: 'obstacle', obstacle: {mode: 'stop', front_cm: 20,
+  rear_cm: 30, phase: 'blocked', blocked_s: 31, warn: true, why: null}});
+o.stale = RM.obstacleView({state: 'paused', pause_reason: 'scan_stale', obstacle: {mode: 'stop', front_cm: null,
+  rear_cm: null, scan_age_s: null, phase: 'blocked', blocked_s: 0.6, warn: false, why: 'scan stale'}});
+o.partial = RM.obstacleView({state: 'follow', pause_reason: null, obstacle: {}});
+o.weird = RM.obstacleView({state: 'follow', pause_reason: 'x', obstacle: {mode: 'y', phase: 'z', front_cm: NaN}});
+o.auto = [RM.autoPaused({pause_reason: 'obstacle'}), RM.autoPaused({pause_reason: 'scan_stale'}),
+          RM.autoPaused({pause_reason: 'manual'}), RM.autoPaused({state: 'paused'}), RM.autoPaused(null)];
+const ob = (phase) => ({mode: 'stop', front_cm: 10, rear_cm: 30, phase, blocked_s: 1, warn: false});
+o.can = {
+  follow: RM.canPause({state: 'follow'}), pass: RM.canPause({state: 'pass'}),
+  advance: RM.canPause({state: 'advance'}), rotate: RM.canPause({state: 'rotate'}),
+  obst_paused: RM.canPause({state: 'paused', pause_reason: 'obstacle', obstacle: ob('blocked')}),
+  obst_wait: RM.canPause({state: 'paused', pause_reason: 'obstacle', obstacle: ob('resume_wait')}),
+  stale_paused: RM.canPause({state: 'paused', pause_reason: 'scan_stale', obstacle: ob('blocked')}),
+  yield_rev: RM.canPause({state: 'reverse', pause_reason: 'obstacle', obstacle: ob('yield')}),
+  manual: RM.canPause({state: 'paused', pause_reason: 'manual', obstacle: ob('clear')}),
+  old_paused: RM.canPause({state: 'paused'}),                       // 옛 line_nav: 사유 없음 = 수동
+  park_rev: RM.canPause({state: 'reverse', pause_reason: null, obstacle: ob('clear')}),
+  park_rev_old: RM.canPause({state: 'reverse'}),
+  // R1b: 장애물 정지 위 수동 일시정지(pause.manual true)는 끔, manual false·필드 없음·pause null 은 지금처럼
+  obst_manual: RM.canPause({state: 'paused', pause_reason: 'obstacle', obstacle: ob('blocked'),
+                            pause: {from: 'follow', settled: true, manual: true}}),
+  stale_manual: RM.canPause({state: 'paused', pause_reason: 'scan_stale', obstacle: ob('blocked'),
+                             pause: {from: 'follow', settled: true, manual: true}}),
+  manual_flag: RM.canPause({state: 'paused', pause_reason: 'manual', pause: {from: 'follow', manual: true}}),
+  obst_auto: RM.canPause({state: 'paused', pause_reason: 'obstacle', obstacle: ob('blocked'),
+                          pause: {from: 'follow', settled: true, manual: false}}),
+  obst_nomanual: RM.canPause({state: 'paused', pause_reason: 'obstacle', obstacle: ob('blocked'),
+                              pause: {from: 'follow', settled: true}}),
+  obst_pause_null: RM.canPause({state: 'paused', pause_reason: 'obstacle', obstacle: ob('blocked'), pause: null}),
+  manual_str: RM.canPause({state: 'paused', pause_reason: 'obstacle', obstacle: ob('blocked'),
+                           pause: {manual: 'true'}}),        // bool 이 아니면 무시
+  yield_auto: RM.canPause({state: 'reverse', pause_reason: 'obstacle', obstacle: ob('yield'),
+                           pause: {from: 'follow', settled: false, manual: false}}),
+  idle: RM.canPause({state: 'idle'}), loading: RM.canPause({state: 'loading'}),
+  arrived: RM.canPause({state: 'arrived'}), none: RM.canPause(null),
+};
+o.ev = ['obstacle_stop', 'obstacle_clear', 'yield_start', 'yield_end', 'obstacle_warn', 'arrived', null]
+  .map((n) => [RM.eventText(n), RM.eventClass(n)]);
+o.gone = ['backCandidates', 'reverseText', 'fillBackSelect'].filter((k) => k in RM);
 console.log(JSON.stringify(o));
 """
 
 
 @pytest.mark.skipif(shutil.which('node') is None, reason='node 없음')
-def test_routemap_reverse_helpers():
+def test_routemap_obstacle_helpers():
     out = subprocess.run(['node', '-e', _SCRIPT, _RM], capture_output=True, text=True, check=True)
     o = json.loads(out.stdout)
-    assert o['paused_mid'] == ['N19', 'N23', 'N07']       # 가장 최근 먼저, 지금 구간 출발 노드 포함
-    assert o['paused_first'] == ['N07']
-    assert o['arrived'] == ['N19', 'N23', 'N07']          # 현재(마지막) 노드 제외
-    assert o['loading'] == ['N19', 'N23', 'N07']
-    assert o['loop'] == ['B']                             # 중복 제거, 현재 노드 id 는 모두 제외
-    assert o['follow'] == [] and o['none'] == [[], [], []]
-    assert o['text'] == '목표 N23 · 구간 N11→N19 · 12.3 / 40.0 cm · 옆 -0.5 cm · 방향 +1.2°'
-    assert o['text_none'] == ['-', '-', '-']
-    assert o['text_part'].startswith('목표 N23 · 구간 - · - / - cm')
-    # back_targets 가 배열이면 경로 기반 계산 대신 그것만(빈 배열 = 후보 없음), 없을 때만 옛 계산
-    assert o['bt'] == ['N23', 'N07']
-    assert o['bt_empty'] == []
-    assert o['bt_clean'] == ['N23', 'N07']
-    assert o['bt_null'] == ['N07']
+    assert o['old'] == {'pause': '-', 'sensor': '보고 없음', 'phase': '-', 'why': '-', 'warn': False,
+                        'cls': '', 'has': False}
+    assert o['none']['has'] is False and o['none']['pause'] == '-'
+    m = o['manual']
+    assert m['pause'] == '수동 일시정지' and m['cls'] == ''
+    assert m['sensor'] == '정지 사용 · 앞 80.0 cm · 뒤 - cm · 스캔 0.10 s'
+    assert m['phase'] == '없음' and m['why'] == '-'
+    b = o['blocked']
+    assert b['pause'] == '장애물 정지' and b['cls'] == 'warn'
+    assert b['sensor'] == '정지 사용 · 앞 12.3 cm · 뒤 40.0 cm'
+    assert b['phase'] == '장애물 정지 · 막힘 3.2 s' and b['why'] == 'rear blocked 9.0 cm < 15'
+    assert o['yield']['phase'] == 'yield · 막힘 5.0 s' and o['yield']['cls'] == 'warn'   # pause_reason obstacle
+    assert o['no_rear']['sensor'] == '정지 사용 · 앞 20.5 cm · 뒤 - cm'
+    w = o['warn']
+    assert w['warn'] is True and w['cls'] == 'err' and w['phase'].endswith('경고: 오래 막힘')
+    s = o['stale']
+    assert s['pause'] == '스캔 끊김(안전 정지)' and s['sensor'] == '정지 사용 · 앞 - cm · 뒤 - cm'
+    assert s['cls'] == 'warn' and s['why'] == 'scan stale'
+    assert o['partial'] == {'pause': '-', 'sensor': '- · 앞 - cm · 뒤 - cm', 'phase': '-', 'why': '-',
+                            'warn': False, 'cls': '', 'has': True}
+    assert o['weird']['pause'] == 'x' and o['weird']['sensor'].startswith('y · 앞 - cm')
+    assert o['weird']['phase'] == 'z'
+    assert o['auto'] == [True, True, False, False, False]
+    # R1·R2: 일시정지 버튼 = 주행 중·장애물 자동 정지 중 켬, 수동 일시정지·reverse(주차 후진, 옛 양보 후진 포함)·끝난 상태는 끔
+    # (이어 가기는 autoPaused 참이면 끔 = 위 o['auto'])
+    can = o['can']
+    on = ('follow', 'pass', 'advance', 'rotate', 'obst_paused', 'obst_wait', 'stale_paused',
+          'obst_auto', 'obst_nomanual', 'obst_pause_null', 'manual_str')
+    off = ('manual', 'old_paused', 'park_rev', 'park_rev_old', 'idle', 'loading', 'arrived', 'none',
+           'obst_manual', 'stale_manual', 'manual_flag',   # R1b: pause.manual true 면 끔
+           'yield_rev', 'yield_auto')                       # R2: 양보 후진 없앰 → reverse 는 끔
+    assert {k: can[k] for k in on} == dict.fromkeys(on, True)
+    assert {k: can[k] for k in off} == dict.fromkeys(off, False)
+    assert o['ev'] == [['obstacle_stop (장애물 정지)', 'ev-obst'],
+                       ['obstacle_clear (장애물 해제·재개)', 'ev-obst'],
+                       ['yield_start', ''], ['yield_end', ''],   # R2: 양보 후진 이벤트 라벨 없앰
+                       ['obstacle_warn (오래 막힘 경고)', 'ev-obst-warn'],
+                       ['arrived', ''], ['-', '']]
+    assert o['gone'] == []   # 수동 후진 보조 함수는 없어짐
+
+
+WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'web')
+
+
+def test_web_has_no_manual_back():
+    """수동 후진(버튼·노드 선택·back 명령·back_why)과 장애물 접근 시 후진(속도 조절·yielded_cm)이 화면에서 빠졌고,
+    장애물 표시 칸이 있다."""
+    for name in ('route.html', 'route.js', 'fleet.html', 'fleet.js', 'routemap.js'):
+        with open(os.path.join(WEB, name), encoding='utf-8') as f:
+            text = f.read()
+        for gone in ('btnBack', 'backTo', 'back_why', 'back_targets', 'cmd: "back"', 'sReverse',
+                     'spRev', 'btnRevSpeed', 'reverse_speed', 'reverse_follow_speed', '양보', 'yielded_cm'):
+            assert gone not in text, (name, gone)
+    # R1: 두 화면 모두 일시정지 버튼은 RM.canPause, 이어 가기는 RM.autoPaused 로 판단
+    for name in ('route.js', 'fleet.js'):
+        with open(os.path.join(WEB, name), encoding='utf-8') as f:
+            lines = f.read().splitlines()
+        pause = [ln for ln in lines if '$("btnPause").disabled' in ln]
+        resume = [ln for ln in lines if '$("btnResume").disabled' in ln]
+        assert len(pause) == 1 and 'RM.canPause(' in pause[0], (name, pause)
+        assert len(resume) == 1 and 'RM.autoPaused(' in resume[0], (name, resume)
+    for name in ('route.html', 'fleet.html'):
+        with open(os.path.join(WEB, name), encoding='utf-8') as f:
+            text = f.read()
+        for need in ('id="sPause"', 'id="sObst"', 'id="sObstPhase"', 'id="sObstWhy"'):
+            assert need in text, (name, need)
 
 
 _END_SCRIPT = r"""

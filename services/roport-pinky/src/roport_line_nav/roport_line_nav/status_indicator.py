@@ -30,7 +30,7 @@ STYLES = {
     'PARKING':   ('PARKING',   BLUE_BG, (0, 255, 0), 1.0),
     'PARKED':    ('PARKED',    BLUE_BG, (0, 255, 0), 0.0),
     'HANDOFF':   ('HANDOFF',   BLUE_BG, (160, 0, 255), 0.0),
-    'PAUSED':    ('PAUSED',    BLUE_BG, (255, 200, 0), 0.0),     # FFT1-172 일시정지(추천값)
+    'PAUSED':    ('PAUSED',    BLUE_BG, (255, 200, 0), 0.0),     # FFT1-172 일시정지·장애물 정지(추천값)
     'STOPPED':   ('STOPPED',   RED_BG, (255, 0, 0), 0.0),
     'ERROR':     ('ERROR',     RED_BG, (255, 0, 0), 2.5),
     'NO_SIGNAL': ('NO SIGNAL', GRAY_BG, (0, 0, 0), None),
@@ -83,11 +83,11 @@ def classify(state):
         return Status('DOCKED', f"{leg.get('to') or ''} waiting load".strip())
     if st == 'handoff':
         return Status('HANDOFF', str(leg.get('to') or ''))
+    reason = state.get('pause_reason')
+    if reason in ('obstacle', 'scan_stale'):   # 장애물 정지·scan 끊김도 일시정지와 같은 노랑
+        return Status('PAUSED', _obstacle_detail(state, reason))
     if st == 'paused':
         return Status('PAUSED', where)
-    rv = state.get('reverse')
-    if st in MOVE_STATES and rv and rv.get('phase') != 'done':     # 라인 후진(back) 중 = 이동
-        return Status('MOVING', f"back -> {rv.get('to')}")
     if st == 'arrived':
         if action == 'park':
             return Status('PARKED', str(leg.get('to') or ''))
@@ -99,6 +99,16 @@ def classify(state):
             return Status('PARKING', where)
         return Status('MOVING', where)
     return Status('READY')
+
+
+def _obstacle_detail(state, reason):
+    ob = state.get('obstacle') or {}
+    if ob.get('why') == 'front_no_points':
+        return 'lidar no points'
+    if reason == 'scan_stale':
+        return 'lidar scan stale'
+    front = ob.get('front_cm')
+    return 'obstacle' if front is None else f'obstacle {front:.0f} cm'
 
 
 class Blinker:

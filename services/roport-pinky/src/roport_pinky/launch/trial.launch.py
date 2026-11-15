@@ -37,6 +37,10 @@ def _nodes(context):
     line_rotate_speed = float(LaunchConfiguration('line_rotate_speed').perform(context))
     if not math.isfinite(line_rotate_speed) or not .15 <= line_rotate_speed <= .4:
         raise ValueError('line_rotate_speed must be finite and in [0.15, 0.4] rad/s')
+    # 선언된 기본값(off)이 없는 직접 호출(시험)에서도 off
+    obstacle_mode = context.launch_configurations.get('obstacle_mode', 'off')
+    if obstacle_mode not in ('off', 'monitor', 'stop'):
+        raise ValueError('obstacle_mode must be off, monitor or stop')
     config = LaunchConfiguration('params_file')
     nodes = [
         Node(package='roport_pinky', executable='trial_guard', output='screen'),
@@ -44,7 +48,9 @@ def _nodes(context):
              parameters=[{'robot': LaunchConfiguration('robot'),
                           'layout_file': LaunchConfiguration('layout_file'), 'base_speed': line_speed,
                           'max_linear': line_speed, 'max_angular': line_rotate_speed,
-                          'rotate_speed': line_rotate_speed}],
+                          'rotate_speed': line_rotate_speed,
+                          # FFT1-172(2026-11-15): 라인 유실 복구 끔, 라이다 장애물 정지는 인자로(기본 off)
+                          'gap_max_cm': 0.0, 'obstacle_mode': obstacle_mode}],
              remappings=[('cmd_vel', 'line_nav/cmd_vel')]),
         Node(package='pinky_sensor_adc', executable='main_node', output='screen',
              condition=IfCondition(LaunchConfiguration('ir_node'))),
@@ -92,6 +98,9 @@ def generate_launch_description():
             DeclareLaunchArgument('ir_node', default_value='false'),
             DeclareLaunchArgument('line_speed', default_value='0.03',
                                   description='Line base speed and cap in m/s; match control route limit'),
+            DeclareLaunchArgument('obstacle_mode', default_value='off',
+                                  description='line_nav lidar obstacle stop: off | monitor | stop '
+                                              '(demo software stop, not a safety device)'),
             DeclareLaunchArgument('line_rotate_speed', default_value='0.15',
                                   description='Independent line rotation speed/cap, 0.15..0.4 rad/s'),
             DeclareLaunchArgument('max_linear', default_value='0.03',
