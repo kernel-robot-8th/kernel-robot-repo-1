@@ -482,3 +482,27 @@ def test_stop_mode_without_scan_holds(tmp_path):
         h.wait(lambda: h.node.ex.state == 'stopped')
     finally:
         h.close()
+
+
+def test_obstacle_exempt_nodes_parameter(tmp_path):
+    """obstacle_exempt_nodes: 기본 N01,N11,N21,N22, 문자열로 바꿀 수 있고, 노드 ID 가 아니면 노드가 뜨지 않음."""
+    h = Harness(tmp_path / 'logs', extra=[Parameter('obstacle_exempt_nodes', value='N11, N22')])
+    try:
+        assert h.node.ex.cfg.obstacle_exempt_nodes == ('N11', 'N22')
+        assert h.node.ex.cfg.stop_cm == 5.0 and h.node.ex.cfg.blind_near_cm == 3.0
+    finally:
+        h.close()
+    from roport_line_nav.line_nav_node import LineNavNode
+    ctx = Context()
+    rclpy.init(context=ctx, domain_id=TEST_DOMAIN_ID)
+    try:
+        with pytest.raises(ValueError, match='obstacle_exempt_nodes'):
+            LineNavNode(context=ctx, namespace=NS, parameter_overrides=[
+                Parameter('robot', value='pinky_d660'),
+                Parameter('calibration_file', value=str(CONFIG)),
+                Parameter('layout_file', value=str(LAYOUT)),
+                Parameter('log_dir', value=str(tmp_path / 'logs2')),
+                Parameter('dock_file', value=str(tmp_path / 'dock2.yaml')),
+                Parameter('obstacle_exempt_nodes', value='N11;rm')])
+    finally:
+        rclpy.shutdown(context=ctx)

@@ -14,7 +14,7 @@ cmd_delay_s: 명령이 바퀴에 반영되기까지 걸리는 시간(구동 지�
 라이다(FFT1-172 장애물 정지, enable_lidar): 세계 좌표 원형 물체(점 장애물, 반지름 cm)와 바깥 벽(사각형)에 광선을 쏴
   LaserScan 같은 거리(m, scan frame 각도)를 만든 뒤, 노드와 같은 obstacle.edge_distances 로 TF(라이다 장착
   x −1.7 cm, yaw = π — URDF rplidar_link)를 거쳐 몸체 끝 거리를 계산해 executor.set_scan 에 넣는다.
-  range_min 안의 점은 무효(실제 라이다처럼 inf). 실제 RPLIDAR 반사·잡음·각도 해상도는 흉내 내지 않음.
+  range_min(기본 5 cm = 2026-11-15 d660 실측 /scan range_min 0.05 m) 안의 점은 무효(실제 라이다처럼 inf). 실제 RPLIDAR 반사·잡음·각도 해상도는 흉내 내지 않음.
 """
 
 import math
@@ -122,7 +122,7 @@ class Sim:
         self.trace = []
         self.lidar = None               # enable_lidar 로 켬
 
-    def enable_lidar(self, obstacles=(), hz=10.0, step_deg=1.0, range_min_cm=15.0,
+    def enable_lidar(self, obstacles=(), hz=10.0, step_deg=1.0, range_min_cm=5.0,
                      range_max_cm=1200.0, mount=LIDAR_MOUNT, room=ROOM):
         """obstacles: [(x, y, 반지름 cm), ...] 또는 시각 → 그 목록 함수. lidar['on'] = False 면 scan 을 안 보냄."""
         self.lidar = {'obstacles': obstacles, 'period': 1.0 / hz, 'next': 0.0,

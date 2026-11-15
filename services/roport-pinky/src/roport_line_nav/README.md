@@ -122,11 +122,12 @@ Gazebo에는 IR 센서가 없다. 시뮬레이터 결과는 실로봇 주행 검
 | 규칙 | 내용 |
 | --- | --- |
 | 감시 단계 | `follow`·`pass`(선 따라 앞으로)만. 회전 전 전진·회전·상차 대기·도킹 이동·주차 후진·교차선 출발 이동·수동 `paused` 중에는 정지 판정 안 함(거리는 보고) |
-| 정지 | `front_cm` < `stop_cm`(25) → 0 속도, `paused`, `pause_reason` `obstacle`, 이벤트 `obstacle_stop`. 구간·이동 거리·감지 창 그대로. 물체가 더 다가와도 멈춘 채 기다린다 |
+| 면제 구간(2026-11-15 실로봇 1차) | 구간의 출발·도착 노드가 `obstacle_exempt_nodes`(기본 `N01,N11,N21,N22` = 정밀 도킹 상차 노드, OMX·선반이 몸체 바로 앞에 옴)에 있으면 그 구간은 정지·scan 끊김·앞 점 없음 판정을 **모두** 하지 않는다(거리는 보고, `obstacle.why` = `exempt leg N19→N11`, monitor도 「would stop」을 내지 않음). 상차 대기·도킹 이동은 원래 감시 단계가 아니다. 쉼표로 구분한 노드 ID만 받고, 빈 값이면 면제 없음 |
+| 정지 | `front_cm` < `stop_cm`(**5**) → 0 속도, `paused`, `pause_reason` `obstacle`, 이벤트 `obstacle_stop`. 구간·이동 거리·감지 창 그대로. 물체가 더 다가와도 멈춘 채 기다린다 |
 | scan 끊김 | scan이 없거나 `scan_max_age_s`(0.5 s)보다 오래됨 → `pause_reason` `scan_stale`(fail-safe). 새 scan이 오면 재개 규칙 |
-| 앞 점 없음(R1, 사용자 결정 안전 쪽) | 감시 단계에서 scan은 오는데 앞 부채꼴에 유효 점이 없는 상태가 `scan_max_age_s`(0.5 s) 넘게 이어지면 정지 → `pause_reason` `scan_stale`, `obstacle.why` `front_no_points`. 시연 공간은 사방 벽이 range_max 안이라 점 없음은 근접 가림·렌즈 가림·드라이버 이상일 수 있음. 재개는 scan 끊김과 같고, **유효 front** ≥ 30 cm가 3 s 이어져야 함(점 없음은 빈 것으로 보지 않음) |
-| 재개 | `front_cm` ≥ `stop_cm` + `clear_margin_cm`(30) 가 `resume_delay_s`(3 s) 이어지면 멈춘 단계 그대로(이벤트 `obstacle_clear`). 앞 부채꼴에 점이 없으면(range_min 안에 붙은 물체일 수 있음) 비었다고 보지 않는다. 수동 일시정지가 함께 걸려 있으면 장애물 정지만 풀리고 `paused`(`manual`)로 남는다 |
-| 사각 의심(계약에 더함) | 장애물 정지 중 마지막 **유효** front가 `blind_near_cm`(15) 미만이었는데 다음 유효 scan이 재개 거리(30 cm) 이상이면(사이에 점 없음 scan이 있어도) 자동 재개하지 않고 수동 재개만(`pause_reason` `manual`, `obstacle.why`에 이유). range_min 안에 들어간 작은 물체는 광선이 무효가 되고 뒤 벽이 보여 앞이 빈 것처럼 나오기 때문(2D 시뮬 8·15 cm/s 물체, 「가까움 → 점 없음 → 멀리」 순서 포함). 앞 끝에서 약 9 cm 사각은 **2D 시뮬 range_min 15 cm로 계산한 값**이고(라이다가 축 뒤 1.7 cm라 앞 끝까지 5.9 cm), 실제 RPLIDAR C1 range_min은 미확인이다. 가까운 물체를 한 번에 들어 올려 치워도 같은 규칙이 걸린다. 조금씩 물러나면(유효 scan마다 15 cm 넘게 뛰지 않음) 자동 재개. `blind_near_cm` 15는 없앤 `yield_cm`(계약 15 cm) 값을 그대로 옮긴 것이다. 0이면 이 규칙을 끈다 |
+| 앞 점 없음(R1, 사용자 결정 안전 쪽) | 감시 단계에서 scan은 오는데 앞 부채꼴에 유효 점이 없는 상태가 `scan_max_age_s`(0.5 s) 넘게 이어지면 정지 → `pause_reason` `scan_stale`, `obstacle.why` `front_no_points`. 시연 공간은 사방 벽이 range_max 안이라 점 없음은 근접 가림·렌즈 가림·드라이버 이상일 수 있음. 재개는 scan 끊김과 같고, **유효 front** ≥ 10 cm가 3 s 이어져야 함(점 없음은 빈 것으로 보지 않음) |
+| 재개 | `front_cm` ≥ `stop_cm` + `clear_margin_cm`(5 + 5 = 10 cm) 가 `resume_delay_s`(3 s) 이어지면 멈춘 단계 그대로(이벤트 `obstacle_clear`). 앞 부채꼴에 점이 없으면(range_min 안에 붙은 물체일 수 있음) 비었다고 보지 않는다. 수동 일시정지가 함께 걸려 있으면 장애물 정지만 풀리고 `paused`(`manual`)로 남는다 |
+| 사각 의심(계약에 더함) | 장애물 정지 중 마지막 **유효** front가 `blind_near_cm`(**3**) 미만이었는데 다음 유효 scan이 재개 거리(10 cm) 이상이면(사이에 점 없음 scan이 있어도) 자동 재개하지 않고 수동 재개만(`pause_reason` `manual`, `obstacle.why`에 이유). range_min 안에 들어간 작은 물체는 광선이 무효가 되고 뒤 벽이 보여 앞이 빈 것처럼 나오기 때문(「가까움 → 점 없음 → 멀리」 순서 포함). d660 실측 `/scan` range_min은 **0.05 m**(frame `rplidar_link`)이고 라이다가 앞 끝 5.9 cm 뒤라, 사각은 앞 끝 −0.9 cm 즉 몸체 안이다. 그래서 3 cm로 낮췄다(15면 손으로 치울 때마다 수동 재개가 필요함, 2026-11-15 사용자 결정). 조금씩 물러나면 자동 재개. 0이면 이 규칙을 끈다 |
 | 오래 막힘 | 장애물 정지 `warn_after_s`(30 s) → `obstacle.warn` true, 이벤트 `obstacle_warn` 한 번 |
 
 상태 보고(`line_nav/state`, 콘솔·CSV 계약):
@@ -141,14 +142,15 @@ Gazebo에는 IR 센서가 없다. 시뮬레이터 결과는 실로봇 주행 검
 - route CSV 끝 칸: `front_cm`·`rear_cm`·`scan_age_s`·`obstacle_phase`·`pause_reason`.
 - LCD: 수동 일시정지·장애물 정지·`scan_stale` 모두 PAUSED(노랑 고정, 추천값). 둘째 줄은 `obstacle 23 cm`·`lidar scan stale`·`lidar no points`.
 - 관제 trial_driver(`roport_pinky`, 바꾸지 않음)는 `paused`를 「주행 중」으로 보지 않는다. 그래서 장애물 정지 중 관찰값은 `line_enabled` false·`drive_owner` `none`인데, line_nav는 3 s 뒤 스스로 다시 출발할 수 있다. 구동 중재 lease는 `line`을 유지하므로 cmd_vel 경합은 아니다. trial.launch는 `obstacle_mode`(기본 off)만 넘긴다. **관제 시험(trial)에서는 백인엽 님과 관찰값을 맞추기 전까지 `obstacle_mode:=stop`을 쓰지 않는다.**
-- 파라미터(노드·launch): `obstacle_mode`, `stop_cm`, `clear_margin_cm`, `resume_delay_s`, `blind_near_cm`, `sector_deg`, `front_edge_cm`, `rear_edge_cm`, `scan_max_age_s`, `warn_after_s`, `scan_topic`(scan). `base_frame`(base_link)은 노드 파라미터만 있다.
+- 기본값 근거(2026-11-15 d660 실로봇 1차): `stop_cm` 25로 N14→N02(24 cm 구간, N02 = 왼쪽 모서리)를 달리다 구간 13.8 cm에서 front 24.9 cm로 멈췄다. 모서리 너머 벽 때문이라 헛정지였다. 그래서 `stop_cm` 5(재개 10 cm)·`blind_near_cm` 3·상차 노드 면제로 바꿨다. 5 cm에서는 0.03 m/s 구동 지연(약 0.5 cm)을 빼고 몸체 앞에 약 4 cm 남는다(2D 시뮬, 실로봇 정지 거리 미측정).
+- 파라미터(노드·launch): `obstacle_mode`, `stop_cm`, `clear_margin_cm`, `resume_delay_s`, `blind_near_cm`, `obstacle_exempt_nodes`(문자열), `sector_deg`, `front_edge_cm`, `rear_edge_cm`, `scan_max_age_s`, `warn_after_s`, `scan_topic`(scan). `base_frame`(base_link)은 노드 파라미터만 있다.
 - 2D 시뮬(`test/test_obstacle.py`, CI 포함): 시뮬 라이다 = 원형 물체 + 바깥 벽(안쪽 가벽·OMX·선반 없음), 라이다 yaw = π 장착, 노드와 같은 계산.
   - 구동 지연 0·0.15·0.2 s × 엔코더 0.95·1.0·1.05: 정지 → 3 s 뒤 재개, 멈춘 뒤 물체가 다가와도 0 그대로 대기, 재개 뒤 노드 감지 위치가 그대로다.
   - 실제 라이다 반사·잡음·벽 오감지는 흉내 내지 않았다.
 - 한계(감지 범위):
   - 2D 라이다 스캔 평면(바닥에서 약 12.5 cm = URDF base_link 위 9.7 cm + base_link 높이 2.8 cm)보다 낮은 물체는 보이지 않는다.
   - 부채꼴 ±20°는 바퀴 축 기준이라 앞 끝 근처에서 몸체보다 좁다(앞 끝 +5 cm에서 옆 ±3.3 cm, 몸체 반폭 4.4~5.5 cm). 그래서 앞 끝에서 약 11 cm 안의 앞 모서리 쪽 물체는 놓칠 수 있다(계약대로 구현).
-  - 대기 칸 P5(N16)는 창가 벽까지 약 34 cm다(layout, 몸체 앞 끝에서는 약 32 cm). 벽·OMX·선반이 25 cm 안에 들어오는지 monitor로 먼저 본다.
+  - 2D 시뮬 라이다 range_min은 실측과 같은 5 cm다.
 
 실로봇 시험(사용자 수행, 바퀴 띄움 → 바닥 저속, 정지 = `stop`·Ctrl+C):
 1. `obstacle_mode:=monitor`로 평소 경로를 돌고, CSV `front_cm`·`rear_cm`로 벽·OMX·선반 오감지를 확인한다.

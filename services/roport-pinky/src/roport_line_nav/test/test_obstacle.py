@@ -22,6 +22,9 @@ LAYOUT = os.path.join(os.path.dirname(__file__), '..', '..', 'roport_gz_world', 
                       'roport_airport.yaml')
 ROUTE = ['N07', 'N23', 'N19', 'N11']
 R_OBJ = 1.5            # 시험 물체 반지름 cm
+# 판정 논리 시험은 값을 직접 준다(기본값은 2026-11-15 실로봇 1차로 stop 5·blind 3·상차 노드 면제로 바뀜 —
+# test_config_defaults_and_limits·test_exempt_* 가 기본값을 본다). 25/15 는 2D 시뮬 시나리오(물체 거리)에 맞춘 값
+LOGIC_CFG = {'stop_cm': 25.0, 'blind_near_cm': 15.0, 'obstacle_exempt_nodes': ()}
 OBS_EVENTS = ('obstacle_stop', 'obstacle_clear', 'obstacle_warn')
 
 
@@ -44,7 +47,7 @@ class Run:
         self.obs = list(obs)
         if lidar:
             self.sim.enable_lidar(lambda t: self.obs)
-        self.ex = RouteExecutor(graph, NavConfig(obstacle_mode=mode, **cfg))
+        self.ex = RouteExecutor(graph, NavConfig(obstacle_mode=mode, **{**LOGIC_CFG, **cfg}))
         self.ex.start(ROUTE, start_cross=True, start_facing='E')
         self.events = []
         self.cmds = []
@@ -175,8 +178,9 @@ def test_config_defaults_and_limits():
     assert c.obstacle_mode == 'off' and not hasattr(c, 'gap_max_cm')
     assert (c.stop_cm, c.clear_margin_cm, c.resume_delay_s, c.blind_near_cm, c.sector_deg,
             c.front_edge_cm, c.rear_edge_cm, c.scan_max_age_s, c.warn_after_s) == \
-        (25.0, 5.0, 3.0, 15.0, 20.0, 4.2, 7.5, 0.5, 30.0)
-    for bad in ({'obstacle_mode': 'on'}, {'stop_cm': 2.0}, {'stop_cm': float('nan')},
+        (5.0, 5.0, 3.0, 3.0, 20.0, 4.2, 7.5, 0.5, 30.0)          # 2026-11-15 실로봇 1차 결정
+    assert c.obstacle_exempt_nodes == ('N01', 'N11', 'N21', 'N22')
+    for bad in ({'obstacle_mode': 'on'}, {'stop_cm': 0.5}, {'stop_cm': float('nan')},
                 {'blind_near_cm': 30.0}, {'sector_deg': 0.0}, {'scan_max_age_s': 0.0},
                 {'warn_after_s': 0.0}, {'blind_near_cm': -1.0}):
         with pytest.raises(ValueError):
@@ -467,7 +471,7 @@ def test_state_shape(graph):
 
 @pytest.mark.parametrize('speed', (8.0, 15.0))
 def test_object_vanishing_into_blind_zone_needs_manual_resume(graph, speed):
-    """빠른 작은 물체가 range_min(앞 끝에서 약 9 cm) 안으로 들어가면 광선이 무효가 되고 뒤 벽이 보여 앞이 빈 것처럼 나온다.
+    """빠른 작은 물체가 range_min(시뮬 5 cm = 앞 끝 −0.9 cm) 안으로 들어가면 광선이 무효가 되고 뒤 벽이 보여 앞이 빈 것처럼 나온다.
     유효 scan 사이에 blind_near_cm 미만 → 재개 거리 이상으로 뛰면 자동 재개하지 않고 수동 재개만(사각 의심)."""
     r = _held_settled(graph)
     r.move = _approach(speed)
@@ -571,7 +575,7 @@ def test_obstacle_stop_then_hold_at_goal_keeps_centered_end(graph):
     sim.place('N07', 'E', 0.0)
     obs = [(225.0, y, R_OBJ)]
     sim.enable_lidar(lambda t: obs)
-    ex = RouteExecutor(graph, NavConfig(obstacle_mode='stop'))
+    ex = RouteExecutor(graph, NavConfig(obstacle_mode='stop', **LOGIC_CFG))
     ex.start(['N07', 'N23', 'N19'], start_cross=True, start_facing='E', hold_at_goal=True)
     while ex.active and ex.state != PAUSED and sim.t < 200:
         sim.tick(ex)
@@ -590,9 +594,95 @@ def test_obstacle_stop_then_hold_at_goal_keeps_centered_end(graph):
     ex.start(['N19', 'N11'])                                       # 우회전 출발 = 중심 기억 사용
     assert 'end_dropped' not in [e['event'] for e in ex.events] and ex._pre is not None
     ex.stop()
-    ex2 = RouteExecutor(graph, NavConfig(obstacle_mode='stop'))
+    ex2 = RouteExecutor(graph, NavConfig(obstacle_mode='stop', **LOGIC_CFG))
     ex2._end = dict(end)
     ox, oy, oyaw = sim.odom
     ex2.step(sim.sensor.update(sim.raw()), (ox, oy + 3.0, oyaw), sim.t + 1.0)
     ex2.start(['N19', 'N11'])
     assert 'end_dropped' in [e['event'] for e in ex2.events]
+
+
+# ---------------------------------------------------------------- 실로봇 1차(2026-11-15): 기본값·상차 노드 면제
+def _approach_n11(graph, cfg, gap_cm=4.0):
+    """N19 우회전 뒤 N19→N11(남쪽) 구간 가운데에서 몸체 앞 gap_cm 에 물체를 둔다. → (실행부, 이벤트·명령 기록)."""
+    r = Run(graph, **cfg)
+    assert r.until(lambda e: e.state == FOLLOW and e.index == 2 and e.as_dict()['traveled_cm'] > 8.0, 200)
+    sx = r.sim.x
+    front_y = r.sim.y - 4.2                                          # 남쪽을 봄: 앞 끝 y
+    r.obs.append((sx, front_y - gap_cm - R_OBJ, R_OBJ))
+    return r
+
+
+def test_exempt_load_leg_does_not_stop_at_4cm(graph):
+    """기본 면제(N01·N11·N21·N22): N19→N11 구간에서 앞 4 cm 물체여도 정지 판정 안 함(거리는 보고, why exempt)."""
+    r = _approach_n11(graph, {'stop_cm': 5.0, 'blind_near_cm': 3.0,
+                              'obstacle_exempt_nodes': ('N01', 'N11', 'N21', 'N22')})
+    for _ in range(4):                                              # 다음 scan(10 Hz)까지
+        r.tick()
+    st = r.ex.as_dict()
+    assert st['state'] == FOLLOW and st['pause_reason'] is None
+    assert st['obstacle']['front_cm'] < 5.0 and st['obstacle']['why'] == 'exempt leg N19→N11'
+    r.obs.clear()
+    r.sim.lidar['on'] = False                                       # scan 끊김도 면제 구간에서는 판정 안 함
+    for _ in range(30):
+        r.tick()
+    assert r.ex.state != PAUSED and 'obstacle_stop' not in r.kinds()
+
+
+def test_same_obstacle_on_normal_leg_stops(graph):
+    """같은 4 cm 물체라도 면제 노드가 없으면(빈 목록) 정지(stop 5 cm)."""
+    r = _approach_n11(graph, {'stop_cm': 5.0, 'blind_near_cm': 3.0, 'obstacle_exempt_nodes': ()})
+    assert r.until(_held, 1.0)
+    st = r.ex.as_dict()
+    assert st['leg']['to'] == 'N11' and st['obstacle']['why'] is None
+
+
+def test_default_stop_5cm_on_straight_leg(graph):
+    """기본값(stop 5): N23→N19 에서 24.8 cm 물체는 지나가고, 4 cm 앞에서 멈춘다(면제 아닌 구간)."""
+    r = Run(graph, obs=[(195.0, _y(graph), R_OBJ)], **{k: v for k, v in NavConfig().__dict__.items()
+                                                       if k in LOGIC_CFG})
+    assert r.until(_held, 120)
+    assert 0.0 < r.front_gap() <= 5.0, r.front_gap()
+    assert r.ex.as_dict()['leg']['to'] == 'N19'
+
+
+def test_monitor_does_not_report_would_stop_on_exempt_leg(graph):
+    r = _approach_n11(graph, {'mode': 'monitor', 'stop_cm': 5.0, 'blind_near_cm': 3.0,
+                              'obstacle_exempt_nodes': ('N11',)})
+    for _ in range(4):
+        r.tick()
+    assert r.ex.as_dict()['obstacle']['why'] == 'exempt leg N19→N11'
+
+
+def test_exempt_also_from_node_and_loading(graph):
+    """구간 from 이 면제 노드여도 면제. LOADING(상차 대기)·도킹 이동은 원래 감시 단계가 아니라 몸체 앞 물체로 멈추지 않음."""
+    from roport_line_nav.graph import Leg
+    ex = RouteExecutor(graph, NavConfig(obstacle_mode='stop'))
+    ex.legs, ex.index = [Leg('N11', 'N19', 'N', 36.1, 'straight', 'side', frozenset())], 0
+    assert ex._exempt_leg() == 'N11→N19'
+    r = Run(graph, stop_cm=5.0, blind_near_cm=3.0, obstacle_exempt_nodes=('N11',))
+    r.ex.load_done = lambda: False                                   # 상차 대기에 머묾
+    assert r.until(lambda e: e.state == 'loading', 200)
+    r.obs.append((r.sim.x + 4.2 + 2.0 + R_OBJ, r.sim.y, R_OBJ))   # 바라보는 쪽(동쪽) 앞 2 cm
+    for _ in range(20):
+        r.tick()
+    st = r.ex.as_dict()
+    assert st['state'] == 'loading' and st['pause_reason'] is None
+    assert st['obstacle']['why'] == 'exempt leg N19→N11'
+
+
+@pytest.mark.parametrize('text, out', [('N01,N11,N21,N22', ('N01', 'N11', 'N21', 'N22')),
+                                       (' N11 , N01 ', ('N11', 'N01')), ('', ())])
+def test_exempt_list_parsing(text, out):
+    from roport_line_nav.executor import parse_node_list
+    assert parse_node_list(text) == out
+    assert NavConfig(obstacle_exempt_nodes=text).obstacle_exempt_nodes == out
+
+
+@pytest.mark.parametrize('bad', ['n11', 'N11;rm', 'N11,,N01', 'N 11', 'N11,'])
+def test_exempt_list_rejects(bad):
+    from roport_line_nav.executor import parse_node_list
+    with pytest.raises(ValueError):
+        parse_node_list(bad)
+    with pytest.raises(ValueError):
+        NavConfig(obstacle_exempt_nodes=bad)

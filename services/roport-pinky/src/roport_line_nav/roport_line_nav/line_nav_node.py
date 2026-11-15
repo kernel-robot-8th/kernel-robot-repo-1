@@ -48,7 +48,8 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String, UInt16MultiArray
 
 from roport_line_nav.dock import load_file as load_dock_file, save_file as save_dock_file
-from roport_line_nav.executor import FACINGS, NavConfig, RouteExecutor
+from roport_line_nav.executor import (DEFAULT_EXEMPT_NODES, FACINGS, NavConfig, RouteExecutor,
+                                      parse_node_list)
 from roport_line_nav.graph import Graph, GraphError
 from roport_line_nav.obstacle import edge_distances, tf_from_quaternion
 from roport_line_nav.recorder import RouteRecorder
@@ -187,7 +188,10 @@ class LineNavNode(Node):
                          'side_rise_tee',
                          'obstacle_mode', 'stop_cm', 'clear_margin_cm', 'resume_delay_s',
                          'blind_near_cm', 'sector_deg', 'front_edge_cm', 'rear_edge_cm',
-                         'scan_max_age_s', 'warn_after_s')})
+                         'scan_max_age_s', 'warn_after_s')},
+            # 장애물 판정 안 하는 노드(쉼표로, 노드 ID 만). 형식이 틀리면 ValueError 로 노드가 뜨지 않음
+            obstacle_exempt_nodes=parse_node_list(
+                p('obstacle_exempt_nodes', ','.join(DEFAULT_EXEMPT_NODES)).value))
         self.scan_topic = str(p('scan_topic', 'scan').value)
         self.base_frame = str(p('base_frame', 'base_link').value)
 
@@ -233,6 +237,7 @@ class LineNavNode(Node):
             f'kp={cfg.kp} kd={cfg.kd} (x speed/{cfg.gain_ref_speed} above it: {cfg.kp_speed_scale}) '
             f'side_rise={cfg.side_rise_only}(off {cfg.side_rise_off_samples}, tee {cfg.side_rise_tee}) '
             f'obstacle={cfg.obstacle_mode} (stop {cfg.stop_cm} cm, resume {cfg.resume_delay_s} s, '
+            f'exempt {",".join(cfg.obstacle_exempt_nodes) or "none"}, '
             f'scan {self.scan_topic} -> {self.base_frame})')
 
     # ---------------- 입력 ----------------

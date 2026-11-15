@@ -56,6 +56,7 @@
 """
 
 import math
+import re
 from collections import deque
 from dataclasses import dataclass, replace
 
@@ -96,6 +97,17 @@ STILL_YAW_RAD = STILL_W * STILL_S
 END_MOVED_CM = 2.0        # 끝 기억: 끝난 자세에서 odom 이 이보다 움직였으면 기억을 버림(옮겨졌을 수 있음)
 END_TURNED_DEG = 5.0      # 끝 기억: 방향이 이보다 바뀌었으면 기억을 버림
 OBSTACLE_MODES = ('off', 'monitor', 'stop')
+NODE_ID_RE = re.compile(r'^[A-Z][A-Z0-9]{0,7}$')
+DEFAULT_EXEMPT_NODES = ('N01', 'N11', 'N21', 'N22')   # 정밀 도킹 상차 노드(OMX·선반 가까이 붙음)
+
+
+def parse_node_list(text):
+    """'N01,N11' → ('N01', 'N11'). 빈 문자열 = (). 노드 ID 형식이 아니면 ValueError."""
+    items = [t.strip() for t in str(text).split(',')] if str(text).strip() else []
+    for t in items:
+        if not NODE_ID_RE.match(t):
+            raise ValueError(f'obstacle_exempt_nodes: bad node id {t!r} (comma-separated, e.g. N01,N11)')
+    return tuple(items)
 
 
 @dataclass(frozen=True)
@@ -166,17 +178,23 @@ class NavConfig:
     pass_full_speed: bool = True
     # 장애물 정지(FFT1-172 범위 변경, 09 계약 값, 양보 후진은 11-15 삭제). 시연용 소프트웨어 정지, 안전 인증 장치 아님
     obstacle_mode: str = 'off'           # off | monitor | stop
-    stop_cm: float = 25.0                # 앞 끝 거리가 이 미만이면 정지
+    # 2026-11-15 실로봇 d660 1차: 25 cm 는 N14→N02(24 cm 구간, 왼쪽 모서리) 13.8 cm 에서 모서리 너머 벽(24.9 cm)으로
+    # 헛정지 → 5 cm(사용자 결정). 재개 = stop_cm + clear_margin_cm = 10 cm 가 resume_delay_s
+    stop_cm: float = 5.0                 # 앞 끝 거리가 이 미만이면 정지
     clear_margin_cm: float = 5.0         # 재개 = stop_cm + 이 값 이상이
     resume_delay_s: float = 3.0          # 이 시간 이어지면
     # 사각 의심: 정지 중 마지막 유효 front 가 이 미만이었는데 다음 유효 scan 이 재개 거리 이상이면 수동 재개만.
-    # 값 = 삭제한 yield_cm(계약 15 cm) 그대로(새 수치 아님). 0 = 규칙 끔
-    blind_near_cm: float = 15.0
+    # 실측 /scan range_min 0.05 m(라이다는 앞 끝 5.9 cm 뒤) → 사각은 앞 끝 −0.9 cm 즉 몸체 안. stop 5 에 맞춰 3 cm
+    # (2026-11-15 사용자 결정, 15 면 손으로 치울 때마다 수동 재개). 0 = 규칙 끔
+    blind_near_cm: float = 3.0
     sector_deg: float = 20.0             # 앞·뒤 부채꼴 ±
     front_edge_cm: float = 4.2           # base_link(바퀴 축) → 앞 끝(URDF)
     rear_edge_cm: float = 7.5            # base_link → 뒤 끝
     scan_max_age_s: float = 0.5          # scan 이 이보다 오래되면 fail-safe 정지
     warn_after_s: float = 30.0           # 장애물 정지가 이만큼 이어지면 경고
+    # 장애물 판정 안 하는 노드: 구간의 from·to 가 여기 있으면 정지·scan 끊김·앞 점 없음 판정을 하지 않음(거리는 보고).
+    # 정밀 도킹 상차 노드는 OMX·선반이 몸체 바로 앞에 옴(2026-11-15 사용자 결정)
+    obstacle_exempt_nodes: tuple = DEFAULT_EXEMPT_NODES
 
     def __post_init__(self):
         if not 0.0 < self.max_linear <= HARD_MAX_LINEAR:
@@ -219,7 +237,7 @@ class NavConfig:
         if self.obstacle_mode not in OBSTACLE_MODES:
             raise ValueError(f'obstacle_mode must be one of {"/".join(OBSTACLE_MODES)}')
         # 장애물 값 범위(입력 검사용 상한·하한, 판정 기본값은 09 계약)
-        for name, lo, hi in (('stop_cm', 5.0, 100.0), ('clear_margin_cm', 0.0, 50.0),
+        for name, lo, hi in (('stop_cm', 1.0, 100.0), ('clear_margin_cm', 0.0, 50.0),
                              ('resume_delay_s', 0.0, 60.0), ('blind_near_cm', 0.0, 100.0),
                              ('sector_deg', 1.0, 90.0), ('front_edge_cm', 0.0, 30.0),
                              ('rear_edge_cm', 0.0, 30.0), ('scan_max_age_s', 0.05, 5.0),
@@ -229,6 +247,11 @@ class NavConfig:
                 raise ValueError(f'need {lo:g} <= {name} <= {hi:g}')
         if self.blind_near_cm > self.stop_cm:
             raise ValueError('need blind_near_cm <= stop_cm')
+        if isinstance(self.obstacle_exempt_nodes, str):
+            object.__setattr__(self, 'obstacle_exempt_nodes', parse_node_list(self.obstacle_exempt_nodes))
+        if not all(isinstance(n, str) and NODE_ID_RE.match(n) for n in self.obstacle_exempt_nodes):
+            raise ValueError('obstacle_exempt_nodes must be node ids (e.g. N01,N11)')
+        object.__setattr__(self, 'obstacle_exempt_nodes', tuple(self.obstacle_exempt_nodes))
         if self.node_confirm < 1 or self.reverse_max_cm <= 0 or self.lost_timeout <= 0:
             raise ValueError('node_confirm >= 1, reverse_max_cm > 0, lost_timeout > 0')
 
@@ -1206,6 +1229,14 @@ class RouteExecutor:
         age = self._scan_age()
         return age is not None and age <= self.cfg.scan_max_age_s
 
+    def _exempt_leg(self):
+        """지금 구간의 from·to 가 obstacle_exempt_nodes 에 있으면 'A→B', 아니면 None."""
+        ex = self.cfg.obstacle_exempt_nodes
+        if not ex or not self.legs or self.index >= len(self.legs):
+            return None
+        leg = self.legs[self.index]
+        return f'{leg.frm}→{leg.to}' if (leg.frm in ex or leg.to in ex) else None
+
     def _obs_block(self):
         """감시 단계에서 멈출 이유: 'scan_stale' | 'obstacle' | 'no_points' | None.
 
@@ -1237,6 +1268,13 @@ class RouteExecutor:
         c = self.cfg
         if c.obstacle_mode == 'off':
             return None
+        if self._ob is None:
+            exempt = self._exempt_leg()
+            if exempt is not None:            # 상차 노드 구간: 판정 안 함(정지·scan 끊김·점 없음 모두), 거리만 보고
+                self._ob_why = f'exempt leg {exempt}'
+                return None
+            if self._ob_why is not None and self._ob_why.startswith('exempt leg'):
+                self._ob_why = None
         if c.obstacle_mode == 'monitor':     # 거리만 보고(동작 안 바꿈)
             why = self._obs_block() if self.state in (FOLLOW, PASS) else None
             self._ob_why = None if why is None else f'monitor: would stop ({self._block_text(why)})'
@@ -1334,4 +1372,5 @@ class RouteExecutor:
 
 __all__ = ['NavConfig', 'Command', 'RouteExecutor', 'GraphError', 'IDLE', 'FOLLOW', 'PASS',
            'ADVANCE', 'ROTATE', 'LOADING', 'REVERSE', 'ARRIVED', 'HANDOFF_STATE', 'STOPPED',
-           'ERROR', 'STOP', 'TERMINAL', 'PAUSED', 'OBSTACLE_MODES']
+           'ERROR', 'STOP', 'TERMINAL', 'PAUSED', 'OBSTACLE_MODES', 'DEFAULT_EXEMPT_NODES',
+           'parse_node_list']

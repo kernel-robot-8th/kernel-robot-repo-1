@@ -31,11 +31,11 @@ FLOAT_ARGS = {
     'ir_ahead_cm': ('3.0', 'center IR to wheel axle (measured 2026-11-03)'),
     'turn_advance_cm': ('4.2', 'drive after side line seen before rotating'),
     # 장애물 정지(FFT1-172, 09 계약 값. 양보 후진은 2026-11-15 삭제)
-    'stop_cm': ('25.0', 'obstacle: stop when the body front edge is closer than this (cm)'),
+    'stop_cm': ('5.0', 'obstacle: stop when the body front edge is closer than this (cm, 2026-11-15 field)'),
     'clear_margin_cm': ('5.0', 'obstacle: resume needs front >= stop_cm + this'),
     'resume_delay_s': ('3.0', 'obstacle: front clear this long before resuming'),
-    'blind_near_cm': ('15.0', 'obstacle: near object then a clear jump = maybe inside range_min '
-                              '-> manual resume only (0 = off)'),
+    'blind_near_cm': ('3.0', 'obstacle: near object then a clear jump = maybe inside range_min '
+                             '-> manual resume only (0 = off)'),
     'sector_deg': ('20.0', 'obstacle: front/rear sector half angle in base_link'),
     'front_edge_cm': ('4.2', 'base_link (axle) to body front edge'),
     'rear_edge_cm': ('7.5', 'base_link (axle) to body rear edge (rear_cm is reported only)'),
@@ -62,6 +62,9 @@ def generate_launch_description():
                                           '(demo software stop, not a safety device)'),
         DeclareLaunchArgument('scan_topic', default_value='scan',
                               description='LaserScan topic for obstacle_mode monitor/stop'),
+        DeclareLaunchArgument('obstacle_exempt_nodes', default_value='N01,N11,N21,N22',
+                              description='legs from/to these nodes skip obstacle checks '
+                                          '(comma-separated node ids, empty = none)'),
     ]
     args += [DeclareLaunchArgument(k, default_value=v, description=d)
              for k, (v, d) in FLOAT_ARGS.items()]
@@ -72,6 +75,8 @@ def generate_launch_description():
         'dry_run': ParameterValue(LaunchConfiguration('dry_run'), value_type=bool),
         'obstacle_mode': ParameterValue(LaunchConfiguration('obstacle_mode'), value_type=str),
         'scan_topic': ParameterValue(LaunchConfiguration('scan_topic'), value_type=str),
+        'obstacle_exempt_nodes': ParameterValue(LaunchConfiguration('obstacle_exempt_nodes'),
+                                                value_type=str),
     }
     params.update({k: ParameterValue(LaunchConfiguration(k), value_type=float)
                    for k in FLOAT_ARGS})
