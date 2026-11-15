@@ -488,6 +488,12 @@ canvas {
 .fl-log-state td { font-weight: 600; }
 .fl-log-console td { color: #b4441c; }
 .fl-files { max-height: 200px; overflow: auto; }
+/* 장애물 정지 (FFT1-172, 계약 09): 이벤트 행·로봇 표 state 칸 */
+.ev-obst td { color: var(--warn); }
+.ev-obst-warn td { color: var(--err); font-weight: 600; background: rgba(251, 113, 133, 0.12); }
+td.obst-warn { color: var(--warn); font-weight: 600; }
+td.obst-err { color: var(--err); font-weight: 600; background: rgba(251, 113, 133, 0.12); }
+.info-line .value.err { font-weight: 600; }
 
 /* 통합 테스트 화면 (test.html) */
 .tt-page { overflow: hidden; }

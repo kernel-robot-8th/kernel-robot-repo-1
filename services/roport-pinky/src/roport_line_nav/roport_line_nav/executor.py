@@ -21,6 +21,7 @@
 경유 정차: 경로 중간의 가로선 노드(예: P5 → P4 상차 → P7)에서는 그 노드의 도착 동작(상차 대기 등)을 한 뒤
   같은 규칙(이어서 출발)으로 다음 구간을 이어 간다. 경로는 가로선 노드마다 구간 묶음으로 나눠 검사한다.
 속도: set_speed 로 직선·회전 속도를 바꾼다(주행 중에도 다음 샘플부터). 상한은 설정의 max_linear·max_angular.
+회전 직후 감속: 노드에서 회전한 뒤 이어지는 구간은 처음 post_turn_slow_cm(기본 10 cm)까지 approach_speed 이하.
 노드 앞 감속: 직선 추종 중 이동 거리가 예상 노드 위치 - approach_lead_cm(기본 5 cm)를 넘으면, 그리고 노드
   감지 뒤 회전 전 전진·후진은 approach_speed(base_speed 보다 크면 base_speed) 이하로 간다. 출발 위치를 몰라
   예상 위치가 없는 구간은 처음부터 approach_speed. 직진 통과 노드(pass_full_speed)는 감속하지 않는다. 실로봇 d660 0.06 m/s(2026-11-06)에서 노드를
@@ -34,6 +35,24 @@
   approach_speed 이하·끝으로 갈수록 감속(min_speed 까지)·방향 유지. 거리 초과·시간 초과·멈추지 않음은 오류 정지.
 교차선 출발(start_cross): IR 3개가 route[0](가로선 노드 아님)을 지나는 선 위, 로봇은 start_facing 을 봄
   → ir_ahead_cm 전진(축을 노드 중심으로) → 첫 구간 방향이 다르면 선 찾기 회전 → 첫 구간(s0 = ir_ahead, gate_early 적용).
+일시정지(FFT1-172, 2D 시뮬만 — 실로봇 미검증):
+  pause = 0 속도·상태 PAUSED(지금 단계·구간·이동 거리 기억 유지, 시간 제한 없음). odom 이 멈추면
+  (|v| < 0.003 m/s·|ω| < 0.03 rad/s 가 0.3 s) paused_settled. resume = 멈춘 단계를 그대로 이어 감(타이머는 멈춘 시간만큼 밀림).
+  수동 후진 back{to} 명령은 없앰(2026-11-15 사용자 결정).
+장애물 정지(FFT1-172 범위 변경, 09 계약, 2D 시뮬만 — 실로봇 미검증, 시연용 소프트웨어 정지·안전 인증 장치 아님):
+  입력 set_scan(front_cm, rear_cm, stamp) = 라이다 점의 몸체 앞·뒤 끝 거리(obstacle.edge_distances, ROS 노드가 TF 로 계산).
+  obstacle_mode off(기본, 예전과 같음) | monitor(거리·이유만 보고) | stop. 감시 단계 = FOLLOW·PASS(선 따라 앞으로).
+  stop: front < stop_cm → 0 속도, PAUSED, pause_reason obstacle(구간·이동 거리 기억 유지). scan 이 없거나
+    scan_max_age_s 보다 오래됨 → pause_reason scan_stale(fail-safe). front ≥ stop_cm + clear_margin_cm 가
+    resume_delay_s 이어지면 멈춘 단계 그대로 재개(앞 부채꼴에 점이 없으면 비었다고 보지 않음). 수동 pause 가 함께
+    걸려 있으면 자동 재개 안 함, 장애물 정지 중 수동 resume 은 거절. stop 명령은 언제나 즉시 0 속도.
+    앞 점 없음(R1): 감시 단계에서 scan 은 오는데 앞 부채꼴 유효 점 없음이 scan_max_age_s 넘게 이어지면 정지
+    (pause_reason scan_stale, obstacle.why front_no_points). 재개는 유효 front ≥ stop_cm + clear_margin_cm 가 resume_delay_s.
+    사각 의심: 장애물 정지 중 마지막 유효 front 가 blind_near_cm 미만이었는데 다음 유효 scan(점 없음 scan 은 건너뜀)이
+    재개 거리 이상이면(range_min 안으로 들어간 작은 물체는 무효가 되고 뒤 벽이 보임) 수동 일시정지로 바꿔 자동 재개하지
+    않는다(09 계약에 더한 안전 쪽 규칙).
+  다가오는 물체에도 멈춰 기다린다(양보 후진 없음, 2026-11-15 사용자 결정: 산업용 라인 AGV 관행 = 보호 영역 정지·비면 약 3 s 뒤 재개).
+  rear_cm 은 감시용(state·CSV)으로만 계산하고 동작에는 쓰지 않는다.
 """
 
 import math
@@ -65,6 +84,18 @@ SETTLE_DEG = 0.2          # 회전이 이보다 작은 새 odom 샘플 비교가
 SETTLE_TIMEOUT_S = 1.5    # 0 명령 뒤 이 시간 안에 멈추지 않으면 오류
 MOVE_GAIN = 0.01          # m/s per 남은 cm (3 cm 남으면 0.03)
 MOVE_OVERRUN_CM = 2.0     # 목표보다 이만큼 더 가면(부호 있는 거리) 오류
+PAUSED = 'paused'         # 일시정지(FFT1-172): 단계·구간 기억 유지, 0 속도
+STILL_V = 0.003           # m/s, 일시정지 정지 확인: 선속 |v| 이 미만
+STILL_W = 0.03            # rad/s, 각속 미만
+STILL_S = 0.3             # s, 이 시간 이어지면 정지로 봄
+# 정지 확인은 메시지 한 쌍의 속도가 아니라 STILL_S 창 안 자세 변화로 본다(2026-11-12 실로봇: 서 있어도 엔코더가
+# 가끔 1틱 튀어 메시지 간 각속이 0.03 rad/s 를 넘음 → 정지 확인이 계속 풀려 back 후보가 비었음).
+# 창 안 허용 변화 = 위 속도 × STILL_S 와 같은 크기(0.003 m/s × 0.3 s ≈ 0.1 cm, 0.03 rad/s × 0.3 s ≈ 0.52°).
+STILL_POS_CM = 0.1
+STILL_YAW_RAD = STILL_W * STILL_S
+END_MOVED_CM = 2.0        # 끝 기억: 끝난 자세에서 odom 이 이보다 움직였으면 기억을 버림(옮겨졌을 수 있음)
+END_TURNED_DEG = 5.0      # 끝 기억: 방향이 이보다 바뀌었으면 기억을 버림
+OBSTACLE_MODES = ('off', 'monitor', 'stop')
 
 
 @dataclass(frozen=True)
@@ -112,6 +143,13 @@ class NavConfig:
     # 실로그 16건의 진짜 T자 감지는 모두 양쪽이 켜짐(각 1.0~2.8 cm).
     tee_both: bool = True
     tee_window_cm: float = 1.5
+    # 옆선 켜짐 확인(2026-11-09 사용자 결정): 옆선 노드는 그 옆 IR 이 감지 창 시작(min_ok) 뒤에 꺼짐 → 켜짐으로
+    # 바뀐 run 일 때만 인정. 창 전부터 켜져 있던 run(본선 가장자리 타기)은 무시. 꺼짐은 side_rise_off_samples
+    # 연속이어야 run 이 끝난 것으로 봄(깜빡임). d660 0.08 m/s 11-09 21:54 N02→N14: 회전 직후 오른쪽으로 밀려
+    # 왼쪽 IR 이 8.0 cm 부터 본선 가장자리를 계속 밟다가 창(14.8 cm)이 열리자 15.1 cm 오감지(진짜 약 18 cm).
+    side_rise_only: bool = True
+    side_rise_off_samples: int = 2
+    side_rise_tee: bool = False    # T자(tee_both)에도 같은 규칙 — 실로그 재생으로 판단(README)
     reverse_speed: float = 0.02    # m/s
     reverse_max_cm: float = 12.0
     # 노드 앞 감속(2026-11-06 d660: 0.06 m/s 에서 노드를 지나쳐 멈춤, 0.03 m/s 는 완주).
@@ -120,8 +158,25 @@ class NavConfig:
     # 예상 노드 위치 몇 cm 전부터 감속(2026-11-07 사용자: 노드 3~5 cm 전). 실로그 61건의 진짜 감지는 예상 위치
     # -3.4 ~ +2.9 cm → 5 cm 면 모두 감속 뒤 감지, 3 cm 면 일찍 오는 노드(-3.1·-3.4)를 빠른 속도로 만남
     approach_lead_cm: float = 5.0
+    # 노드에서 회전한 직후 구간 처음 이 거리(cm)는 approach_speed 이하. 0 = 끔.
+    # 근거(2026-11-10 결정): 회전 뒤 선 옆으로 0.5~1 cm 밀린 채 0.06~0.08로 가면 옆 IR이 본선 가장자리를
+    # 11.5~15.9 cm까지 밟아 감지 창과 겹침(오감지). 0.03 기록은 가장자리 타기가 8.5 cm 전에 끝남.
+    post_turn_slow_cm: float = 10.0
     # 직진 통과 노드(N15·N23 등)는 다가갈 때·지날 때 감속하지 않음(2026-11-07 사용자)
     pass_full_speed: bool = True
+    # 장애물 정지(FFT1-172 범위 변경, 09 계약 값, 양보 후진은 11-15 삭제). 시연용 소프트웨어 정지, 안전 인증 장치 아님
+    obstacle_mode: str = 'off'           # off | monitor | stop
+    stop_cm: float = 25.0                # 앞 끝 거리가 이 미만이면 정지
+    clear_margin_cm: float = 5.0         # 재개 = stop_cm + 이 값 이상이
+    resume_delay_s: float = 3.0          # 이 시간 이어지면
+    # 사각 의심: 정지 중 마지막 유효 front 가 이 미만이었는데 다음 유효 scan 이 재개 거리 이상이면 수동 재개만.
+    # 값 = 삭제한 yield_cm(계약 15 cm) 그대로(새 수치 아님). 0 = 규칙 끔
+    blind_near_cm: float = 15.0
+    sector_deg: float = 20.0             # 앞·뒤 부채꼴 ±
+    front_edge_cm: float = 4.2           # base_link(바퀴 축) → 앞 끝(URDF)
+    rear_edge_cm: float = 7.5            # base_link → 뒤 끝
+    scan_max_age_s: float = 0.5          # scan 이 이보다 오래되면 fail-safe 정지
+    warn_after_s: float = 30.0           # 장애물 정지가 이만큼 이어지면 경고
 
     def __post_init__(self):
         if not 0.0 < self.max_linear <= HARD_MAX_LINEAR:
@@ -139,6 +194,8 @@ class NavConfig:
             raise ValueError(f'need min_speed <= approach_speed <= {HARD_MAX_LINEAR}')
         if not (math.isfinite(self.approach_lead_cm) and 0.0 <= self.approach_lead_cm <= 50.0):
             raise ValueError('need 0 <= approach_lead_cm <= 50')
+        if not (math.isfinite(self.post_turn_slow_cm) and 0.0 <= self.post_turn_slow_cm <= 50.0):
+            raise ValueError('need 0 <= post_turn_slow_cm <= 50')
         if not 0.0 < self.rotate_min_speed <= self.rotate_speed <= self.max_angular:
             raise ValueError('need 0 < rotate_min_speed <= rotate_speed <= max_angular')
         if not (math.isfinite(self.gate_early_cm) and 0.0 <= self.gate_early_cm <= 50.0):
@@ -157,6 +214,21 @@ class NavConfig:
             raise ValueError('need kp > 0, kd >= 0')
         if not (math.isfinite(self.tee_window_cm) and 0.0 < self.tee_window_cm <= 5.0):
             raise ValueError('need 0 < tee_window_cm <= 5')
+        if not 1 <= self.side_rise_off_samples <= 10:
+            raise ValueError('need 1 <= side_rise_off_samples <= 10')
+        if self.obstacle_mode not in OBSTACLE_MODES:
+            raise ValueError(f'obstacle_mode must be one of {"/".join(OBSTACLE_MODES)}')
+        # 장애물 값 범위(입력 검사용 상한·하한, 판정 기본값은 09 계약)
+        for name, lo, hi in (('stop_cm', 5.0, 100.0), ('clear_margin_cm', 0.0, 50.0),
+                             ('resume_delay_s', 0.0, 60.0), ('blind_near_cm', 0.0, 100.0),
+                             ('sector_deg', 1.0, 90.0), ('front_edge_cm', 0.0, 30.0),
+                             ('rear_edge_cm', 0.0, 30.0), ('scan_max_age_s', 0.05, 5.0),
+                             ('warn_after_s', 1.0, 600.0)):
+            v = getattr(self, name)
+            if not (math.isfinite(v) and lo <= v <= hi):
+                raise ValueError(f'need {lo:g} <= {name} <= {hi:g}')
+        if self.blind_near_cm > self.stop_cm:
+            raise ValueError('need blind_near_cm <= stop_cm')
         if self.node_confirm < 1 or self.reverse_max_cm <= 0 or self.lost_timeout <= 0:
             raise ValueError('node_confirm >= 1, reverse_max_cm > 0, lost_timeout > 0')
 
@@ -201,9 +273,23 @@ class RouteExecutor:
         self._leg_s0 = 0.0       # 구간 시작 때 출발 노드 → 센서 거리(표시용 위치 추정)
         self._progress = 0.0     # 현재 구간 진행률 0~1 (정지·오류 뒤에도 마지막 값 유지)
         self._seg_ends = set()   # 경유 정차 구간 묶음의 끝 Leg 번호
-        self._end = None         # 직전 경로가 끝난 곳 {'node', 'facing', 's0'} (이어서 출발용)
+        self._end = None         # 직전 경로가 끝난 곳 {'node', 'facing', 's0', 'pose'} (이어서 출발용)
         self._expected = None    # 지금 구간의 예상 노드 위치(센서 이동 거리 cm). 모르면 None
+        self._slow_until = 0.0   # 이 구간에서 이 이동 거리(cm)까지 감속(회전 직후)
         self._pre = None         # 출발 전 제자리 회전의 시작 방향(도, 표시용)
+        # 일시정지·장애물 정지(FFT1-172)
+        self._paused_from = None  # PAUSED 직전 상태
+        self._pause_t0 = 0.0
+        self._pause_noted = False  # paused_settled 이벤트를 남겼는지
+        self._manual = False      # 수동 pause 가 걸려 있음(자동 재개 안 함)
+        self._held = None         # 멈춘 때 {'d'} (수동·장애물 공통, None = 멈춤 아님)
+        self._ob = None           # 장애물 정지 중 {'reason', 't0', 'clear_since', 'warned', 'last_front', 'vanished'}
+        self._ob_why = None       # 표시용 이유(멈춘 이유, monitor 의 멈췄을 이유)
+        self._scan = None         # 마지막 라이다 (front_cm, rear_cm, stamp)
+        self._front_none_since = None  # 앞 부채꼴 점 없음이 이어진 시작 scan 시각
+        self._still_last = None   # 정지 확인: (시각, 자세)
+        self._still_since = None  # 멈춘 상태가 시작된 시각
+        self._still_hist = deque()  # 정지 확인 창: (시각, 자세), 최근 STILL_S 남짓
         self._reset_primitive()
 
     # ------------------------------------------------------------ 명령
@@ -226,7 +312,14 @@ class RouteExecutor:
                                 or not math.isfinite(start_offset_cm)
                                 or not 0 <= start_offset_cm < legs[0].length):
             raise ValueError('Confirmed start requires a finite offset within the first leg')
-        self.route = [str(r) for r in route]
+        route = [str(r) for r in route]
+        # 끝난 뒤 odom 이 2 cm·5° 넘게 바뀌었거나 odom 을 모르면 끝 기억(s0·gate_early·출발 전 회전)을 버리고
+        # 손으로 놓은 출발과 같게(2026-11-12 결정 1)
+        dropped = None
+        if self._end is not None and self._end_moved() is not False:
+            dropped = self._end['node']
+            self._end = None
+        self.route = route
         self.legs = legs
         self._seg_ends = seg_ends
         self.index = 0
@@ -234,8 +327,15 @@ class RouteExecutor:
         self._loaded = False
         self._steps.clear()
         self._pre = None
+        self._paused_from = None
+        self._manual = False
+        self._held = None
+        self._ob = None
+        self._ob_why = None
         self.route_seq0 = self.event_seq
-        self._log('start', ' → '.join(self.route))
+        self._log('start', ' → '.join(route))
+        if dropped is not None:
+            self._log('end_dropped', f'{dropped}: moved or odom unknown since the end')
         self._dock_phase = None
         end = self._end
         self._end = None
@@ -243,6 +343,29 @@ class RouteExecutor:
             self._depart_cross(legs[0], start_facing)
             return
         self._depart(legs[0], end, start_offset_cm, confirmed_start=confirmed_start)
+
+    def _end_moved(self):
+        """끝 기억 자세(_end['pose'])에서 odom 이 END_MOVED_CM 또는 END_TURNED_DEG 넘게 바뀌었는지. 모르면 None."""
+        end = self._end
+        ref = None if end is None else end.get('pose')
+        pose = self._still_last[1] if self._still_last is not None else None   # odom 끊김 = 모름
+        if ref is None or pose is None:
+            return None
+        moved = math.hypot(pose[0] - ref[0], pose[1] - ref[1])
+        turned = abs(_wrap(pose[2] - ref[2]))
+        return moved > END_MOVED_CM or turned > math.radians(END_TURNED_DEG)
+
+    @property
+    def route_shown(self):
+        """상태에 보고하는 경로(명령한 경로)."""
+        return self.route
+
+    def _end_dict(self):
+        """상태 보고 end: {node, facing, moved, passed}. passed 는 수동 후진(back)을 없애 늘 [](콘솔 호환용으로 남김)."""
+        e = self._end
+        if e is None:
+            return None
+        return {'node': e['node'], 'facing': e['facing'], 'moved': self._end_moved(), 'passed': []}
 
     def _check_cross(self, nid, facing, offset):
         if facing not in FACINGS:
@@ -379,6 +502,75 @@ class RouteExecutor:
             return
         self._finish(ERROR, reason)
 
+    # ------------------------------------------------------------ 일시정지·장애물 정지(FFT1-172)
+    def pause(self):
+        """주행 중 일시정지: 0 속도, 지금 단계·구간·이동 거리 기억 유지. 끝난 뒤면 ValueError. → 결과 문자열.
+
+        장애물 정지 중이면 수동 일시정지를 더한다(앞이 비어도 자동 재개 안 함).
+        """
+        if self.state in TERMINAL:
+            raise ValueError(f'pause rejected: not driving ({self.state})')
+        if self._manual:
+            return 'already paused'
+        if self._ob is not None:
+            self._manual = True
+            self._log('pause', f'manual on obstacle stop ({self._paused_from})')
+            return f'paused (manual, obstacle stop in {self._paused_from})'
+        prev = self.state
+        leg = self.legs[self.index]
+        self._hold_enter(prev)
+        self._manual = True
+        self._log('pause', f'{prev} on {leg.frm}→{leg.to} at {self._odo - self._ref_odo:.1f} cm')
+        return f'paused ({prev})'
+
+    def resume(self):
+        """수동 일시정지에서만: 멈춘 단계를 그대로 이어 감(감지 창·누적 거리 그대로, 타이머는 멈춘 시간만큼 밀림).
+
+        장애물 정지 중이면 거절(ValueError, 사유 = 결과 문자열). 앞이 비면 장애물 정지가 풀린 뒤 다시 resume.
+        """
+        if self._ob is not None:
+            extra = '; manual pause stays' if self._manual else ''
+            raise ValueError(f'resume rejected: obstacle stop ({self._block_text(self._ob["reason"])}), '
+                             f'resumes by itself {self.cfg.resume_delay_s:g} s after the front '
+                             f'clears{extra}')
+        if self.state != PAUSED or not self._manual:
+            raise ValueError(f'resume rejected: not paused ({self.state})')
+        self._manual = False
+        self._ob_why = None
+        dt = self._resume_motion()
+        self._log('resume', f'{self.state} after {dt:.1f} s')
+        return f'resumed ({self.state})'
+
+    @property
+    def settled(self):
+        """odom 이 멈춤(|v| < STILL_V, |ω| < STILL_W 가 STILL_S 이어짐)."""
+        return (self._still_since is not None and self._still_last is not None
+                and self._still_last[0] - self._still_since >= STILL_S - 1e-9)
+
+    def set_scan(self, front_cm, rear_cm, stamp):
+        """라이다 한 번: 몸체 앞·뒤 끝에서 가장 가까운 점 거리(cm, 부채꼴에 점이 없으면 None).
+
+        stamp = step 의 now 와 같은 시계(s). obstacle_mode 가 off 면 기록만 하고 동작에 쓰지 않는다.
+        """
+        f = None if front_cm is None or not math.isfinite(front_cm) else float(front_cm)
+        r = None if rear_cm is None or not math.isfinite(rear_cm) else float(rear_cm)
+        t = float(stamp)
+        self._scan = (f, r, t)
+        if f is None:                     # 앞 부채꼴에 점 없음이 이어진 시작 시각(주행 중 fail-safe)
+            if self._front_none_since is None:
+                self._front_none_since = t
+        else:
+            self._front_none_since = None
+        ob = self._ob
+        c = self.cfg
+        if ob is not None and f is not None:
+            last = ob.get('last_front')   # 장애물 정지 중 마지막 유효 front(None scan 은 건너뜀)
+            if last is not None and last < c.blind_near_cm and f >= c.stop_cm + c.clear_margin_cm:
+                # 가까운 물체가 다음 유효 scan 에서 사라짐(사이에 점 없음 scan 이 있어도) = range_min 안(라이다
+                # 사각)으로 들어갔을 수 있음. 뒤 벽이 보여 앞이 빈 것처럼 나오므로 자동 재개하지 않는다(수동 재개만)
+                ob['vanished'] = (last, f)
+            ob['last_front'] = f
+
     @property
     def active(self):
         return self.state not in TERMINAL
@@ -397,6 +589,7 @@ class RouteExecutor:
         """
         self._now = now
         self._pose_stamp = pose_stamp
+        self._watch_still(pose, now, pose_stamp)
         if self.state in TERMINAL:
             if self._zero_once:
                 self._zero_once = False
@@ -406,9 +599,13 @@ class RouteExecutor:
             self.fail('no_odom')
             return self.step(reading, pose, now)
         self._update_odom(pose)
+        cmd = self._obstacle(reading)       # 장애물 정지(obstacle_mode stop). off 면 None
+        if cmd is not None:
+            return cmd
         handler = {
             FOLLOW: self._follow, PASS: self._drive, ADVANCE: self._drive,
             ROTATE: self._rotate, LOADING: self._loading, REVERSE: self._reverse,
+            PAUSED: self._paused,
         }[self.state]
         cmd = handler(reading)
         if self.state in TERMINAL:   # 이 샘플에서 끝남
@@ -420,7 +617,7 @@ class RouteExecutor:
     def as_dict(self):
         leg = self.legs[self.index] if self.legs and self.index < len(self.legs) else None
         out = {
-            'state': self.state, 'reason': self.reason, 'route': self.route,
+            'state': self.state, 'reason': self.reason, 'route': self.route_shown,
             'index': self.index,
             'leg': None if leg is None else {
                 'from': leg.frm, 'to': leg.to, 'heading': leg.heading, 'action': leg.action,
@@ -433,12 +630,18 @@ class RouteExecutor:
             'event_seq': self.event_seq,
             'route_event_seq0': self.route_seq0,
             'dock': self.dock.as_dict(),
+            'pause': None if self._held is None else {
+                'from': self._paused_from, 'settled': self.settled, 'manual': self._manual},
+            'pause_reason': self._pause_reason(),
+            'obstacle': self._obstacle_dict(),
+            'end': self._end_dict(),
             'speed': {'base_speed': self.cfg.base_speed, 'rotate_speed': self.cfg.rotate_speed,
                       'min_speed': self.cfg.min_speed, 'max_linear': self.cfg.max_linear,
                       'rotate_min_speed': self.cfg.rotate_min_speed,
                       'max_angular': self.cfg.max_angular,
                       'approach_speed': self.approach_speed,
                       'approach_lead_cm': self.cfg.approach_lead_cm,
+                      'post_turn_slow_cm': self.cfg.post_turn_slow_cm,
                       'pass_full_speed': self.cfg.pass_full_speed,
                       'kp': self.cfg.kp, 'kd': self.cfg.kd,
                       'kp_at_base': round(self.kp_for(self.cfg.base_speed), 3),
@@ -537,6 +740,9 @@ class RouteExecutor:
         self._max_ok = 0.0
         self._prim = {}
         self._tee_seen = {0: None, 2: None}   # T자: 왼쪽·오른쪽 센서가 마지막으로 선을 본 이동 거리
+        # 옆 IR run: on = 지금 켜진 run 안, off = 연속 꺼진 샘플 수, valid = 창 시작 뒤 꺼짐→켜짐으로 시작한 run
+        self._side_run = {ch: {'on': False, 'off': 0, 'valid': False, 'start': None, 'noted': False}
+                          for ch in (0, 2)}
 
     def _update_odom(self, pose):
         if self._pose is not None:
@@ -547,6 +753,11 @@ class RouteExecutor:
             self._hold_yaw = pose[2]
 
     def _finish(self, state, reason=''):
+        self._paused_from = None
+        self._manual = False
+        self._held = None
+        self._ob = None
+        self._ob_why = None
         self.state = state
         self.reason = reason
         self._steps.clear()
@@ -554,6 +765,8 @@ class RouteExecutor:
         self._pre = None
         self._end = (self._end_of_leg(self.legs[self.index])
                      if state in (ARRIVED, HANDOFF_STATE) else None)
+        if self._end is not None:
+            self._end['pose'] = self._pose     # 끝난 자세(끝 기억 보고·이어 출발의 이동 검사)
         self._log(state, reason)
 
     def _end_of_leg(self, leg):
@@ -575,6 +788,9 @@ class RouteExecutor:
         guess: s0 가 가정값(사람이 놓은 출발 위치)이면 True → 비율 창만 쓰고 gate_early 는 안 씀.
         """
         leg = self.legs[self.index]
+        c = self.cfg
+        # 노드 회전(ROTATE)이 끝나 바로 이 구간을 시작하면 처음 post_turn_slow_cm 은 감속
+        self._slow_until = c.post_turn_slow_cm if self.state == ROTATE else 0.0
         self.state = FOLLOW
         self._reset_primitive()
         self._leg_s0 = 0.0 if s0_cm is None else s0_cm
@@ -594,6 +810,36 @@ class RouteExecutor:
             self._max_ok = c.gate_max * expected + c.gate_slack_cm
         self._log('leg', f'{leg.frm}→{leg.to} {leg.action}')
 
+    def _track_sides(self, reading, d):
+        """추종 샘플마다 옆 IR run 을 갱신. 창 시작 전 run 은 valid 가 아님."""
+        k = self.cfg.side_rise_off_samples
+        for ch in (0, 2):
+            r = self._side_run[ch]
+            if reading.on_line[ch]:
+                if not r['on']:
+                    r.update(on=True, valid=r['off'] >= k and d >= self._min_ok, start=d,
+                             noted=False)
+                r['off'] = 0
+            else:
+                r['off'] += 1
+                if r['off'] >= k:
+                    r['on'] = False
+                    r['valid'] = False
+
+    def _side_ok(self, ch, leg, d, tee=False):
+        """옆 IR ch 를 노드 판정에 써도 되는지(켜짐 확인 규칙)."""
+        c = self.cfg
+        if not c.side_rise_only or (tee and not c.side_rise_tee):
+            return True
+        r = self._side_run[ch]
+        if r['valid']:
+            return True
+        if r['on'] and not r['noted']:      # 창 전부터 켜져 있던 run: 한 번만 기록
+            r['noted'] = True
+            self._log('side_ignored', f'{leg.to} {"left" if ch == 0 else "right"} on since '
+                      f'{r["start"]:.1f} cm (window {self._min_ok:.1f}), at {d:.1f} cm')
+        return False
+
     def _hit(self, reading, leg, d=0.0):
         if leg.detect == 'bar':
             return reading.node
@@ -601,18 +847,20 @@ class RouteExecutor:
         if not on[1]:
             return False
         if self.cfg.tee_both and LEFT in leg.sides and RIGHT in leg.sides:
-            for ch in (0, 2):
-                if on[ch]:
-                    self._tee_seen[ch] = d
+            seen = [ch for ch in (0, 2) if on[ch] and self._side_ok(ch, leg, d, tee=True)]
+            for ch in seen:
+                self._tee_seen[ch] = d
             a, b = self._tee_seen[0], self._tee_seen[2]
-            return (on[0] or on[2]) and a is not None and b is not None \
+            return bool(seen) and a is not None and b is not None \
                 and abs(a - b) <= self.cfg.tee_window_cm
-        return (LEFT in leg.sides and on[0]) or (RIGHT in leg.sides and on[2])
+        return ((LEFT in leg.sides and on[0] and self._side_ok(0, leg, d))
+                or (RIGHT in leg.sides and on[2] and self._side_ok(2, leg, d)))
 
     def _follow(self, reading):
         c = self.cfg
         leg = self.legs[self.index]
         d = self._odo - self._ref_odo
+        self._track_sides(reading, d)
         if d >= c.suppress_cm and d >= self._min_ok and self._hit(reading, leg, d):
             self._hits += 1
         else:
@@ -644,6 +892,8 @@ class RouteExecutor:
             speed = self.approach_speed
         else:
             speed = self.approach_speed if d >= self._expected - c.approach_lead_cm else c.base_speed
+        if d < self._slow_until:         # 회전 직후: 선 가운데로 돌아올 때까지 감속(가장자리 타기 방지)
+            speed = min(speed, self.approach_speed)
         angular = _clamp(-(self.kp_for(speed) * e + c.kd * de), c.max_angular)
         linear = speed * (1.0 - c.slow_gain * abs(e))
         linear = min(c.max_linear, max(c.min_speed, linear))
@@ -767,7 +1017,8 @@ class RouteExecutor:
     def _dock_step_done(self):
         """끝난 도킹 이동을 표시용 누적값에 더한다."""
         p = self._prim
-        if p.get('signed'):
+        if p.get('signed') and not p.get('counted'):
+            p['counted'] = True
             a, b = self._dock_disp
             if p['phase'] in ('a', '-a'):
                 a += p['proj']
@@ -782,7 +1033,8 @@ class RouteExecutor:
         if self.state == FOLLOW:
             return Command(0.0, 0.0)  # 다음 샘플부터 추종
         return {PASS: self._drive, ADVANCE: self._drive, ROTATE: self._rotate,
-                LOADING: self._loading, REVERSE: self._reverse}[self.state](reading)
+                LOADING: self._loading, REVERSE: self._reverse,
+                PAUSED: self._paused}[self.state](reading)
 
     def _hold(self):
         return _clamp(self.cfg.heading_kp * _wrap(self._hold_yaw - self._pose[2]),
@@ -886,7 +1138,200 @@ class RouteExecutor:
             return None
         return Command(-min(c.reverse_speed, self.approach_speed), self._hold())
 
+    # ------------------------------------------------------------ 일시정지·장애물 정지 내부(FFT1-172)
+    def _paused(self, reading):
+        if self._paused_from == FOLLOW and reading is not None:
+            self._track_sides(reading, self._odo - self._ref_odo)   # 멈춘 동안 옆 IR run 기록만
+        if not self._pause_noted and self.settled:
+            self._pause_noted = True
+            self._log('paused_settled', self._paused_from)
+        return Command(0.0, 0.0)
+
+    def _shift_time(self, dt):
+        """일시정지한 시간만큼 시간 기준(시간 초과·놓침 시작)을 민다."""
+        if self._lost_since is not None:
+            self._lost_since += dt
+        for k in ('t0', 'lost_t'):
+            if self._prim.get(k) is not None:
+                self._prim[k] += dt
+
+    def _watch_still(self, pose, now, stamp):
+        """odom 정지 확인(모든 상태에서 기록만). 같은 odom(stamp 같음)은 건너뜀."""
+        if pose is None:
+            self._still_last = self._still_since = None
+            self._still_hist.clear()
+            return
+        t = now if stamp is None else stamp
+        last = self._still_last
+        if last is not None and t - last[0] <= 1e-6:
+            return
+        hist = self._still_hist
+        if last is None:
+            hist.clear()
+        hist.append((t, pose))
+        while len(hist) > 2 and hist[1][0] <= t - STILL_S:   # 창 시작보다 오래된 것 하나만 남김
+            hist.popleft()
+        self._still_last = (t, pose)
+        # 창 안 모든 자세가 지금 자세에서 STILL_POS_CM·STILL_YAW_RAD 안이면 창 시작부터 멈춘 것으로 본다
+        still = all(math.hypot(pose[0] - p[0], pose[1] - p[1]) < STILL_POS_CM
+                    and abs(_wrap(pose[2] - p[2])) < STILL_YAW_RAD for _, p in hist)
+        self._still_since = hist[0][0] if still and len(hist) > 1 else None
+
+    # ---------------- 멈춤 기억(수동·장애물 공통)
+    def _hold_enter(self, prev):
+        """주행 → PAUSED. 멈춘 단계를 기억(구간·이동 거리·감지 창은 그대로 둠)."""
+        self._paused_from = prev
+        self._pause_t0 = self._now
+        self._pause_noted = False
+        self.state = PAUSED
+        self._held = {'d': self._odo - self._ref_odo}
+
+    def _resume_motion(self):
+        """PAUSED → 멈춘 단계. 타이머를 멈춘 시간만큼 민다. → 멈춘 시간 s."""
+        dt = max(0.0, self._now - self._pause_t0)
+        self._shift_time(dt)
+        self._held = None
+        self.state = self._paused_from
+        self._paused_from = None
+        self._prev_error = None
+        self._prev_t = None
+        self._hits = 0
+        return dt
+
+    # ---------------- 장애물 정지
+    def _scan_age(self):
+        return None if self._scan is None else max(0.0, self._now - self._scan[2])
+
+    def _scan_fresh(self):
+        age = self._scan_age()
+        return age is not None and age <= self.cfg.scan_max_age_s
+
+    def _obs_block(self):
+        """감시 단계에서 멈출 이유: 'scan_stale' | 'obstacle' | 'no_points' | None.
+
+        no_points = scan 은 오는데 앞 부채꼴에 유효 점 없음이 scan_max_age_s 넘게 이어짐(R1, 사용자 결정 안전 쪽:
+        사방 벽이 range_max 안인 시연 공간에서 점 없음은 근접 가림·렌즈 가림·드라이버 이상일 수 있음).
+        """
+        if not self._scan_fresh():
+            return 'scan_stale'
+        f = self._scan[0]
+        if f is not None and f < self.cfg.stop_cm:
+            return 'obstacle'
+        if f is None and self._front_none_since is not None \
+                and self._now - self._front_none_since > self.cfg.scan_max_age_s:
+            return 'no_points'
+        return None
+
+    def _block_text(self, reason):
+        if reason == 'no_points':
+            since = self._front_none_since
+            return 'front no points' + ('' if since is None else f' {self._now - since:.2f} s')
+        if reason == 'scan_stale':
+            age = self._scan_age()
+            return 'scan none' if age is None else f'scan stale {age:.2f} s'
+        f = self._scan[0] if self._scan is not None else None
+        return 'front unknown' if f is None else f'front {f:.1f} cm'
+
+    def _obstacle(self, reading):
+        """장애물 감시(한 샘플). 이 샘플 명령을 정했으면 Command, 아니면 None(평소 처리)."""
+        c = self.cfg
+        if c.obstacle_mode == 'off':
+            return None
+        if c.obstacle_mode == 'monitor':     # 거리만 보고(동작 안 바꿈)
+            why = self._obs_block() if self.state in (FOLLOW, PASS) else None
+            self._ob_why = None if why is None else f'monitor: would stop ({self._block_text(why)})'
+            return None
+        if self._ob is not None:
+            return self._ob_step(reading)
+        if self.state in (FOLLOW, PASS):
+            why = self._obs_block()
+            if why is not None:
+                leg = self.legs[self.index]
+                prev = self.state
+                self._hold_enter(prev)
+                f = self._scan[0] if self._scan is not None else None
+                self._ob = {'reason': 'scan_stale' if why == 'no_points' else why, 't0': self._now,
+                            'clear_since': None, 'warned': False, 'last_front': f}
+                self._ob_why = 'front_no_points' if why == 'no_points' else None
+                self._log('obstacle_stop', f'{self._block_text(why)} in {prev} on '
+                          f'{leg.frm}→{leg.to} at {self._held["d"]:.1f} cm')
+                return Command(0.0, 0.0)
+        return None
+
+    def _ob_step(self, reading):
+        c = self.cfg
+        ob = self._ob
+        cmd = self._paused(reading)         # 0 속도(다가오는 물체에도 멈춰 기다림, 양보 후진 없음)
+        f = self._scan[0] if self._scan is not None else None
+        if not self._scan_fresh():
+            ob['reason'], ob['clear_since'] = 'scan_stale', None
+        elif f is not None and f >= c.stop_cm + c.clear_margin_cm:
+            if ob.get('vanished') and not self._manual:
+                near, far = ob['vanished']
+                self._manual = True
+                self._ob_why = (f'front jumped {near:.1f} -> {far:.1f} cm between valid scans '
+                                '(object may be inside lidar range_min); check, then resume')
+                self._log('pause', f'auto: obstacle may be too close to see ({near:.1f} cm)')
+            if ob['clear_since'] is None:
+                ob['clear_since'] = self._now
+        elif f is None:
+            # 앞 부채꼴에 점이 없으면(range_min 안에 붙은 물체일 수 있음) 비었다고 보지 않는다.
+            # 물체로 멈췄으면 obstacle 그대로, scan 끊김·점 없음으로 멈췄으면 scan_stale(why front_no_points)
+            ob['clear_since'] = None
+            if not self._manual:          # 수동 재개가 필요한 이유(사각 의심 등)는 덮어쓰지 않음
+                self._ob_why = ('front sector has no valid points (not counted as clear)'
+                                if ob['reason'] == 'obstacle' else 'front_no_points')
+        else:
+            ob['reason'], ob['clear_since'] = 'obstacle', None
+        if not ob['warned'] and self._now - ob['t0'] >= c.warn_after_s:
+            ob['warned'] = True
+            self._log('obstacle_warn', f'blocked {self._now - ob["t0"]:.0f} s '
+                      f'({self._block_text(ob["reason"])})')
+        if ob['clear_since'] is not None \
+                and self._now - ob['clear_since'] >= c.resume_delay_s - 1e-9:
+            self._ob_release()
+        return cmd
+
+    def _ob_release(self):
+        """앞이 resume_delay_s 동안 비었음: 장애물 정지를 푼다. 수동 일시정지가 걸려 있으면 그대로 멈춤."""
+        ob = self._ob
+        self._ob = None
+        blocked = self._now - ob['t0']
+        if self._manual:       # 이유(사각 의심 등)는 수동 재개 때까지 보여 준다
+            self._log('obstacle_clear', f'after {blocked:.1f} s; manual pause remains')
+            return
+        self._ob_why = None
+        self._resume_motion()
+        self._log('obstacle_clear', f'{self.state} after {blocked:.1f} s')
+
+    def _pause_reason(self):
+        if self._ob is not None:
+            return self._ob['reason']
+        if self._manual:
+            return 'manual'
+        return None
+
+    def _obstacle_dict(self):
+        c = self.cfg
+        f, r = (self._scan[0], self._scan[1]) if self._scan is not None else (None, None)
+        age = self._scan_age()
+        ob = self._ob
+        if ob is None:
+            phase = 'clear'
+        elif ob['clear_since'] is not None:
+            phase = 'resume_wait'
+        else:
+            phase = 'blocked'
+        return {'mode': c.obstacle_mode,
+                'front_cm': None if f is None else round(f, 1),
+                'rear_cm': None if r is None else round(r, 1),
+                'scan_age_s': None if age is None else round(age, 2),
+                'phase': phase,
+                'blocked_s': 0.0 if ob is None else round(self._now - ob['t0'], 1),
+                'warn': bool(ob is not None and ob['warned']),
+                'why': self._ob_why}
+
 
 __all__ = ['NavConfig', 'Command', 'RouteExecutor', 'GraphError', 'IDLE', 'FOLLOW', 'PASS',
            'ADVANCE', 'ROTATE', 'LOADING', 'REVERSE', 'ARRIVED', 'HANDOFF_STATE', 'STOPPED',
-           'ERROR', 'STOP', 'TERMINAL']
+           'ERROR', 'STOP', 'TERMINAL', 'PAUSED', 'OBSTACLE_MODES']

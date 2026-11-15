@@ -405,8 +405,14 @@ def test_route_api(client, node):
     r = client.post('/api/route/command', json={'cmd': 'start', 'route': ['N14', 'N16']})
     assert r.status_code == 200 and node.calls[-1] == ('route', {'cmd': 'start',
                                                                  'route': ['N14', 'N16']})
+    for c in ({'cmd': 'pause'}, {'cmd': 'resume'}):
+        assert client.post('/api/route/command', json=c).status_code == 200
+        assert node.calls[-1] == ('route', c)
     for body in ({'cmd': 'fly'}, {'cmd': 'start', 'route': ['N14']},
-                 {'cmd': 'start', 'route': ['N14', 'x; rm']}):
+                 {'cmd': 'start', 'route': ['N14', 'x; rm']}, {'cmd': 'back'},
+                 {'cmd': 'back', 'to': 'N23'},           # 수동 후진은 없앰(FFT1-172 계약 09)
+                 {'cmd': 'back', 'to': 'bad id'}, {'cmd': 'speed', 'reverse_speed': 0.05},
+                 {'cmd': 'speed', 'reverse_speed': 0.02}):   # reverse_speed 는 없앰(R2b)
         assert client.post('/api/route/command', json=body).status_code == 400, body
     assert client.post('/api/route/command', data='cmd=stop',
                        content_type='application/x-www-form-urlencoded').status_code == 400
@@ -453,6 +459,9 @@ def test_fleet_api(fleet_client):
     assert r.status_code == 200 and r.get_json()['result'] == {'success': True}
     assert c.post('/api/fleet/route', headers=h,
                   json={'name': 'pinky1', 'cmd': 'start', 'route': ['N1']}).status_code == 400
+    for to in ('N23', 'x'):   # 수동 후진은 없앰(FFT1-172 계약 09) → 형식이 맞아도 거부
+        assert c.post('/api/fleet/route', headers=h,
+                      json={'name': 'pinky1', 'cmd': 'back', 'to': to}).status_code == 400
     assert c.post('/api/fleet/stop_all', headers=h, json={}).get_json()['success']
     mgr.client.fail = True
     r = c.post('/api/fleet/route', headers=h, json={'name': 'pinky1', 'cmd': 'stop'})

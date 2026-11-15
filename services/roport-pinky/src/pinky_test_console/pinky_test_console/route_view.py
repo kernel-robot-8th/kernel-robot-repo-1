@@ -12,7 +12,7 @@ import yaml
 
 NODE_ID = re.compile(r'^[A-Z][A-Z0-9]{0,7}$')
 MAX_ROUTE = 64
-COMMANDS = ('start', 'stop', 'load_done', 'speed', 'dock')
+COMMANDS = ('start', 'stop', 'load_done', 'speed', 'dock', 'pause', 'resume')
 SPEED_CAPS = {'base_speed': 0.15, 'rotate_speed': 1.5}   # 형식 검사용(실제 상한은 line_nav 설정)
 
 # 정밀 도킹(FFT1-112, 계약 01_dock_contract.md 1·2절): 상차(LOAD) 노드별 ① 선 따라 ② 반시계 회전 ③ 직진.

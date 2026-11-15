@@ -2,6 +2,7 @@
 
 파일: <log_dir>/route_<YYYYmmdd_HHMMSS>_<출발>-<도착>.csv, 최근 keep 개만 남긴다(2026-11-04 결정: 50개).
 쓰기에 실패하면 기록만 끄고 주행에는 영향을 주지 않는다.
+장애물 칸(FFT1-172): front_cm·rear_cm(몸체 끝 거리, 부채꼴에 점 없으면 빈 칸)·scan_age_s·obstacle_phase·pause_reason.
 """
 
 import csv
@@ -11,7 +12,8 @@ import re
 
 FIELDS = ('t', 'state', 'index', 'leg_from', 'leg_to', 'traveled_cm', 'rotated_deg',
           'ir0', 'ir1', 'ir2', 'on0', 'on1', 'on2', 'error', 'cmd_linear', 'cmd_angular',
-          'odom_x_cm', 'odom_y_cm', 'odom_yaw_deg', 'events')
+          'odom_x_cm', 'odom_y_cm', 'odom_yaw_deg', 'events',
+          'front_cm', 'rear_cm', 'scan_age_s', 'obstacle_phase', 'pause_reason')
 FILE_RE = re.compile(r'^route_\d{8}_\d{6}_[A-Z0-9]{1,8}-[A-Z0-9]{1,8}\.csv$')
 
 
@@ -62,6 +64,7 @@ class RouteRecorder:
         new = events[-fresh:] if fresh else []
         self._events_seen = seq
         leg = state.get('leg') or {}
+        ob = state.get('obstacle') or {}      # 장애물 감시(monitor·stop 모드 시험 검토용)
         raw = reading.raw if reading is not None else (None, None, None)
         on = reading.on_line if reading is not None else (None, None, None)
         od = (None, None, None) if odom is None else (
@@ -73,7 +76,9 @@ class RouteRecorder:
                None if cmd is None else round(cmd[0], 3),
                None if cmd is None else round(cmd[1], 3),
                *od,
-               ' | '.join(f"{e.get('event')}:{e.get('detail', '')}" for e in new)]
+               ' | '.join(f"{e.get('event')}:{e.get('detail', '')}" for e in new),
+               ob.get('front_cm'), ob.get('rear_cm'), ob.get('scan_age_s'), ob.get('phase'),
+               state.get('pause_reason')]
         try:
             self._w.writerow(row)
         except OSError as e:

@@ -56,6 +56,98 @@ const RM = (() => {
     return out;
   }
 
+  // 로봇이 끝났다고 기억하는 노드(FFT1-172 후속). 필드 이름이 바뀌면 이 함수만 고친다.
+  // state.end {node, facing} 를 우선 읽고, 없으면(옛 line_nav) arrived·loading 일 때 route 마지막 노드로 대신한다.
+  // handoff 는 옛 동작 호환으로 포함. 반환: {node, facing|null} 또는 null.
+  function endMemory(st) {
+    if (!st) return null;
+    if ("end" in st) {   // 새 line_nav: end 키가 있으면 그 값만 쓴다(null = 기억 없음)
+      const e = st.end;
+      if (e && typeof e === "object" && typeof e.node === "string" && e.node) {
+        return { node: e.node, facing: e.facing === undefined ? null : e.facing };
+      }
+      return null;
+    }
+    if (Array.isArray(st.route) && st.route.length && ["arrived", "loading", "handoff"].includes(st.state)) {
+      return { node: st.route[st.route.length - 1], facing: null };
+    }
+    return null;
+  }
+
+  // 출발 노드가 끝 기억과 다르면 확인창에 쓸 문구, 같거나 기억이 없으면 null.
+  function startMismatchMsg(st, startNode) {
+    const e = endMemory(st);
+    if (!e || !startNode || e.node === startNode) return null;
+    return `로봇이 ${e.node} 에서 끝났다고 기억 중입니다. 로봇을 ${startNode} 에 옮겨 놓았나요?`;
+  }
+
+  // 장애물 정지 표시(FFT1-172 범위 변경, 계약 09_obstacle_yield_contract.md 「line_nav/state 추가 필드」).
+  // 수동 후진 back{to} 과 장애물 접근 시 후진(yield)은 없어졌다(2026-11-15 사용자 결정). 필드가 없는 옛 line_nav·null 거리는 "-".
+  // 옛 line_nav 가 보내는 phase "yield"·yield_* 이벤트는 모르는 값으로 원문 그대로 보인다.
+  const PAUSE_REASON_KO = { manual: "수동 일시정지", obstacle: "장애물 정지", scan_stale: "스캔 끊김(안전 정지)" };
+  const OBST_MODE_KO = { off: "끔", monitor: "감시만", stop: "정지 사용" };
+  const OBST_PHASE_KO = { clear: "없음", blocked: "장애물 정지", resume_wait: "재개 대기" };
+  const OBST_EVENT_KO = {
+    obstacle_stop: "장애물 정지", obstacle_clear: "장애물 해제·재개", obstacle_warn: "오래 막힘 경고",
+  };
+
+  function num(v, d) { return typeof v === "number" && isFinite(v) ? v.toFixed(d) : "-"; }
+  function label(map, v) {
+    if (v === null || v === undefined || v === "") return "-";
+    return Object.prototype.hasOwnProperty.call(map, v) ? map[v] : String(v);
+  }
+
+  // line_nav/state → 화면 문자열. {pause, sensor, phase, why, warn, cls, has}
+  // cls = "err"(warn 참) | "warn"(정지·재개 대기·자동 정지 사유) | "" — info-line 값 칸 색.
+  // rear_cm 은 line_nav 가 보고하지 않으면 "-".
+  function obstacleView(st) {
+    const pr = st && "pause_reason" in st ? st.pause_reason : undefined;
+    const ob = st && st.obstacle && typeof st.obstacle === "object" ? st.obstacle : null;
+    const out = { pause: pr === undefined ? "-" : label(PAUSE_REASON_KO, pr),
+      sensor: "보고 없음", phase: "-", why: "-", warn: false, cls: "", has: !!ob };
+    if (ob) {
+      const age = typeof ob.scan_age_s === "number" && isFinite(ob.scan_age_s) ? ` · 스캔 ${ob.scan_age_s.toFixed(2)} s` : "";
+      out.sensor = `${label(OBST_MODE_KO, ob.mode)} · 앞 ${num(ob.front_cm, 1)} cm · 뒤 ${num(ob.rear_cm, 1)} cm${age}`;
+      const parts = [label(OBST_PHASE_KO, ob.phase)];
+      if (typeof ob.blocked_s === "number" && ob.blocked_s > 0) parts.push(`막힘 ${num(ob.blocked_s, 1)} s`);
+      out.warn = ob.warn === true;
+      if (out.warn) parts.push("경고: 오래 막힘");
+      out.phase = parts.join(" · ");
+      out.why = typeof ob.why === "string" && ob.why ? ob.why : "-";
+      if (["blocked", "resume_wait"].includes(ob.phase)) out.cls = "warn";
+    }
+    if (!out.cls && (pr === "obstacle" || pr === "scan_stale")) out.cls = "warn";
+    if (out.warn) out.cls = "err";
+    return out;
+  }
+
+  // 장애물 정지 중이면 수동 「이어 가기」를 막음(line_nav 도 거부, 계약 6번). pause_reason 없으면(옛 line_nav) 막지 않음.
+  function autoPaused(st) {
+    return !!st && (st.pause_reason === "obstacle" || st.pause_reason === "scan_stale");
+  }
+
+  // 「일시정지」 버튼을 켤지(R1·R2). 주행 중(전진 추종·통과·전진·회전), 장애물·스캔 끊김 자동 정지 중(paused)에 켬
+  // — line_nav 가 받아 자동 재개를 막음. 이미 수동 일시정지(pause_reason manual 또는 pause.manual === true)면 끔.
+  // pause.manual 이 없으면(옛 line_nav) pause_reason 만으로 판단. reverse(주차 후진)·끝난 상태는 끔.
+  function canPause(st) {
+    if (!st) return false;
+    if (st.pause && typeof st.pause === "object" && st.pause.manual === true) return false;
+    if (["follow", "pass", "advance", "rotate"].includes(st.state)) return true;
+    if (st.state === "paused") return autoPaused(st);
+    return false;
+  }
+
+  // 이벤트 이름 → 표시(장애물 이벤트는 한국어 뜻을 붙임). 이름은 그대로 남겨 CSV·로그와 맞춤.
+  function eventText(name) {
+    const ko = OBST_EVENT_KO[name];
+    return ko ? `${name} (${ko})` : (name === null || name === undefined ? "-" : String(name));
+  }
+  // 이벤트 행 색: obstacle_warn = "ev-obst-warn", 그 밖의 장애물 이벤트 = "ev-obst", 나머지 = ""
+  function eventClass(name) {
+    if (name === "obstacle_warn") return "ev-obst-warn";
+    return Object.prototype.hasOwnProperty.call(OBST_EVENT_KO, name) ? "ev-obst" : "";
+  }
+
   const COLORS = {
     bg: "#ffffff", grid: "#eef0f3", tape: "#9cc7b4", node: "#ffffff", text: "#222222",
     route: "#e1702b", sw: "#2e4fd8", goal: "#e1702b", wall: "#2f3640", zone: "#eef0fb",
@@ -310,5 +402,7 @@ const RM = (() => {
     }
   }
 
-  return { getJson, postJson, setMsg, markConnection, RouteMap, traversed, mapToCm, ROBOT_COLORS };
+  return { getJson, postJson, setMsg, markConnection, RouteMap, traversed, mapToCm, ROBOT_COLORS,
+    endMemory, startMismatchMsg, obstacleView, autoPaused, canPause, eventText, eventClass };
 })();
+if (typeof module !== "undefined") module.exports = RM;

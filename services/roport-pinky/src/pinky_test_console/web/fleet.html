@@ -69,6 +69,8 @@
         <button id="btnStart" class="btn btn-primary" type="button" disabled>▶ 시작</button>
         <button id="btnLoad" class="btn btn-outline" type="button" disabled>상차 완료</button>
         <button id="btnStop" class="btn btn-danger" type="button" disabled>■ 정지</button>
+        <button id="btnPause" class="btn btn-outline" type="button" disabled title="그 자리에서 멈춤(경로·구간 기억 유지). 주행 중, 장애물 정지 중(자동 재개 막음)">⏸ 일시정지</button>
+        <button id="btnResume" class="btn btn-outline" type="button" disabled title="수동 일시정지한 자리에서 같은 구간 전진을 이어 감. 장애물 정지는 비면 3 s 뒤 스스로 재개(이 버튼으로 못 풂)">⏵ 이어 가기</button>
         <button id="btnHome" class="btn btn-outline" type="button" disabled title="등록한 충전·대기 칸으로 최단 경로">⌂ 복귀</button>
       </div>
       <div class="form-line"><label for="spLin">직선 속도</label>
@@ -107,6 +109,10 @@
       <div class="info-line"><span>state</span><span class="value" id="sState">-</span></div>
       <div class="info-line"><span>reason</span><span class="value" id="sReason">-</span></div>
       <div class="info-line"><span>구간</span><span class="value" id="sLeg">-</span></div>
+      <div class="info-line"><span>일시정지 사유</span><span class="value" id="sPause">-</span></div>
+      <div class="info-line"><span>장애물 감시 (라이다)</span><span class="value" id="sObst">-</span></div>
+      <div class="info-line"><span>장애물 단계</span><span class="value" id="sObstPhase">-</span></div>
+      <div class="info-line"><span>장애물 이유</span><span class="value" id="sObstWhy">-</span></div>
       <div class="info-line"><span>이동 / 감지 창 (cm)</span><span class="value" id="sTravel">-</span></div>
       <div class="info-line"><span>IR on_line</span><span class="value" id="sOn">-</span></div>
       <div class="info-line"><span>odom</span><span class="value" id="sOdom">-</span></div>

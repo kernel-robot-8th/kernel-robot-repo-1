@@ -13,12 +13,27 @@ const map = new RM.RouteMap($("routeCanvas"), (ids) => {
   updateButtons();
 });
 
+// 출발 기본값 = 「현재」: 경로가 비어 있고 로봇이 끝 기억 노드를 보고하면 그 노드를 첫 노드로 미리 찍어 둠.
+// 같은 노드로는 한 번만(사용자가 지우면 다시 안 채움).
+let seededEnd = null;
+function seedStartFromEnd(s) {
+  const e = RM.endMemory(s);
+  if (!e) { seededEnd = null; return; }
+  if (seededEnd === e.node || routeIds.length) return;
+  seededEnd = e.node;
+  map.setRoute([e.node]);
+}
+
 function updateButtons() {
   const st = lastState ? lastState.state : null;
   const busy = st && !["idle", "arrived", "handoff", "stopped", "error"].includes(st);
   $("btnStart").disabled = routeIds.length < 2 || !!busy;
   $("btnLoad").disabled = st !== "loading";
   $("btnHome").disabled = !!busy && st !== "loading";
+  // 일시정지 (FFT1-172). 주행 중·장애물 자동 정지 중 켬(RM.canPause). 장애물 정지 중에는 이어 가기 안 됨.
+  // 거절은 로봇의 line_nav 가 한다.
+  $("btnPause").disabled = !RM.canPause(lastState);
+  $("btnResume").disabled = st !== "paused" || RM.autoPaused(lastState);
   map.editable = !busy;
 }
 
@@ -26,6 +41,7 @@ async function command(body) {
   const r = await RM.postJson("api/route/command", body);
   RM.setMsg($("cmdMsg"), r.success ? `보냄: ${body.cmd}` : `실패: ${r.msg || r.httpStatus}`,
     r.success ? "ok" : "err");
+  return !!r.success;
 }
 
 
@@ -57,7 +73,30 @@ function speedBody() {
 }
 $("btnSpeed").addEventListener("click", () => { speedDirty = false; command(speedBody()); });
 
-$("btnStart").addEventListener("click", () => {
+$("btnPause").addEventListener("click", () => command({ cmd: "pause" }));
+$("btnResume").addEventListener("click", () => command({ cmd: "resume" }));
+
+$("btnStart").addEventListener("click", async () => {
+  // 끝 기억 노드와 다른 곳에서 출발하면 확인 → 먼저 stop(기억 지움) 뒤 start. 취소하면 출발 안 함.
+  const warn = RM.startMismatchMsg(lastState, routeIds[0]);
+  if (warn) {
+    // 1) 기본 제안: 로봇이 기억하는 노드에서 같은 목적지로 다시 계획해 출발(기억 유지)
+    const here = RM.endMemory(lastState).node;
+    const goal = routeIds[routeIds.length - 1];
+    if (goal !== here && confirm(`로봇이 ${here} 에 있다고 기억 중입니다.\n[확인] ${here} → ${goal} 경로로 다시 계획해 출발\n[취소] 다른 선택`)) {
+      const r = await RM.getJson(`api/route/plan?from=${encodeURIComponent(here)}&to=${encodeURIComponent(goal)}`);
+      if (!Array.isArray(r.route) || r.route.length < 2) {
+        RM.setMsg($("cmdMsg"), `경로 계획 실패: ${here} → ${goal}`, "err");
+        return;
+      }
+      map.setRoute(r.route);
+      routeIds = r.route;
+    } else {
+      // 2) 로봇을 지도 경로의 첫 노드로 옮겨 놓았으면: 기억을 지우고(stop) 그 경로로 출발
+      if (!confirm(warn)) return;
+      if (!(await command({ cmd: "stop" }))) return;   // stop 실패면 start 하지 않음(실패 문구 유지)
+    }
+  }
   const body = { cmd: "start", route: routeIds };
   const off = $("offset").value.trim();
   if (off !== "") body.start_offset_cm = Number(off);
@@ -81,7 +120,7 @@ $("btnHome").addEventListener("click", async () => {
   const r = await RM.postJson("api/route/return", body);
   RM.setMsg($("cmdMsg"), r.success ? r.msg : `복귀 실패: ${r.msg || r.httpStatus}`, r.success ? "ok" : "err");
 });
-$("btnClear").addEventListener("click", () => map.setRoute([]));
+$("btnClear").addEventListener("click", () => { map.setRoute([]); seededEnd = null; seedStartFromEnd(lastState); });
 $("presets").addEventListener("change", (ev) => {
   const v = ev.target.value;
   if (v) map.setRoute(v.split(","));
@@ -103,6 +142,19 @@ document.addEventListener("keydown", (ev) => {
 
 function fmt(v) { return v === null || v === undefined ? "-" : String(v); }
 
+// 장애물 정지(계약 09). 필드가 없으면(옛 line_nav) "-"·「보고 없음」.
+function showObstacle(s) {
+  const o = RM.obstacleView(s);
+  $("sPause").textContent = o.pause;
+  $("sObst").textContent = o.sensor;
+  $("sObstPhase").textContent = o.phase;
+  $("sObstWhy").textContent = o.why;
+  for (const id of ["sPause", "sObstPhase"]) {
+    $(id).classList.toggle("warn", o.cls === "warn");
+    $(id).classList.toggle("err", o.cls === "err");
+  }
+}
+
 function showBattery(b) {
   const chip = $("battChip");
   if (!b || b.percent === null || b.percent === undefined) {
@@ -120,6 +172,7 @@ function render(snap) {
   const s = snap.state;
   syncSpeed(s && s.speed);
   lastState = s;
+  seedStartFromEnd(s);
   lastStale = !!snap.stale;
   $("robotChip").textContent = "robot " + (snap.robot || "-");
   $("stateChip").textContent = "state " + (s ? s.state : "-");
@@ -128,6 +181,7 @@ function render(snap) {
   $("sState").textContent = s.state;
   $("sReason").textContent = s.reason || "-";
   $("sLeg").textContent = s.leg ? `${s.leg.from} → ${s.leg.to} (${s.leg.action}, ${s.leg.detect})` : "-";
+  showObstacle(s);
   $("sTravel").textContent = `${fmt(s.traveled_cm)}` + (s.window_cm ? ` / ${s.window_cm[0]}~${s.window_cm[1]}` : "");
   $("sRot").textContent = fmt(s.rotated_deg);
   $("sIr").textContent = s.ir ? s.ir.raw.join(", ") : "-";
@@ -139,7 +193,9 @@ function render(snap) {
   tb.replaceChildren();
   for (const e of (s.events || []).slice().reverse().slice(0, 30)) {
     const tr = document.createElement("tr");
-    for (const v of [e.t, e.event, e.detail]) {
+    const ec = RM.eventClass(e.event);
+    if (ec) tr.classList.add(ec);
+    for (const v of [e.t, RM.eventText(e.event), e.detail]) {
       const td = document.createElement("td");
       td.textContent = fmt(v);
       tr.appendChild(td);

@@ -20,7 +20,9 @@ def graph():
 
 def test_confirmed_n12_start_rejects_early_noise_but_accepts_expected_branch(graph):
     from roport_pinky_line.line_sensor import LineReading
-    runner = RouteExecutor(graph)
+    # 감지 창만 확인한다. 같은 옆 IR 이 25 cm(창 전)부터 35 cm 까지 계속 켜진 합성 입력은 옆선 켜짐 확인
+    # (side_rise_only, test_side_rise.py)이 본선 가장자리 타기로 보고 무시하므로 여기서는 끈다.
+    runner = RouteExecutor(graph, NavConfig(side_rise_only=False))
     runner.start(['N12', 'N08', 'N09', 'H1'], start_offset_cm=0., confirmed_start=True)
     runner._odo = runner._ref_odo+25.
     side = LineReading((300,)*3, (1., 1., 0.), (True, True, False), -.5, False, False)
@@ -33,6 +35,53 @@ def test_confirmed_n12_start_rejects_early_noise_but_accepts_expected_branch(gra
     for _ in range(2):
         runner._follow(side)
     assert any(e['event'] == 'node' and e['detail'].startswith('N08') for e in runner.events)
+
+
+def _n12_confirmed(graph):
+    """기본 설정(side_rise_only 켬)으로 N12 확인 출발. N12→N08 창 약 29.9~48.4 cm, N08 옆선 = 왼쪽(H2)."""
+    runner = RouteExecutor(graph)
+    assert runner.cfg.side_rise_only
+    runner.start(['N12', 'N08', 'N09', 'H1'], start_offset_cm=0., confirmed_start=True)
+    lo, hi = runner.as_dict()['window_cm']
+    assert 29.0 < lo < 30.5 and 47.5 < hi < 49.5           # 25 cm 잡음은 창 전, 35 cm 옆선은 창 안
+    runner._pose, runner._hold_yaw = (0., 0., math.pi), math.pi     # _arrive 뒤 통과 단계용 odom 방향
+    return runner
+
+
+def _ir(on, error=0.0):
+    from roport_pinky_line.line_sensor import LineReading
+    return LineReading((300,) * 3, tuple(1. if o else 0. for o in on), tuple(on), error,
+                       not any(on), all(on))
+
+
+def test_confirmed_n12_default_side_rise_noise_then_branch_detects_n08(graph):
+    """(가) 기본 설정: 창 전 잡음(왼쪽 IR 25 cm) → 꺼짐 2샘플 이상 → 창 안에서 다시 켜짐(진짜 옆선) = N08 감지."""
+    runner = _n12_confirmed(graph)
+    side, center = _ir((True, True, False), -.5), _ir((False, True, False))
+    for d, reading in ((25., side), (25.2, side), (26., center), (26.2, center), (27., center),
+                       (35., side), (35.2, side)):
+        runner._odo = runner._ref_odo + d
+        runner._follow(reading)
+    kinds = [e['event'] for e in runner.events]
+    assert any(e['event'] == 'node' and e['detail'].startswith('N08') for e in runner.events)
+    assert 'side_ignored' not in kinds and runner.state != 'error'
+
+
+def test_confirmed_n12_default_side_rise_continuous_edge_is_ignored(graph):
+    """(나) 기본 설정: 왼쪽 IR 이 창 전(25 cm)부터 꺼지지 않고 옆선까지 이어지면 본선 가장자리 타기로 보고 무시
+    → side_ignored 한 번 → 창 끝(약 48.4 cm) 넘어 node_missed 정지. main(옆선 켜짐 확인 없음)은 여기서 N08 을
+    감지한다 — 이 브랜치는 오감지 대신 정지하는 안전 쪽(#60 옆선 켜짐 확인, test_side_rise.py)."""
+    runner = _n12_confirmed(graph)
+    side = _ir((True, True, False), -.5)
+    d = 25.
+    while runner.state == 'follow' and d < 55.:
+        runner._odo = runner._ref_odo + d
+        runner._follow(side)
+        d += 0.2
+    kinds = [e['event'] for e in runner.events]
+    assert kinds.count('side_ignored') == 1 and 'node' not in kinds
+    assert runner.state == 'error' and runner.reason.startswith('node_missed: N08'), runner.reason
+    assert d > runner._max_ok
 
 
 @pytest.mark.parametrize('offset', [None, -1., math.nan, math.inf, 1000.])
@@ -256,14 +305,26 @@ def _shifted(graph, shifts):
 
 @pytest.mark.parametrize('odom_scale, yaw_scale', [(1.0, 1.0), (0.93, 1.06), (1.07, 0.94)])
 def test_robust_to_odom_error_and_tape_offset(graph, odom_scale, yaw_scale):
-    """엔코더 ±7%, 테이프 위치 지도와 최대 4 cm 차이(11-03 재측정에서 본 정도)에서도 완주."""
+    """엔코더 ±7%, 테이프 위치 지도와 최대 4 cm 차이(11-03 재측정에서 본 정도)에서도 완주.
+
+    옆선 켜짐 확인(side_rise_only, 2026-11-09)을 켜면 엔코더 −7%(0.93)에서는 88.9 cm 구간 N02→N10 의 진짜 모서리
+    옆선이 odom 으로 창 시작 0.6 cm 전에 켜져(예상보다 약 6 cm 일찍) 노드로 보지 않고, 예상 거리를 넘어 정지한다
+    (안전 정지, 돌지 않음). 실로그 173구간의 진짜 옆선 run 은 창 시작보다 0.5 cm 이상 뒤(README).
+    """
     # N01 가로선(상차)이 지도보다 3 cm 짧게, N18 분기가 x 로 2 cm 어긋나게 붙은 경우
     tape = _shifted(graph, {'N01': (2.0, 3.0), 'N18': (2.0, 0.0)})
-    sim, ex = run_route(graph, ['N16', 'N14', 'N02', 'N10', 'N18', 'N01'], 'S', 0.0,
-                        sim_kw={'tape_graph': tape, 'odom_scale': odom_scale,
-                                'odom_yaw_scale': yaw_scale})
-    assert ex.state == ARRIVED, ex.as_dict()
+    route = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']
+    kw = {'tape_graph': tape, 'odom_scale': odom_scale, 'odom_yaw_scale': yaw_scale}
+    sim, ex = run_route(graph, route, 'S', 0.0, sim_kw=kw, side_rise_only=False)
+    assert ex.state == ARRIVED, ex.as_dict()               # 켜짐 확인 없이: 예전과 같이 완주
     assert sim.sensor.update(sim.raw()).on_line[1]      # 끝나고 진입선 위
+    sim, ex = run_route(graph, route, 'S', 0.0, sim_kw=kw)
+    if odom_scale >= 1.0:
+        assert ex.state == ARRIVED, ex.as_dict()
+        return
+    assert ex.state == ERROR and ex.legs[ex.index].to == 'N10', ex.as_dict()
+    assert any(e['event'] == 'side_ignored' and 'N10' in e['detail'] for e in ex.events)
+    assert not [e for e in ex.events if e['event'] == 'node' and e['detail'].startswith('N10')]
 
 
 def test_pose_estimate_follows_route(graph):
@@ -512,7 +573,7 @@ def test_early_side_pattern_before_window_ignored(graph):
     """회전 직후 구간에서 창 시작 전에 옆선 패턴(on=110)이 와도 노드로 보지 않고, 창 안에서는 감지."""
     sim = Sim(graph)
     sim.place('N16', 'S', 0.0)
-    ex = RouteExecutor(graph)
+    ex = RouteExecutor(graph, NavConfig(side_rise_only=False))   # 감지 창만 확인(켜짐 확인은 test_side_rise)
     ex.start(['N16', 'N14', 'N02', 'N10', 'N18', 'N01'])
     assert sim.run(ex, lambda e: e.index == 1 and e.state == 'follow')
     lo = ex.as_dict()['window_cm'][0]
@@ -833,7 +894,7 @@ def test_corner_early_side_inside_ratio_window_rejected(graph, early_cm, detecte
     (실로그 18.4 / 19.8 과 같은 차이)에서 감지. 0(예전 비율 창만)이면 이른 옆선을 노드로 오판."""
     sim = Sim(graph)
     sim.place('N16', 'S', 0.0)
-    ex = RouteExecutor(graph, NavConfig(gate_early_cm=early_cm))
+    ex = RouteExecutor(graph, NavConfig(gate_early_cm=early_cm, side_rise_only=False))
     ex.start(['N16', 'N14', 'N02', 'N10', 'N18', 'N01'])
     assert sim.run(ex, lambda e: e.index == 1 and e.state == 'follow')
     c = ex.cfg
@@ -871,3 +932,82 @@ def test_gate_early_validation():
         with pytest.raises(ValueError, match='gate_early_cm'):
             NavConfig(gate_early_cm=bad)
     assert NavConfig().gate_early_cm == 5.0
+
+
+def _record_follow(ex):
+    """ex.step 을 감싸 follow 명령을 (구간 번호, 구간 이동 거리, 회전 직후 감속 거리, 직선 속도)로 기록."""
+    rec, step = [], ex.step
+
+    def wrapped(reading, pose, now, *a, **kw):
+        cmd = step(reading, pose, now, *a, **kw)
+        if ex.state == 'follow' and cmd is not None and cmd.linear > 0:
+            rec.append((ex.index, ex._odo - ex._ref_odo, ex._slow_until, cmd.linear))
+        return cmd
+    ex.step = wrapped
+    return rec
+
+
+def test_post_turn_slow_first_10cm_after_node_turn(graph):
+    """회전 직후 구간은 처음 post_turn_slow_cm(10)까지 approach_speed(2026-11-10 사용자 결정).
+    회전 없이 시작한 첫 구간·회전 뒤 10 cm 지난 곳은 base_speed."""
+    route = ['N16', 'N14', 'N02', 'N10', 'N18', 'N01']
+    sim = Sim(graph)
+    sim.place(route[0], 'S', 0.0)
+    ex = RouteExecutor(graph, NavConfig(base_speed=0.06, max_linear=0.08))
+    rec = _record_follow(ex)
+    ex.start(route)
+    assert sim.run(ex, _done, on_loading=lambda s: True)
+    assert ex.state == ARRIVED, ex.reason
+    first = [v for i, d, s, v in rec if i == 0]
+    assert all(s == 0.0 for i, d, s, v in rec if i == 0)              # 첫 구간: 회전 없이 출발
+    turned = [(i, d, s, v) for i, d, s, v in rec if i > 0]
+    assert turned and all(s == pytest.approx(10.0) for *_, s, _v in turned)   # N14·N02·N10·N18 모두 회전 뒤
+    assert all(v <= 0.03 + 1e-9 for i, d, s, v in turned if d < 10.0)
+    assert any(v > 0.05 for i, d, s, v in turned if d >= 10.0)        # 10 cm 뒤 긴 구간(N02→N10)은 다시 빠르게
+    assert max(first) > 0.05
+
+
+def test_post_turn_slow_not_after_straight_pass_and_off_switch(graph):
+    """직진 통과(PASS) 뒤 구간은 감속 안 함. post_turn_slow_cm=0 이면 회전 뒤에도 감속 안 함."""
+    route = ['N11', 'N19', 'N23', 'N07', 'N05', 'N15', 'N17']
+    for slow_cm in (10.0, 0.0):
+        sim = Sim(graph)
+        sim.place(route[0], 'N', 7.0)
+        ex = RouteExecutor(graph, NavConfig(base_speed=0.06, max_linear=0.08,
+                                            post_turn_slow_cm=slow_cm))
+        rec = _record_follow(ex)
+        ex.start(route)
+        assert sim.run(ex, _done)
+        assert ex.state == ARRIVED, ex.reason
+        legs = {i: ex.legs[i] for i, *_ in rec}
+        after_pass = [i for i in legs if i > 0 and ex.legs[i - 1].action == 'straight']
+        assert after_pass and all(s == 0.0 for i, d, s, v in rec if i in after_pass)
+        if slow_cm == 0.0:
+            assert all(s == 0.0 for *_, s, _v in rec)
+
+
+@pytest.mark.parametrize('bad', [-1.0, 50.1, float('nan'), float('inf')])
+def test_post_turn_slow_config_limits(bad):
+    with pytest.raises(ValueError):
+        NavConfig(post_turn_slow_cm=bad)
+
+
+# ---------------------------------------------------------------- 라인 유실 = main 과 같은 정지(GAP·SEARCH 없앰, 2026-11-15)
+@pytest.mark.parametrize('length', (3.0, 8.0))
+def test_line_gap_stops_after_lost_timeout(graph, length):
+    """테이프가 끊기면 0 명령으로 멈추고 lost_timeout(1 s) 뒤 line_lost 오류(GAP 직진·SEARCH 없음)."""
+    sim = Sim(graph, gaps=[('N05', 'N07', 40.0, length)])
+    sim.place('N05', 'S', 0.0)
+    ex = RouteExecutor(graph)
+    ex.start(['N05', 'N07', 'N18', 'N01'], start_cross=True, start_facing='S')
+    lost_at = None
+    while ex.active and sim.t < 200:
+        r = sim.tick(ex)
+        if r.lost and lost_at is None and ex.state == 'follow':
+            lost_at = sim.t
+    assert ex.state == 'error' and ex.reason == 'line_lost on N05→N07', ex.reason
+    assert lost_at is not None and ex.cfg.lost_timeout <= sim.t - lost_at <= ex.cfg.lost_timeout + 0.2
+    kinds = {e['event'] for e in ex.events}
+    assert not kinds & {'gap', 'gap_recovered', 'search'} and 'recovery' not in ex.as_dict()
+    for name in ('gap_max_cm', 'gap_heading_window_cm', 'gap_confirm', 'search_deg', 'ir_spacing_cm'):
+        assert not hasattr(ex.cfg, name)

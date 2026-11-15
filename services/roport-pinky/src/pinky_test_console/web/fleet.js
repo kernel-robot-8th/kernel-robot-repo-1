@@ -5,7 +5,7 @@
 const $ = (id) => document.getElementById(id);
 const POLL_MS = 1000;
 const LOG_KEEP = 1500;
-const BUSY = ["follow", "pass", "advance", "rotate", "loading", "reverse"];
+const BUSY = ["follow", "pass", "advance", "rotate", "loading", "reverse", "paused"];
 let selected = null;
 let robots = [];
 let graph = null;
@@ -27,8 +27,8 @@ function navState(r) {
 }
 
 function currentNode(st) {
-  return st && Array.isArray(st.route) && st.route.length && ["arrived", "handoff"].includes(st.state)
-    ? st.route[st.route.length - 1] : null;
+  const e = RM.endMemory(st);   // 끝 기억 노드(state.end 우선, 없으면 arrived·loading·handoff 의 route 마지막)
+  return e ? e.node : null;
 }
 
 const map = new RM.RouteMap($("routeCanvas"), () => {}, { mode: "goal", onGoal: (id) => setGoal(id) });
@@ -40,6 +40,7 @@ function selPick() {
   return pick[selected];
 }
 
+let lastEndKey = null;
 function fillStarts() {
   const sel = $("startSel");
   sel.replaceChildren();
@@ -56,6 +57,8 @@ function fillStarts() {
     o.textContent = label;
     sel.appendChild(o);
   }
+  // 사용자가 직접 고르지 않았으면 기본값은 「현재」(끝 기억 노드)
+  if (cur && !p.userStart) p.start = cur;
   if (!p.start || !opts.some(([v]) => v === p.start)) {
     p.start = cur || (r.role === "smartcart" ? "H1" : "N16");
   }
@@ -92,7 +95,7 @@ function setGoal(id) {
   plan();
 }
 
-$("startSel").addEventListener("change", (ev) => { selPick().start = ev.target.value; plan(); });
+$("startSel").addEventListener("change", (ev) => { const p = selPick(); p.start = ev.target.value; p.userStart = true; plan(); });
 $("viaSel").addEventListener("change", (ev) => { selPick().via = ev.target.value; plan(); });
 
 // 속도: 슬라이더를 움직이면 표시만 바꾸고 「속도 적용」 때 보냄. 그 전에는 로봇 값을 따라감.
@@ -122,6 +125,9 @@ function speedBody() {
 }
 $("btnSpeed").addEventListener("click", () => { speedDirty = false; command(speedBody()); });
 
+$("btnPause").addEventListener("click", () => command({ cmd: "pause" }));
+$("btnResume").addEventListener("click", () => command({ cmd: "resume" }));
+
 function updateButtons() {
   const r = robots.find((x) => x.name === selected);
   const st = navState(r);
@@ -131,6 +137,8 @@ function updateButtons() {
   $("btnLoad").disabled = !r || !st || st.state !== "loading";
   $("btnStop").disabled = !r;
   $("btnSpeed").disabled = !r || !st;
+  $("btnPause").disabled = !r || !RM.canPause(st);   // 주행 중·장애물 자동 정지 중(수동 일시정지 중이면 끔)
+  $("btnResume").disabled = !r || !st || st.state !== "paused" || RM.autoPaused(st);   // 장애물 정지는 수동 재개 안 됨
   $("btnHome").disabled = !r || !r.home || !st || !["arrived", "handoff"].includes(st.state);
 }
 
@@ -144,10 +152,16 @@ async function command(body) {
   return ok;
 }
 
-$("btnStart").addEventListener("click", () => {
+$("btnStart").addEventListener("click", async () => {
   const p = selPick();
+  // 끝 기억 노드와 다른 출발이면 확인 → 먼저 stop(기억 지움) 뒤 start. 취소하면 출발 안 함.
+  const warn = RM.startMismatchMsg(navState(robots.find((x) => x.name === selected)), p.route[0]);
+  if (warn) {
+    if (!confirm(warn)) return;
+    if (!(await command({ cmd: "stop" }))) return;
+  }
   command({ cmd: "start", route: p.route }).then((ok) => {
-    if (ok) { p.goal = null; p.route = []; p.start = null; showPick(); }
+    if (ok) { p.goal = null; p.route = []; p.start = null; p.userStart = false; showPick(); }
   });
 });
 $("btnLoad").addEventListener("click", () => command({ cmd: "load_done" }));
@@ -194,6 +208,19 @@ function cell(tr, text) {
   return td;
 }
 
+// 장애물 정지(계약 09). 필드가 없으면(옛 line_nav) "-"·「보고 없음」.
+function showObstacle(st) {
+  const o = RM.obstacleView(st);
+  $("sPause").textContent = st ? o.pause : "-";
+  $("sObst").textContent = st ? o.sensor : "-";
+  $("sObstPhase").textContent = o.phase;
+  $("sObstWhy").textContent = o.why;
+  for (const id of ["sPause", "sObstPhase"]) {
+    $(id).classList.toggle("warn", o.cls === "warn");
+    $(id).classList.toggle("err", o.cls === "err");
+  }
+}
+
 function render(snap) {
   robots = snap.robots || [];
   $("logFile").textContent = snap.log_error || snap.log_file || "-";
@@ -219,7 +246,12 @@ function render(snap) {
       bc.classList.add(b.stale ? "batt-stale" : b.percent < 20 ? "batt-low" : b.percent < 40 ? "batt-mid" : "batt-ok");
     }
     cell(tr, consoleMode(r));
-    cell(tr, st ? st.state : "-");
+    { // state + 일시정지 사유(장애물·스캔 끊김), 오래 막힘 경고는 빨강
+      const o = RM.obstacleView(st);
+      const why = st && (st.pause_reason === "obstacle" || st.pause_reason === "scan_stale") ? ` · ${o.pause}` : "";
+      const sc = cell(tr, st ? `${st.state}${why}` : "-");
+      if (o.cls) sc.classList.add(o.cls === "err" ? "obst-err" : "obst-warn");
+    }
     cell(tr, st && st.leg ? `${st.leg.from}→${st.leg.to}` : "-");
     tr.addEventListener("click", () => {
       selected = r.name;
@@ -248,8 +280,17 @@ function render(snap) {
   }));
   const r = robots.find((x) => x.name === selected);
   const st = navState(r);
+  // 끝 기억 노드가 바뀌면 출발 목록·기본값(「현재」)을 새로 채움(직접 고른 출발은 유지)
+  const endKey = `${selected}|${currentNode(st) || ""}`;
+  if (endKey !== lastEndKey) {
+    lastEndKey = endKey;
+    const before = selPick() ? selPick().start : null;
+    fillStarts();
+    if (selPick() && selPick().start !== before) plan();
+  }
   $("sState").textContent = st ? st.state : "-";
   syncSpeed(st && st.speed);
+  showObstacle(st);
   $("sReason").textContent = st && st.reason ? st.reason : "-";
   $("sLeg").textContent = st && st.leg ? `${st.leg.from} → ${st.leg.to} (${st.leg.action})` : "-";
   $("sTravel").textContent = st ? `${st.traveled_cm}` + (st.window_cm ? ` / ${st.window_cm[0]}~${st.window_cm[1]}` : "") : "-";
@@ -286,10 +327,12 @@ function renderLogs() {
     if (src && e.source !== src) continue;
     const tr = document.createElement("tr");
     tr.className = "fl-log-" + e.source;
+    const ec = e.source === "robot" ? RM.eventClass(e.event) : "";
+    if (ec) tr.classList.add(ec);
     cell(tr, e.time.slice(11, 23));
     cell(tr, e.robot);
     cell(tr, e.source);
-    cell(tr, e.event);
+    cell(tr, e.source === "robot" ? RM.eventText(e.event) : e.event);
     cell(tr, e.detail);
     tb.appendChild(tr);
   }
