@@ -21,10 +21,10 @@ def _now():
     return datetime.now(UTC).isoformat()
 
 
-def _fresh(value, max_age):
+def _fresh(value, max_age, future_s=1.0):
     try:
         age = (datetime.now(UTC) - datetime.fromisoformat(value)).total_seconds()
-        return -1 <= age <= max_age
+        return -future_s <= age <= max_age
     except (ValueError, TypeError):
         return False
 
@@ -269,8 +269,17 @@ class FieldOmxHost:
 
     def state(self, target):
         self.state_sequence[target] = self.state_sequence.get(target, 0) + 1
+        active_id = self.data["active"] or self.data.get("recovery_command_id")
+        active = self.data["commands"].get(active_id)
+        involved = set()
+        if active:
+            owner = active["command"]["target"]
+            involved = {owner}
+            if owner == "shelf-01":
+                involved.update(("omx1", "omx2"))
+        observer = owner if target in involved else target
         try:
-            ready = self.executors[target].readiness()
+            ready = self.executors[observer].readiness()
         except Exception:  # noqa: BLE001 - unreadable device cannot be ready
             ready = {"error": "executor_unavailable", "arms": {}}
         arm_names = ["omx1", "omx2"] if target == "shelf-01" else [target]
@@ -278,13 +287,16 @@ class FieldOmxHost:
             {
                 "robot_id": a,
                 "boot_version": self.boot_version,
-                "active_command_id": self.data["active"]
-                or self.data.get("recovery_command_id"),
+                "active_command_id": active_id if a in involved else None,
                 **_flags(ready.get("arms", {}).get(a)),
             }
             for a in arm_names
         ]
-        fault = self.data["hold"] or ready.get("error")
+        fault = (
+            self.data["hold"]
+            or ready.get("error")
+            or ("host_busy" if active_id and target not in involved else None)
+        )
         ok = (
             not fault
             and not self.data["active"]
@@ -319,8 +331,7 @@ class FieldOmxHost:
                 "boot_version": self.boot_version,
                 "observed_at": _now(),
                 "sequence": self.state_sequence[target],
-                "active_command_id": self.data["active"]
-                or self.data.get("recovery_command_id"),
+                "active_command_id": active_id if target in involved else None,
                 "state": state,
             },
         )
@@ -380,10 +391,14 @@ class FieldOmxHost:
         try:
             if datetime.fromisoformat(message["expires_at"]) <= datetime.now(UTC):
                 raise ValueError("expired_command")
+            if not _fresh(message["sent_at"], 3.0, future_s=0.5):
+                raise ValueError("stale_message")
             if p["expected_boot_version"] != self.boot_version:
                 raise ValueError("boot_version_mismatch")
             if kind == "robot_stop_command":
                 return self._stop(message)
+            if p.get("operation") == "return_home":
+                raise ValueError("unsupported_operation")
             if self.data["hold"] or self.data["active"]:
                 raise ValueError("workcell_held_or_busy")
             expected = getattr(self.executors[message["target"]], "versions", {})
@@ -393,6 +408,27 @@ class FieldOmxHost:
             ):
                 raise ValueError("executor_version_mismatch")
             task = self._task(message)
+            for record in self.data["commands"].values():
+                prior = record["command"]
+                # Older journals already contain the accepted command and its outcome.
+                consumed = record.get(
+                    "arrival_consumed",
+                    record.get("status")
+                    in {
+                        "accepted",
+                        "in_progress",
+                        "completed",
+                        "failed",
+                        "interrupted",
+                    },
+                )
+                if (
+                    consumed
+                    and self._pinky(prior) == self._pinky(message)
+                    and prior["payload"].get("arrival_command_id")
+                    == p["arrival_command_id"]
+                ):
+                    raise ValueError("arrival_already_used")
             self._visit(message)
             self._ready(message["target"], task["robot_ids"])
             check = getattr(self.executors[message["target"]], "check", None)
@@ -403,6 +439,7 @@ class FieldOmxHost:
         except (ValueError, KeyError) as exc:
             return [self._event(message, "rejected", reason=str(exc))]
         self.data["active"] = command_id
+        self.data["commands"][command_id]["arrival_consumed"] = True
         accepted = self._event(message, "accepted")
         # Durable acceptance may block too; no device has started yet.
         if datetime.fromisoformat(message["expires_at"]) <= datetime.now(UTC):

@@ -71,7 +71,8 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 - `cmd` 토픽은 `*.requested`, `ack` 토픽은 `event.ack`만 받고 QoS 1·비retained가 아니면 응답 없이 버립니다.
 - journal에는 site·control·binding을 기록하며 다른 등록 정보로 열면 시작을 거부합니다. 등록 정보를 바꾸면 별도 `--journal`을 사용합니다. journal 저장에 실패하면 수신 확인(ACK) 없이 종료하고, 재시작 시 journal 기준으로 복구합니다.
 - 실패·재시작으로 결과가 불명확하면 HOLD가 되어 새 작업을 거절합니다. 팔·물품·Pinky를 확인한 뒤 `--clear-hold`로 해제합니다.
-- 실물 실행: `--executor panel --routes <경로 파일> --box-marker <상자 ID>`는 같은 PC의 OMX 제어판(v3.12.0 이상) API로 평가 1회를 시작합니다. 칸마다 모델이 다르므로 `(operation, slot_id)`별 모델·작업 문장·시간을 경로 파일에 둡니다(`config/cooperative_routes.example.json`). 경로마다 제어판 출력 필터(`output_filter`: 약·중·강, 생략하면 끔)와 `filter_gripper`를 지정하면 관제로 시작한 평가에도 그대로 적용합니다. 경로가 없는 칸, 학습 목록에 없는 모델, 제어판 armed 꺼짐은 동작 전에 거절합니다. 완료는 제어판 `last_result`의 정상 종료·양팔 복귀·그리퍼 놓음(52+5% = 54.6 이하)으로 판정합니다. 제어판 3.12부터 Host는 `end_on_return`을 보내, 팔이 처음 자세에서 벗어났다가 돌아오고(모든 관절 8 이내) 그리퍼가 54.6 이하로 0.3초 유지되면 `episode_s` 전이라도 평가를 끝냅니다(정책의 재시도 방지). 이 경우 복귀는 그 감지로 확인하며(제어판 `last_result.last_episode.returned`), 완료 근거는 관제가 받는 `evidence: "arm_return_only"` 그대로 보고합니다. 제어판 3.9부터 평가 뒤 선반 정렬이 이어지면 `final`이 될 때까지 기다리고, 정렬 성공·정렬 뒤 쉬는 자세 확인(`align.rest`)·평가 종료 시 그리퍼 열림으로 판정합니다(`evidence: "shelf_align"`). 사람 조치를 기다리는 `hold`(비상 정지, 내려놓기 경로 없음)는 기다리지 않고 바로 실패·HOLD로 보고합니다. 제어판에서 사람이 누른 중지·즉시 중단은 정지가 끝난 뒤 `PANEL_STOPPED`·`PANEL_ABORTED`(정렬 중이면 `PANEL_ALIGN_STOPPED`)로 실패 보고하되 HOLD하지 않습니다. 정지하면 제어판 armed가 꺼지므로 다음 시작은 사람이 armed를 다시 켜야 합니다. 비상 정지·강제 종료·내려놓기 실패·오류·미복귀는 HOLD합니다. 상태 조회(`status.requested`)의 양팔 상태는 제어판 3.11의 `GET /api/arms?model=…`(실행 중이 아닐 때 모터 위치를 읽음)에서 가져오며, 경로표의 모든 모델 홈 자세 안이어야 `returned`입니다. 그리퍼는 54.6 이하면 놓음, 넘으면 `grasping`으로 봅니다(2026-11-10 시험 합의: 빈 채로 닫히면 48~51, 상자에 막히면 58~60, 열림 61~67. 상자 모서리를 50 근처에서 쥘 수도 있어 놓음 여부는 팔 복귀와 함께 판정). 제어판 3.11부터 armed를 켤 때 `~/.config/roport/omx-host.json` 설정(예: `config/omx-host.example.json`, `link_config`는 `execution_mode: hardware`여야 함)으로 이 Host를 자동 시작하고, armed를 꺼도 Host는 남아 보고·상태 조회에 답합니다. Host는 제어판 **3.12.0 이상**만 준비 상태로 보고합니다(낮으면 `executor_error: PANEL_VERSION`). **팔이 움직이므로 사람이 옆에서 armed를 켠 상태로만 시험합니다.** 상자 ID는 시험용 고정값이며 `package_id` 규칙은 관제와 합의 후 연결합니다.
+- 실물 실행: `--executor panel --routes <경로 파일> --box-marker <상자 ID>`는 같은 PC의 OMX 제어판(v3.12.0 이상) API로 평가 1회를 시작합니다. 칸마다 모델이 다르므로 `(operation, slot_id)`별 모델·작업 문장·시간을 경로 파일에 둡니다(`config/cooperative_routes.example.json`). 경로마다 제어판 출력 필터(`output_filter`: 약·중·강, 생략하면 끔)와 `filter_gripper`를 지정하면 관제로 시작한 평가에도 그대로 적용합니다. 경로가 없는 칸, 학습 목록에 없는 모델, 제어판 armed 꺼짐은 동작 전에 거절합니다. 완료는 제어판 `last_result`의 정상 종료·양팔 복귀·그리퍼 놓음(52+5% = 54.6 이하)으로 판정합니다. 제어판 3.12부터 Host는 `end_on_return`을 보내, 팔이 처음 자세에서 벗어났다가 돌아오고(모든 관절 8 이내) 그리퍼가 54.6 이하로 0.3초 유지되면 `episode_s` 전이라도 평가를 끝냅니다(정책의 재시도 방지). 조기 종료 신호(`last_result.last_episode.returned`)만으로 안전 복귀를 확정하지 않습니다. 양팔 `at_home is True`와 그리퍼 놓음이 확인될 때만 `evidence: "arm_return_only"`로 완료하며 False/미관측은 실패·HOLD입니다. 제어판 3.9부터 평가 뒤 선반 정렬이 이어지면 `final`이 될 때까지 기다리고, 정렬 성공·정렬 뒤 쉬는 자세 확인(`align.rest`)·최종 `/api/arms` 홈/그리퍼 실측을 함께 판정합니다(`evidence: "shelf_align"`). 사람 조치를 기다리는 `hold`(비상 정지, 내려놓기 경로 없음)는 기다리지 않고 바로 실패·HOLD로 보고합니다. 제어판에서 사람이 누른 중지·즉시 중단은 정지가 끝난 뒤 `PANEL_STOPPED`·`PANEL_ABORTED`(정렬 중이면 `PANEL_ALIGN_STOPPED`)로 실패 보고하되 HOLD하지 않습니다. 정지하면 제어판 armed가 꺼지므로 다음 시작은 사람이 armed를 다시 켜야 합니다. 비상 정지·강제 종료·내려놓기 실패·오류·미복귀는 HOLD합니다. 상태 조회(`status.requested`)의 양팔 상태는 제어판 3.11의 `GET /api/arms?model=…`(실행 중이 아닐 때 모터 위치를 읽음)에서 가져오며, 경로표의 모든 모델 홈 자세 안이어야 `returned`입니다. 그리퍼는 54.6 이하면 놓음, 넘으면 `grasping`으로 봅니다(2026-11-10 시험 합의: 빈 채로 닫히면 48~51, 상자에 막히면 58~60, 열림 61~67. 상자 모서리를 50 근처에서 쥘 수도 있어 놓음 여부는 팔 복귀와 함께 판정). 제어판 3.11부터 armed를 켤 때 `~/.config/roport/omx-host.json` 설정(예: `config/omx-host.example.json`, `link_config`는 `execution_mode: hardware`여야 함)으로 이 Host를 자동 시작하고, armed를 꺼도 Host는 남아 보고·상태 조회에 답합니다. Host는 제어판 **3.12.0 이상**만 준비 상태로 보고합니다(낮으면 `executor_error: PANEL_VERSION`). **팔이 움직이므로 사람이 옆에서 armed를 켠 상태로만 시험합니다.** 상자 ID는 시험용 고정값이며 `package_id` 규칙은 관제와 합의 후 연결합니다.
+- 준비 조회·모델 검사 이후, 접수 journal 저장 이후와 `/api/eval/start` POST 직전에 각각 `expires_at`을 재검사합니다. 만료되면 새 평가를 시작하지 않습니다. HTTP 시작 응답이 끊기면 결과 불명·HOLD이므로 자동 재시작하지 않습니다.
 - 검사: `bash ci/test.sh` (`ci/test_cooperative.py`, `ci/test_panel_executor.py`; 브로커·제어판·장비 불필요). 실제 브로커 왕복은 로컬 Mosquitto에서만 확인했고, 패널 연동·실물 팔은 미검증입니다.
 
 ## 최소화 규약 현장 Host (FFT1-180)
@@ -84,6 +85,8 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 - `arm_action_command`: OMX1 단독 N21 `1a/2a`, OMX2 단독 N22 `1c/2c`. 각 슬롯·입출고 방향의 Runner/정책/캘리브레이션을 따로 주입합니다.
 - `warehouse_load_command`: stock-omx(창고 OMX, MQTT 식별자 `omx3`) N01. 기존 `Omx3Host → Runner`를 실행하며 실제 결과의 안착·해제·복귀를 보고합니다. `package_size`는 임시 물품 카탈로그 값이며 추론으로 확인했다고 표시하지 않습니다.
 - Host는 Pinky의 최신 정차·boot·도착 명령과 별도 정렬 센서, 해당 executor의 `model_version/calibration_version` 일치, 팔 준비를 검사합니다. 한 프로세스가 작업을 하나씩 소유합니다. 준비 검사·접수 저장이 지연되면 실행 직전에 만료를 재확인하며, Runner 내부 준비 중 만료도 첫 모터 목표 전 취소합니다. MQTT ACK와 팔 복귀만으로 물품 안착을 확정하지 않습니다.
+- `(pinky_id, arrival_command_id)`는 이송 접수와 함께 journal에 소모 기록을 저장합니다. 같은 명령 재전송은 저장 결과만 반환하며, 같은 도착을 새 명령으로 재사용하면 `arrival_already_used`입니다. 실패·ACK·Host 재시작 뒤에도 소모 기록을 유지합니다. 사전 거절은 소모하지 않지만 접수 이후 실패/만료는 소모합니다. 재시도는 현장 상태 조정 후 **새 이동으로 확인된 도착**이 필요하며 ID만 바꾸거나 journal을 지워서 재시도하지 않습니다.
+- 공동 명령은 `shelf-01`과 참여 팔 `omx1/omx2`에 같은 `active_command_id`를 표시하며 팔 관측도 공동 executor에서 읽습니다. 무관한 대상은 `active_command_id: null`, `ready: false`, `fault: host_busy`입니다.
 - 완료는 `command_status`로 보고하고 `event_stored`까지 journal/outbox에 유지합니다. 재시작·한쪽 팔 미복귀·관측 불명·watchdog 만료는 HOLD입니다. 정지 대상은 실패·재시작 후에도 보존하고 재시작 시 abort를 요청합니다. 새 boot를 조회한 뒤 기존 `target_command_id`로 정지를 재요청할 수 있습니다. 정지 중 다른 정지 명령은 `stop_already_pending`으로 거절하며 원래 요청을 덮어쓰지 않습니다. 정지 성공은 `stop_status`의 최신 관측으로만 확정하고 HOLD는 유지합니다.
 
 가상 모드(격리 loopback 브로커 필요):
@@ -103,8 +106,8 @@ uv run python scripts/field_host.py --mock --host 127.0.0.1 --port 1883 \
 확정된 모델·캘리브레이션 버전이 필요합니다. 공동 `PanelFieldExecutor`는 실제 중지
 콜백과, command/package/slot/arrival에 일치하는 최신 안착·해제 센서 콜백이 추가로
 필요합니다. 패널의 `arm_return_only`/`shelf_align`만으로 재고 확정은 불가능합니다.
-개별 `return_home`의 실장비 실행 경로, 모델/ArUco·정렬/안착 센서 바인딩은 아직 현장
-설정이 없으므로 미검증이며 factory에서 준비되지 않은 동작은 거절합니다.
+개별 `return_home`은 스키마에 예약된 동작이며 현재 Host는 항상 `unsupported_operation`으로 거절합니다.
+홈 밖 복귀 경로는 아직 구현하지 않았고 모델/ArUco·정렬/안착 센서 바인딩도 현장 검증이 필요합니다.
 
 검사: `bash ci/test.sh` 및 관제 서버의 `tests/test_omx_device_mqtt.py`,
 `tests/test_omx_panel_integration.py`. 루프백 MQTT·실제 Host/Runner/PanelExecutor를
@@ -115,9 +118,17 @@ uv run python scripts/field_host.py --mock --host 127.0.0.1 --port 1883 \
 
 - 모든 실물 어댑터의 `stop_status()`는 모터 관측에서 `{"observed_at": "ISO-8601 UTC", "stopped": true/false}`를 반환합니다. 공동 작업은 양팔 모두 정지한 값이어야 합니다. 어댑터 PC와 같은 시각 기준의 관측만 받으며 허용 나이는 0~3초입니다. 정지 완료는 **해당 abort 요청 이후** 관측이어야 합니다. 콜백은 최신 센서 캐시를 짧게 읽고, 홈 위치·HTTP 성공·명령 접수를 정지 근거로 만들지 않습니다. 누락·오류·오래된 값은 준비/정지 확인으로 인정하지 않습니다.
 - `WarehouseExecutor`는 진행 중 Runner에 취소를 전달하고, 재시작 등 Runner가 없으면 기존 Robot 포트의 `hold()`를 호출합니다. `IndependentArmExecutor`도 같은 경로를 사용합니다. `PanelFieldExecutor`는 현장 `stop` 콜백을 호출합니다. 관측이 없으면 `physical_stop_not_confirmed` + HOLD이며, 정지 관측 연결 전에는 실물 준비 상태가 되지 않습니다.
-- **실물 실행은 아직 검증 완료가 아닙니다.** 패널 HTTP 호출은 여전히 동기식이며 `/api/arms` 최대 15초·상태 조회 5초·시작 300초가 MQTT 처리와 3초 watchdog을 지연시킬 수 있습니다. 현장 적용 전에 패널의 취소 가능한 비동기 시작·센서 캐시·독립 정지 경로를 연결하고 지연/정지 시험을 해야 합니다. 스레드로 감싸는 것만으로 원격 시작 취소가 보장되지는 않습니다.
-- OMX의 물리 명령 만료는 수신 PC의 `expires_at` 절대시각 기준입니다. 유지 확인은 `sent_at`의 나이 −1~1초, Pinky/정렬 관측은 −1~3초, 로컬 정지 관측은 0~3초를 검사합니다. Pinky의 명령 신선도 창과 다르므로 관제·로봇 NTP와 센서 timestamp 기준을 맞춰야 합니다.
+- **실물 실행은 아직 검증 완료가 아닙니다.** 패널 HTTP 호출은 여전히 동기식이며 `/api/arms` 최대 15초·상태 조회 5초·시작 300초가 MQTT 처리와 3초 watchdog을 지연시킬 수 있습니다. 이를 해결한 비동기 시작·센서 캐시·독립 정지 경로와 지연/정지 시험 전에는 패널 기반 v2 실물 factory를 운영에 연결하지 않습니다. 이 PR은 해당 factory를 제공하지 않습니다. 스레드로 감싸는 것만으로 원격 시작 취소가 보장되지는 않습니다.
+- OMX의 새 물리 명령은 Pinky와 동일하게 `sent_at` 나이 −0.5~3초를 검사하고 벗어나면 `stale_message`로 거절합니다. 기록된 명령의 동일 본문 재전송은 신선도 검사 전에 저장 결과를 반환합니다. 만료는 수신 PC의 `expires_at` 절대시각 기준입니다. 유지 확인은 `sent_at`의 나이 −1~1초, Pinky/정렬 관측은 −1~3초, 로컬 정지 관측은 0~3초를 검사합니다. 명령과 센서의 허용 창이 다르므로 관제·로봇 NTP와 센서 timestamp 기준을 맞춰야 합니다.
 - HOLD 자동 해제/원격 해제는 제공하지 않습니다. 물품·팔·진행 중 패널 작업의 현장 조정과 명시적 복구 절차는 후속입니다. journal 삭제를 복구 방법으로 사용하지 않습니다.
 - 같은 `command_id`로 다른 본문을 보내거나 스키마·출처·토픽이 틀린 패킷은 로그 후 거절합니다. 기존 명령의 결과를 덮어쓸 새 상태 이벤트는 만들지 않습니다. 관제는 유효한 상태/기존 결과를 조회해 확인합니다.
 
 `stock-omx`는 창고 팔의 역할 명칭입니다. MQTT 토픽·JSON·journal 및 Python `omx3` 모듈 이름은 기존 연동을 위해 유지합니다. 식별자까지 바꾸는 작업은 관제·로봇·명세를 함께 전환하는 별도 변경입니다.
+
+### PR #66 기능 인수 범위
+
+`cooperative_host.py --executor panel`, 슬롯별 Route/출력 필터/eval 옵션, 두 예제 설정,
+모든 경로 모델의 실제 팔 관측, `end_on_return`, 작업 결과·일반 중지/비상 정지 구분을 유지합니다.
+관련 패널 회귀 테스트도 함께 유지하며 만료·미복귀 판정만 위 기준으로 수정했습니다.
+별도 저장소의 제어판(3.12.0 이상) 설치·자동 Host 시작 설정과 현장 정책/캘리브레이션은
+이 저장소의 PR 병합만으로 설치되지 않습니다. 구형 v1 시험과 v2 현장 규약을 혼용하지 않습니다.

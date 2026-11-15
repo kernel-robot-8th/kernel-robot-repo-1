@@ -50,3 +50,11 @@ npx @asyncapi/cli@latest generate fromTemplate services/roport-control-server/in
 
 - yaml과 `field_wire.py`는 함께 바꾸고 문서와 코드의 일치는 테스트로 확인한다. 토픽·필드를 바꾸면 관제·Pinky·OMX 담당자가 함께 확인한다.
 - 예시 값은 가짜 값만 쓴다. 실제 SSID·IP·인증정보·현장 좌표를 넣지 않는다([공개 저장소 보안 규칙](../../../../.agents/rules/public-repository-security.md)).
+
+### OMX 실행 제약
+
+- OMX 새 물리 명령도 `sent_at` 나이 −0.5~3초와 `expires_at`을 검사합니다. 동일 명령 재전송은 저장된 결과만 돌려줍니다.
+- `(pinky_id, arrival_command_id)` 하나당 이송 접수는 한 번입니다. 접수 후 성공/실패·ACK·재시작과 무관하게 소모되며, 새 명령으로 재사용하면 `arrival_already_used`입니다. 사전 거절은 소모하지 않습니다. 재시도는 현장 조정 후 새 이동으로 확인된 도착이 필요합니다.
+- `arm_action_command.operation=return_home`은 예약 필드이며 현재 OMX Host에서는 `unsupported_operation`입니다.
+- 공동 작업의 `active_command_id`는 shelf-01 및 참여 팔 omx1/omx2만 공유합니다. 다른 대상은 null + `host_busy`로 표시합니다.
+- 실물 패널의 동기 HTTP 지연·독립 정지 경로는 현장 적용 전 해결 조건입니다. [OMX 실행 범위](../../../roport-omx/README.md)를 함께 확인합니다.

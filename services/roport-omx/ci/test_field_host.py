@@ -225,10 +225,132 @@ class FieldHostTest(unittest.TestCase):
         self.assertNotIn(done, self.host.pending())
         self.assertIn(accepted, self.host.pending())
 
+    def test_arrival_is_consumed_across_ack_and_restart(self):
+        first = self.command()
+        self.host.handle(first)
+        done = self.host.poll()[0]
+        self.host.handle(
+            build_message(
+                "event_stored",
+                "control-01",
+                "shelf-01",
+                {"acked_message_id": done["message_id"]},
+            )
+        )
+        self.host = FieldOmxHost(self.journal, self.executors)
+        self.host.alignment = lambda cmd: virtual_alignment(self.host, cmd)
+        self.observe("N11")
+        self.assertEqual(self.host.handle(first), [done])
+        second = self.command()
+        second["command_id"] = "command-2"
+        self.assertEqual(
+            self.host.handle(second)[0]["payload"]["reason"], "arrival_already_used"
+        )
+        self.assertEqual(len(self.executors["shelf-01"].tasks), 1)
+        self.observe("N11", arrival_command_id="arrival-2")
+        third = self.command(arrival_command_id="arrival-2")
+        third["command_id"] = "command-3"
+        self.assertEqual(self.host.handle(third)[0]["payload"]["status"], "accepted")
+        self.assertEqual(self.host.poll()[0]["payload"]["status"], "completed")
+
+    def test_failed_start_still_consumes_arrival_after_reconciliation(self):
+        with patch.object(
+            self.executors["shelf-01"], "start", side_effect=RuntimeError
+        ):
+            self.host.handle(self.command())
+        self.host.data["hold"] = (
+            None  # simulated operator reconciliation, not a wire API
+        )
+        self.host.data.pop("recovery_command_id", None)
+        second = self.command()
+        second["command_id"] = "retry"
+        self.assertEqual(
+            self.host.handle(second)[0]["payload"]["reason"], "arrival_already_used"
+        )
+
+    def test_rejected_precheck_does_not_consume_arrival(self):
+        bad = self.command(calibration_version="old")
+        bad["command_id"] = "bad-version"
+        self.assertEqual(self.host.handle(bad)[0]["payload"]["status"], "rejected")
+        self.assertEqual(
+            self.host.handle(self.command())[0]["payload"]["status"], "accepted"
+        )
+
+    def test_old_journal_outcome_also_consumes_arrival(self):
+        self.host.handle(self.command())
+        self.host.poll()
+        self.host.data["commands"]["command-1"].pop("arrival_consumed")
+        self.host._save()
+        self.host = FieldOmxHost(self.journal, self.executors)
+        self.host.alignment = lambda cmd: virtual_alignment(self.host, cmd)
+        self.observe("N11")
+        second = self.command()
+        second["command_id"] = "new-owner"
+        self.assertEqual(
+            self.host.handle(second)[0]["payload"]["reason"], "arrival_already_used"
+        )
+
+    def test_return_home_reports_unsupported_operation(self):
+        for home in (False, True):
+            cmd = build_message(
+                "arm_action_command",
+                "control-01",
+                "omx1",
+                {
+                    "expected_boot_version": self.host.boot_version,
+                    "operation": "return_home",
+                    "workcell_id": "shelf-01",
+                    "calibration_version": "sim-cal",
+                },
+                command_id=f"home-{home}",
+                expires_at=expiry(),
+            )
+            self.executors["omx1"].unreturned = set() if home else {"omx1"}
+            self.assertEqual(
+                self.host.handle(cmd)[0]["payload"]["reason"], "unsupported_operation"
+            )
+            self.assertFalse(self.executors["omx1"].tasks)
+
+    def test_state_identifies_participating_targets_only(self):
+        self.host.handle(self.command())
+        for target in ("shelf-01", "omx1", "omx2"):
+            self.assertEqual(
+                self.host.state(target)["payload"]["active_command_id"], "command-1"
+            )
+        other = self.host.state("omx3")["payload"]
+        self.assertIsNone(other["active_command_id"])
+        self.assertFalse(other["state"]["ready"])
+        self.assertEqual(other["state"]["fault"], "host_busy")
+        self.host.poll()
+        self.observe("N01", arrival_command_id="arrival-2")
+        cmd = self.command("omx3", arrival_command_id="arrival-2")
+        cmd["command_id"] = "warehouse"
+        self.host.handle(cmd)
+        shelf = self.host.state("shelf-01")["payload"]
+        self.assertIsNone(shelf["active_command_id"])
+        self.assertTrue(
+            all(a["active_command_id"] is None for a in shelf["state"]["arms"])
+        )
+        self.assertEqual(shelf["state"]["fault"], "host_busy")
+
+    def test_old_or_future_command_refused_but_duplicate_remains_queryable(self):
+        for age in (120, -2):
+            cmd = self.command()
+            cmd["command_id"] = f"aged-{age}"
+            cmd["sent_at"] = (datetime.now(UTC) - timedelta(seconds=age)).isoformat()
+            self.assertEqual(
+                self.host.handle(cmd)[0]["payload"]["reason"], "stale_message"
+            )
+        cmd = self.command()
+        accepted = self.host.handle(cmd)[0]
+        with patch("roport_omx.field_host._fresh", return_value=False):
+            self.assertEqual(self.host.handle(cmd), [accepted])
+        self.assertEqual(len(self.executors["shelf-01"].tasks), 1)
+
     def test_independent_columns_and_nodes(self):
         for arm, node in (("omx1", "N21"), ("omx2", "N22")):
-            self.observe(node)
-            command = self.command(arm)
+            self.observe(node, arrival_command_id=f"arrival-{node}")
+            command = self.command(arm, arrival_command_id=f"arrival-{node}")
             command["command_id"] = arm
             self.assertEqual(
                 self.host.handle(command)[0]["payload"]["status"], "accepted"

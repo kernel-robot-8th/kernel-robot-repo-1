@@ -251,6 +251,58 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertIs(p["departure_ready"], True)
         self.assertIsNone(p["placement_confirmed"])
 
+    def test_expiry_after_panel_checks_or_acceptance_never_posts_start(self):
+        for stage in ("readiness", "check", "accepted_save", "panel_post"):
+            with self.subTest(stage=stage):
+                self.host.clear_hold()
+                command = self.inbound()
+                clock = datetime.now(UTC)
+                ready, check, start, save = (
+                    self.executor.readiness,
+                    self.executor.check,
+                    self.executor.start,
+                    self.journal.save,
+                )
+
+                def delay():
+                    nonlocal clock
+                    clock += timedelta(seconds=20)
+
+                def delayed_ready():
+                    result = ready()
+                    if stage == "readiness":
+                        delay()
+                    return result
+
+                def delayed_check(task):
+                    check(task)
+                    if stage == "check":
+                        delay()
+
+                def delayed_save(data):
+                    save(data)
+                    if stage == "accepted_save" and data["active"]:
+                        delay()
+
+                def delayed_start(task):
+                    if stage == "panel_post":
+                        delay()
+                    start(task)
+
+                with (
+                    patch("roport_omx.mqtt_link.messages.datetime") as clock_type,
+                    patch.object(self.executor, "readiness", delayed_ready),
+                    patch.object(self.executor, "check", delayed_check),
+                    patch.object(self.executor, "start", delayed_start),
+                    patch.object(self.journal, "save", delayed_save),
+                ):
+                    clock_type.now.side_effect = lambda tz: clock
+                    clock_type.fromisoformat = datetime.fromisoformat
+                    events = self.send(command)
+                self.assertEqual(self.panel.starts, [])
+                self.assertIn(events[-1]["payload"]["phase"], {"REJECTED", "FAILED"})
+                self.assertIn("expired_command", str(events[-1]["payload"]))
+
     def test_model_cache_fetches_on_fresh_boot_and_refreshes_after_ttl(self):
         clock = 1.0
         with (
@@ -389,6 +441,18 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertEqual(p["evidence"], "shelf_align")
         self.assertIs(p["arms"]["omx1"]["returned"], True)
 
+    def test_alignment_rest_cannot_replace_live_home_observation(self):
+        for home in (False, None):
+            with self.subTest(home=home):
+                self.host.clear_hold()
+                self.panel.arms = {"OMX 1": live("left"), "OMX 2": live("right")}
+                self.send(self.inbound())
+                self.panel.arms["OMX 2"]["at_home"] = home
+                self.panel.finish(align=align(), final=True)
+                event = self.host.poll()[-1]
+                self.assertEqual(event["type"], "shelf_inbound.failed")
+                self.assertFalse(event["payload"]["departure_ready"])
+
     def test_alignment_failures(self):
         stopped = {"ok": False, "returncode": 2, "shelf": None, "align": None}
         cases = [
@@ -476,12 +540,19 @@ class PanelExecutorTest(unittest.TestCase):
         (event,) = self.send(message)
         return event["payload"]
 
-    def test_return_detected_by_panel_completes_without_model_home(self):
+    def test_return_detected_by_panel_requires_model_home(self):
         self.send(self.inbound())
         self.assertIs(self.panel.starts[-1]["end_on_return"], True)
-        arms = {"OMX 1": arm("left", home=None), "OMX 2": arm("right", home=False)}
         last = {"episode": 0, "returned": True, "elapsed_s": 21.9}
-        self.panel.finish(arms=arms, last_episode=last)
+        for home in (False, None):
+            arms = {"OMX 1": arm("left", home=home), "OMX 2": arm("right")}
+            self.panel.finish(arms=arms, last_episode=last)
+            events = self.host.poll()
+            self.assertEqual(events[-1]["type"], "shelf_inbound.failed")
+            self.assertFalse(events[-1]["payload"]["departure_ready"])
+            self.host.clear_hold()
+            self.send(self.inbound())
+        self.panel.finish(last_episode=last)
         events = self.host.poll()
         self.assertEqual(events[-1]["type"], "shelf_inbound.completed")
         self.assertEqual(events[-1]["payload"]["evidence"], "arm_return_only")

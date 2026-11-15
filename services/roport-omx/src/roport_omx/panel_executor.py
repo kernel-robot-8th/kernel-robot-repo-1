@@ -1,4 +1,4 @@
-"""Executor that runs shelf-01 COOPERATIVE tasks through the local OMX control panel (v3.8+).
+"""Executor that runs shelf-01 COOPERATIVE tasks through the local OMX control panel (v3.12+).
 
 The panel owns the arms, cameras and safety stop. This adapter only calls its HTTP API on this PC:
 a route table picks the trained model for each (operation, slot) because each slot needs its own
@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .cooperative import ARMS, OPERATIONS, SLOTS, Rejected
+from .mqtt_link.messages import check_expiry
 
 ARM_SIDES = {"left": "omx1", "right": "omx2"}
 STOPS = {
@@ -284,6 +285,7 @@ class PanelExecutor:
                 "output_filter": route.output_filter,
                 "filter_gripper": route.filter_gripper,
             }
+        check_expiry(task)
         reply = self._call("POST", "/api/eval/start", body, timeout=self.start_timeout)
         if not isinstance(reply.get("repo_id"), str) or not reply["repo_id"]:
             raise RuntimeError("panel did not return the run's repo_id")
@@ -316,7 +318,17 @@ class PanelExecutor:
                     "state": "running",
                     "step": step if isinstance(step, str) else None,
                 }
-            return self._result(result)
+            observation = self._result(result)
+            if result.get("align") and observation["state"] == "finished":
+                # Evaluation snapshots predate alignment; verify the final motor pose too.
+                live = self._arms_now()
+                for name, flags in observation["arms"].items():
+                    for flag in ("connected", "returned", "safe"):
+                        if flags[flag] is True:
+                            flags[flag] = live.get(name, {}).get(flag)
+                    if flags["grasping"] is False:
+                        flags["grasping"] = live.get(name, {}).get("grasping")
+            return observation
         # Between the job ending and last_result appearing; give up only after a grace period.
         now = time.monotonic()
         self._missing_since = self._missing_since or now
@@ -331,8 +343,7 @@ class PanelExecutor:
         align = result.get("align")
         align = align if isinstance(align, dict) else None
         if align is not None:
-            # Alignment ends at the evaluation start pose with grippers closed: at_home does not
-            # apply, so return is the rest check; gripper_open is still read at evaluation end.
+            # The rest check is necessary; observe() also checks the final live home pose.
             rest = align.get("rest") if isinstance(align.get("rest"), dict) else {}
             rest_arms = _by_side(rest.get("arms"))
         # panel 3.12: the episode ended because the arms came back to its start pose (every joint)
@@ -340,7 +351,7 @@ class PanelExecutor:
         returned_early = isinstance(last, dict) and last.get("returned") is True
         arms = {}
         for name, arm in _by_side(result.get("arms")).items():
-            home = True if returned_early else arm.get("at_home")
+            home = arm.get("at_home")
             if align is not None:
                 far = (rest_arms.get(name) or {}).get("far_joints")
                 known = rest.get("check") in {"ok", "far"} and isinstance(far, list)
@@ -357,8 +368,7 @@ class PanelExecutor:
                     "state": "finished",
                     "step": "returned",
                     "arms": arms,
-                    # control (omx_trial.py) moves the Pinky on only this evidence; the detection
-                    # rests on arm return alone (the panel's last_result.last_episode.returned)
+                    # Early return ends evaluation, but never replaces the home observation.
                     "evidence": "arm_return_only",
                 }
             return {"state": "finished", "step": "home", "arms": arms}
