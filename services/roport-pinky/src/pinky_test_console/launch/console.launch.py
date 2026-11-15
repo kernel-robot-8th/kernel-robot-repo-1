@@ -100,6 +100,8 @@ def launch_setup(context):
                 # 직선 속도 상한·노드 앞 감속 거리(화면 슬라이더 최대 = line_max_linear)
                 'max_linear': float(LaunchConfiguration('line_max_linear').perform(context)),
                 'approach_lead_cm': float(LaunchConfiguration('approach_lead_cm').perform(context)),
+                # 라이다 장애물 정지·대기(off | monitor | stop, 시연용 소프트웨어 정지)
+                'obstacle_mode': LaunchConfiguration('obstacle_mode').perform(context),
                 # 라인 추종 게인(시험판): gain_ref_speed 를 넘는 속도에서 kp × 속도/gain_ref_speed
                 **{k: float(LaunchConfiguration(f'line_{k}').perform(context))
                    for k in ('kp', 'kd', 'gain_ref_speed')},
@@ -169,6 +171,10 @@ def generate_launch_description():
         DeclareLaunchArgument('approach_lead_cm', default_value='5.0',
                               description='mode:=route|test slow to approach speed this many cm '
                                           'before the expected node (0.08 m/s 에서 회전이 늦으면 7)'),
+        DeclareLaunchArgument('obstacle_mode', default_value='off',
+                              choices=['off', 'monitor', 'stop'],
+                              description='mode:=route|test lidar obstacle stop: off | monitor | '
+                                          'stop (demo software stop, not a safety device)'),
         DeclareLaunchArgument('line_kp', default_value='1.0',
                               description='mode:=route|test line following kp (rad/s per error); '
                                           'grows x speed/line_gain_ref_speed above that speed'),
