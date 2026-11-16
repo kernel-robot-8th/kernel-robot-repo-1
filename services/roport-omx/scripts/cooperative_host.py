@@ -276,7 +276,11 @@ def main() -> None:
             except (ConnectionError, TimeoutError) as exc:
                 log.warning("broker link lost (%s); reconnecting", exc)
                 transport.stop()
-                time.sleep(2)
+                # The panel's [HOLD 해제] does not need the broker: keep answering it while
+                # waiting to reconnect.
+                for _ in range(10):
+                    holds.tick(host)
+                    time.sleep(0.2)
     except KeyboardInterrupt:
         pass
     except StorageError as exc:
