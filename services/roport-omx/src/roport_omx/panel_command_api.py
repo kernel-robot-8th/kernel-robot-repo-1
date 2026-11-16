@@ -4,6 +4,7 @@ import re
 from urllib.parse import unquote, urlsplit
 
 from .mqtt_link.field_wire import ID
+from .panel_commands import CommandConflict
 
 
 class PanelCommandAPI:
@@ -35,8 +36,10 @@ class PanelCommandAPI:
                 return 400, {"error": "invalid_command_payload"}
             try:
                 self.ledger.submit(body)
+            except CommandConflict:
+                return 409, {"error": "command_conflict"}
             except (ValueError, TypeError, KeyError):
-                return 409, {"error": "command_conflict_or_invalid_expiry"}
+                return 400, {"error": "invalid_command_payload"}
             try:
                 result = self.ledger.start(body["command_id"], self.begin)
             except Exception:  # noqa: BLE001 - preserve unknown device outcome

@@ -14,17 +14,18 @@ from test_field_host import wait_until
 from test_panel_executor import ROUTES, FakePanel
 
 from roport_omx.field_executors import PanelFieldExecutor
-from roport_omx.panel_executor import PanelExecutor
+from roport_omx.panel_executor import PanelExecutor, PanelHTTPError
+from roport_omx.managed_panel import ManagedPanelExecutor, PanelStartRejected
 
 
 class AsyncPanelTest(unittest.TestCase):
     def setUp(self):
-        self.panel = FakePanel()
+        self.panel = FakePanel(managed=True)
         self.gates = []
         self.stops = 0
         self.sample = self.stationary()
         self.adapter = PanelFieldExecutor(
-            PanelExecutor(ROUTES, box_marker=16, base_url=self.panel.url),
+            ManagedPanelExecutor(ROUTES, box_marker=16, base_url=self.panel.url),
             model_version="test-model",
             calibration_version="test-cal",
             stop=self.stop,
@@ -64,6 +65,7 @@ class AsyncPanelTest(unittest.TestCase):
                     pass
         self.panel.server.shutdown()
         self.panel.server.server_close()
+        self.panel.ledger.close()
 
     def block(self):
         entered, release = threading.Event(), threading.Event()
@@ -100,50 +102,59 @@ class AsyncPanelTest(unittest.TestCase):
         self.assertFalse(self.panel.starts)
         release.set()
 
-    def test_abort_while_starting_repeats_stop_after_late_start_reply(self):
+    def test_cancel_confirms_while_start_is_blocked_and_prevents_late_start(self):
         self.ready()
         entered, release, delay = self.block()
         self.panel.before_start = delay
-        self.prompt(lambda: self.adapter.start(self.task))
+        self.adapter.start(self.task)
         self.assertTrue(entered.wait(1))
-        with patch(
-            "roport_omx.field_executors.monotonic", return_value=time.monotonic() + 4
-        ):
-            self.assertIsNone(self.adapter.readiness()["error"])
         self.prompt(self.adapter.abort)
-        self.adapter.stop_future.result(timeout=1)
-        self.assertEqual(self.stops, 1)
-        self.assertEqual(self.prompt(self.adapter.observe)["state"], "stopping")
-        release.set()
-        self.adapter.start_future.result(timeout=1)
         wait_until(self.adapter.observe, lambda r: r["state"] == "stopped")
-        self.assertGreaterEqual(self.stops, 2)
-        self.assertEqual(len(self.panel.starts), 1)
-        self.assertFalse(self.panel.status["job"]["running"])
+        self.assertFalse(self.adapter.start_future.done())
+        self.assertFalse(self.panel.starts)
+        release.set()
+        with self.assertRaisesRegex(PanelStartRejected, "cancelled"):
+            self.adapter.start_future.result(timeout=1)
+        self.assertFalse(self.panel.starts)
+        self.assertEqual(self.stops, 1)
         with self.assertRaisesRegex(ValueError, "held"):
             self.adapter.start(self.task)
 
-    def test_lost_start_reply_never_certifies_stop_or_retries_remote_start(self):
+    def test_running_device_cancels_before_its_start_http_reply_arrives(self):
         self.ready()
         entered, release, delay = self.block()
-        self.panel.before_start = delay
-        self.adapter.panel.start_timeout = 0.05
+        self.panel.after_start = delay
         self.adapter.start(self.task)
         self.assertTrue(entered.wait(1))
+        self.assertTrue(self.panel.status["job"]["running"])
+        self.adapter.abort()
+        wait_until(self.adapter.observe, lambda r: r["state"] == "stopped")
+        self.assertFalse(self.adapter.start_future.done())
+        self.assertFalse(self.panel.status["job"]["running"])
+        release.set()
+        self.adapter.start_future.result(timeout=1)
+        self.assertEqual(self.stops, 1)
+        self.assertEqual(len(self.panel.starts), 1)
+
+    def test_lost_start_reply_is_reconciled_without_replaying_start(self):
+        self.ready()
+        original = self.adapter.panel._call
+
+        def timeout_start(method, path, body=None, **kwargs):
+            if method == "POST" and path == "/api/control/commands":
+                original(method, path, body, **kwargs)
+                raise TimeoutError("response lost")
+            return original(method, path, body, **kwargs)
+
+        self.adapter.panel._call = timeout_start
+        self.adapter.start(self.task)
         with self.assertRaises(TimeoutError):
             self.adapter.start_future.result(timeout=1)
-        self.assertEqual(self.adapter.observe()["state"], "failed")
+        self.assertEqual(self.adapter.observe()["error"], "panel_start_unconfirmed")
         self.adapter.abort()
-        self.adapter.stop_future.result(timeout=1)
-        self.assertEqual(self.adapter.observe()["state"], "stopping")
-        # The old remote API may still execute after the client times out. Never call this safe.
-        release.set()
-        wait_until(lambda: self.panel.starts, bool)
-        self.assertTrue(self.panel.status["job"]["running"])
-        self.assertEqual(self.adapter.observe()["state"], "stopping")
-        with self.assertRaisesRegex(ValueError, "held"):
-            self.adapter.start(self.task)
+        wait_until(self.adapter.observe, lambda r: r["state"] == "stopped")
         self.assertEqual(len(self.panel.starts), 1)
+        self.assertFalse(self.panel.status["job"]["running"])
 
     def test_stop_callback_delay_does_not_block_owner_or_fake_completion(self):
         self.ready()
@@ -202,13 +213,16 @@ class AsyncPanelTest(unittest.TestCase):
         self.adapter.start(self.task)
         self.adapter.start_future.result(timeout=1)
         entered, release, delay = self.block()
-        self.panel.before_get = lambda path: delay() if path == "/api/status" else None
+        self.panel.before_get = lambda path: (
+            delay() if path.startswith("/api/control/commands/") else None
+        )
         self.prompt(self.adapter.observe)
         self.assertTrue(entered.wait(1))
         self.prompt(self.adapter.abort)
         self.adapter.stop_future.result(timeout=1)
-        self.assertEqual(self.prompt(self.adapter.observe)["state"], "stopped")
+        self.assertEqual(self.prompt(self.adapter.observe)["state"], "stopping")
         release.set()
+        wait_until(self.adapter.observe, lambda r: r["state"] == "stopped")
 
     def test_stop_failure_cannot_be_replaced_by_stationary_sample(self):
         self.ready()
@@ -230,7 +244,7 @@ class AsyncPanelTest(unittest.TestCase):
         self.adapter.start(self.task)
         self.adapter.start_future.result(timeout=1)
         entered, release, delay = self.block()
-        self.adapter.panel.cancel = delay
+        self.adapter.panel.cancel = lambda **kwargs: delay()
         self.adapter.abort()
         self.assertTrue(entered.wait(1))
         self.assertEqual(self.stops, 1)
@@ -238,28 +252,92 @@ class AsyncPanelTest(unittest.TestCase):
         release.set()
         self.adapter.stop_future.result(timeout=1)
 
-    def test_managed_cancel_error_still_invokes_local_motor_stop(self):
+    def test_transient_cancel_failure_retries_and_logs(self):
         self.ready()
         self.adapter.start(self.task)
         self.adapter.start_future.result(timeout=1)
+        original = self.adapter.panel.cancel
+        calls = []
 
-        def fail_cancel():
-            raise OSError("panel unavailable")
+        def cancel(**kwargs):
+            calls.append(kwargs["timeout"])
+            if len(calls) == 1:
+                raise TimeoutError("first cancel response lost")
+            return original(**kwargs)
 
-        self.adapter.panel.cancel = fail_cancel
-        self.adapter.abort()
-        with self.assertRaises(OSError):
-            self.adapter.stop_future.result(timeout=1)
+        self.adapter.panel.cancel = cancel
+        with self.assertLogs("roport_omx.field_executors", level="ERROR"):
+            self.adapter.abort()
+            wait_until(self.adapter.observe, lambda r: r["state"] == "stopped")
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(0 < value <= 1 for value in calls))
         self.assertEqual(self.stops, 1)
-        self.assertEqual(self.adapter.observe()["state"], "stopping")
 
-    def test_restart_cannot_certify_legacy_remote_start_as_cancelled(self):
-        self.adapter.recover("previous-command")
-        self.adapter.abort()
-        self.adapter.stop_future.result(timeout=1)
-        self.sample = self.stationary()
-        self.assertEqual(self.adapter.observe()["state"], "stopping")
+    def test_legacy_client_is_rejected_before_connection(self):
+        with self.assertRaisesRegex(ValueError, "managed_panel_required"):
+            PanelFieldExecutor(
+                PanelExecutor(ROUTES, box_marker=16),
+                model_version="test",
+                calibration_version="test",
+            )
+
+    def test_normal_completion_does_not_request_an_extra_stop_on_close(self):
+        self.ready()
+        self.adapter.start(self.task)
+        self.adapter.start_future.result(timeout=1)
+        self.panel.finish()
+        wait_until(self.adapter.observe, lambda r: r["state"] == "finished")
+        self.adapter.close()
+        self.assertEqual(self.stops, 0)
+        self.assertIsNone(self.adapter.stop_future)
+
+    def test_definitive_http_refusal_preserves_failure_reason(self):
+        self.ready()
+        original = self.adapter.panel._call
+
+        def refused(method, path, body=None, **kwargs):
+            if method == "POST" and path == "/api/control/commands":
+                raise PanelHTTPError(409, "command_conflict")
+            return original(method, path, body, **kwargs)
+
+        self.adapter.panel._call = refused
+        self.adapter.start(self.task)
+        with self.assertRaises(PanelStartRejected):
+            self.adapter.start_future.result(timeout=1)
+        self.assertFalse(self.adapter.start_unknown)
+        self.assertEqual(self.adapter.observe()["error"], "panel_start_rejected_409")
         self.assertFalse(self.panel.starts)
+
+    def test_failed_refresh_discards_previous_cached_sample(self):
+        from concurrent.futures import Future
+
+        future = Future()
+        future.set_exception(OSError("read failed"))
+        self.adapter.reads["ready"] = {
+            "future": future,
+            "sample": (time.monotonic(), {"armed": True}),
+            "since": time.monotonic(),
+        }
+        with self.assertRaises(OSError):
+            self.adapter._sample("ready", lambda: {})
+        self.assertIsNone(self.adapter.reads["ready"]["sample"])
+
+    def test_cancel_retry_exhaustion_stays_unconfirmed(self):
+        from unittest.mock import Mock
+
+        self.ready()
+        self.adapter.start(self.task)
+        self.adapter.start_future.result(timeout=1)
+        self.adapter.panel.cancel = Mock(side_effect=TimeoutError("panel offline"))
+        with self.assertLogs("roport_omx.field_executors", level="ERROR"):
+            self.adapter.abort()
+            with self.assertRaises(TimeoutError):
+                self.adapter.stop_future.result(timeout=1)
+        self.assertEqual(self.adapter.panel.cancel.call_count, 3)
+        self.assertEqual(self.adapter.observe()["state"], "stopping")
+        self.assertFalse(self.adapter.panel.cancellation_settled())
+        # The failure path was already checked; close without another test-only network failure.
+        self.adapter.panel.cancel = lambda **kwargs: None
 
     def test_owner_close_waits_for_an_already_requested_stop(self):
         entered, release, delay = self.block()
@@ -293,6 +371,7 @@ class AsyncPanelTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "arm_not_safely_home"):
             self.adapter.start_future.result(timeout=1)
         self.assertFalse(self.panel.starts)
+        self.assertEqual(self.adapter.observe()["error"], "arm_not_safely_home")
 
 
 if __name__ == "__main__":

@@ -3,53 +3,74 @@
 from urllib.parse import quote
 
 from .mqtt_link.messages import check_expiry
-from .panel_executor import PanelExecutor
+from .panel_executor import PanelExecutor, PanelHTTPError
+
+
+class PanelStartRejected(ValueError):
+    """The panel definitively refused this start; no ambiguous POST outcome."""
 
 
 class ManagedPanelExecutor(PanelExecutor):
     command_id = None
+    capability_checked = False
 
     def prepare(self):
-        capability = self._call("GET", "/api/control/capabilities", timeout=3)
-        if capability.get("command_cancel") != "durable":
-            raise ValueError("panel command cancellation unavailable")
+        if not self.capability_checked:
+            capability = self._call("GET", "/api/control/capabilities", timeout=3)
+            if capability.get("command_cancel") != "durable":
+                raise ValueError("panel command cancellation unavailable")
+            self.capability_checked = True
         return super().prepare()
 
     def start(self, task):
         check_expiry(task)
         self.command_id = task["command_id"]
-        self._call(
-            "POST",
-            "/api/control/commands",
-            {
-                "command_id": self.command_id,
-                "expires_at": task["expires_at"],
-                "payload": self.start_body(task),
-            },
-            timeout=3,
-        )
+        try:
+            result = self._call(
+                "POST",
+                "/api/control/commands",
+                {
+                    "command_id": self.command_id,
+                    "expires_at": task["expires_at"],
+                    "payload": self.start_body(task),
+                },
+                timeout=3,
+            )
+        except PanelHTTPError as exc:
+            if 400 <= exc.status < 500:
+                raise PanelStartRejected(f"panel_start_rejected_{exc.status}") from exc
+            raise
+        if not isinstance(result, dict) or result.get("command_id") != self.command_id:
+            raise ValueError("panel command mismatch")
+        state = result.get("state")
+        if state in {"cancelled", "expired", "completed", "failed"}:
+            raise PanelStartRejected("panel_command_" + state)
+        if state not in {"pending", "running"}:
+            raise ValueError("panel start outcome unknown")
 
-    def command_state(self):
+    def command_state(self, *, timeout=3):
         if self.command_id is None:
             raise ValueError("no panel command selected")
         result = self._call(
-            "GET", "/api/control/commands/" + quote(self.command_id, safe=""), timeout=3
+            "GET",
+            "/api/control/commands/" + quote(self.command_id, safe=""),
+            timeout=timeout,
         )
         if result.get("command_id") != self.command_id:
             raise ValueError("panel command mismatch")
         return result
 
-    def cancel(self):
+    def cancel(self, *, timeout=1):
         if self.command_id is not None:
             self._call(
                 "POST",
                 "/api/control/commands/" + quote(self.command_id, safe="") + "/cancel",
                 {},
-                timeout=3,
+                timeout=timeout,
             )
 
     def cancellation_settled(self):
-        return self.command_state()["state"] in {
+        return self.command_state(timeout=1)["state"] in {
             "cancelled",
             "expired",
             "completed",

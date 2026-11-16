@@ -1,12 +1,14 @@
 """Adapters preserve the team's device owners; no simulated evidence in a hardware executor."""
 
 from concurrent.futures import Future
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import UTC, datetime
 from logging import getLogger
 from threading import Lock, RLock, Thread
-from time import monotonic
+from time import monotonic, sleep
 
+from .managed_panel import PanelStartRejected
 from .omx3 import judge
 from .omx3.contract import Phase
 from .omx3.host import Omx3Host
@@ -188,7 +190,7 @@ class WarehouseExecutor:
 
 
 class PanelFieldExecutor:
-    """PR66 panel executor supports cooperative actions only. Missing sensors remain unknown."""
+    """Managed cooperative panel only; missing device observations remain unknown."""
 
     def __init__(
         self,
@@ -204,6 +206,11 @@ class PanelFieldExecutor:
             "model_version": model_version,
             "calibration_version": calibration_version,
         }
+        if not all(
+            callable(getattr(panel, name, None))
+            for name in ("cancel", "cancellation_settled")
+        ):
+            raise ValueError("managed_panel_required")
         self.panel, self.completion, self.stop = panel, completion, stop
         self.task = None
         self.stop_status, self.stop_requested_at = stop_status, None
@@ -211,8 +218,8 @@ class PanelFieldExecutor:
         self.closed = False
         self.start_future = self.stop_future = None
         self.reads = {}
-        self.start_unknown = self.stop_again = False
-        self.stop_running = False
+        self.start_unknown = self.finished = False
+        self.start_error = None
 
     def _sample(self, name, read):
         """One bounded outstanding read per kind; stale replies are never re-dated."""
@@ -223,13 +230,14 @@ class PanelFieldExecutor:
             future = entry["future"]
             if future and future.done():
                 entry["future"] = None
+                # Clear the old sample even when the completed read raises.
                 entry["sample"] = None
                 entry["sample"] = future.result()
             sample = entry["sample"]
             if entry["future"] is None and not self.closed:
 
                 def fetch():
-                    with self.io_lock:
+                    with nullcontext() if name == "cancel" else self.io_lock:
                         if self.closed:
                             return monotonic(), {}
                         observed = monotonic()
@@ -285,6 +293,8 @@ class PanelFieldExecutor:
             ):
                 raise ValueError("panel_held_or_starting")
             self.task = deepcopy(task)
+            self.panel.command_id = task["command_id"]
+            self.finished, self.start_error = False, None
             self.reads.pop("ready", None)
             self.reads.pop("observe", None)
             self.start_future = _background(self._start)
@@ -321,28 +331,27 @@ class PanelFieldExecutor:
                         raise ValueError("expired_command")
                     sent = True
                 self.panel.start(self.task)
-        except Exception:
-            # A timeout does not cancel a POST already received by the panel.
-            self.start_unknown = sent
-            raise
-        finally:
+        except Exception as exc:
             with self.lock:
-                if sent and self.stop_requested_at is not None:
-                    self._request_stop()
+                # A timeout does not cancel a POST already received by the panel.
+                self.start_unknown = sent and not isinstance(exc, PanelStartRejected)
+                self.start_error = (
+                    "panel_start_unconfirmed" if self.start_unknown else str(exc)
+                )
+            raise
 
     def observe(self):
         with self.lock:
             stopped = _stopped(self.stop_status, self.stop_requested_at)
             if self.stop_requested_at is not None:
-                cancel_settled = getattr(self.panel, "cancellation_settled", None)
-                if cancel_settled and self.panel.command_id is not None:
+                if self.panel.command_id is not None:
                     try:
                         self.start_unknown = (
-                            self._sample("cancel", cancel_settled) is not True
+                            self._sample("cancel", self.panel.cancellation_settled)
+                            is not True
                         )
                     except Exception:  # noqa: BLE001 - a query failure cannot prove cancellation
                         self.start_unknown = True
-                settled = self.start_future is None or self.start_future.done()
                 stop_done = (
                     self.stop_future
                     and self.stop_future.done()
@@ -350,7 +359,7 @@ class PanelFieldExecutor:
                 )
                 return (
                     {"state": "stopped", "stopped": True}
-                    if stopped and settled and stop_done and not self.start_unknown
+                    if stopped and stop_done and not self.start_unknown
                     else {"state": "stopping"}
                 )
         if self.start_future is None:
@@ -358,7 +367,7 @@ class PanelFieldExecutor:
         if not self.start_future.done():
             return {"state": "running", "step": "starting"}
         if self.start_future.exception() is not None:
-            return {"state": "failed", "error": "panel_start_unconfirmed"}
+            return {"state": "failed", "error": self.start_error}
         try:
             result = self._sample("observe", self.panel.observe)
         except Exception:  # noqa: BLE001 - preserve uncertain device outcomes
@@ -397,14 +406,15 @@ class PanelFieldExecutor:
                     "placement_confirmed": proof.get("placement_confirmed"),
                     "release_confirmed": proof.get("release_confirmed"),
                 }
+        with self.lock:
+            self.finished = result.get("state") == "finished"
         return result
 
     def recover(self, command_id):
         """Restore cancellation identity only; a previous start must never be replayed."""
         with self.lock:
             self.start_unknown = True
-            if getattr(self.panel, "cancellation_settled", None):
-                self.panel.command_id = command_id
+            self.panel.command_id = command_id
 
     def abort(self):
         if self.stop is None:
@@ -413,41 +423,37 @@ class PanelFieldExecutor:
             self._request_stop()
 
     def _request_stop(self):
+        if self.stop_future and (
+            not self.stop_future.done() or self.stop_future.exception() is None
+        ):
+            return
         self.stop_requested_at = datetime.now(UTC)
-        if self.stop_running:
-            self.stop_again = True
-        else:
-            self.stop_running = True
-            self.stop_future = _background(self._stop)
+        self.stop_future = _background(self._stop)
 
     def _stop(self):
-        # This path never waits for the HTTP start/read lock.
-        while True:
-            with self.lock:
-                self.stop_again = False
-                self.stop_requested_at = datetime.now(UTC)
-            try:
-                cancel = getattr(self.panel, "cancel", None)
+        # Durable cancellation prevents late POSTs; neither path waits for start/read I/O.
+        deadline = monotonic() + 3
+        try:
+            self.stop()
+        finally:
+            for attempt in range(3):
                 try:
-                    self.stop()
-                finally:
-                    if cancel:
-                        cancel()
-            except Exception:
-                with self.lock:
-                    self.stop_running = False
-                raise
-            with self.lock:
-                if not self.stop_again:
-                    self.stop_running = False
-                    return
+                    self.panel.cancel(timeout=max(0.01, min(1, deadline - monotonic())))
+                    break
+                except Exception:
+                    getLogger(__name__).exception("Panel command cancellation failed")
+                    if attempt == 2 or monotonic() >= deadline:
+                        raise
+                    sleep(min(0.05, max(0, deadline - monotonic())))
 
     def close(self):
         with self.lock:
             if self.closed:
                 return
             self.closed = True
-            if self.start_future is not None:
+            if (
+                self.start_future is not None and not self.finished
+            ) or self.start_unknown:
                 self._request_stop()
             stop = self.stop_future
         if stop:

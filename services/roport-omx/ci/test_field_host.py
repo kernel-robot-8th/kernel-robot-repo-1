@@ -21,7 +21,7 @@ from roport_omx.field_executors import (
     PanelFieldExecutor,
     WarehouseExecutor,
 )
-from roport_omx.field_host import FieldOmxHost
+from roport_omx.field_host import FieldOmxHost, ReadinessPending
 from roport_omx.mqtt_link.field_wire import build_message
 from roport_omx.mqtt_link.journal import Journal
 
@@ -532,6 +532,25 @@ class FieldHostTest(unittest.TestCase):
             expires_at=expiry(),
         )
 
+    def test_only_pending_readiness_is_retryable_during_reconciliation(self):
+        with self.assertRaises(ValueError) as invalid:
+            self.host.release_hold("")
+        self.assertNotIsInstance(invalid.exception, ReadinessPending)
+        panel = self.executors["shelf-01"]
+        with patch.object(
+            panel, "readiness", return_value={"armed": False, "arms": {}}
+        ):
+            with self.assertRaises(ReadinessPending):
+                self.host.release_hold("checked")
+        with patch.object(panel, "readiness", return_value={"error": "device_fault"}):
+            with self.assertRaises(ValueError) as fault:
+                self.host.release_hold("checked")
+            self.assertNotIsInstance(fault.exception, ReadinessPending)
+        self.host.handle(self.command())
+        with self.assertRaises(ValueError) as active:
+            self.host.release_hold("checked")
+        self.assertNotIsInstance(active.exception, ReadinessPending)
+
     def test_local_reconciliation_preserves_history_and_never_resumes_motion(self):
         self.host.handle(self.command())
         with self.assertRaisesRegex(ValueError, "pending device stop"):
@@ -748,6 +767,9 @@ class FieldHostTest(unittest.TestCase):
         panel = self.executors["shelf-01"]
         panel.check = lambda task, **kwargs: None
         panel.prepare = panel.readiness
+        panel.cancel = lambda **kwargs: panel.abort()
+        panel.cancellation_settled = lambda: True
+        panel.command_id = None
         wrong = {
             "command_id": "command-1",
             "package_id": "wrong-package",
@@ -796,6 +818,10 @@ class FieldHostTest(unittest.TestCase):
             calibration_version="sim-cal",
             stop_status=lambda: sample,
         )
+        panel = self.executors["shelf-01"]
+        panel.cancel = lambda **kwargs: None
+        panel.cancellation_settled = lambda: True
+        panel.command_id = None
         adapters = [
             WarehouseExecutor(runner, marker_ids={"package-17": 17}, **options),
             IndependentArmExecutor(
@@ -1032,6 +1058,9 @@ class FieldHostTest(unittest.TestCase):
 
         panel.check = delayed_check
         panel.prepare = panel.readiness
+        panel.cancel = lambda **kwargs: panel.abort()
+        panel.cancellation_settled = lambda: True
+        panel.command_id = None
         adapter = PanelFieldExecutor(
             panel,
             model_version="sim-model",
@@ -1079,12 +1108,12 @@ class FieldHostTest(unittest.TestCase):
     def test_panel_return_without_sensor_proof_stays_unconfirmed(self):
         from test_panel_executor import ROUTES, FakePanel
 
-        from roport_omx.panel_executor import PanelExecutor
+        from roport_omx.managed_panel import ManagedPanelExecutor
 
-        panel = FakePanel()
+        panel = FakePanel(managed=True)
         try:
             adapter = PanelFieldExecutor(
-                PanelExecutor(ROUTES, box_marker=16, base_url=panel.url),
+                ManagedPanelExecutor(ROUTES, box_marker=16, base_url=panel.url),
                 stop=lambda: None,
                 model_version="sim-model",
                 calibration_version="sim-cal",
@@ -1106,6 +1135,7 @@ class FieldHostTest(unittest.TestCase):
             adapter.close()
             panel.server.shutdown()
             panel.server.server_close()
+            panel.ledger.close()
 
 
 if __name__ == "__main__":

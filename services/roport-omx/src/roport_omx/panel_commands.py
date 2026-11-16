@@ -10,6 +10,10 @@ from datetime import UTC, datetime
 from threading import RLock
 
 
+class CommandConflict(ValueError):
+    """A valid request conflicts with a recorded command or the current device owner."""
+
+
 class PanelCommands:
     def __init__(self, path, *, clock=lambda: datetime.now(UTC)):
         self.clock, self.lock = clock, RLock()
@@ -61,12 +65,12 @@ class PanelCommands:
             ).fetchone()
             if row:
                 if row["body"] is not None and row["body"] != body:
-                    raise ValueError("command_id reused")
+                    raise CommandConflict("command_id reused")
                 return self.get(request["command_id"])
             if self.db.execute(
                 "SELECT 1 FROM commands WHERE state IN ('pending','running','stopping','unknown')"
             ).fetchone():
-                raise ValueError("panel busy or requires reconciliation")
+                raise CommandConflict("panel busy or requires reconciliation")
             state = "expired" if expiry <= self.clock() else "pending"
             with self.db:
                 self.db.execute(
@@ -94,6 +98,7 @@ class PanelCommands:
                     "UPDATE commands SET state=? WHERE id=?", (state, command_id)
                 )
             if state == "running":
+                # Keep local process creation atomic with cancel: unlocking permits a late start after stop.
                 try:
                     begin(request["payload"])
                 except Exception:
@@ -119,8 +124,8 @@ class PanelCommands:
                 )
                 if state in {"running", "stopping", "unknown"}:
                     self.db.execute(
-                        "UPDATE commands SET state='stopping', stop_requested_at=COALESCE(stop_requested_at,?) WHERE id=?",
-                        (self.clock().isoformat(), command_id),
+                        "UPDATE commands SET state='stopping', stop_requested_at=CASE WHEN ?='stopping' THEN stop_requested_at ELSE ? END WHERE id=?",
+                        (state, self.clock().isoformat(), command_id),
                     )
             if state in {"running", "stopping", "unknown"}:
                 stop()  # Request only; confirmation is a separate physical observation.

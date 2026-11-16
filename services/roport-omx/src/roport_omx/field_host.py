@@ -17,6 +17,14 @@ NODES = {"omx1": "N21", "omx2": "N22", "shelf-01": "N11", "omx3": "N01"}
 TERMINAL = {"completed", "failed", "rejected", "interrupted"}
 
 
+class ReadinessPending(ValueError):
+    """Reconciliation is valid but still waiting for fresh device observations."""
+
+
+def _target_arms(target):
+    return ("omx1", "omx2") if target == "shelf-01" else (target,)
+
+
 def _now():
     return datetime.now(UTC).isoformat()
 
@@ -132,16 +140,13 @@ class FieldOmxHost:
             raise ValueError("confirm the pending device stop before reconciliation")
         for target, executor in self.executors.items():
             ready = executor.readiness()
-            arms = ("omx1", "omx2") if target == "shelf-01" else (target,)
-            if (
-                ready.get("armed") is not True
-                or ready.get("busy")
-                or ready.get("error")
-                or any(
-                    not _flags(ready.get("arms", {}).get(arm))["ready"] for arm in arms
-                )
+            arms = _target_arms(target)
+            if ready.get("busy") or ready.get("error"):
+                raise ValueError(target + ": executor busy or fault")
+            if ready.get("armed") is not True or any(
+                not _flags(ready.get("arms", {}).get(arm))["ready"] for arm in arms
             ):
-                raise ValueError(
+                raise ReadinessPending(
                     target + ": stopped, returned and empty observation required"
                 )
         if self.data["hold"]:
@@ -310,15 +315,13 @@ class FieldOmxHost:
         involved = set()
         if active:
             owner = active["command"]["target"]
-            involved = {owner}
-            if owner == "shelf-01":
-                involved.update(("omx1", "omx2"))
+            involved = {owner, *_target_arms(owner)}
         observer = owner if target in involved else target
         try:
             ready = self.executors[observer].readiness()
         except Exception:  # noqa: BLE001 - unreadable device cannot be ready
             ready = {"error": "executor_unavailable", "arms": {}}
-        arm_names = ["omx1", "omx2"] if target == "shelf-01" else [target]
+        arm_names = _target_arms(target)
         arms = [
             {
                 "robot_id": a,
@@ -530,9 +533,7 @@ class FieldOmxHost:
         ):
             return [self._event(stop, "rejected", reason="target_command_not_active")]
         original = active["command"]
-        involved = {original["target"]}
-        if original["target"] == "shelf-01":
-            involved.update(("omx1", "omx2"))
+        involved = {original["target"], *_target_arms(original["target"])}
         if stop["target"] not in involved:
             return [self._event(stop, "rejected", reason="wrong_stop_target")]
         executor = self.executors[original["target"]]

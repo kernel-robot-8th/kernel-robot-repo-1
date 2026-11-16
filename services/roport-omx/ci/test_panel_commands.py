@@ -11,7 +11,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from test_panel_executor import ROUTES
 
-from roport_omx.managed_panel import ManagedPanelExecutor
+from roport_omx.managed_panel import ManagedPanelExecutor, PanelStartRejected
+from roport_omx.panel_executor import PanelHTTPError
 from roport_omx.panel_command_api import PanelCommandAPI
 from roport_omx.panel_commands import PanelCommands
 
@@ -111,12 +112,119 @@ class PanelCommandsTest(unittest.TestCase):
             "pending",
         )
 
+    def test_restart_requires_a_new_stop_observation(self):
+        self.ledger.submit(self.request)
+        self.ledger.start("test-1", self.starts.append)
+        self.ledger.cancel("test-1", lambda: None)
+        old = self.now.isoformat()
+        self.ledger.close()
+        self.now += timedelta(seconds=1)
+        self.ledger = PanelCommands(self.path, clock=lambda: self.now)
+        self.ledger.cancel("test-1", lambda: None)
+        with self.assertRaisesRegex(ValueError, "post-cancel"):
+            self.ledger.confirm_stopped("test-1", {"stopped": True, "observed_at": old})
+        fresh = self.now.isoformat()
+        self.now += timedelta(seconds=1)
+        self.ledger.cancel("test-1", lambda: None)
+        self.ledger.confirm_stopped("test-1", {"stopped": True, "observed_at": fresh})
+        self.assertEqual(self.ledger.get("test-1")["state"], "cancelled")
+
     def test_managed_client_never_falls_back_to_legacy_panel(self):
         client = ManagedPanelExecutor(ROUTES, box_marker=16)
         with patch.object(client, "_call", return_value={}) as call:
             with self.assertRaisesRegex(ValueError, "cancellation unavailable"):
                 client.prepare()
             call.assert_called_once_with("GET", "/api/control/capabilities", timeout=3)
+
+    def test_start_reply_identity_state_and_http_outcomes(self):
+        client = ManagedPanelExecutor(ROUTES, box_marker=16)
+        task = {
+            "command_id": "test-1",
+            "expires_at": self.request["expires_at"],
+            "slot_id": "2b",
+            "operation": "INBOUND",
+        }
+        for state in ("pending", "running"):
+            with patch.object(
+                client, "_call", return_value={"command_id": "test-1", "state": state}
+            ):
+                client.start(task)
+        for state in ("cancelled", "expired", "completed", "failed"):
+            with patch.object(
+                client, "_call", return_value={"command_id": "test-1", "state": state}
+            ):
+                with self.assertRaises(PanelStartRejected):
+                    client.start(task)
+        for reply in (
+            {"command_id": "wrong", "state": "running"},
+            {"command_id": "test-1", "state": "unknown"},
+            [],
+            {},
+        ):
+            with patch.object(client, "_call", return_value=reply):
+                with self.assertRaises(ValueError) as error:
+                    client.start(task)
+                self.assertNotIsInstance(error.exception, PanelStartRejected)
+        for status in (400, 409, 503):
+            with patch.object(
+                client, "_call", side_effect=PanelHTTPError(status, "test error")
+            ):
+                with self.assertRaises(
+                    PanelStartRejected if status < 500 else PanelHTTPError
+                ):
+                    client.start(task)
+
+    def test_capability_is_checked_once_after_success(self):
+        client = ManagedPanelExecutor(ROUTES, box_marker=16)
+        with (
+            patch.object(
+                client, "_call", return_value={"command_cancel": "durable"}
+            ) as call,
+            patch("roport_omx.panel_executor.PanelExecutor.prepare", return_value={}),
+        ):
+            client.prepare()
+            client.prepare()
+            call.assert_called_once_with("GET", "/api/control/capabilities", timeout=3)
+
+    def test_local_begin_cannot_run_after_cancel_confirmation(self):
+        entered, release, stopping = (
+            threading.Event(),
+            threading.Event(),
+            threading.Event(),
+        )
+        order = []
+        self.ledger.submit(self.request)
+
+        def begin(payload):
+            entered.set()
+            if not release.wait(1):
+                raise TimeoutError("test begin gate")
+            order.append("created")
+
+        starter = threading.Thread(target=lambda: self.ledger.start("test-1", begin))
+
+        def cancel():
+            stopping.set()
+            self.ledger.cancel("test-1", lambda: order.append("stop"))
+
+        stopper = threading.Thread(target=cancel)
+        starter.start()
+        self.assertTrue(entered.wait(1))
+        stopper.start()
+        self.assertTrue(stopping.wait(1))
+        try:
+            stopper.join(0.02)
+            self.assertTrue(stopper.is_alive())
+            self.assertEqual(order, [])
+        finally:
+            release.set()
+            starter.join(1)
+            stopper.join(1)
+        self.assertEqual(order, ["created", "stop"])
+        self.ledger.confirm_stopped(
+            "test-1", {"observed_at": self.now.isoformat(), "stopped": True}
+        )
+        self.assertEqual(self.ledger.get("test-1")["state"], "cancelled")
 
     def test_real_http_client_uses_command_identity_and_durable_cancel(self):
         ledger = self.ledger
@@ -171,7 +279,8 @@ class PanelCommandsTest(unittest.TestCase):
             )
             self.assertTrue(client.cancellation_settled())
             # Delayed duplicate POST cannot resurrect the cancelled command.
-            client.start(task)
+            with self.assertRaisesRegex(ValueError, "panel_command_cancelled"):
+                client.start(task)
             ledger.start("test-1", self.starts.append)
             self.assertEqual(len(self.starts), 1)
         finally:

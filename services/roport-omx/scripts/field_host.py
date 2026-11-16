@@ -12,7 +12,7 @@ from queue import Empty
 
 from field_mock import virtual_alignment, virtual_executors
 
-from roport_omx.field_host import FieldOmxHost
+from roport_omx.field_host import FieldOmxHost, ReadinessPending
 from roport_omx.mqtt_link.field_wire import decode, topic
 from roport_omx.mqtt_link.journal import Journal
 from roport_omx.mqtt_link.mqtt import MqttConfig, MqttTransport
@@ -150,10 +150,12 @@ def main():
                 try:
                     host.release_hold(args.reconcile_note)
                     break
-                except ValueError as exc:
+                except ReadinessPending as exc:
                     if time.monotonic() >= deadline:
                         parser.error(str(exc))
                     time.sleep(0.05)
+                except ValueError as exc:
+                    parser.error(str(exc))
         config = MqttConfig(
             host=args.host,
             port=args.port,

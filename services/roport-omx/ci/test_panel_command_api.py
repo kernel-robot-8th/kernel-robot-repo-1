@@ -93,3 +93,20 @@ class PanelAPITest(unittest.TestCase):
             {"command_cancel": "durable"},
         )
         self.assertFalse(self.starts)
+
+    def test_invalid_envelope_is_400_and_busy_is_409(self):
+        original = dict(self.body)
+        for changes in (
+            {"expires_at": "bad"},
+            {"expires_at": "2026-11-16T00:00:00"},
+            {"extra": True},
+            {"expires_at": None},
+        ):
+            self.body = original | changes
+            self.assertEqual(self.submit()[0], 400, changes)
+        self.body = {k: v for k, v in original.items() if k != "expires_at"}
+        self.assertEqual(self.submit()[0], 400)
+        self.body = original
+        self.assertEqual(self.submit()[0], 202)
+        self.body = original | {"command_id": "busy-2"}
+        self.assertEqual(self.submit()[0], 409)

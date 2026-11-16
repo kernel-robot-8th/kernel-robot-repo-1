@@ -26,10 +26,11 @@ from roport_omx.field_executors import (
     WarehouseExecutor,
 )
 from roport_omx.field_host import FieldOmxHost
+from roport_omx.managed_panel import ManagedPanelExecutor
 from roport_omx.mqtt_link import field_wire as wire
 from roport_omx.mqtt_link.journal import Journal
 from roport_omx.mqtt_link.mqtt import MqttConfig, MqttTransport
-from roport_omx.panel_executor import PanelExecutor, Route
+from roport_omx.panel_executor import Route
 from test_omx3_runner import FakeRobot, ScriptPolicy, make
 from test_panel_executor import MODEL, FakePanel
 
@@ -102,7 +103,8 @@ def panel_device_executor(
     arrival_observation(task) reads the fixture's currently observed Pinky visit.
     The fixture's fixed marker/package association is not a production inventory lookup.
     """
-    panel = FakePanel()
+    panel = FakePanel(managed=True)
+    stack.callback(panel.ledger.close)
     stack.callback(panel.server.server_close)
     stack.callback(panel.server.shutdown)
     routes = {
@@ -110,7 +112,7 @@ def panel_device_executor(
         for op in ("INBOUND", "OUTBOUND")
         for slot in ("1b", "2b")
     }
-    actual = PanelExecutor(routes, box_marker=marker_id, base_url=panel.url)
+    actual = ManagedPanelExecutor(routes, box_marker=marker_id, base_url=panel.url)
     sensor = {"run": 0, "started": None, "placed": False}
 
     def tick():
@@ -418,7 +420,7 @@ def test_device_executor_command_to_saved_result_over_mqtt(
                             "schema",
                             "FieldOmxHost",
                             type(executor).__name__,
-                            "Runner" if robot else "PanelExecutor",
+                            "Runner" if robot else "ManagedPanelExecutor",
                         ],
                         "command": command,
                         "events": events,
@@ -447,7 +449,7 @@ def test_panel_start_delay_keeps_mqtt_status_and_stop_responsive(broker, tmp_pat
             assert release.wait(5)
 
         device.panel.before_start = delayed_start
-        # Independent stop device port; the old panel has no agreed remote cancel API.
+        # The local stop and command-aware cancellation are independent of start HTTP.
         device.executor.stop = lambda: device.panel.status["job"].update(running=False)
         journal = Journal(tmp_path / "delayed.json")
         stack.callback(journal.close)
@@ -560,6 +562,11 @@ def test_panel_start_delay_keeps_mqtt_status_and_stop_responsive(broker, tmp_pat
             command_id="stop-delayed",
             expires_at=(datetime.now(UTC) + timedelta(seconds=10)).isoformat(),
         )
+        timer = threading.Timer(2.5, release.set)
+        timer.start()
+        stack.callback(timer.join, 3)
+        stack.callback(timer.cancel)
+        stopped_at = time.monotonic()
         controller.publish(wire.topic("shelf-01", "cmd"), stop_command)
         pump(
             lambda: any(
@@ -570,9 +577,6 @@ def test_panel_start_delay_keeps_mqtt_status_and_stop_responsive(broker, tmp_pat
         )
         count = sum(e["type"] == "robot_state" for e in events)
         pump(lambda: sum(e["type"] == "robot_state" for e in events) > count)
-        assert not release.is_set()
-        assert not any(e["payload"].get("status") == "completed" for e in events)
-        release.set()
         pump(
             lambda: any(
                 e.get("command_id") == "stop-delayed"
@@ -580,7 +584,12 @@ def test_panel_start_delay_keeps_mqtt_status_and_stop_responsive(broker, tmp_pat
                 for e in events
             )
         )
+        assert host.watchdog_s == 3
+        assert time.monotonic() - stopped_at < host.watchdog_s
+        assert not release.is_set()
+        assert not device.executor.start_future.done()
+        timer.join(3)
+        with pytest.raises(ValueError, match="panel_command_cancelled"):
+            device.executor.start_future.result(timeout=1)
         assert host.data["hold"] and not host.data["active"]
-        assert (
-            len(device.panel.starts) == 1 and not device.panel.status["job"]["running"]
-        )
+        assert not device.panel.starts and not device.panel.status["job"]["running"]

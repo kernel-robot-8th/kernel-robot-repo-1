@@ -20,6 +20,8 @@ from roport_omx import panel_executor
 from roport_omx.cooperative import PROFILE, CooperativeHost
 from roport_omx.mqtt_link.journal import Journal
 from roport_omx.panel_executor import PanelExecutor, Route, load_routes
+from roport_omx.panel_commands import PanelCommands
+from roport_omx.panel_command_api import PanelCommandAPI
 
 MODEL = "/models/real_act_2b/pretrained_model"
 ROUTES = {
@@ -75,18 +77,31 @@ def align(*, far=(), check="ok", **change):
 
 
 class FakePanel:
-    def __init__(self):
+    def __init__(self, *, managed=False):
         self.status = {
             "version": "3.12.0",
             "armed": True,
             "job": {"running": False},
             "last_result": None,
         }
+        self.ledger = PanelCommands(":memory:") if managed else None
+        self.command_id = None
+        self.api = (
+            PanelCommandAPI(
+                self.ledger,
+                validate_payload=lambda body: None,
+                begin=self.begin,
+                stop=self.cancel,
+            )
+            if managed
+            else None
+        )
         self.models = [MODEL]
         self.starts = []
         self.start_error = None
         self.before_get = lambda path: None
         self.before_start = lambda: None
+        self.after_start = lambda: None
         self.arms = {
             "OMX 1": live("left"),
             "OMX 2": live("right"),
@@ -96,6 +111,29 @@ class FakePanel:
         self.server = server
         self.url = f"http://127.0.0.1:{server.server_address[1]}"
         threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.observer = PanelExecutor(ROUTES, box_marker=16, base_url=self.url)
+
+    def begin(self, body):
+        self.starts.append(body)
+        repo = f"user/eval_test_{len(self.starts)}"
+        self.status["job"] = {
+            "running": True,
+            "kind": "eval",
+            "info": {"repo_id": repo, "phase": "모델 불러오는 중"},
+        }
+        self.observer.repo_id = repo
+        return {"ok": True, "repo_id": repo}
+
+    def cancel(self):
+        self.status["job"]["running"] = False
+        row = self.ledger.db.execute(
+            "SELECT id FROM commands WHERE state='stopping'"
+        ).fetchone()
+        if row:
+            self.ledger.confirm_stopped(
+                row["id"],
+                {"stopped": True, "observed_at": datetime.now(UTC).isoformat()},
+            )
 
     def _handler(self):
         panel = self
@@ -116,7 +154,10 @@ class FakePanel:
 
             def do_GET(self):
                 panel.before_get(self.path)
-                if self.path == "/api/status":
+                if self.path.startswith("/api/control/") and panel.api:
+                    code, body = panel.api.handle("GET", self.path)
+                    self._json(body, code)
+                elif self.path == "/api/status":
                     self._json(panel.status)
                 elif self.path.startswith("/api/arms?"):
                     query = urllib.parse.urlsplit(self.path).query
@@ -132,20 +173,21 @@ class FakePanel:
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                if self.path != "/api/eval/start":
+                if self.path.startswith("/api/control/") and panel.api:
+                    if self.path == "/api/control/commands":
+                        panel.before_start()
+                        panel.command_id = body["command_id"]
+                    code, reply = panel.api.handle("POST", self.path, body)
+                    if self.path == "/api/control/commands":
+                        panel.after_start()
+                    self._json(reply, code)
+                elif self.path != "/api/eval/start":
                     self._json({"error": "unknown"}, 404)
                 elif panel.start_error:
                     self._json({"error": panel.start_error}, 400)
                 else:
                     panel.before_start()
-                    panel.starts.append(body)
-                    repo = f"user/eval_test_{len(panel.starts)}"
-                    panel.status["job"] = {
-                        "running": True,
-                        "kind": "eval",
-                        "info": {"repo_id": repo, "phase": "모델 불러오는 중"},
-                    }
-                    self._json({"ok": True, "repo_id": repo})
+                    self._json(panel.begin(body))
 
         return Handler
 
@@ -166,6 +208,8 @@ class FakePanel:
             "arms": {"OMX 1": arm("left"), "OMX 2": arm("right")},
             "home_check": "ok",
         } | result
+        if self.ledger:
+            self.ledger.finish(self.command_id, self.observer.observe())
 
 
 class PanelExecutorTest(unittest.TestCase):
@@ -326,6 +370,34 @@ class PanelExecutorTest(unittest.TestCase):
             clock += panel_executor.MODELS_TTL_S + 1
             self.assertEqual(self.executor._model_paths(), set())
             self.assertEqual(call.call_count, 2)
+
+    def test_prepare_refreshes_before_cache_acceptance_expires(self):
+        clock = 100.0
+        self.executor._models = (clock, {MODEL})
+        task = {"operation": "INBOUND", "slot_id": "2b"}
+        calls = []
+
+        def refresh(*args, **kwargs):
+            calls.append(args)
+            # A concurrent command can still use the old cache while refresh is in flight.
+            self.executor.check(task, cached=True)
+            return {"runs": [{"model_path": MODEL}]}
+
+        with (
+            patch.object(
+                panel_executor, "time", SimpleNamespace(monotonic=lambda: clock)
+            ),
+            patch.object(self.executor, "_call", side_effect=refresh),
+            patch.object(self.executor, "readiness", return_value={}),
+        ):
+            clock += 16
+            self.executor.prepare()
+            self.assertEqual(len(calls), 1)
+            clock = 131
+            self.executor.check(task, cached=True)
+            clock = 147
+            with self.assertRaisesRegex(ValueError, "MODEL_CACHE_STALE"):
+                self.executor.check(task, cached=True)
 
     def test_refusals_happen_before_anything_starts(self):
         cases = [("NOT_ARMED", {"armed": False}), ("NOT_ARMED", {"armed": None})]

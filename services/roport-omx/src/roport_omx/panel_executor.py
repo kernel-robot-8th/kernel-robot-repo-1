@@ -162,6 +162,12 @@ def load_routes(path: Path) -> dict[tuple[str, str], Route]:
     return routes
 
 
+class PanelHTTPError(RuntimeError):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
 class PanelExecutor:
     """One evaluation episode per task; the run is matched by the repo_id the panel returns."""
 
@@ -197,7 +203,7 @@ class PanelExecutor:
                 message = json.loads(exc.read()).get("error") or str(exc)
             except ValueError:
                 message = str(exc)
-            raise RuntimeError(f"panel {path}: {message}") from exc
+            raise PanelHTTPError(exc.code, f"panel {path}: {message}") from exc
 
     def readiness(self) -> dict:
         status = self._call("GET", "/api/status")
@@ -245,7 +251,7 @@ class PanelExecutor:
 
     def prepare(self) -> dict:
         """Refresh read-only prerequisites outside the MQTT owner loop."""
-        self._model_paths()
+        self._model_paths(max_age=MODELS_TTL_S / 2)
         return self.readiness()
 
     def check(self, task: dict, *, cached: bool = False) -> None:
@@ -269,9 +275,9 @@ class PanelExecutor:
         if route.model_path not in models:
             raise Rejected("MODEL_NOT_READY")
 
-    def _model_paths(self) -> set[str]:
+    def _model_paths(self, *, max_age=MODELS_TTL_S) -> set[str]:
         fetched, paths = self._models
-        if time.monotonic() - fetched > MODELS_TTL_S:
+        if time.monotonic() - fetched >= max_age:
             runs = self._call("GET", "/api/train/runs", timeout=15).get("runs", [])
             paths = {r.get("model_path") for r in runs if r.get("model_path")}
             self._models = (time.monotonic(), paths)
