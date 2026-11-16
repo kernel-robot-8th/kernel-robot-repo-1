@@ -105,11 +105,11 @@ uv run python scripts/field_host.py --mock --host 127.0.0.1 --port 1883 \
 `stock-omx`는 창고 팔의 역할 명칭입니다. MQTT 토픽·JSON·journal 및 Python `omx3` 모듈 이름은 기존 연동을 위해 유지합니다. 식별자까지 바꾸는 작업은 관제·로봇·명세를 함께 전환하는 별도 변경입니다.
 
 OMX3 소스(`src/roport_omx/omx3/`)와 `ci/test_omx3*.py`는 팀원의 `task/omx3`
-병합본 `6ff67ba307ea4fdb942e8a7d8d2ce16200453ad2`와 동일합니다(PR #71·#89·#95·#91 포함).
+병합본 `32b5b9e7184e09c3dfd97b2fd0847a67aaeb9887`와 동일합니다(PR #71·#89·#95·#91·#96 포함).
 관제 연결 수정은 `field_executors.py`에서 관리합니다. 실행 중에는 Runner만 모터 버스를
 읽으며, 상태 조회는 홈/그리퍼 자세를 미확인으로 둡니다. 같은 팔의 다른 경로도 이때
 조회하지 않고, 실행 종료 후 다시 실제 자세를 읽습니다. `Robot.ready()`와 `stop_status()`는
-연결 상태·관측 캐시만 읽어야 합니다. PR #96의 미병합 정책 어댑터는 포함하지 않았습니다.
+연결 상태·관측 캐시만 읽어야 합니다. 정책은 `reset(marker_id)`와 추론 대기 시 `act() -> None` 계약을 사용합니다.
 
 ### PR #66 기능 인수 범위
 

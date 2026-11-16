@@ -104,7 +104,7 @@ class Runner:
             return end(Phase.FAILED, ErrorCode.ROBOT_ERROR, detail=repr(exc))
 
         marker.reset()  # 학습 데이터처럼 에피소드 시작에서 원 상태를 비운다
-        self.policy.reset()
+        self.policy.reset(marker_id)
         emit(Phase.RUNNING, {})
         period, held = 1.0 / s.fps, 0
         start = next_tick = self.clock()
@@ -122,7 +122,12 @@ class Runner:
                 # 완료 조건이 맞는 동안은 정책 동작을 보내지 않는다(대기 자세 움찔거림 방지).
                 # 마지막 목표 자세에 멈춘 채 확인하고, 조건이 깨지면 다시 정책을 실행한다.
                 if held == 0:
-                    self.robot.send(self.policy.act(obs.state, frame))
+                    action = self.policy.act(obs.state, frame)
+                    # 정책 호출 중 취소됐으면 받은 동작을 보내지 않는다(#96 리뷰)
+                    if abort.is_set():
+                        return end(Phase.FAILED, ErrorCode.CANCELED)
+                    if action is not None:  # None = 추론 대기, 이번 주기는 자세 유지
+                        self.robot.send(action)
                 next_tick += period
                 delay = next_tick - self.clock()
                 if delay < 0:  # 늦으면 밀린 주기를 몰아 보내지 않는다

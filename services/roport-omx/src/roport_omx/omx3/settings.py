@@ -47,6 +47,15 @@ class Omx3Settings:
     home_tolerance: float = 1.0
     home_timeout_s: float = 20.0
 
+    # 원격 추론(7단계 ChunkPolicy). 통신 방식(8단계 UDP)과 무관한 값
+    # 큐가 빈 뒤 이 시간 안에 새 묶음이 안 오면 INFERENCE_UNAVAILABLE(실측 전 기본값)
+    infer_timeout_s: float = 2.0
+    # 남은 동작이 이 개수 이하면 다음 묶음을 미리 요청(실측 전 기본값)
+    refill_at: int = 30
+    # 패널 평가 때 보낸 문장과 같게(eval 데이터 tasks). ACT는 문장을 쓰지 않지만 서버 기록·다른 정책용
+    task: str = "Pick up the box with marker {marker_id} and put it on the tray"
+    robot_type: str = "omx_follower"
+
     def __post_init__(self) -> None:
         if len(self.init_pose) != len(JOINTS):
             raise ValueError(
