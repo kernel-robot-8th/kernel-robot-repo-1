@@ -115,6 +115,38 @@ class FieldOmxHost:
             self.data = deepcopy(self.journal.data)
             raise
 
+    def release_hold(self, note):
+        """Local device-owner confirmation; command history/outbox remain immutable."""
+        if not isinstance(note, str) or not note.strip():
+            raise ValueError("operator note required")
+        if (
+            self.failed
+            or self.data["active"]
+            or self.data.get("stop")
+            or self.data.get("recovery_command_id")
+        ):
+            raise ValueError("confirm the pending device stop before reconciliation")
+        for target, executor in self.executors.items():
+            ready = executor.readiness()
+            arms = ("omx1", "omx2") if target == "shelf-01" else (target,)
+            if (
+                ready.get("armed") is not True
+                or ready.get("busy")
+                or ready.get("error")
+                or any(
+                    not _flags(ready.get("arms", {}).get(arm))["ready"] for arm in arms
+                )
+            ):
+                raise ValueError(
+                    target + ": stopped, returned and empty observation required"
+                )
+        if self.data["hold"]:
+            self.data.setdefault("recoveries", []).append(
+                {"fault": self.data["hold"], "note": note, "at": _now()}
+            )
+            self.data["hold"] = None
+            self._save()
+
     def pending(self):
         return deepcopy(self.data["outbox"])
 
@@ -292,6 +324,12 @@ class FieldOmxHost:
             }
             for a in arm_names
         ]
+        # The panel omits live motor reads while its program owns the bus.
+        # Unknown pose stays unknown; an explicit device fault is never suppressed.
+        if target in involved and ready.get("busy") and not ready.get("error"):
+            for arm in arms:
+                if arm["robot_id"] not in ready.get("arms", {}):
+                    arm["fault"] = None
         fault = (
             self.data["hold"]
             or ready.get("error")

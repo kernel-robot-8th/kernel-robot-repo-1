@@ -243,7 +243,12 @@ class PanelExecutor:
                 merged[name] = flags
         return merged
 
-    def check(self, task: dict) -> None:
+    def prepare(self) -> dict:
+        """Refresh read-only prerequisites outside the MQTT owner loop."""
+        self._model_paths()
+        return self.readiness()
+
+    def check(self, task: dict, *, cached: bool = False) -> None:
         """Refuse before acceptance: no route, no box marker or the model is not trained yet."""
         route = self.routes.get((task["operation"], task["slot_id"]))
         if route is None:
@@ -251,7 +256,14 @@ class PanelExecutor:
         if self.box_marker is None:
             raise Rejected("BOX_MARKER_UNKNOWN")
         try:
-            models = self._model_paths()
+            if cached:
+                fetched, models = self._models
+                if time.monotonic() - fetched > MODELS_TTL_S:
+                    raise Rejected("MODEL_CACHE_STALE")
+            else:
+                models = self._model_paths()
+        except Rejected:
+            raise
         except Exception as exc:
             raise Rejected("EXECUTOR_ERROR") from exc
         if route.model_path not in models:
@@ -265,7 +277,7 @@ class PanelExecutor:
             self._models = (time.monotonic(), paths)
         return paths
 
-    def start(self, task: dict) -> None:
+    def start_body(self, task: dict) -> dict:
         route = self.routes[(task["operation"], task["slot_id"])]
         body = {
             "source": "mqtt",
@@ -285,6 +297,10 @@ class PanelExecutor:
                 "output_filter": route.output_filter,
                 "filter_gripper": route.filter_gripper,
             }
+        return body
+
+    def start(self, task: dict) -> None:
+        body = self.start_body(task)
         check_expiry(task)
         reply = self._call("POST", "/api/eval/start", body, timeout=self.start_timeout)
         if not isinstance(reply.get("repo_id"), str) or not reply["repo_id"]:
