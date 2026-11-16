@@ -346,3 +346,24 @@ def test_start_cross_command(ros):
     ros.command({'cmd': 'start', 'route': ROUTE, 'start_cross': True, 'start_facing': 'S'})
     last = _last(ros, 'start')
     assert last['ok'] is False and 'bar' in last['detail']
+
+
+# ---------------------------------------------------------------- 옆선 켜짐 확인·회전 직후 감속 파라미터
+def test_side_rise_and_post_turn_slow_defaults(ros):
+    c = ros.node.ex.cfg
+    assert (c.side_rise_only, c.side_rise_off_samples, c.side_rise_tee) == (True, 2, False)
+    assert c.post_turn_slow_cm == 10.0
+    ros.feed(2)
+    ros.wait(lambda: ros.states and ros.states[-1]['speed'].get('post_turn_slow_cm') == 10.0)
+
+
+def test_side_rise_and_post_turn_slow_parameters(tmp_path):
+    h = Harness(tmp_path / 'logs', extra=[Parameter('side_rise_only', value=False),
+                                          Parameter('side_rise_off_samples', value=3),
+                                          Parameter('post_turn_slow_cm', value=0.0)])
+    try:
+        c = h.node.ex.cfg
+        assert (c.side_rise_only, c.side_rise_off_samples, c.side_rise_tee) == (False, 3, False)
+        assert c.post_turn_slow_cm == 0.0
+    finally:
+        h.close()
