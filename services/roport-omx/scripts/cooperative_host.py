@@ -7,6 +7,7 @@ fixed. Broker settings come from ROPORT_MQTT_* like the control server; secrets 
 """
 
 import argparse
+import json
 import logging
 import math
 import os
@@ -81,11 +82,71 @@ class HostMetrics:
             log.warning("host metrics not sent: %s", type(exc).__name__)
 
 
+class HoldChannel:
+    """Local files next to the journal for the panel on this PC (same user, never the network).
+
+    <journal stem>.host-state.json   written by the Host: boot_id, active task, HOLD and its cause
+    <journal stem>.hold-request.json written by the panel's [HOLD 해제] button:
+        {"request_id", "hold": <command_id shown>, "checks": {arms_safe, package_checked,
+         pinky_checked}, "requested_at": <unix s>, "by": "panel"}
+    <journal stem>.hold-result.json  written by the Host: {"request_id", "cleared", "reason", ...}
+    A request is read once and removed; one older than REQUEST_MAX_AGE_S is refused.
+    """
+
+    REQUEST_MAX_AGE_S = 60.0
+
+    def __init__(self, journal_path: Path):
+        stem = journal_path.with_suffix("")
+        self.state_path = stem.with_name(stem.name + ".host-state.json")
+        self.request_path = stem.with_name(stem.name + ".hold-request.json")
+        self.result_path = stem.with_name(stem.name + ".hold-result.json")
+        self._last_state = None
+
+    @staticmethod
+    def _write(path: Path, data: dict) -> None:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1))
+        tmp.replace(path)  # the panel never reads half a file
+
+    def tick(self, host: CooperativeHost, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        if self.request_path.exists():
+            try:
+                request = json.loads(self.request_path.read_text())
+            except (OSError, ValueError):
+                request = {}
+            self.request_path.unlink(missing_ok=True)
+            request = request if isinstance(request, dict) else {}
+            asked = request.get("requested_at")
+            if isinstance(asked, bool) or not isinstance(asked, (int, float)):
+                asked = None
+            if asked is None or not 0 <= now - asked < self.REQUEST_MAX_AGE_S:
+                result = {
+                    "request_id": request.get("request_id"),
+                    "hold": host.hold,
+                    "cleared": False,
+                    "reason": "STALE_REQUEST",
+                }
+            else:
+                result = host.release_hold(request)
+            self._write(self.result_path, result | {"at": now})
+            log.warning("HOLD release request %s: %s", result.get("request_id"), result)
+        state = {
+            "boot_id": host.boot_id,
+            "active": host.active,
+            "hold": host.hold_info(),
+        }
+        if state != self._last_state:
+            self._write(self.state_path, state | {"updated_at": now})
+            self._last_state = state
+
+
 def serve(
     host: CooperativeHost,
     transport: MqttTransport,
     site: str,
     metrics: HostMetrics | None = None,
+    holds: HoldChannel | None = None,
 ) -> None:
     channels = {topic(site, "workcell", WORKCELL, c): c for c in ("cmd", "ack")}
     publish(transport, site, host.pending())
@@ -118,6 +179,8 @@ def serve(
             next_resend = time.monotonic() + RESEND_S
         if metrics is not None:
             metrics.tick(transport)
+        if holds is not None:
+            holds.tick(host)
 
 
 def positive_period(text: str) -> float:
@@ -200,6 +263,8 @@ def main() -> None:
     metrics = None
     if args.host_metrics_period_s is not None:
         metrics = HostMetrics(host.boot_id, args.control, args.host_metrics_period_s)
+    holds = HoldChannel(args.journal)  # the panel's [HOLD 해제] button
+    holds.tick(host)
     subscriptions = [topic(args.site, "workcell", WORKCELL, c) for c in ("cmd", "ack")]
     try:
         while True:
@@ -207,7 +272,7 @@ def main() -> None:
             try:
                 transport.start()
                 log.info("subscribed %s:%s", args.host, args.port)
-                serve(host, transport, args.site, metrics)
+                serve(host, transport, args.site, metrics, holds)
             except (ConnectionError, TimeoutError) as exc:
                 log.warning("broker link lost (%s); reconnecting", exc)
                 transport.stop()

@@ -93,6 +93,10 @@ def _fingerprint(message: dict) -> str:
     )
 
 
+# What a person confirms on the panel before a HOLD is released.
+RELEASE_CHECKS = ("arms_safe", "package_checked", "pinky_checked")
+
+
 def _arms(raw) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     result = {}
@@ -166,6 +170,11 @@ class CooperativeHost:
             self._save()
 
     @property
+    def active(self) -> str | None:
+        """Command whose task is running now."""
+        return self._data["active"]
+
+    @property
     def hold(self) -> str | None:
         """Command whose result needs an operator check before any new task."""
         return self._data["hold"]
@@ -175,6 +184,62 @@ class CooperativeHost:
         self._usable()
         self._data["hold"] = None
         self._save()
+
+    def hold_info(self) -> dict | None:
+        """What the HOLD is about, for the panel's screen; None when there is no HOLD."""
+        command_id = self._data["hold"]
+        if command_id is None:
+            return None
+        record = self._data["commands"].get(command_id) or {}
+        events = record.get("events") or []
+        failed = next(
+            (e for e in reversed(events) if e.get("type", "").endswith(".failed")), None
+        )
+        payload = (failed or {}).get("payload") or {}
+        return {
+            "command_id": command_id,
+            # no failed event: the Host restarted during the task, its result is unknown
+            "error_code": payload.get("error_code") or "RESULT_UNKNOWN",
+            "detail": payload.get("detail"),
+            "mission_result": payload.get("mission_result"),
+            "last_step": record.get("last_step"),
+            "since": (failed or {}).get("sent_at"),
+        }
+
+    def release_hold(self, request: dict) -> dict:
+        """Clear the HOLD on a person's request from this PC (the panel's [HOLD 해제] button).
+
+        The person confirms arms, package and Pinky; the Host also needs the HOLD it was asked
+        about (not a newer one), no task in progress, an idle executor and both arms read home
+        with grippers released. Anything missing refuses with a reason and keeps the HOLD.
+        """
+        result = {
+            "request_id": request.get("request_id"),
+            "hold": self._data["hold"],
+            "cleared": False,
+        }
+        checks = (
+            request.get("checks") if isinstance(request.get("checks"), dict) else {}
+        )
+        if self._data["hold"] is None:
+            return result | {"reason": "NO_HOLD"}
+        if request.get("hold") != self._data["hold"]:
+            return result | {"reason": "HOLD_CHANGED"}
+        if self._data["active"] is not None:
+            return result | {"reason": "TASK_ACTIVE"}
+        if not all(checks.get(k) is True for k in RELEASE_CHECKS):
+            return result | {"reason": "CHECKS_MISSING"}
+        ready = self._readiness()
+        if ready["busy"]:
+            return result | {"reason": "EXECUTOR_BUSY"}
+        arms = _arms(ready.get("arms"))
+        if not all(
+            (a["connected"], a["returned"], a["grasping"]) == (True, True, False)
+            for a in arms.values()
+        ):
+            return result | {"reason": "ARMS_NOT_HOME", "arms": arms}
+        self.clear_hold()
+        return result | {"cleared": True, "by": request.get("by")}
 
     def pending(self) -> list[dict]:
         """Events not yet acknowledged by control; resend with the same message_id."""
