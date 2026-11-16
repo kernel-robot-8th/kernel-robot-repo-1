@@ -75,10 +75,18 @@ class Executor(Protocol):
         """{"armed": bool|None, "busy": bool, "error": str|None, "arms": {arm: flags}}"""
 
     def start(self, task: dict) -> None:
-        """Begin one task; raise to refuse. Must return quickly."""
+        """Begin one task; raise to refuse. Must return quickly.
+
+        An executor may also define check(task), raising Rejected before acceptance.
+        """
 
     def observe(self) -> dict:
-        """{"state": "running"|"finished"|"failed", "step": str, "error": str|None, "arms": ...}"""
+        """{"state": "running"|"finished"|"failed", "step": str, "error": str|None, "arms": ...}
+
+        A finished observation may name its completion "evidence" (default "arm_return_only").
+        A failed one may set "operator_stop": True when a person stopped the run and the executor
+        completed that stop; the Host then reports the failure without holding.
+        """
 
 
 def _now() -> str:
@@ -244,6 +252,10 @@ class CooperativeHost:
                 raise Rejected("EXECUTOR_BUSY")
             if self.require_armed and ready["armed"] is not True:
                 raise Rejected("NOT_ARMED")
+            check = getattr(self.executor, "check", None)
+            if check is not None:
+                check(task)  # executor-specific refusal (e.g. no model for this slot)
+            check_expiry(message)
         except ValueError as exc:
             code = exc.args[0] if isinstance(exc, Rejected) else "INVALID_REQUEST"
             detail = {} if isinstance(exc, Rejected) else {"detail": str(exc)}
@@ -258,6 +270,7 @@ class CooperativeHost:
             message, record, "accepted", "ACCEPTED", self._echo(task)
         )
         try:
+            check_expiry(message)  # durable acceptance can also outlive the command
             self.executor.start(task)
         except Exception as exc:  # noqa: BLE001 - any refusal ends this execution
             return events + self._finish(record, "EXECUTOR_START_FAILED", {}, str(exc))
@@ -302,19 +315,32 @@ class CooperativeHost:
                 "grasp_released": True,
                 "arms": arms,
                 "departure_ready": True,
-                "evidence": "arm_return_only",
+                "evidence": seen.get("evidence")
+                if isinstance(seen.get("evidence"), str)
+                else "arm_return_only",
             }
             return self._push(
                 record, self._event(record, "completed", "COMPLETE", payload)
             )
         code = seen.get("error") if state == "failed" else "ARM_NOT_RETURNED"
-        return self._finish(record, code or "EXECUTION_FAILED", arms)
+        # A person's stop that the executor finished safely is reported but does not hold:
+        # the executor's own interlock (e.g. the panel's armed switch) gates the next start.
+        operator_stop = state == "failed" and seen.get("operator_stop") is True
+        return self._finish(
+            record, code or "EXECUTION_FAILED", arms, hold=not operator_stop
+        )
 
     def _finish(
-        self, record: dict, code: str, arms: dict, detail: str | None = None
+        self,
+        record: dict,
+        code: str,
+        arms: dict,
+        detail: str | None = None,
+        *,
+        hold: bool = True,
     ) -> list[dict]:
         self._data["active"] = None
-        self._data["hold"] = record["ids"]["command_id"]
+        self._data["hold"] = record["ids"]["command_id"] if hold else None
         arms = _arms(arms)
         payload = {
             **self._echo(record["task"]),
@@ -394,6 +420,7 @@ class CooperativeHost:
             **task,
             "command_id": message["command_id"],
             "execution_id": message["execution_id"],
+            "expires_at": message["expires_at"],
         }
 
     def _readiness(self) -> dict:
