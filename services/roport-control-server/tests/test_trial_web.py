@@ -186,12 +186,13 @@ def test_host_metrics_profile_key_is_validated(single_profile, settings):
 
 
 def test_host_metrics_subscriber_is_separate_and_optional(
-    single_profile, monkeypatch, capsys
+    single_profile, monkeypatch, caplog
 ):
     from roport_control_server.adapters.mqtt.mqtt import MqttConfig
     from roport_control_server.executor import pinky_trial
 
     created = []
+    attempted = threading.Event()
 
     class Transport:
         ready = False
@@ -200,7 +201,11 @@ def test_host_metrics_subscriber_is_separate_and_optional(
             created.append((config.client_id, subscriptions))
 
         def start(self):
+            attempted.set()
             raise ConnectionError("broker unavailable")
+
+        def stop(self):
+            pass
 
     monkeypatch.setattr(pinky_trial, "MqttTransport", Transport)
     connection = MqttConfig("127.0.0.1", "control-x")
@@ -210,15 +215,20 @@ def test_host_metrics_subscriber_is_separate_and_optional(
         **single_profile,
         "host_metrics": {"hosts": ["pinky1", "shelf-01"], "stale_after_s": 15},
     }
-    receiver, transport = pinky_trial.start_host_metrics(profile, connection)
+    receiver, stop = pinky_trial.start_host_metrics(profile, connection)
+    try:
+        assert attempted.wait(2)
+        assert receiver.stale_after_s == 15
+        assert receiver.diagnostics()["connected"] is False
+    finally:
+        stop()
     assert created == [
         (
             "control-x-host",
             ["roport/robot/pinky1/host", "roport/workcell/shelf-01/host"],
         )
     ]
-    assert receiver.stale_after_s == 15 and isinstance(transport, Transport)
-    assert "Host metrics unavailable" in capsys.readouterr().out
+    assert "Host metrics subscription failed" in caplog.text
 
 
 def test_motion_rejection_diagnostics_reach_ui_without_blocking_start(local_owner):
