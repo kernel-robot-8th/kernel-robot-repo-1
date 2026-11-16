@@ -16,8 +16,12 @@ from mqtt_helpers import wait_until
 
 SERVICE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SERVICE / "tools"))
+from check_field import listen
 from run_virtual_fleet import fetch, send
 from run_virtual_trial import free_port
+
+from roport_control_server.adapters.mqtt.mqtt import MqttConfig
+from roport_control_server.executor.fleet import TARGETS
 
 
 @pytest.mark.parametrize("termination", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
@@ -78,6 +82,20 @@ def test_script_starts_current_checkout_and_cleans_up(termination):
                     assert state["available"] and not state["fault"]
                     assert len(state["robots"]) == 7
                     assert state["tasks"] == {}
+                    if termination == signal.SIGINT and attempt == 0:
+                        config = json.loads((root / "fleet.json").read_text())
+                        broker_port = int(
+                            (root / "mosquitto.conf").read_text().split()[1]
+                        )
+                        report = listen(
+                            config,
+                            list(TARGETS),
+                            MqttConfig("127.0.0.1", "passive-fleet-check", broker_port),
+                            3,
+                            nav2=["pinky3"],
+                        )
+                        assert report["ok"], report
+                        assert fetch(url)["tasks"] == {}
                     assert send(url, key, state, "enable")["accepted"]
                     for name, pid in info["pids"].items():
                         if name == "broker":

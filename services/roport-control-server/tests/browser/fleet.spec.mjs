@@ -3,8 +3,8 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
 // This suite covers the real owner/socket/API/UI, not MQTT or simulated motion.
-async function fixture(mode = 'simulation', receipt = false) {
-  const child = spawn('.venv/bin/python', ['-u', 'tests/fleet_web_fixture.py', mode, ...(receipt ? ['--receipt'] : [])], {stdio: ['ignore', 'pipe', 'pipe']});
+async function fixture(mode = 'simulation', receipt = false, held = false) {
+  const child = spawn('.venv/bin/python', ['-u', 'tests/fleet_web_fixture.py', mode, ...(receipt ? ['--receipt'] : []), ...(held ? ['--held'] : []), ...(held === 'rejected' ? ['--rejected'] : [])], {stdio: ['ignore', 'pipe', 'pipe']});
   const lines = createInterface({input: child.stdout});
   let diagnostics = '';
   child.stderr.on('data', data => { diagnostics += data; });
@@ -103,5 +103,62 @@ test('fleet hardware view never permits a browser to fabricate customer receipt'
     expect((await response.json()).detail).toContain('service evidence');
     await expect(page.locator('#fleet-work')).toContainText('고객 수령 대기');
     expect(errors).toEqual([]);
+  } finally { await owner.close(); }
+});
+
+
+test('held fleet shows owner evidence without changing commands, stock or reservations', async ({page, context}, testInfo) => {
+  const owner = await fixture('simulation', false, true);
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    const snapshot = async () => (await (await page.request.get(`${owner.url}/api/snapshot?mode=fleet`)).json()).fleet;
+    const before = await snapshot();
+    await page.goto(`${owner.url}/ui/?mode=fleet`);
+    await expect(page.locator('#fleet-diagnostics')).toHaveAttribute('open', '');
+    await expect(page.locator('#fleet-diagnostic-status')).toContainText('owner_restarted');
+    await expect(page.locator('#fleet-pending-commands')).toContainText('held-command');
+    await expect(page.locator('#fleet-pending-commands')).toContainText('held-box');
+    await expect(page.locator('#fleet-reservation-owners')).toContainText('held-box');
+    await expect(page.locator('#fleet-robot-observations')).toContainText('N16');
+    await page.locator('#fleet-key').fill(owner.token);
+    await expect(page.locator('#fleet-enable')).toBeDisabled();
+    owner.child.kill('SIGUSR1');
+    await expect(page.locator('#fleet-robot-observations')).toContainText('오래된 관측', {timeout: 6000});
+    await context.setOffline(true);
+    await expect(page.locator('#fleet-diagnostic-status')).toContainText('마지막 수신 상태', {timeout: 5000});
+    await context.setOffline(false);
+    await page.reload();
+    await expect(page.locator('#fleet-pending-commands')).toContainText('held-command');
+    const after = await snapshot();
+    for (const key of ['commands', 'tasks', 'slots', 'resources', 'fault', 'enabled']) expect(after[key]).toEqual(before[key]);
+    await page.locator('#fleet-diagnostics').screenshot({path: testInfo.outputPath('fleet-held-evidence.png')});
+    expect(errors).toEqual([]);
+  } finally { await context.setOffline(false); await owner.close(); }
+});
+
+
+test('operator reconciles a rejected command, releases HOLD and separately enables dispatch', async ({page}) => {
+  const owner = await fixture('simulation', false, 'rejected');
+  try {
+    await page.goto(`${owner.url}/ui/?mode=fleet`);
+    await expect(page.locator('#fleet-recovery-note')).toBeDisabled();
+    await page.locator('#fleet-key').fill(owner.token);
+    await expect(page.locator('#fleet-recovery-note')).toBeEnabled();
+    await expect(page.locator('#fleet-reconcile')).toBeDisabled();
+    await page.locator('#fleet-recovery-note').fill('현장 기체 정지 및 미착수 확인');
+    await page.locator('#fleet-recovery-confirm').check();
+    await page.locator('#fleet-reconcile').click();
+    await expect(page.locator('#fleet-feedback')).toContainText('matching completion evidence');
+    await expect(page.locator('#fleet-release')).toBeDisabled();
+    await page.locator('#fleet-recovery-outcome').selectOption('not_started');
+    await page.locator('#fleet-reconcile').click();
+    await expect(page.locator('#fleet-recovery-command option')).toHaveCount(0);
+    await expect(page.locator('#fleet-enable')).toBeDisabled();
+    await page.locator('#fleet-release').click();
+    await expect(page.locator('#fleet-state')).toHaveText('요청 처리 시작 대기');
+    await expect(page.locator('#fleet-recovery-note')).toBeDisabled();
+    await page.locator('#fleet-enable').click();
+    await expect(page.locator('#fleet-state')).toHaveText('요청 처리 중');
   } finally { await owner.close(); }
 });

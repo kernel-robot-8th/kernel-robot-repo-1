@@ -37,3 +37,11 @@ CREATE TABLE IF NOT EXISTS control_service_receipts (
 -- Legacy receipts have no arrival evidence and must never authorize departure.
 ALTER TABLE control_service_receipts
 ADD COLUMN IF NOT EXISTS arrival_verified boolean NOT NULL DEFAULT false;
+-- A durable claim fences manifest updates before any child robot work is created.
+ALTER TABLE control_service_tasks
+ADD COLUMN IF NOT EXISTS dispatch_locked boolean NOT NULL DEFAULT false;
+UPDATE control_service_tasks SET dispatch_locked=true
+WHERE state IN ('RUNNING','HOLD','COMPLETED','FAILED','REJECTED')
+   OR EXISTS (SELECT 1 FROM control_operational_state s,
+       jsonb_each(COALESCE(s.data->'tasks', '{}'::jsonb)) child
+       WHERE child.key LIKE control_service_tasks.task_id || ':%');

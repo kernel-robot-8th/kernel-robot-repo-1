@@ -3,6 +3,7 @@
 import time
 from copy import deepcopy
 
+from .fleet_recovery import reconcile, release
 from .trial_socket import TrialSocket
 
 
@@ -37,6 +38,8 @@ class FleetSocket(TrialSocket):
             "assign": {"robot", "role"},
             "submit": {"request"},
             "receipt": {"request_id"},
+            "reconcile": {"command_id", "outcome", "note"},
+            "release_hold": {"note"},
         }
         if (
             action not in fields
@@ -49,6 +52,12 @@ class FleetSocket(TrialSocket):
             self.control.hold("operator_stop")
         elif action == "assign":
             self.control.assign(request["robot"], request["role"])
+        elif action == "reconcile":
+            reconcile(
+                self.control, request["command_id"], request["outcome"], request["note"]
+            )
+        elif action == "release_hold":
+            release(self.control, request["note"])
         elif action == "submit":
             self.control.submit(request["request"])
         elif action == "receipt":

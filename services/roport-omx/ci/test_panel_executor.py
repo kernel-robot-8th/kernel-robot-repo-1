@@ -85,6 +85,8 @@ class FakePanel:
         self.models = [MODEL]
         self.starts = []
         self.start_error = None
+        self.before_get = lambda path: None
+        self.before_start = lambda: None
         self.arms = {
             "OMX 1": live("left"),
             "OMX 2": live("right"),
@@ -107,9 +109,13 @@ class FakePanel:
                 self.send_response(code)
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
-                self.wfile.write(raw)
+                try:
+                    self.wfile.write(raw)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
 
             def do_GET(self):
+                panel.before_get(self.path)
                 if self.path == "/api/status":
                     self._json(panel.status)
                 elif self.path.startswith("/api/arms?"):
@@ -131,6 +137,7 @@ class FakePanel:
                 elif panel.start_error:
                     self._json({"error": panel.start_error}, 400)
                 else:
+                    panel.before_start()
                     panel.starts.append(body)
                     repo = f"user/eval_test_{len(panel.starts)}"
                     panel.status["job"] = {

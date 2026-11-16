@@ -332,6 +332,12 @@ def mutate(r, fault):
 def test_preflight_must_block_motion_and_inventory(rig_factory, target, fault):
     r = rig_factory(target)
     mutate(r, fault)
+    if fault.startswith("arm_"):
+        # The panel now publishes asynchronously; wait for the injected observation.
+        deadline = time.monotonic() + 2
+        while r.host.state(target)["payload"]["state"]["ready"]:
+            assert time.monotonic() < deadline, "injected arm fault was not observed"
+            time.sleep(0.005)
     r.consume(r.host.handle(r.command))
     r.finish()
     safe = r.evidence(

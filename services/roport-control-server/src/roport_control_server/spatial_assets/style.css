@@ -455,3 +455,7 @@ nav a { margin-left:auto; color:var(--muted); padding:10px; }
 #fleet-panel { padding: 16px; }
 #fleet-work { padding-left: 20px; max-height: 240px; overflow: auto; }
 #fleet-work li { padding: 6px 0; }
+#fleet-diagnostics { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
+#fleet-diagnostics summary { cursor: pointer; font-weight: 600; }
+#fleet-diagnostics ul { padding-left: 18px; overflow-wrap: anywhere; }
+#fleet-diagnostics li { margin-bottom: 8px; line-height: 1.5; }

@@ -101,6 +101,23 @@
             </fieldset>
             <div id="fleet-shelf" aria-label="선반 2행 3열"></div>
             <p id="fleet-resources"></p><ol id="fleet-work"></ol>
+            <details id="fleet-diagnostics">
+              <summary>중단·복구 확인</summary>
+              <p id="fleet-diagnostic-status" role="status"></p>
+              <p class="muted">조회는 상태를 변경하지 않습니다. 복구는 아래에서 현장 확인 후 명시적으로 적용하며, 이후 관제 실행을 따로 눌러야 합니다.</p>
+              <h4>기체 관측</h4><ul id="fleet-robot-observations"></ul>
+              <h4>미완료 명령</h4><ul id="fleet-pending-commands"></ul>
+              <h4>예약 소유</h4><ul id="fleet-reservation-owners"></ul>
+              <fieldset id="fleet-recovery" disabled>
+                <legend>운영자 복구</legend>
+                <label>대상 명령 <select id="fleet-recovery-command"></select></label>
+                <label>처리 <select id="fleet-recovery-outcome"><option value="completed">저장된 완료 근거 반영</option><option value="not_started">장치가 거절한 작업 재배정</option><option value="removed">물품 제거·주차 확인 후 작업 종료</option></select></label>
+                <label>현장 확인 기록 <input id="fleet-recovery-note" maxlength="500" placeholder="기체·팔·물품 위치 확인 내용"></label>
+                <label><input id="fleet-recovery-confirm" type="checkbox">정지·물품 위치를 현장에서 확인했습니다.</label>
+                <button id="fleet-reconcile" type="button">선택 명령 복구 적용</button>
+                <button id="fleet-release" type="button">확인 완료 · 보류 해제</button>
+              </fieldset>
+            </details>
             <p id="fleet-feedback" role="status">요청을 등록하고 요청 처리를 시작하세요. 고객 수령은 별도 증거로 확인합니다.</p>
           </section>
           <div id="trial-overview"><div id="trial-panel" hidden>

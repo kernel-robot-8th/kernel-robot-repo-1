@@ -15,8 +15,10 @@ from types import SimpleNamespace
 import uvicorn
 
 from roport_control_server.adapters.api.app import create_app
+from roport_control_server.adapters.mqtt.field_wire import build_message
 from roport_control_server.adapters.mqtt.journal import Journal
 from roport_control_server.executor.fleet import TARGETS, FleetControl
+from roport_control_server.executor.fleet_runtime import expiry
 from roport_control_server.executor.fleet_socket import FleetSocket
 
 SERVICE = Path(__file__).resolve().parents[1]
@@ -39,6 +41,7 @@ def owner(folder, mode="simulation"):
     config = {
         **profile,
         "mode": mode,
+        "speed_limit_mps": 0.06,
         "goals": {"gate": goal},
         "n12_goal": goal,
         "omx": {
@@ -137,6 +140,44 @@ def main():
             )
             data["slots"]["1a"] = {"state": "empty", "package_id": None}
             fixture.control.save(data)
+        if "--held" in sys.argv:
+            fixture.control.submit(
+                {
+                    "request_id": "held-request",
+                    "operation": "inbound",
+                    "package_id": "held-box",
+                    "goal": None,
+                }
+            )
+            fixture.control.enable()
+            task, (target, kind, payload) = fixture.control.next_action()
+            command = build_message(
+                kind,
+                fixture.control.config["control_id"],
+                target,
+                payload,
+                command_id="held-command",
+                expires_at=expiry(),
+            )
+            fixture.control.dispatched(task, command)
+            fixture.control.hold("owner_restarted: reconcile active command")
+            if "--rejected" in sys.argv:
+                fixture.control.result(
+                    build_message(
+                        "command_status",
+                        target,
+                        command["source"],
+                        {
+                            "boot_version": payload["expected_boot_version"],
+                            "observed_at": command["sent_at"],
+                            "sequence": 1,
+                            "status": "rejected",
+                            "reason": "test_rejection",
+                            "result": {},
+                        },
+                        command_id=command["command_id"],
+                    )
+                )
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             port = reservation.getsockname()[1]

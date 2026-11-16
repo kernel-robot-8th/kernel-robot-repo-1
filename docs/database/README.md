@@ -68,8 +68,8 @@ erDiagram
     qr_credentials o|--o{ verifications : checked_credential
     pickups ||--o{ handover_approvals : authorized_for
     orders ||--o{ handover_approvals : authorizes_order
-    orders ||--o| receipts : received_once
-    pickups ||--o| receipts : fulfilled_pickup
+    orders ||--o{ receipts : delivered_in_parts
+    pickups ||--o{ receipts : delivered_in_parts
     handover_approvals ||--o| receipts : fulfilled_by
     receipts ||--|{ receipt_packages : confirms
     packages ||--o| receipt_packages : received_as
@@ -95,7 +95,7 @@ erDiagram
 | `qr_credentials` | `credential_id PK`, `token_hash UQ`, `member_id? FK`, `order_id? FK`, `pickup_id? FK`, `issued_at`, `expires_at?`, `revoked_at?` | 소유 FK 정확히 하나만 non-null(`num_nonnulls(...)=1`). 소유 대상이 곧 용도다(회원 QR / 주문 QR / **예약 QR = 카트가 읽는 QR**). 토큰 원문·QR 이미지는 저장하지 않는다. 소유권 불일치·폐기·만료 검사는 서버 책임. |
 | `verifications` | `verification_id PK`, `verification_request_id UQ`, `pickup_id FK`, `method`, `result`, `verified_at?`, `actor_ref`, `credential_id? FK`, `reason_code?`, `marker_id?`, `UQ(verification_id,pickup_id)` | QR 인식 또는 예약번호 조회가 성공했다고 본인 인증 성공으로 기록하지 않는다. 존재하는 예약에 대한 실패 시도는 비밀 원문 없이 기록한다. **대상 예약을 찾지 못한 실패는 이 ERD 밖의 보안 감사·rate-limit에서 기록**(비밀 키 HMAC, 원문 미저장). `marker_id`는 추종(P1)용: 35~49 CHECK, 결속 후 변경 금지(트랜잭션/trigger). 동일 marker 동시 사용 정책은 미정이라 UNIQUE를 두지 않는다. |
 | `handover_approvals` | `approval_id PK`, `pickup_id`, `order_id`, `verification_id`, `task_ref`, `cart_ref`, `order_revision`, `manifest_hash`, `expires_at?`, `revoked_at?`, `consumed_at?`, `UQ(approval_id,order_id,pickup_id)` | **복합 FK** `(pickup_id,order_id)`→pickups, `(verification_id,pickup_id)`→verifications. 부분 UQ `pickup_id WHERE consumed_at IS NULL AND revoked_at IS NULL`(활성 승인 1개; 만료 행은 새 승인 전에 같은 트랜잭션에서 명시적으로 철회). 만료 수치 미정. |
-| `receipts` | `receipt_id PK`, `order_id`, `pickup_id`, `approval_id`, `confirmation_request_id UQ`, `confirmed_by`, `channel`, `received_at`, `order_revision` | `order_id UQ`, `approval_id UQ`, `UNIQUE(receipt_id,order_id)`(receipt_packages 복합 FK 대상). **복합 FK** `(approval_id,order_id,pickup_id)`→handover_approvals. 주문당 전체 수령 1회. 같은 요청 재전송은 기존 결과 반환. 실제 회수 확인 없이 생성 금지. |
+| `receipts` | `receipt_id PK`, `order_id`, `pickup_id`, `approval_id`, `confirmation_request_id UQ`, `confirmed_by`, `channel`, `received_at`, `order_revision` | `order_id` 인덱스, `approval_id UQ`, `UNIQUE(receipt_id,order_id)`(receipt_packages 복합 FK 대상). **복합 FK** `(approval_id,order_id,pickup_id)`→handover_approvals. V3부터 전달 회차별 수령; 모든 활성 포장품 수령 시 주문 완료. 같은 요청 재전송은 기존 결과 반환. 실제 회수 확인 없이 생성 금지. |
 | `receipt_packages` | `receipt_id`, `order_id`, `package_id`, `package_revision`; `PK(receipt_id,package_id)` | `(receipt_id,order_id)`→receipts, `(order_id,package_id)`→packages 복합 FK. `package_id` UQ로 중복 수령 금지. |
 | `customer_service_requests` | `request_id PK`, `pickup_id`, `verification_id`, `mode`, `expected_pickup_revision`, `supersedes_request_id?`, `status`, `requested_at`, `UQ(pickup_id,request_id)` | 입국장 인증 후 안내/추종 선택·모드 변경 이력. **복합 FK** `(verification_id,pickup_id)`, `(pickup_id,supersedes_request_id)`. 같은 pickup의 활성 선택은 부분 UQ로 1개, 같은 이전 요청을 동시에 유효하게 두 번 대체하지 못하게 `supersedes_request_id`의 부분 UQ를 둔다. 거절·실패로 끝난 요청은 제외해야 같은 이전 선택에 다시 요청할 수 있다. 상태 이름이 확정되기 전이라 제외할 종결 상태 목록은 미정이며, 이름이 정해질 때 함께 확정한다. **로봇의 일시정지 상태는 이 테이블에 두지 않는다(원본은 관제).** |
 | `notifications` | `notification_id PK`, `pickup_id FK`, `event_key UQ`, `type`, `delivery_status`, `sent_at?`, `task_ref?`, `robot_ref?` | 카트 도착·미수령·탑승 알림. 전달 성공과 고객 확인을 구분. 동일 사건 replay로 중복 알림 금지. |

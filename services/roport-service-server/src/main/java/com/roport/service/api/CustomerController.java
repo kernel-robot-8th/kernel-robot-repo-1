@@ -5,6 +5,7 @@ import com.roport.service.api.PickupService.Flight;
 import com.roport.service.api.PickupService.Location;
 import com.roport.service.api.PickupService.Order;
 import com.roport.service.api.PickupService.Pickup;
+import com.roport.service.control.ControlExchange;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -29,9 +30,11 @@ class CustomerController {
     record PickupRequest(String orderId, String locationId, String flightId, String pickupAt) {}
 
     private final PickupService service;
+    private final ControlExchange exchange;
 
-    CustomerController(PickupService service) {
+    CustomerController(PickupService service, ControlExchange exchange) {
         this.service = service;
+        this.exchange = exchange;
     }
 
     @GetMapping("/orders")
@@ -81,6 +84,13 @@ class CustomerController {
     @GetMapping("/pickups/{pickupId}")
     Pickup pickup(@SessionAttribute(WebConfig.MEMBER_ID) String memberId, @PathVariable String pickupId) {
         return service.pickup(memberId, pickupId).orElseThrow(() -> ApiException.notFound("PICKUP_NOT_FOUND"));
+    }
+
+    @PostMapping("/pickups/{pickupId}/manifest-refresh")
+    Map<String, Object> refreshManifest(@SessionAttribute(WebConfig.MEMBER_ID) String memberId,
+            @PathVariable String pickupId) {
+        service.pickup(memberId, pickupId).orElseThrow(() -> ApiException.notFound("PICKUP_NOT_FOUND"));
+        return exchange.refreshManifest(pickupId, memberId);
     }
 
     private static CreatePickup validate(PickupRequest b) {

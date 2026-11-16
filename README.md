@@ -1,22 +1,34 @@
 # RO:PORT (로포트)
 
-## 팀원 통합 시험 브랜치
+## 관제 통합 시험 브랜치
 
-`feature/inyup-baek/control-test-current`는 PR 병합을 기다리는 동안 로컬 구현을 함께 시험하기 위한 브랜치입니다. 최신 main과 PR #79의 MQTT·OMX 수정, 미제출 Fleet·웹 UI·서비스 WSS·운영 저장소 코드를 포함합니다. main 릴리스나 실물 인수 완료 버전은 아닙니다. 시험 결과에는 `git rev-parse HEAD` 값을 함께 기록하세요.
-
-Ubuntu 24.04, Python 3.12, uv, Node.js 24, Mosquitto가 설치된 PC에서:
+`task/control-integration-test`는 사용자 서비스 연결 전 관제 통합본을 모아 시험할 기준 브랜치입니다.
+초기 통합 PR의 feature 브랜치는 `feature/inyup-baek/control-integration-test`입니다.
+**초기 PR 병합 전에는 아래 feature 브랜치를 사용하세요.** 병합 후에는 clone 명령의 브랜치를
+`task/control-integration-test`로 바꾸면 됩니다. main 릴리스·실물 인수 완료 버전은 아닙니다.
 
 ```bash
-git clone --branch feature/inyup-baek/control-test-current https://github.com/kernel-robot-8th/kernel-robot-repo-1.git roport-control-test
+git clone --branch feature/inyup-baek/control-integration-test https://github.com/kernel-robot-8th/kernel-robot-repo-1.git roport-control-test
 cd roport-control-test/services/roport-control-server
 npm ci --ignore-scripts
 npm run prepare:assets
 bash tools/start_virtual_ui.sh
 ```
 
-터미널에 표시되는 URL과 마지막 조작 키로 접속합니다. 기본 URL은 `http://127.0.0.1:8000/ui/?mode=fleet`입니다. 가상 시험은 로컬 브로커와 가상 장치를 사용하며 별도 운영 DB나 실물 로봇 없이 실행됩니다. 종료는 Ctrl+C입니다. 실행 기록과 키는 공유하지 마세요.
+필수 환경은 Ubuntu 24.04, Python 3.12, uv, Node.js 24, Mosquitto입니다.
+터미널의 URL과 조작 키로 접속합니다. 기본 URL은 `http://127.0.0.1:8000/ui/?mode=fleet`입니다.
+실물 로봇·운영 DB 없이 가상 Pinky·OMX와 로컬 MQTT로 시험하며 Ctrl+C로 종료합니다.
+시험 결과에는 `git rev-parse HEAD`를 기록하고, 생성된 키·로그·DB는 공개하지 마세요.
 
-작업을 수정하지 않은 테스트 복사본의 업데이트는 저장소에서 `git pull --ff-only` 후 위 실행 명령을 다시 사용합니다. 직접 수정 중인 작업공간에는 덮어쓰지 말고 별도 clone을 사용하세요. 실물 설치·센서·제어판 설정은 [통합 관제 가이드](services/roport-control-server/docs/field-control.md)를 따릅니다.
+포함: 요청 기반 배정·동시 주행·입출고·N12 왕복, 원본 관제 웹 UI, 최소 MQTT v2,
+OMX 장치 어댑터·복구·패널 수신 모듈, 서비스 WSS·운영 DB·수령 처리, 현장 배포/점검 도구입니다.
+**고객 웹·카트 패드의 전체 흐름 연결은 다음 작업입니다.** 현재 가상 UI 명령은 서비스 서버를 띄우지 않습니다.
+실물은 장치 factory·센서·모델/캘리브레이션·현장 확인이 별도로 필요합니다.
+
+설치·브랜치 운용·검증 범위는 [통합 시험 안내](docs/control-integration-test.md),
+장비별 적용은 [현장 매뉴얼](docs/field/README.md)을 따릅니다.
+기존 `feature/inyup-baek/control-test-current`는 과거 시험 기준으로 보존합니다.
+직접 수정하지 않은 시험 clone은 `git pull --ff-only` 후 위 실행 명령을 다시 사용합니다.
 
 **공항 면세품 물류와 고객 안내를 연결하는 로봇 서비스 프로젝트**
 

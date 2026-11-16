@@ -166,6 +166,7 @@ def java_service(pg_port, output):
         SERVICE_CONTROL_SITE="E2E",
         SERVICE_CONTROL_TOKEN=token,
         SERVICE_DEV_LOGIN="true",
+        SERVICE_DEV_CART="true",
         SERVER_ADDRESS="127.0.0.1",
         SERVER_PORT=str(port),
     )
@@ -282,7 +283,7 @@ def service_link(url, token, store):
             raise RuntimeError("service link did not stop")
 
 
-def exercise(output, pg_port, url, token, case):
+def exercise(output, pg_port, url, token, case, *, confirm_receipt=False):
     service_dsn = f"postgresql://127.0.0.1:{pg_port}/service_test"
     control_dsn = f"postgresql://127.0.0.1:{pg_port}/control_test"
     migrate_service(control_dsn)
@@ -368,7 +369,13 @@ def exercise(output, pg_port, url, token, case):
                 for panel in panels:
                     panel.tick()
                 if time.monotonic() - last_tick >= 0.15:
-                    service_tick(control, store)
+                    # Advance only the business clock to the requested pickup time.
+                    # MQTT/sensor clocks and real driver timing remain unchanged.
+                    service_tick(
+                        control,
+                        store,
+                        now=datetime.fromisoformat(customer_request["pickupAt"]),
+                    )
                     last_tick = time.monotonic()
                 return predicate()
 
@@ -485,6 +492,89 @@ def exercise(output, pg_port, url, token, case):
             },
             "hardware_connected": False,
         }
+        if confirm_receipt:
+            # Explicitly simulate customer arrival only for the receipt-boundary test.
+            # The default run above still ends at the real driver's Nav2 input.
+            cart.driver.nav.tick = lambda dt: SimulatedNav.tick(cart.driver.nav, dt)
+            pump(lambda: control.data["tasks"][child_id]["stage"] == "await_receipt")
+            cart.driver.nav.tick = lambda dt: setattr(
+                cart.driver.nav, "observed_at", time.time()
+            )
+
+            def arrival_reported():
+                with psycopg.connect(service_dsn) as db:
+                    row = db.execute(
+                        "SELECT progress_payload FROM control_task_views WHERE task_ref=%s",
+                        (task["task_id"],),
+                    ).fetchone()
+                    return row and row[0]["progress"]["packages"] == [
+                        {
+                            "package_id": package,
+                            "robot": "pinky3",
+                            "stage": "await_receipt",
+                        }
+                    ]
+
+            pump(arrival_reported)
+
+            def cart_post(path, body):
+                request = urllib.request.Request(
+                    url + path,
+                    data=json.dumps(body).encode(),
+                    headers={"Content-Type": "application/json", "X-Cart-Id": "pinky3"},
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    return json.load(response)
+
+            verified = cart_post(
+                "/cart-api/verifications",
+                {
+                    "verificationRequestId": str(uuid4()),
+                    "method": "RESERVATION_NO",
+                    "value": reservation["reservationNo"],
+                },
+            )
+            assert verified["result"] == "VERIFIED"
+            confirmation = {
+                "verificationId": verified["verificationId"],
+                "confirmationRequestId": str(uuid4()),
+            }
+            receipt = cart_post("/cart-api/receipts", confirmation)
+            assert (
+                cart_post("/cart-api/receipts", confirmation)["receiptId"]
+                == receipt["receiptId"]
+            )
+            pump(lambda: len(cart.driver.nav.received) == 2)
+            assert store.receipts()[0]["arrival_verified"] is True
+            assert (
+                cart.driver.nav.received[-1]["pose"]
+                == control.config["n12_goal"]["pose"]
+            )
+            assert control.data["tasks"][child_id]["stage"] == "return_nav"
+            with psycopg.connect(service_dsn) as db:
+                assert db.execute("SELECT count(*) FROM receipts").fetchone()[0] == 1
+                assert (
+                    db.execute(
+                        "SELECT business_status FROM orders WHERE order_id='e2e-order'"
+                    ).fetchone()[0]
+                    == "RECEIVED"
+                )
+            result.update(
+                stage="return_nav",
+                nav_goal_completion_generated=True,
+                customer_receipt_count=1,
+                mqtt_cart_command_types=[
+                    r["command"]["type"] for r in cart.journal.data["records"].values()
+                ],
+            )
+            result["receipt_boundary"] = {
+                "simulated_customer_arrival": True,
+                "receipt": receipt,
+                "duplicate_created": False,
+                "return_goal_received": True,
+                "arrival_verified": True,
+            }
+        result["business_clock"] = customer_request["pickupAt"]
         write_json(output / "result.json", result)
         write_json(
             output / "customer-request.json",
@@ -504,6 +594,11 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--case", choices=("left", "right", "large"), default="left")
     parser.add_argument("--pg-bin", type=Path, required=True)
+    parser.add_argument(
+        "--confirm-receipt",
+        action="store_true",
+        help="simulate Nav2 arrival, verify and explicitly confirm receipt over HTTP",
+    )
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
 
@@ -516,7 +611,14 @@ def main():
             databases(args.pg_bin, args.output) as pg_port,
             java_service(pg_port, args.output) as (url, token),
         ):
-            exercise(args.output, pg_port, url, token, args.case)
+            exercise(
+                args.output,
+                pg_port,
+                url,
+                token,
+                args.case,
+                confirm_receipt=args.confirm_receipt,
+            )
     except BaseException as exc:
         write_json(
             args.output / "failure.json",

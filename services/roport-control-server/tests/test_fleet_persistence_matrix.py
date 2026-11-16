@@ -13,6 +13,7 @@ import pytest
 from psycopg.types.json import Jsonb
 from test_fleet import complete, dispatch, submit
 from test_fleet import fleet as fleet  # noqa: PLC0414
+from test_fleet_service import service_tick
 from test_pinky_trial import MemoryTransport
 from test_pinky_trial import profile as profile  # noqa: PLC0414
 from test_service_link import dsn as dsn  # noqa: PLC0414
@@ -28,7 +29,7 @@ from roport_control_server.adapters.db.service_tasks import (
 from roport_control_server.adapters.mqtt import field_wire as wire
 from roport_control_server.adapters.wss.service import ServiceLink
 from roport_control_server.executor.fleet import FleetControl
-from roport_control_server.executor.fleet_runtime import FleetRuntime, service_tick
+from roport_control_server.executor.fleet_runtime import FleetRuntime
 
 
 @pytest.fixture

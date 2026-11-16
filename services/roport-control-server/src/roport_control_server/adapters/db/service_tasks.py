@@ -12,6 +12,8 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from ...contracts.service_policy import manifest_change_reason
+
 SCHEMA = Path(__file__).with_name("002_service.sql")
 TERMINAL = {"COMPLETED", "FAILED", "REJECTED"}
 STATES = {"QUEUED", "WAITING_MANIFEST", "RUNNING", "HOLD"} | TERMINAL
@@ -139,12 +141,43 @@ class ServiceTaskStore:
                     (previous["task_id"],),
                 ).fetchone()
             task = conn.execute(
-                "SELECT * FROM control_service_tasks WHERE reservation_id=%s",
+                "SELECT * FROM control_service_tasks WHERE reservation_id=%s FOR UPDATE",
                 (payload["reservation_id"],),
             ).fetchone()
             if task:
-                if task["request"] != payload or task["site_id"] != message["site_id"]:
-                    raise ValueError("reservation already has a different request")
+                if task["site_id"] != message["site_id"]:
+                    raise ValueError("reservation site mismatch")
+                if task["request"] != payload:
+                    reason = manifest_change_reason(
+                        task["request"],
+                        payload,
+                        task["dispatch_locked"] or task["state"] in TERMINAL,
+                    )
+                    if reason == "reservation_fields_changed":
+                        raise ValueError(
+                            "reservation already has a different request: " + reason
+                        )
+                    progress = {
+                        **task["progress"],
+                        "manifest_change": {
+                            "order_revision": payload["order_revision"],
+                            "accepted": reason is None,
+                            "reason": reason,
+                        },
+                    }
+                    task = conn.execute(
+                        """UPDATE control_service_tasks SET request=%s,state=%s,progress=%s,
+                        revision=revision+1,updated_at=now() WHERE task_id=%s RETURNING *""",
+                        (
+                            Jsonb(payload if reason is None else task["request"]),
+                            ("QUEUED" if packages else "WAITING_MANIFEST")
+                            if reason is None
+                            else task["state"],
+                            Jsonb(progress),
+                            task["task_id"],
+                        ),
+                    ).fetchone()
+                    self._event(conn, task, "task.progress")
             else:
                 existing = conn.execute(
                     "SELECT 1 FROM control_service_tasks WHERE order_id=%s AND state NOT IN ('COMPLETED','FAILED','REJECTED')",
@@ -169,6 +202,26 @@ class ServiceTaskStore:
             conn.execute(
                 "INSERT INTO control_service_inbox(message_id,message,task_id) VALUES (%s,%s,%s)",
                 (message["message_id"], Jsonb(message), task["task_id"]),
+            )
+            return task
+
+    def claim(self, task_id, order_revision):
+        """Serialize a prepared dispatch against a concurrent manifest update."""
+        with self._connection() as conn:
+            task = conn.execute(
+                "SELECT * FROM control_service_tasks WHERE task_id=%s FOR UPDATE",
+                (task_id,),
+            ).fetchone()
+            if (
+                not task
+                or task["state"] in TERMINAL
+                or not task["request"]["packages"]
+                or task["request"]["order_revision"] != order_revision
+            ):
+                return None
+            conn.execute(
+                "UPDATE control_service_tasks SET dispatch_locked=true WHERE task_id=%s",
+                (task_id,),
             )
             return task
 
@@ -267,6 +320,11 @@ class ServiceTaskStore:
             ).fetchone()
             if not task:
                 raise ValueError("unknown task")
+            if "manifest_change" in task["progress"]:
+                progress = {
+                    **progress,
+                    "manifest_change": task["progress"]["manifest_change"],
+                }
             if task["state"] == state and task["progress"] == progress:
                 return task
             if task["state"] in TERMINAL:

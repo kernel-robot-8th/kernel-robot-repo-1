@@ -17,6 +17,7 @@ from roport_control_server.adapters.mqtt import field_wire as wire
 from roport_control_server.adapters.mqtt.journal import Journal
 from roport_control_server.adapters.mqtt.mqtt import MqttTransport
 from roport_control_server.adapters.mqtt.trial_wire import mqtt_config
+from roport_control_server.contracts.service_policy import dispatch_at
 
 from .fleet import ROLES, TARGETS, FleetControl
 from .fleet_socket import FleetSocket
@@ -195,7 +196,8 @@ class FleetRuntime:
                 c.hold("command publish outcome unknown")
 
 
-def service_tick(control, store):
+def service_tick(control, store, *, now=None):
+    now = now or datetime.now(UTC)
     for task in store.pending_tasks():
         payload = task["request"]
         if task["state"] == "WAITING_MANIFEST":
@@ -223,12 +225,23 @@ def service_tick(control, store):
             # Reject an invalid manifest before creating any robot work.
             for request in requests:
                 control.validate_request(request)
+            if (
+                payload["operation"] == "customer_service"
+                and not task["dispatch_locked"]
+                and now < dispatch_at(payload, control.config.get("service_policy", {}))
+            ):
+                continue
+            if store.claim(task["task_id"], payload["order_revision"]) is None:
+                continue
             for request in requests:
                 children.append(control.submit(request))
             if children:
+                settled = all(t["status"] in {"COMPLETE", "CANCELED"} for t in children)
                 state = (
-                    "COMPLETED"
-                    if all(t["status"] == "COMPLETE" for t in children)
+                    "FAILED"
+                    if settled and any(t["status"] == "CANCELED" for t in children)
+                    else "COMPLETED"
+                    if settled
                     else "HOLD"
                     if any(t["status"] == "HOLD" for t in children)
                     else "QUEUED"
@@ -236,7 +249,19 @@ def service_tick(control, store):
                     else "RUNNING"
                 )
                 store.update(
-                    task["task_id"], state, {"stages": [t["stage"] for t in children]}
+                    task["task_id"],
+                    state,
+                    {
+                        "stages": [t["stage"] for t in children],
+                        "packages": [
+                            {
+                                "package_id": t["request"]["package_id"],
+                                "robot": t.get("robot"),
+                                "stage": t["stage"],
+                            }
+                            for t in children
+                        ],
+                    },
                 )
         except ValueError as exc:
             store.update(task["task_id"], "HOLD", {"reason": str(exc)})

@@ -111,7 +111,7 @@ class FleetControl:
 
     def hold(self, reason):
         data = deepcopy(self.data)
-        data.update(enabled=False, fault=reason)
+        data.update(enabled=False, fault=data["fault"] or reason)
         for active in data["commands"].values():
             data["tasks"][active["task"]]["status"] = "HOLD"
         self.save(data)
@@ -120,7 +120,7 @@ class FleetControl:
         if robot not in ROLES or role not in {*PARKING, None}:
             raise ValueError("unknown robot/role")
         if any(
-            t.get("robot") == robot and t["status"] != "COMPLETE"
+            t.get("robot") == robot and t["status"] not in {"COMPLETE", "CANCELED"}
             for t in self.data["tasks"].values()
         ):
             raise ValueError("finish/reconcile current robot task before changing role")
@@ -159,7 +159,7 @@ class FleetControl:
             return deepcopy(previous)
         if any(
             t["request"]["package_id"] == request["package_id"]
-            and t["status"] != "COMPLETE"
+            and t["status"] not in {"COMPLETE", "CANCELED"}
             for t in self.data["tasks"].values()
         ):
             raise ValueError("package already has an active task")
@@ -231,7 +231,7 @@ class FleetControl:
             return
         if any(
             t.get("robot") == robot
-            and t["status"] != "COMPLETE"
+            and t["status"] not in {"COMPLETE", "CANCELED"}
             and t.get("robot_boot") != p["boot_version"]
             for t in self.data["tasks"].values()
         ):
@@ -310,7 +310,9 @@ class FleetControl:
         busy = self.occupied(robot) | {
             t["parking"]
             for t in (data or self.data)["tasks"].values()
-            if t.get("robot") != robot and t["status"] != "COMPLETE" and "parking" in t
+            if t.get("robot") != robot
+            and t["status"] not in {"COMPLETE", "CANCELED"}
+            and "parking" in t
         }
         for node in PARKING[role]:
             if node not in busy:
@@ -336,7 +338,8 @@ class FleetControl:
                 (
                     t
                     for t in data["tasks"].values()
-                    if t.get("robot") == robot and t["status"] != "COMPLETE"
+                    if t.get("robot") == robot
+                    and t["status"] not in {"COMPLETE", "CANCELED"}
                 ),
                 None,
             )
@@ -366,7 +369,10 @@ class FleetControl:
             raise ValueError(f"no ready {role} robot with free route/return bay")
         _, robot, bay = min(candidates)
         for previous in data["tasks"].values():
-            if previous.get("robot") == robot and previous["status"] != "COMPLETE":
+            if previous.get("robot") == robot and previous["status"] not in {
+                "COMPLETE",
+                "CANCELED",
+            }:
                 previous.update(
                     stage="done",
                     status="COMPLETE",
@@ -459,10 +465,10 @@ class FleetControl:
     def waiting_node_clear(self, node, task):
         # Waiting must leave other robots a route to their goal and out of a bay.
         for other in self.data["tasks"].values():
-            if (
-                other.get("robot") in {None, task["robot"]}
-                or other["status"] == "COMPLETE"
-            ):
+            if other.get("robot") in {None, task["robot"]} or other["status"] in {
+                "COMPLETE",
+                "CANCELED",
+            }:
                 continue
             if goal := self.route_goal(other):
                 start = self.observed[other["robot"]]["state"]["node"]
@@ -784,7 +790,7 @@ class FleetControl:
         task = data["tasks"][active["task"]]
         if p["status"] in {"failed", "rejected", "interrupted"}:
             task.update(status="HOLD", reason=p.get("reason", p["status"]))
-            data.update(fault=task["reason"], enabled=False)
+            data.update(fault=data["fault"] or task["reason"], enabled=False)
             for other in data["commands"].values():
                 data["tasks"][other["task"]]["status"] = "HOLD"
         elif p["status"] == "completed" and not data["fault"]:

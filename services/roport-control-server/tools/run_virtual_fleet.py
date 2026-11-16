@@ -26,16 +26,17 @@ from roport_control_server.adapters.api.maps import load_map
 from roport_control_server.executor.plans import shortest_route
 
 
-def profiles():
-    trial = prepare(MAP, LAYOUT, simulation=True)
+def profiles(*, map_path=MAP, layout_path=LAYOUT, simulation=True):
+    trial = prepare(map_path, layout_path, simulation=simulation)
+    speed = VIRTUAL_SPEED_MPS if simulation else 0.06
     for route in trial["routes"].values():
-        route["speed_limit_mps"] = VIRTUAL_SPEED_MPS
-    grid = load_map(MAP, LAYOUT)
+        route["speed_limit_mps"] = speed
+    grid = load_map(map_path, layout_path)
     positions = {n["id"]: n["position"] for n in grid["layout"]["nodes"]}
     # The IR bar is 3 cm in front of the body; use the same graph return calibration.
     import yaml
 
-    layout = yaml.safe_load(LAYOUT.read_text())
+    layout = yaml.safe_load(Path(layout_path).read_text())
     yaw = math.radians(layout["frame"]["yaw_deg"])
     x, y = positions["N12"]
     goal = {
@@ -59,7 +60,7 @@ def profiles():
         "node_positions": positions,
         # Two padded turning footprints + front IR and node-detection allowance.
         "node_clearance_m": 0.35,
-        "speed_limit_mps": VIRTUAL_SPEED_MPS,
+        "speed_limit_mps": speed,
         "goals": {"PUBLIC_SPACE_TRIAL": goal},
         "n12_goal": back,
         "omx": {
@@ -67,6 +68,13 @@ def profiles():
             for r in ["omx1", "omx2", "omx3", "shelf-01"]
         },
     }
+    if not simulation:
+        # Neither simulated clearance nor model names are field calibration.
+        fleet.pop("node_clearance_m")
+        fleet["omx"] = {
+            r: {"model_version": None, "calibration_version": None}
+            for r in fleet["omx"]
+        }
     robots = {}
     for robot, role, start in [
         ("pinky1", "logistics", "N16"),

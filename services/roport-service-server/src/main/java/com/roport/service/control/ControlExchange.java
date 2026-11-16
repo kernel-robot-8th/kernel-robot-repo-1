@@ -46,6 +46,12 @@ public class ControlExchange {
     /** Called inside reservation creation's transaction, including its package snapshot. */
     @Transactional
     public void reservationCreated(String pickupId) {
+        var payload = reservationPayload(pickupId);
+        String site = (String) payload.remove("site_id");
+        enqueue("reservation:" + pickupId, envelope(site, "task.requested", payload));
+    }
+
+    private LinkedHashMap<String, Object> reservationPayload(String pickupId) {
         var row = db.sql("""
                 SELECT p.pickup_id,p.order_id,o.site_id,o.revision,l.control_point_ref,
                     to_char(p.pickup_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS pickup_at
@@ -63,7 +69,29 @@ public class ControlExchange {
         payload.put("pickup_point_id", row.get("control_point_ref"));
         payload.put("pickup_at", row.get("pickup_at").toString());
         payload.put("order_revision", row.get("revision"));
-        enqueue("reservation:" + pickupId, envelope((String) row.get("site_id"), "task.requested", payload));
+        payload.put("site_id", row.get("site_id"));
+        return payload;
+    }
+
+    /** Re-send committed packaging data; never accepts customer-supplied package identities. */
+    @Transactional
+    public Map<String, Object> refreshManifest(String pickupId, String memberId) {
+        var owner = db.sql("SELECT p.order_id FROM pickups p JOIN orders o USING(order_id) WHERE p.pickup_id=? AND o.member_id=? FOR UPDATE OF o,p")
+                .param(pickupId).param(memberId).query(String.class).optional();
+        if (owner.isEmpty()) throw new IllegalArgumentException("unknown reservation owner");
+        var payload = reservationPayload(pickupId);
+        String site = (String) payload.remove("site_id");
+        var prior = db.sql("SELECT message::text FROM control_link_outbox WHERE site_id=? AND message->'payload'->>'reservation_id'=? AND message->>'type'='task.requested' ORDER BY created_at DESC,message_id DESC LIMIT 1")
+                .param(site).param(pickupId).query(String.class).optional();
+        if (prior.isPresent() && json.readTree(prior.get()).path("payload").path("packages")
+                .equals(json.valueToTree(payload.get("packages")))) {
+            return Map.of("submitted", false, "orderRevision", payload.get("order_revision"));
+        }
+        long revision = db.sql("UPDATE orders SET revision=revision+1 WHERE order_id=? RETURNING revision")
+                .param(owner.get()).query(Long.class).single();
+        payload.put("order_revision", revision);
+        enqueue("manifest:" + pickupId + ":" + revision, envelope(site, "task.requested", payload));
+        return Map.of("submitted", true, "orderRevision", revision);
     }
 
     /** Existing receipt/approval workflow owns these rows; this link only forwards committed evidence. */

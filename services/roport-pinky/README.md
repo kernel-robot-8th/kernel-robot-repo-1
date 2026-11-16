@@ -88,3 +88,7 @@ python3 scripts/check_hardware.py --namespace / --output /tmp/pinky-check.json
 - 원본은 [roport_gz_world/layout/roport_airport.yaml](src/roport_gz_world/layout/roport_airport.yaml)입니다. 벽·물체·노드를 여기서 고치고 지도·도면·Gazebo world를 다시 생성합니다([roport_gz_world README](src/roport_gz_world/README.md)).
 - 지도 좌표(m)는 `map` 프레임입니다. 실측 좌표(cm)와의 변환은 같은 파일의 `frame`에 있습니다.
 - 사진(사람이 찍힘)은 올리지 않습니다.
+
+## 최신 FLEET 현장 적용
+
+최소 MQTT v2·Pinky별 설정·코드 배포·ROS 준비·무구동 점검은 [Pinky 현장 매뉴얼](../../docs/field/pinky.md)을 따른다. 과거 trial-v1 설명과 구분한다.

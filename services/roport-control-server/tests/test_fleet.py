@@ -436,3 +436,32 @@ def test_unknown_heading_waits_instead_of_building_invalid_command(fleet):
     assert dispatch(fleet) is None
     assert "heading unavailable" in fleet.data["tasks"][key]["reason"]
     assert fleet.data["fault"] is None
+
+
+def test_hold_keeps_root_cause_when_stop_results_arrive(fleet):
+    submit(fleet, "held-box")
+    command = dispatch(fleet)
+    fleet.hold("participant state stale")
+    before = deepcopy(fleet.data)
+    fleet.hold("operator_stop")
+    event = wire.build_message(
+        "command_status",
+        command["target"],
+        command["source"],
+        {
+            "boot_version": command["payload"]["expected_boot_version"],
+            "observed_at": command["sent_at"],
+            "sequence": 1,
+            "status": "interrupted",
+            "reason": "operator_stop",
+            "result": {},
+        },
+        command_id=command["command_id"],
+    )
+    assert fleet.result(event)
+    assert fleet.data["fault"] == "participant state stale"
+    assert not fleet.data["enabled"]
+    assert fleet.data["resources"] == before["resources"]
+    assert fleet.data["slots"] == before["slots"]
+    assert fleet.data["tasks"]["inbound-held-box"]["reason"] == "operator_stop"
+    assert fleet.data["events"][event["message_id"]] == event

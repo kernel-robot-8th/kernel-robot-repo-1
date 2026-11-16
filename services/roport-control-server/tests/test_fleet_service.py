@@ -1,7 +1,7 @@
 """The service inbox and the same fleet executor share stable request identities."""
 
 from copy import deepcopy
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 from test_fleet import finish
@@ -14,7 +14,11 @@ from roport_control_server.adapters.db.service_tasks import (
     OperationalStore,
     ServiceTaskStore,
 )
-from roport_control_server.executor.fleet_runtime import service_tick
+from roport_control_server.executor.fleet_runtime import service_tick as tick
+
+
+def service_tick(control, store):
+    return tick(control, store, now=datetime(2030, 1, 1, 2, tzinfo=UTC))
 
 
 @pytest.fixture
@@ -216,3 +220,30 @@ def test_partial_receipt_only_releases_its_package(operational_fleet, dsn):
     service_tick(fleet, store)
     assert fleet.data["tasks"][task["task_id"] + ":b"]["stage"] == "return_nav"
     assert len(store.receipts()) == 2
+
+
+def test_cancelled_package_does_not_close_other_in_progress_deliveries(
+    operational_fleet, dsn
+):
+    fleet = operational_fleet
+    store = ServiceTaskStore(dsn)
+    data = deepcopy(fleet.data)
+    for slot, package in [("1a", "a"), ("2a", "b")]:
+        data["slots"][slot] = {"state": "occupied", "package_id": package}
+    fleet.save(data)
+    task = queued(store, operation="customer_service")
+    service_tick(fleet, store)
+    data = deepcopy(fleet.data)
+    data["tasks"][task["task_id"] + ":a"].update(status="CANCELED", stage="done")
+    data["tasks"][task["task_id"] + ":b"].update(
+        status="AWAITING_RECEIPT", stage="await_receipt"
+    )
+    fleet.save(data)
+    service_tick(fleet, store)
+    assert store.pending_tasks()[0]["state"] == "RUNNING"
+    data = deepcopy(fleet.data)
+    data["tasks"][task["task_id"] + ":b"].update(status="COMPLETE", stage="done")
+    fleet.save(data)
+    service_tick(fleet, store)
+    assert not store.pending_tasks()
+    assert store.outbox()[-1]["type"] == "task.failed"
