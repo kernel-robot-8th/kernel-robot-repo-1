@@ -786,6 +786,10 @@ components:
     robot_stop_command:
       name: robot_stop_command
       contentType: application/json
+      description: >-
+        OMX는 sent_at 신선도를 검사하지 않지만 expires_at, 현재 boot,
+        정지 대상 명령/로봇 일치를 검사한다. abort 이후 실제 정지 관측으로
+        완료를 확인하며 HOLD는 유지한다. Pinky의 sent_at 신선도 검사는 유지한다.
       payload:
         type: object
         required:

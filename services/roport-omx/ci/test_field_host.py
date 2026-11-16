@@ -7,7 +7,7 @@ import unittest
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import current_thread, main_thread
+from threading import Event, current_thread, main_thread
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -534,6 +534,50 @@ class FieldHostTest(unittest.TestCase):
         self.assertEqual(events[-1]["command_id"], "stop-1")
         self.assertEqual(events[-1]["payload"]["status"], "completed")
 
+    def test_stop_ignores_sent_at_but_still_requires_expiry_boot_and_target(self):
+        self.host.handle(self.command())
+        executor = self.executors["shelf-01"]
+        with patch.object(executor, "abort", wraps=executor.abort) as abort:
+            invalid = [
+                ("expired_command", {"expires_at": datetime.now(UTC).isoformat()}, {}),
+                ("boot_version_mismatch", {}, {"expected_boot_version": "old-boot"}),
+                ("target_command_not_active", {}, {"target_command_id": "other"}),
+                ("wrong_stop_target", {"target": "omx3"}, {}),
+            ]
+            for reason, envelope, payload in invalid:
+                with self.subTest(reason=reason):
+                    stop = self.stop_command(reason)
+                    stop["sent_at"] = (
+                        datetime.now(UTC) - timedelta(seconds=4)
+                    ).isoformat()
+                    stop.update(envelope)
+                    stop["payload"].update(payload)
+                    self.assertEqual(
+                        self.host.handle(stop)[0]["payload"]["reason"], reason
+                    )
+            abort.assert_not_called()
+            stop = self.stop_command()
+            stop["sent_at"] = (datetime.now(UTC) - timedelta(seconds=4)).isoformat()
+            self.assertEqual(self.host.handle(stop)[0]["payload"]["status"], "accepted")
+            self.assertEqual(self.host.handle(stop)[0]["payload"]["status"], "accepted")
+            abort.assert_called_once()
+            self.assertEqual(
+                [event["payload"]["status"] for event in self.host.poll()],
+                ["interrupted", "completed"],
+            )
+            self.assertTrue(self.host.data["hold"])
+            self.assertEqual(
+                self.host.handle(stop)[0]["payload"]["status"], "completed"
+            )
+            abort.assert_called_once()
+
+    def test_stop_with_future_sent_at_is_accepted_until_expiry(self):
+        self.host.handle(self.command())
+        stop = self.stop_command()
+        stop["sent_at"] = (datetime.now(UTC) + timedelta(seconds=4)).isoformat()
+        self.assertEqual(self.host.handle(stop)[0]["payload"]["status"], "accepted")
+        self.assertEqual(self.host.poll()[-1]["payload"]["status"], "completed")
+
     def test_restart_aborts_without_resuming_and_accepts_stop_for_old_command(self):
         self.host.handle(self.command())
         executor = self.executors["shelf-01"]
@@ -750,6 +794,65 @@ class FieldHostTest(unittest.TestCase):
         self.assertEqual(
             [a["robot_id"] for a in done["payload"]["result"]["arms"]], ["omx3"]
         )
+
+    def test_state_poll_does_not_read_warehouse_motor_bus_during_execution(self):
+        self.assert_state_poll_does_not_read_running_motor_bus("omx3", "N01")
+
+    def test_independent_routes_share_motor_bus_without_state_poll_reads(self):
+        self.assert_state_poll_does_not_read_running_motor_bus("omx1", "N21")
+
+    def assert_state_poll_does_not_read_running_motor_bus(self, target, node):
+        robot = FakeRobot()
+        runner, _ = make(robot, ScriptPolicy(away=4), box_until(robot, 4))
+        options = {
+            "marker_ids": {"package-17": 17},
+            "model_version": "sim-model",
+            "calibration_version": "sim-cal",
+            "stop_status": stationary_sample,
+        }
+        if target == "omx3":
+            adapter = WarehouseExecutor(runner, **options)
+            owner = adapter
+        else:
+            other, _ = make(robot, ScriptPolicy(away=4), box_until(robot, 4))
+            adapter = IndependentArmExecutor(
+                target, {("INBOUND", "1a"): runner, ("INBOUND", "2a"): other}, **options
+            )
+            owner = adapter.routes[("INBOUND", "1a")]
+        self.host.executors[target] = adapter
+        self.observe(node)
+        reading, release = Event(), Event()
+        observe, overlaps = robot.observe, []
+
+        def blocked_worker_read():
+            if current_thread() is not main_thread() and not reading.is_set():
+                reading.set()
+                if not release.wait(5):
+                    raise TimeoutError("test did not release device read")
+            elif (
+                current_thread() is main_thread()
+                and reading.is_set()
+                and not release.is_set()
+            ):
+                overlaps.append(True)
+            return observe()
+
+        with patch.object(robot, "observe", blocked_worker_read):
+            try:
+                self.host.handle(self.command(target))
+                self.assertTrue(reading.wait(2), "Runner never read the device")
+                for _ in range(3):
+                    self.assertFalse(
+                        self.host.state(target)["payload"]["state"]["ready"]
+                    )
+                self.assertEqual(
+                    overlaps, [], "state polling read the active motor bus"
+                )
+            finally:
+                release.set()
+                owner.host.wait(2)
+        self.assertEqual(self.host.poll()[0]["payload"]["status"], "completed")
+        self.assertTrue(self.host.state(target)["payload"]["state"]["home_reached"])
 
     def test_expiry_inside_runner_preparation_does_not_write_motor_targets(self):
         robot, policy = FakeRobot(), ScriptPolicy(away=4)

@@ -29,7 +29,7 @@ Pinky와 OMX v2 Host에 같은 계약을 적용한다. OMX 단독·공동 작업
 
 ## 시각 동기화 전제 (미정)
 
-수신한 로봇은 **자기 시계의 현재 시각**으로 `sent_at`과 `expires_at`을 판정한다(Pinky: `field_pinky.py`의 `_fresh`). 먼저 `sent_at`이 로봇 시계 기준 −0.5~+3초 창 안인지 보고 벗어나면 `stale_message`로 거절하며, 그 다음 `expires_at`이 지났으면 `expired_command`로 거절한다. 그래서 로봇 시계가 이 창보다 크게 어긋나면(0.5초 넘게 늦거나 3초 넘게 빠르면) **모든 명령이 `stale_message`로 거절**된다. 안전한 쪽으로 실패하지만 시험이 되지 않는다. 만료된 명령이 유효로 판정될 수 있는 경우는 이 창 안의 어긋남(약 0.5초 이내)으로 좁혀진다. 관제의 `field_wire.py`는 `sent_at`보다 `expires_at`이 늦은지만 검사하고 시각 동기화를 요구하지 않는다. 현장망에서 Pinky 시계가 크게 어긋난 사례가 있었다고 한다(Pinky 쪽 리뷰 보고, 직접 확인하지 못함). 이 경우는 "만료 명령 수락"이 아니라 "전부 거절"로 나타난다. 코드를 현장에 적용하기 전에 관제·로봇 시각 동기화(NTP)와 허용 오차를 정해야 한다.
+Pinky는 **자기 시계의 현재 시각**으로 `sent_at`과 `expires_at`을 판정한다(Pinky: `field_pinky.py`의 `_fresh`). 먼저 `sent_at`이 로봇 시계 기준 −0.5~+3초 창 안인지 보고 벗어나면 `stale_message`로 거절하며, 그 다음 `expires_at`이 지났으면 `expired_command`로 거절한다. 그래서 로봇 시계가 이 창보다 크게 어긋나면(0.5초 넘게 늦거나 3초 넘게 빠르면) **모든 명령이 `stale_message`로 거절**된다. 안전한 쪽으로 실패하지만 시험이 되지 않는다. 만료된 명령이 유효로 판정될 수 있는 경우는 이 창 안의 어긋남(약 0.5초 이내)으로 좁혀진다. 관제의 `field_wire.py`는 `sent_at`보다 `expires_at`이 늦은지만 검사하고 시각 동기화를 요구하지 않는다. 현장망에서 Pinky 시계가 크게 어긋난 사례가 있었다고 한다(Pinky 쪽 리뷰 보고, 직접 확인하지 못함). 이 경우는 "만료 명령 수락"이 아니라 "전부 거절"로 나타난다. 코드를 현장에 적용하기 전에 관제·로봇 시각 동기화(NTP)와 허용 오차를 정해야 한다.
 
 ## 검증과 보기
 
@@ -53,7 +53,7 @@ npx @asyncapi/cli@latest generate fromTemplate services/roport-control-server/in
 
 ### OMX 실행 제약
 
-- OMX 새 물리 명령도 `sent_at` 나이 −0.5~3초와 `expires_at`을 검사합니다. 동일 명령 재전송은 저장된 결과만 돌려줍니다.
+- OMX 새 이송 명령은 `sent_at` 나이 −0.5~3초와 `expires_at`을 검사합니다. `robot_stop_command`는 지연된 정지를 차단하지 않도록 `sent_at` 신선도만 제외하며, 만료·현재 boot·정지할 명령/대상 일치는 검사합니다. 정지 성공은 abort 이후 실제 정지 관측으로 확인하고 HOLD를 유지합니다. 동일 명령 재전송은 저장된 결과만 돌려줍니다. 이 예외는 OMX에만 적용하며 위 Pinky 판정은 유지합니다.
 - `(pinky_id, arrival_command_id)` 하나당 이송 접수는 한 번입니다. 접수 후 성공/실패·ACK·재시작과 무관하게 소모되며, 새 명령으로 재사용하면 `arrival_already_used`입니다. 사전 거절은 소모하지 않습니다. 재시도는 현장 조정 후 새 이동으로 확인된 도착이 필요합니다.
 - `arm_action_command.operation=return_home`은 예약 필드이며 현재 OMX Host에서는 `unsupported_operation`입니다.
 - 공동 작업의 `active_command_id`는 shelf-01 및 참여 팔 omx1/omx2만 공유합니다. 다른 대상은 null + `host_busy`로 표시합니다.

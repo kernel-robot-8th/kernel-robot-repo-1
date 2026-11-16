@@ -391,12 +391,12 @@ class FieldOmxHost:
         try:
             if datetime.fromisoformat(message["expires_at"]) <= datetime.now(UTC):
                 raise ValueError("expired_command")
-            if not _fresh(message["sent_at"], 3.0, future_s=0.5):
-                raise ValueError("stale_message")
             if p["expected_boot_version"] != self.boot_version:
                 raise ValueError("boot_version_mismatch")
             if kind == "robot_stop_command":
                 return self._stop(message)
+            if not _fresh(message["sent_at"], 3.0, future_s=0.5):
+                raise ValueError("stale_message")
             if p.get("operation") == "return_home":
                 raise ValueError("unsupported_operation")
             if self.data["hold"] or self.data["active"]:

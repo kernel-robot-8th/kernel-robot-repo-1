@@ -60,12 +60,15 @@ class WarehouseExecutor:
         self.stop_status, self.stop_requested_at = stop_status, None
         self.host = Omx3Host(runner, self._event)
 
-    def _arms(self):
+    def _arms(self, busy):
         try:
             ready = self.runner.robot.ready() is None
-            pose = self.runner.robot.observe().state
-            home = judge.near_init(pose, self.runner.settings)
-            released = judge.gripper_open(pose, self.runner.settings)
+            home, released = None, None
+            # The Runner owns motor-bus I/O until its worker finishes.
+            if not busy:
+                pose = self.runner.robot.observe().state
+                home = judge.near_init(pose, self.runner.settings)
+                released = judge.gripper_open(pose, self.runner.settings)
         except Exception:  # noqa: BLE001 - a failed device read is unknown, never ready
             ready, home, released = False, None, None
         return {
@@ -84,7 +87,7 @@ class WarehouseExecutor:
             "armed": status["robot"] == "ok",
             "busy": status["active"] is not None,
             "error": "omx3_reconciling" if status["reconciling"] else None,
-            "arms": self._arms(),
+            "arms": self._arms(status["active"] is not None),
         }
 
     def check(self, task):
@@ -294,6 +297,11 @@ class IndependentArmExecutor:
         self.current = None
 
     def readiness(self):
+        if self.current:
+            current = self.current.readiness()
+            if current["busy"]:
+                current["arms"] = {self.arm_id: current["arms"]["omx3"]}
+                return current
         statuses = [adapter.readiness() for adapter in self.routes.values()]
         flags = [s["arms"]["omx3"] for s in statuses]
 
