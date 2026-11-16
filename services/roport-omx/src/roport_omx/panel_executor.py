@@ -45,6 +45,8 @@ ARMS_TIMEOUT_S = 15.0
 # start field with alignment after a control-tower evaluation (3.14): an older panel may run every
 # episode to episode_s, reach the AI server over HTTP (SSH tunnel), or skip the alignment.
 PANEL_MIN_VERSION = (3, 14, 0)
+# Unloading needs the camera-only Pinky check after the evaluation (panel 3.15: "pinky_check").
+PANEL_MIN_VERSION_UNLOAD = (3, 15, 0)
 # The panel PINGs the AI server about every 5 s (up to ~15 s on a slow GPU tunnel) and stamps
 # gpu_link.infer.udp.at with its clock (time.time(); same PC as the Host). Older than this → stale.
 AI_LINK_FRESH_S = 20.0
@@ -298,8 +300,10 @@ class PanelExecutor:
         armed = status.get("armed")  # absent before panel 3.8 → None → not armed
         busy = bool((status.get("job") or {}).get("running"))
         version = _version(status.get("version"))
-        if version is None or version < PANEL_MIN_VERSION:
-            need = ".".join(map(str, PANEL_MIN_VERSION))
+        unload = any(op == "OUTBOUND" for op, _ in self.routes)
+        minimum = PANEL_MIN_VERSION_UNLOAD if unload else PANEL_MIN_VERSION
+        if version is None or version < minimum:
+            need = ".".join(map(str, minimum))
             error = f"PANEL_VERSION: {status.get('version')} (needs {need}+)"
         else:
             error = _ai_link_error(status, time.time())

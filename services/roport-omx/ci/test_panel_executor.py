@@ -99,7 +99,7 @@ def align(*, far=(), check="ok", **change):
 class FakePanel:
     def __init__(self):
         self.status = {
-            "version": "3.14.5",
+            "version": "3.15.0",
             "armed": True,
             "job": {"running": False},
             "last_result": None,
@@ -748,6 +748,16 @@ class PanelExecutorTest(unittest.TestCase):
     def use_unload_route(self):
         self.executor.routes = ROUTES | OUT_ROUTE
         self.panel.models.append(OUT_MODEL)
+
+    def test_unload_route_needs_panel_3_15(self):
+        self.panel.status["version"] = "3.14.5"
+        self.assertTrue(self.status()["ready"])  # loading only: 3.14 is enough
+        self.use_unload_route()
+        payload = self.status()
+        self.assertFalse(payload["ready"])
+        self.assertIn("needs 3.15.0+", payload["executor_error"])
+        self.panel.status["version"] = "3.15.0"
+        self.assertTrue(self.status()["ready"])
 
     def test_unload_checks_pinky_and_completes_when_the_box_is_on_it(self):
         self.use_unload_route()
