@@ -46,8 +46,11 @@ class Policy(Protocol):
     def reset(self, marker_id: int) -> None:
         """명령 시작: 남은 동작을 비운다. 추론 서버에 보낼 작업 문장에 마커 번호가 들어간다."""
 
-    def act(self, state: Sequence[float], marked_front: Any) -> Sequence[float]:
-        """다음 한 스텝의 JOINTS 순서 절대 목표값."""
+    def act(self, state: Sequence[float], marked_front: Any) -> Sequence[float] | None:
+        """다음 한 스텝의 JOINTS 순서 절대 목표값. 막히지 않는다.
+
+        아직 동작이 없으면(추론 대기) None: runner는 이번 주기에 보내지 않고 다음 주기에 다시 관측한다.
+        """
 
 
 class PolicyUnavailable(RuntimeError):

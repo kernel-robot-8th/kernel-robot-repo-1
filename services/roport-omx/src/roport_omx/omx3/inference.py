@@ -2,6 +2,9 @@
 
 ACT는 한 번 추론에 N개(예 100) 동작을 돌려준다. 남은 동작을 실행하는 동안 다음 묶음을
 백그라운드로 미리 요청해 30 fps 루프가 추론 지연에 막히지 않게 한다.
+
+act()는 기다리지 않는다. 동작이 없으면 None을 돌려주고, runner는 그 주기에 목표를 보내지 않은 채
+다음 주기에 새로 관측한다. 그래서 취소는 한 주기 안에 반영되고, 재요청은 늘 그 주기의 관측을 쓴다.
 """
 
 from __future__ import annotations
@@ -32,36 +35,36 @@ class ChunkPolicy:
     def __init__(self, client: InferClient, settings: Omx3Settings | None = None):
         self.client = client
         self.settings = settings or Omx3Settings()
-        self._cond = threading.Condition()
+        self._lock = threading.Lock()
         self._queue: deque[list[float]] = deque()
         self._gen = 0  # reset마다 올려 이전 명령의 늦은 응답을 버린다
         self._step = 0  # act()로 꺼낸 동작 수
         self._pending = False
+        self._starved_at: float | None = None  # 큐가 빈 채로 기다리기 시작한 시각
         self._task = ""
 
     def reset(self, marker_id: int) -> None:
-        with self._cond:
+        with self._lock:
             self._gen += 1
             self._queue.clear()
-            self._step, self._pending = 0, False
+            self._step, self._pending, self._starved_at = 0, False, None
             self._task = self.settings.task.format(marker_id=marker_id)
 
-    def act(self, state: Sequence[float], marked_front: Any) -> list[float]:
+    def act(self, state: Sequence[float], marked_front: Any) -> list[float] | None:
         s = self.settings
-        with self._cond:
+        with self._lock:
             if not self._pending and len(self._queue) <= s.refill_at:
                 self._request(list(state), marked_front)
-            # 첫 묶음이나 지연·유실: 실패하면 제한 시간 안에서 새 관측으로 다시 요청한다
-            deadline = time.monotonic() + s.infer_timeout_s
-            while not self._queue:
-                if not self._pending:
-                    self._request(list(state), marked_front)
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    raise PolicyUnavailable(f"no chunk in {s.infer_timeout_s}s")
-                self._cond.wait_for(lambda: self._queue or not self._pending, left)
-            self._step += 1
-            return self._queue.popleft()
+            if self._queue:
+                self._starved_at = None
+                self._step += 1
+                return self._queue.popleft()
+            now = time.monotonic()
+            if self._starved_at is None:
+                self._starved_at = now
+            elif now - self._starved_at > s.infer_timeout_s:
+                raise PolicyUnavailable(f"no chunk in {s.infer_timeout_s}s")
+            return None
 
     def _request(self, state: list[float], frame: Any) -> None:
         self._pending = True
@@ -73,18 +76,19 @@ class ChunkPolicy:
             chunk = _check(
                 self.client.infer(state, frame, task, self.settings.robot_type)
             )
-        except Exception:  # 다음 act()가 새 관측으로 다시 요청한다
+        except Exception:  # 다음 act()가 그 주기의 관측으로 다시 요청한다
             log.exception("inference failed")
             chunk = None
             time.sleep(RETRY_S)  # 바로 실패하는 클라이언트로 요청이 몰리지 않게
-        with self._cond:
+        with self._lock:
             if gen != self._gen:  # 그 사이 reset: 이전 명령의 응답
                 return
             self._pending = False
-            if chunk is not None:
-                # 요청 뒤 이미 실행한 스텝만큼 앞을 버린다: 묶음 첫 동작은 요청 시점 관측 기준
-                self._queue = deque(chunk[self._step - step :])
-            self._cond.notify_all()
+            # 요청 뒤 이미 실행한 스텝만큼 앞을 버린다: 묶음 첫 동작은 요청 시점 관측 기준.
+            # 다 버려지면(응답이 너무 늦음) 실행 중이던 큐를 그대로 둔다(#96 리뷰)
+            rest = chunk[self._step - step :] if chunk else []
+            if rest:
+                self._queue = deque(rest)
 
 
 def _check(chunk: Sequence[Sequence[float]]) -> list[list[float]]:
