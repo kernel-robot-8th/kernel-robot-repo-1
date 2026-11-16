@@ -233,6 +233,39 @@ def test_mqtt_complete_advances_once_and_keeps_evidence(omx_pair):
         c.dummy(token)
 
 
+def test_mqtt_complete_not_aligned_advances_and_keeps_reason(omx_pair):
+    c, host, executor = omx_pair
+    dispatch_omx(c, host)
+    executor.observe = lambda: {
+        "state": "finished",
+        "step": "rest",
+        "arms": executor._arms(moving=False),
+        "evidence": "shelf_load_not_aligned",
+        "align_error": "PANEL_ALIGN_FAILED",
+    }
+    (event,) = host.poll()
+    assert event["payload"]["evidence"] == "shelf_load_not_aligned"
+    deliver(c, event)
+    assert c.state["phase"] == "return"  # Mission Complete (Not Aligned) does not hold
+    transfer = c.state["transfers"][0]
+    assert transfer["evidence"] == "shelf_load_not_aligned"
+    assert transfer["align_error"] == "PANEL_ALIGN_FAILED"
+
+
+def test_mqtt_complete_with_unknown_evidence_holds(omx_pair):
+    c, host, executor = omx_pair
+    dispatch_omx(c, host)
+    executor.observe = lambda: {
+        "state": "finished",
+        "step": "home",
+        "arms": executor._arms(moving=False),
+        "evidence": "guess",
+    }
+    deliver(c, host.poll()[0])
+    assert c.state["phase"] == "HOLD"
+    assert c.state["transfers"] == []
+
+
 def test_manual_first_prevents_late_status_from_starting_omx(omx_pair):
     c, host, executor = omx_pair
     c.omx.poll()

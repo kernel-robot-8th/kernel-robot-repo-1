@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 from datetime import UTC, datetime, timedelta
@@ -77,11 +78,21 @@ def align(*, far=(), check="ok", **change):
 class FakePanel:
     def __init__(self):
         self.status = {
-            "version": "3.12.0",
+            "version": "3.13.0",
             "armed": True,
             "job": {"running": False},
             "last_result": None,
+            "gpu_link": {
+                "ok": False,  # SSH tunnel; not needed for a mission since 3.13
+                "infer": {
+                    "transport": "udp",
+                    "udp": {"ok": True, "stage": "ok", "error": "", "at": None},
+                },
+            },
         }
+        self.udp_age = (
+            1.0  # seconds since the panel's last UDP check; None keeps "at" as set
+        )
         self.models = [MODEL]
         self.starts = []
         self.start_error = None
@@ -111,7 +122,11 @@ class FakePanel:
 
             def do_GET(self):
                 if self.path == "/api/status":
-                    self._json(panel.status)
+                    body = json.loads(json.dumps(panel.status))
+                    infer = (body.get("gpu_link") or {}).get("infer") or {}
+                    if panel.udp_age is not None and isinstance(infer.get("udp"), dict):
+                        infer["udp"]["at"] = time.time() - panel.udp_age
+                    self._json(body)
                 elif self.path.startswith("/api/arms?"):
                     query = urllib.parse.urlsplit(self.path).query
                     panel.arms_models.append(urllib.parse.parse_qs(query)["model"][0])
@@ -219,7 +234,7 @@ class PanelExecutorTest(unittest.TestCase):
     def send(self, message):
         return self.host.handle(message, channel="cmd")
 
-    def test_routed_slot_starts_eval_and_completes_on_home_return(self):
+    def test_routed_slot_starts_eval_and_completes_after_shelf_alignment(self):
         (accepted,) = self.send(self.inbound())
         self.assertEqual(accepted["payload"]["phase"], "ACCEPTED")
         (start,) = self.panel.starts
@@ -234,16 +249,18 @@ class PanelExecutorTest(unittest.TestCase):
                 "reset_s": 15.0,
                 "target_marker": 16,
                 "end_on_return": True,
+                "shelf_align": True,
             },
         )
         (progress,) = self.host.poll()
         self.assertEqual(progress["payload"]["step"], "모델 불러오는 중")
-        self.panel.finish()
+        self.panel.finish(align=align(), stage="done", final=True)
         (done,) = self.host.poll()
         p = done["payload"]
         self.assertEqual(
             (done["type"], p["phase"]), ("shelf_inbound.completed", "COMPLETE")
         )
+        self.assertEqual(p["evidence"], "shelf_align")
         self.assertEqual(
             p["arms"]["omx1"],
             {"connected": True, "grasping": False, "returned": True, "safe": True},
@@ -356,15 +373,22 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertEqual(self.panel.starts, [])
 
     def test_arm_away_from_home_or_closed_gripper_fails_and_holds(self):
-        for arms in (
-            {"OMX 1": arm("left"), "OMX 2": arm("right", home=False)},
-            {"OMX 1": arm("left", gripper_open=False), "OMX 2": arm("right")},
-            {"OMX 1": arm("left", home=None), "OMX 2": arm("right")},
+        both = {"OMX 1": arm("left"), "OMX 2": arm("right")}
+        for arms, rest in (
+            (
+                both,
+                align(far=("shoulder_pan",)),
+            ),  # alignment ended away from its rest pose
+            (
+                {"OMX 1": arm("left", gripper_open=False), "OMX 2": arm("right")},
+                align(),
+            ),
+            (both, align(check="unknown")),
         ):
-            with self.subTest(arms):
+            with self.subTest(arms=arms, rest=rest["rest"]["check"]):
                 self.host.clear_hold()
                 self.send(self.inbound())
-                self.panel.finish(arms=arms)
+                self.panel.finish(arms=arms, align=rest, stage="done", final=True)
                 events = self.host.poll()
                 self.assertEqual(events[-1]["type"], "shelf_inbound.failed")
                 self.assertEqual(
@@ -464,7 +488,6 @@ class PanelExecutorTest(unittest.TestCase):
                     "align": align(ran=False, ok=False, skipped="평가 오류", rest=None),
                 },
             ),
-            ("PANEL_ALIGN_SKIPPED", {"align": align(ran=False, ok=False, rest=None)}),
             (
                 "PANEL_ALIGN_STOPPED",
                 {"align": align(stopped_by="즉시 중단", **stopped)},
@@ -473,8 +496,33 @@ class PanelExecutorTest(unittest.TestCase):
                 "PANEL_EMERGENCY_STOP",
                 {"align": align(stopped_by="비상 정지", **stopped)},
             ),
-            ("PANEL_ALIGN_FAILED", {"align": align(ok=False, shelf="not_found")}),
+            # the aligner found the box marker nowhere on the shelf, or outside the slot: not loaded
+            (
+                "PANEL_BOX_NOT_ON_SHELF",
+                {
+                    "align": align(
+                        ok=False, shelf="marker_not_found", on_shelf=False, align=None
+                    )
+                },
+            ),
+            (
+                "PANEL_BOX_NOT_ON_SHELF",
+                {
+                    "align": align(
+                        ok=False, shelf="read_off_shelf", on_shelf=False, align=None
+                    )
+                },
+            ),
             ("ARM_NOT_RETURNED", {"align": align(far=["elbow_flex"], check="far")}),
+            # not aligned in time and the arms did not come back to rest: failed, not "not aligned"
+            (
+                "ARM_NOT_RETURNED",
+                {
+                    "align": align(
+                        ok=False, align="timeout", far=["elbow_flex"], check="far"
+                    )
+                },
+            ),
             ("ARM_NOT_RETURNED", {"align": align(check="unknown")}),
             (
                 "ARM_NOT_RETURNED",
@@ -540,29 +588,62 @@ class PanelExecutorTest(unittest.TestCase):
         (event,) = self.send(message)
         return event["payload"]
 
-    def test_return_detected_by_panel_requires_model_home(self):
+    def test_loaded_but_not_aligned_completes_without_hold(self):
         self.send(self.inbound())
         self.assertIs(self.panel.starts[-1]["end_on_return"], True)
-        last = {"episode": 0, "returned": True, "elapsed_s": 21.9}
-        for home in (False, None):
-            arms = {"OMX 1": arm("left", home=home), "OMX 2": arm("right")}
-            self.panel.finish(arms=arms, last_episode=last)
-            events = self.host.poll()
-            self.assertEqual(events[-1]["type"], "shelf_inbound.failed")
-            self.assertFalse(events[-1]["payload"]["departure_ready"])
-            self.host.clear_hold()
-            self.send(self.inbound())
-        self.panel.finish(last_episode=last)
-        events = self.host.poll()
-        self.assertEqual(events[-1]["type"], "shelf_inbound.completed")
-        self.assertEqual(events[-1]["payload"]["evidence"], "arm_return_only")
-        # a gripper still on the box edge above 54.6 is not released even after a detected return
+        self.assertIs(self.panel.starts[-1]["shelf_align"], True)
+        returned = {"last_episode": {"episode": 0, "returned": True, "elapsed_s": 21.9}}
+        cases = [
+            # no aligner set up on this PC: the panel reports no alignment at all
+            ("PANEL_ALIGN_NOT_RUN", returned),
+            # armed turned off (or another job) before the aligner started
+            ("PANEL_ALIGN_SKIPPED", {"align": align(ran=False, ok=False, rest=None)}),
+            # on the shelf, but not straightened within the aligner's time limit
+            ("PANEL_ALIGN_FAILED", {"align": align(ok=False, align="timeout", taps=7)}),
+            # cameras unreadable: the box cannot be called off the shelf
+            (
+                "PANEL_ALIGN_FAILED",
+                {
+                    "align": align(
+                        ok=False, shelf="marker_not_found", on_shelf=None, align=None
+                    )
+                },
+            ),
+        ]
+        for code, change in cases:
+            with self.subTest(code=code, change=change):
+                if code != "PANEL_ALIGN_NOT_RUN":
+                    self.send(self.inbound())
+                    change = change | {"stage": "done", "final": True}
+                self.panel.finish(**change)
+                events = self.host.poll()
+                p = events[-1]["payload"]
+                self.assertEqual(
+                    (events[-1]["type"], p["phase"]),
+                    ("shelf_inbound.completed", "COMPLETE"),
+                )
+                self.assertEqual(p["evidence"], "shelf_load_not_aligned")
+                self.assertEqual(p["align_error"], code)
+                self.assertIs(p["departure_ready"], True)
+                self.assertIsNone(self.host.hold)
+        # not aligned and an arm not home (live read after the alignment): failed and held
         self.send(self.inbound())
-        arms = {"OMX 1": arm("left", gripper_open=False), "OMX 2": arm("right")}
-        self.panel.finish(arms=arms, last_episode=last)
+        self.panel.arms["OMX 2"] = live("right", home=False)
+        self.panel.finish(
+            align=align(ok=False, align="timeout"), stage="done", final=True
+        )
+        events = self.host.poll()
+        self.assertEqual(events[-1]["payload"]["error_code"], "ARM_NOT_RETURNED")
+        self.assertIsNotNone(self.host.hold)
+
+    def test_alignment_at_another_slot_fails(self):
+        # The panel aligns at the slot of its own config; a 2b mission aligned at 2A failed.
+        self.send(self.inbound())
+        self.panel.finish(align=align(slot="2A"), stage="done", final=True)
         events = self.host.poll()
         self.assertEqual(events[-1]["type"], "shelf_inbound.failed")
-        self.assertEqual(events[-1]["payload"]["error_code"], "ARM_NOT_RETURNED")
+        self.assertEqual(events[-1]["payload"]["error_code"], "PANEL_ALIGN_WRONG_SLOT")
+        self.assertIsNotNone(self.host.hold)
 
     def test_status_reports_live_arms_with_closed_grippers_as_empty(self):
         payload = self.status()
@@ -593,15 +674,52 @@ class PanelExecutorTest(unittest.TestCase):
         )
         self.assertIsNone(arms["omx2"]["connected"])
 
-    def test_panel_older_than_3_12_is_not_ready(self):
-        for version in ("3.11.0", "3.9.1", None, "dev"):
+    def test_panel_older_than_3_13_is_not_ready(self):
+        # 3.12 still reached the AI server over HTTP (SSH tunnel) by default
+        for version in ("3.12.0", "3.11.0", "3.9.1", None, "dev"):
             with self.subTest(version):
                 self.panel.status["version"] = version
                 payload = self.status()
                 self.assertFalse(payload["ready"])
                 self.assertIn("PANEL_VERSION", payload["executor_error"])
-        self.panel.status["version"] = "3.12.0"
+        for version in ("3.13.0", "3.14.5"):
+            self.panel.status["version"] = version
+            self.assertTrue(self.status()["ready"])
+
+    def test_ai_link_must_be_udp_checked_and_fresh(self):
+        infer = self.panel.status["gpu_link"]["infer"]
+        cases = [
+            (
+                "AI_LINK_DOWN: network timeout",
+                {"ok": False, "stage": "network", "error": "timeout"},
+            ),
+            ("AI_LINK_DOWN: starting", {"ok": None, "stage": ""}),
+            ("AI_LINK_STALE", {"ok": True}, 25.0),
+            ("AI_LINK_STALE: no check time", {"ok": True, "at": None}, None),
+        ]
+        for code, change, *age in cases:
+            with self.subTest(code):
+                self.panel.udp_age = age[0] if age else 1.0
+                infer["udp"] = {
+                    "ok": True,
+                    "stage": "ok",
+                    "error": "",
+                    "at": None,
+                } | change
+                payload = self.status()
+                self.assertFalse(payload["ready"])
+                self.assertTrue(payload["executor_error"].startswith(code))
+                (rejected,) = self.send(self.inbound())
+                self.assertEqual(rejected["payload"]["error_code"], "EXECUTOR_ERROR")
+                self.assertEqual(self.panel.starts, [])
+                self.assertIsNone(self.host.hold)  # refused before acceptance: no HOLD
+        self.panel.udp_age = 1.0
+        infer["udp"] = {"ok": True, "stage": "ok", "error": "", "at": None}
         self.assertTrue(self.status()["ready"])
+        infer["transport"] = "http"
+        self.assertIn("AI_LINK_NOT_UDP", self.status()["executor_error"])
+        self.panel.status["gpu_link"] = None  # GPU-role panel: no remote link reported
+        self.assertIn("AI_LINK_UNKNOWN", self.status()["executor_error"])
 
     def test_old_panel_or_busy_leaves_arms_unknown(self):
         self.panel.arms = None

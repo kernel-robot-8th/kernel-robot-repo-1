@@ -83,7 +83,8 @@ class Executor(Protocol):
     def observe(self) -> dict:
         """{"state": "running"|"finished"|"failed", "step": str, "error": str|None, "arms": ...}
 
-        A finished observation may name its completion "evidence" (default "arm_return_only").
+        A finished observation may name its completion "evidence" (default "arm_return_only") and,
+        when the box was loaded but not aligned, the "align_error" that stopped the alignment.
         A failed one may set "operator_stop": True when a person stopped the run and the executor
         completed that stop; the Host then reports the failure without holding.
         """
@@ -319,6 +320,9 @@ class CooperativeHost:
                 if isinstance(seen.get("evidence"), str)
                 else "arm_return_only",
             }
+            if isinstance(seen.get("align_error"), str):
+                # completed but not aligned: why the alignment did not finish
+                payload["align_error"] = seen["align_error"]
             return self._push(
                 record, self._event(record, "completed", "COMPLETE", payload)
             )

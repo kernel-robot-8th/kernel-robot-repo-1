@@ -72,6 +72,30 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 - journal에는 site·control·binding을 기록하며 다른 등록 정보로 열면 시작을 거부합니다. 등록 정보를 바꾸면 별도 `--journal`을 사용합니다. journal 저장에 실패하면 수신 확인(ACK) 없이 종료하고, 재시작 시 journal 기준으로 복구합니다.
 - 실패·재시작으로 결과가 불명확하면 HOLD가 되어 새 작업을 거절합니다. 팔·물품·Pinky를 확인한 뒤 `--clear-hold`로 해제합니다.
 - 호스트 메트릭(표시 전용): `--host-metrics-period-s 5`처럼 주기를 줄 때만 `roport/workcell/shelf-01/host`에 v2 `host_metrics`(QoS0, retain=false, boot_version=boot_id)를 발행합니다. 생략하면 꺼지며 기본값은 없습니다. 작업·ACK·HOLD·정지 판단에 쓰지 않고 발행 실패는 로그만 남깁니다. 실장비·실브로커에서는 아직 검증하지 않았습니다.
-- 실물 실행: `--executor panel --routes <경로 파일> --box-marker <상자 ID>`는 같은 PC의 OMX 제어판(v3.12.0 이상) API로 평가 1회를 시작합니다. 칸마다 모델이 다르므로 `(operation, slot_id)`별 모델·작업 문장·시간을 경로 파일에 둡니다(`config/cooperative_routes.example.json`). 경로마다 제어판 출력 필터(`output_filter`: 약·중·강, 생략하면 끔)와 `filter_gripper`를 지정하면 관제로 시작한 평가에도 그대로 적용합니다. 경로가 없는 칸, 학습 목록에 없는 모델, 제어판 armed 꺼짐은 동작 전에 거절합니다. 완료는 제어판 `last_result`의 정상 종료·양팔 복귀·그리퍼 놓음(52+5% = 54.6 이하)으로 판정합니다. 제어판 3.12부터 Host는 `end_on_return`을 보내, 팔이 처음 자세에서 벗어났다가 돌아오고(모든 관절 8 이내) 그리퍼가 54.6 이하로 0.3초 유지되면 `episode_s` 전이라도 평가를 끝냅니다(정책의 재시도 방지). 조기 종료 신호(`last_result.last_episode.returned`)만으로 안전 복귀를 확정하지 않습니다. 양팔 `at_home is True`와 그리퍼 놓음이 확인될 때만 `evidence: "arm_return_only"`로 완료하며 False/미관측은 실패·HOLD입니다. 제어판 3.9부터 평가 뒤 선반 정렬이 이어지면 `final`이 될 때까지 기다리고, 정렬 성공·정렬 뒤 쉬는 자세 확인(`align.rest`)·최종 `/api/arms` 홈/그리퍼 실측을 함께 판정합니다(`evidence: "shelf_align"`). 사람 조치를 기다리는 `hold`(비상 정지, 내려놓기 경로 없음)는 기다리지 않고 바로 실패·HOLD로 보고합니다. 제어판에서 사람이 누른 중지·즉시 중단은 정지가 끝난 뒤 `PANEL_STOPPED`·`PANEL_ABORTED`(정렬 중이면 `PANEL_ALIGN_STOPPED`)로 실패 보고하되 HOLD하지 않습니다. 정지하면 제어판 armed가 꺼지므로 다음 시작은 사람이 armed를 다시 켜야 합니다. 비상 정지·강제 종료·내려놓기 실패·오류·미복귀는 HOLD합니다. 상태 조회(`status.requested`)의 양팔 상태는 제어판 3.11의 `GET /api/arms?model=…`(실행 중이 아닐 때 모터 위치를 읽음)에서 가져오며, 경로표의 모든 모델 홈 자세 안이어야 `returned`입니다. 그리퍼는 54.6 이하면 놓음, 넘으면 `grasping`으로 봅니다(2026-11-10 시험 합의: 빈 채로 닫히면 48~51, 상자에 막히면 58~60, 열림 61~67. 상자 모서리를 50 근처에서 쥘 수도 있어 놓음 여부는 팔 복귀와 함께 판정). 제어판 3.11부터 armed를 켤 때 `~/.config/roport/omx-host.json` 설정(예: `config/omx-host.example.json`, `link_config`는 `execution_mode: hardware`여야 함)으로 이 Host를 자동 시작하고, armed를 꺼도 Host는 남아 보고·상태 조회에 답합니다. Host는 제어판 **3.12.0 이상**만 준비 상태로 보고합니다(낮으면 `executor_error: PANEL_VERSION`). **팔이 움직이므로 사람이 옆에서 armed를 켠 상태로만 시험합니다.** 상자 ID는 시험용 고정값이며 `package_id` 규칙은 관제와 합의 후 연결합니다.
+- 실물 실행: `--executor panel --routes <경로 파일> --box-marker <상자 ID>`는 같은 PC의 OMX 제어판(v3.13.0 이상) API로 평가 1회와 이어지는 선반 정렬을 시작합니다(`shelf_align: true`). 칸마다 모델이 다르므로 `(operation, slot_id)`별 모델·작업 문장·시간을 경로 파일에 둡니다(`config/cooperative_routes.example.json`). 경로마다 제어판 출력 필터(`output_filter`: 약·중·강, 생략하면 끔)와 `filter_gripper`를 지정하면 관제로 시작한 평가에도 그대로 적용합니다. 경로가 없는 칸, 학습 목록에 없는 모델, 제어판 armed 꺼짐은 동작 전에 거절합니다. 완료는 제어판 `last_result`의 정상 종료·양팔 복귀·그리퍼 놓음(52+5% = 54.6 이하)으로 판정합니다. 제어판 3.12부터 Host는 `end_on_return`을 보내, 팔이 처음 자세에서 벗어났다가 돌아오고(모든 관절 8 이내) 그리퍼가 54.6 이하로 0.3초 유지되면 `episode_s` 전이라도 평가를 끝냅니다(정책의 재시도 방지). 조기 종료 신호(`last_result.last_episode.returned`)만으로 안전 복귀를 확정하지 않습니다. 완료·실패 구분은 아래 "선반 적재 미션 판정"을 따릅니다. 제어판 3.9부터 평가 뒤 선반 정렬이 이어지면 `final`이 될 때까지 기다리고, 정렬 성공·정렬 뒤 쉬는 자세 확인(`align.rest`)·최종 `/api/arms` 홈/그리퍼 실측을 함께 판정합니다(`evidence: "shelf_align"`). 사람 조치를 기다리는 `hold`(비상 정지, 내려놓기 경로 없음)는 기다리지 않고 바로 실패·HOLD로 보고합니다. 제어판에서 사람이 누른 중지·즉시 중단은 정지가 끝난 뒤 `PANEL_STOPPED`·`PANEL_ABORTED`(정렬 중이면 `PANEL_ALIGN_STOPPED`)로 실패 보고하되 HOLD하지 않습니다. 정지하면 제어판 armed가 꺼지므로 다음 시작은 사람이 armed를 다시 켜야 합니다. 비상 정지·강제 종료·내려놓기 실패·오류·미복귀는 HOLD합니다. 상태 조회(`status.requested`)의 양팔 상태는 제어판 3.11의 `GET /api/arms?model=…`(실행 중이 아닐 때 모터 위치를 읽음)에서 가져오며, 경로표의 모든 모델 홈 자세 안이어야 `returned`입니다. 그리퍼는 54.6 이하면 놓음, 넘으면 `grasping`으로 봅니다(2026-11-10 시험 합의: 빈 채로 닫히면 48~51, 상자에 막히면 58~60, 열림 61~67. 상자 모서리를 50 근처에서 쥘 수도 있어 놓음 여부는 팔 복귀와 함께 판정). 제어판 3.11부터 armed를 켤 때 `~/.config/roport/omx-host.json` 설정(예: `config/omx-host.example.json`, `link_config`는 `execution_mode: hardware`여야 함)으로 이 Host를 자동 시작하고, armed를 꺼도 Host는 남아 보고·상태 조회에 답합니다. Host는 제어판 **3.13.0 이상**이고 AI 추론 UDP 연결이 살아 있을 때만 준비 상태로 보고합니다(아래 "AI 추론 연결 확인"). **팔이 움직이므로 사람이 옆에서 armed를 켠 상태로만 시험합니다.** 상자 ID는 시험용 고정값이며 `package_id` 규칙은 관제와 합의 후 연결합니다.
 - 준비 조회·모델 검사 이후, 접수 journal 저장 이후와 `/api/eval/start` POST 직전에 각각 `expires_at`을 재검사합니다. 만료되면 새 평가를 시작하지 않습니다. HTTP 시작 응답이 끊기면 결과 불명·HOLD이므로 자동 재시작하지 않습니다.
 - 검사: `bash ci/test.sh` (`ci/test_cooperative.py`·`ci/test_host_metrics.py`·`ci/test_panel_executor.py`; 브로커·제어판·장비 불필요). 실제 브로커 왕복은 로컬 Mosquitto에서만 확인했고, 패널 연동·실물 팔은 미검증입니다.
+
+### 선반 적재 미션 판정 (2026-11-16 합의)
+
+선반 적재 미션은 적재 뒤 상자 정렬까지 포함합니다. 평가가 정상으로 끝난 뒤 제어판의 정렬 결과(`last_result.align`)와 양팔 실측으로 셋 중 하나로 보고합니다.
+
+| 결과 | 조건 | 보고 |
+| --- | --- | --- |
+| Mission Complete | 정렬 성공(명령한 칸), 양팔 홈·그리퍼 놓음 | `completed`, `evidence: "shelf_align"` |
+| Mission Complete (Not Aligned) | 적재됨, 정렬은 시간 초과·실패·건너뜀·미실행, 양팔 홈·그리퍼 놓음 | `completed`, `evidence: "shelf_load_not_aligned"`, `align_error`(`PANEL_ALIGN_FAILED`·`PANEL_ALIGN_SKIPPED`·`PANEL_ALIGN_NOT_RUN`). HOLD 없음 |
+| Mission Failed | 평가 오류, 팔 미복귀·그리퍼 쥠, 정렬기가 상자를 선반 위에서 찾지 못함(`on_shelf: false` → `PANEL_BOX_NOT_ON_SHELF`), 다른 칸 정렬(`PANEL_ALIGN_WRONG_SLOT`), 비상 정지·내려놓기 실패 | `failed`, HOLD(작업자 중지·즉시 중단만 HOLD 없음) |
+
+- 양팔 홈 판정: 정렬이 돌았으면 정렬 뒤 쉬는 자세 확인(`align.rest`), 돌지 않았으면 평가 결과의 홈 판정을 쓰고, 어느 경우든 완료 전에 `/api/arms`로 최종 모터 위치·그리퍼를 다시 읽습니다.
+- 카메라를 읽지 못해 `on_shelf`가 미확인(`null`)이면 적재 실패로 보지 않고 Not Aligned로 보고합니다.
+- 제어판은 PC 설정(`shelf_align.slot`, 현재 2B 하나)의 칸에서 정렬합니다. 다른 칸 미션의 정렬은 `PANEL_ALIGN_WRONG_SLOT`으로 실패하므로, 칸별 정렬은 제어판이 명령의 칸을 받도록 바뀐 뒤 사용합니다.
+- 관제(`omx_trial`)는 `arm_return_only`(모의 실행부)·`shelf_align`·`shelf_load_not_aligned`만 완료로 받고, Not Aligned 사유를 이송 기록의 `align_error`에 남깁니다.
+
+### AI 추론 연결 확인
+
+추론은 제어판이 GPU AI 추론 서버로 UDP(`RPI1`)만 사용합니다(제어판 3.13.0부터). Host는 제어판 `/api/status`의 `gpu_link.infer`를 읽어 다음이 모두 맞을 때만 준비 상태입니다. Host는 추론 서버에 직접 PING하지 않습니다(공유 키를 제어판 한 곳에만 둠).
+
+- `transport == "udp"`, `udp.ok is True`, 마지막 확인 시각 `udp.at`이 20초 이내(제어판은 약 5초마다, 느리면 최대 15초마다 확인).
+- `ok`가 `null`(시작 중, GPU 서버가 이 PC를 아직 허용 전)이어도 준비 아님입니다. 제어판은 `ok: false`일 때만 평가 시작을 거절하므로 Host가 먼저 막습니다.
+- 준비가 아니면 `executor_error`에 `AI_LINK_DOWN`·`AI_LINK_STALE`·`AI_LINK_NOT_UDP`·`AI_LINK_UNKNOWN`을 싣고, 작업 명령은 접수 전에 `EXECUTOR_ERROR`로 거절합니다(HOLD 없음).
+- PING 성공은 서버가 살아 있다는 뜻이며 첫 추론의 모델 적재 지연까지 보장하지 않습니다.

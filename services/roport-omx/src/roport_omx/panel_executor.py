@@ -1,6 +1,8 @@
-"""Executor that runs shelf-01 COOPERATIVE tasks through the local OMX control panel (v3.12+).
+"""Executor that runs shelf-01 COOPERATIVE tasks through the local OMX control panel (v3.13+).
 
 The panel owns the arms, cameras and safety stop. This adapter only calls its HTTP API on this PC:
+the panel runs the robot loop and sends each observation to the GPU AI inference server over UDP
+(wire RPI1, panel 3.13+), so the Host reports ready only while the panel says that link is up.
 a route table picks the trained model for each (operation, slot) because each slot needs its own
 policy; tasks without a route are rejected before anything moves. A start needs the panel's
 armed switch (turned on by a person on the panel screen) and is sent with "source": "mqtt".
@@ -39,13 +41,12 @@ MODELS_TTL_S = 30.0
 # (a held box keeps the arm away from its start pose). Open (61-67) or stopped on a box (58-60) is above.
 GRIP_RELEASED_MAX = 54.6
 ARMS_TIMEOUT_S = 15.0
-# /api/arms (3.11) and end_on_return (3.12): an older panel would run every episode to episode_s,
-# where the policy may start the task again.
-PANEL_MIN_VERSION = (
-    3,
-    12,
-    0,
-)  # panel /api/arms reads the motor bus (about 3.5 s for two arms when not cached)
+# /api/arms (3.11), end_on_return (3.12) and AI inference over UDP only (3.13): an older panel may run
+# every episode to episode_s, or reach the AI server over HTTP (SSH tunnel) instead of UDP.
+PANEL_MIN_VERSION = (3, 13, 0)
+# The panel PINGs the AI server about every 5 s (up to ~15 s on a slow GPU tunnel) and stamps
+# gpu_link.infer.udp.at with its clock (time.time(); same PC as the Host). Older than this → stale.
+AI_LINK_FRESH_S = 20.0
 OUTPUT_FILTERS = {None, "약", "중", "강"}
 # Panel 3.10 enables its async engine for remote inference only when no other run setting is sent,
 # so a route with a filter states the async settings itself.
@@ -96,6 +97,29 @@ def _live_flags(arm: dict) -> dict:
     }
 
 
+def _ai_link_error(status: dict, now: float) -> str | None:
+    """None only when the panel's last UDP check of the AI inference server passed recently.
+
+    ok None (panel starting, or the GPU server has not allowed this PC yet) is not ready: the panel
+    itself refuses a start only on ok False, so the Host must not count on that refusal.
+    """
+    link = (status.get("gpu_link") or {}).get("infer")
+    if not isinstance(link, dict):
+        return "AI_LINK_UNKNOWN: panel reports no AI inference link (control PC role needed)"
+    if link.get("transport") != "udp":
+        return f"AI_LINK_NOT_UDP: {link.get('transport')}"
+    udp = link.get("udp") if isinstance(link.get("udp"), dict) else {}
+    if udp.get("ok") is not True:
+        stage = udp.get("stage") or ("starting" if udp.get("ok") is None else "failed")
+        return f"AI_LINK_DOWN: {stage} {udp.get('error') or ''}".strip()[:200]
+    at = udp.get("at")
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return "AI_LINK_STALE: no check time"
+    if not 0 <= now - at < AI_LINK_FRESH_S:
+        return f"AI_LINK_STALE: last check {now - at:.0f} s ago"
+    return None
+
+
 def _hold_code(result: dict) -> str:
     """stage "hold" stays until a person acts: emergency stop, or release found no path back."""
     align = result.get("align") if isinstance(result.get("align"), dict) else {}
@@ -106,14 +130,38 @@ def _hold_code(result: dict) -> str:
     return "PANEL_HOLD"
 
 
-def _align_error(align: dict) -> str | None:
+# Mission outcome after a clean evaluation (agreed 2026-11-16):
+#   loaded and aligned                    → completed, evidence "shelf_align"
+#   loaded, not aligned in time, arms home → completed, evidence "shelf_load_not_aligned"
+#   not loaded (or arms not back home)     → failed
+NOT_ALIGNED = "shelf_load_not_aligned"
+# Alignment outcomes that leave a loaded box merely unaligned (the arms are judged separately).
+NOT_ALIGNED_ERRORS = {
+    "PANEL_ALIGN_SKIPPED",
+    "PANEL_ALIGN_FAILED",
+    "PANEL_ALIGN_NOT_RUN",
+}
+
+
+def _align_error(align: dict, slot: str | None) -> str | None:
+    if (
+        align.get("on_shelf") is False
+    ):  # the aligner looked and the box is not on the shelf
+        return "PANEL_BOX_NOT_ON_SHELF"
     if align.get("ran") is not True:
         return "PANEL_ALIGN_SKIPPED"
+    # The panel aligns at the slot of its own config (one slot per PC), not the commanded one.
+    if slot is not None and str(align.get("slot") or "").lower() != slot.lower():
+        return "PANEL_ALIGN_WRONG_SLOT"
     if align.get("stopped_by"):
         if align["stopped_by"] == "비상 정지":
             return "PANEL_EMERGENCY_STOP"
         return "PANEL_ALIGN_STOPPED"
-    if align.get("ok") is not True:
+    if align.get("released") is False:  # the release after a stop found no way back
+        return "PANEL_ALIGN_RELEASE_FAILED"
+    if (
+        align.get("ok") is not True
+    ):  # time limit, pushing blocked, hand height not calibrated, …
         return "PANEL_ALIGN_FAILED"
     return None
 
@@ -178,6 +226,7 @@ class PanelExecutor:
         self.base_url = base_url.rstrip("/")
         self.timeout, self.start_timeout = timeout, start_timeout
         self.repo_id: str | None = None
+        self.slot: str | None = None
         self._missing_since: float | None = None
         self._models: tuple[float, set[str]] = (float("-inf"), set())
 
@@ -208,7 +257,7 @@ class PanelExecutor:
             need = ".".join(map(str, PANEL_MIN_VERSION))
             error = f"PANEL_VERSION: {status.get('version')} (needs {need}+)"
         else:
-            error = None
+            error = _ai_link_error(status, time.time())
         return {
             "armed": armed if isinstance(armed, bool) else None,
             "busy": busy,
@@ -278,6 +327,9 @@ class PanelExecutor:
             # panel 3.12+: end the episode once the arms are back at the start pose with grippers
             # released, so the policy does not start the task again before episode_s runs out
             "end_on_return": True,
+            # The shelf loading mission ends with the box aligned on the shelf: ask the panel
+            # (3.14+) to align after the evaluation even when the model is not in its own list.
+            "shelf_align": True,
         }
         body |= route.eval_options or {}
         if route.output_filter:
@@ -290,6 +342,7 @@ class PanelExecutor:
         if not isinstance(reply.get("repo_id"), str) or not reply["repo_id"]:
             raise RuntimeError("panel did not return the run's repo_id")
         self.repo_id, self._missing_since = reply["repo_id"], None
+        self.slot = task["slot_id"]
 
     def observe(self) -> dict:
         if self.repo_id is None:
@@ -318,9 +371,10 @@ class PanelExecutor:
                     "state": "running",
                     "step": step if isinstance(step, str) else None,
                 }
-            observation = self._result(result)
-            if result.get("align") and observation["state"] == "finished":
-                # Evaluation snapshots predate alignment; verify the final motor pose too.
+            observation = self._result(result, self.slot)
+            if observation["state"] == "finished":
+                # Evaluation snapshots predate alignment; every completion (aligned or not)
+                # also needs the final motor pose: arms home with grippers released.
                 live = self._arms_now()
                 for name, flags in observation["arms"].items():
                     for flag in ("connected", "returned", "safe"):
@@ -337,22 +391,21 @@ class PanelExecutor:
         return {"state": "failed", "error": "RESULT_UNAVAILABLE", "arms": {}}
 
     @staticmethod
-    def _result(result: dict) -> dict:
+    def _result(result: dict, slot: str | None = None) -> dict:
         exit_ok = result.get("exit_ok") is True
         safe = True if exit_ok else (False if result.get("exit_ok") is False else None)
         align = result.get("align")
         align = align if isinstance(align, dict) else None
-        if align is not None:
-            # The rest check is necessary; observe() also checks the final live home pose.
+        # Arms moved again only when an alignment ran; then its rest check replaces the eval
+        # snapshot (necessary, not sufficient: observe() also checks the final live home pose).
+        use_rest = align is not None and align.get("ran") is True
+        if use_rest:
             rest = align.get("rest") if isinstance(align.get("rest"), dict) else {}
             rest_arms = _by_side(rest.get("arms"))
-        # panel 3.12: the episode ended because the arms came back to its start pose (every joint)
-        last = result.get("last_episode")
-        returned_early = isinstance(last, dict) and last.get("returned") is True
         arms = {}
         for name, arm in _by_side(result.get("arms")).items():
             home = arm.get("at_home")
-            if align is not None:
+            if use_rest:
                 far = (rest_arms.get(name) or {}).get("far_joints")
                 known = rest.get("check") in {"ok", "far"} and isinstance(far, list)
                 home = rest.get("check") == "ok" and not far if known else None
@@ -362,24 +415,24 @@ class PanelExecutor:
                 "returned": home if isinstance(home, bool) else None,
                 "safe": safe,
             }
-        if exit_ok and align is None:
-            if returned_early:
-                return {
-                    "state": "finished",
-                    "step": "returned",
-                    "arms": arms,
-                    # Early return ends evaluation, but never replaces the home observation.
-                    "evidence": "arm_return_only",
-                }
-            return {"state": "finished", "step": "home", "arms": arms}
         if exit_ok:
-            error = _align_error(align)
+            # No alignment ran at all (no aligner set up on this PC): loaded, not aligned.
+            error = _align_error(align, slot) if align else "PANEL_ALIGN_NOT_RUN"
             if error is None:
                 return {
                     "state": "finished",
                     "step": "rest",
                     "arms": arms,
                     "evidence": "shelf_align",
+                }
+            if error in NOT_ALIGNED_ERRORS:
+                # Completed only if the arms are home with grippers released (the Host checks).
+                return {
+                    "state": "finished",
+                    "step": "rest" if align else "home",
+                    "arms": arms,
+                    "evidence": NOT_ALIGNED,
+                    "align_error": error,
                 }
             stopped = align.get("stopped_by") in OPERATOR_STOPS
             return {
