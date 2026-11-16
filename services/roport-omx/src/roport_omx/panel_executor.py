@@ -1,4 +1,4 @@
-"""Executor that runs shelf-01 COOPERATIVE tasks through the local OMX control panel (v3.13+).
+"""Executor that runs shelf-01 COOPERATIVE tasks through the local OMX control panel (v3.14+).
 
 The panel owns the arms, cameras and safety stop. This adapter only calls its HTTP API on this PC:
 the panel runs the robot loop and sends each observation to the GPU AI inference server over UDP
@@ -41,9 +41,10 @@ MODELS_TTL_S = 30.0
 # (a held box keeps the arm away from its start pose). Open (61-67) or stopped on a box (58-60) is above.
 GRIP_RELEASED_MAX = 54.6
 ARMS_TIMEOUT_S = 15.0
-# /api/arms (3.11), end_on_return (3.12) and AI inference over UDP only (3.13): an older panel may run
-# every episode to episode_s, or reach the AI server over HTTP (SSH tunnel) instead of UDP.
-PANEL_MIN_VERSION = (3, 13, 0)
+# /api/arms (3.11), end_on_return (3.12), AI inference over UDP only (3.13) and the "shelf_align"
+# start field with alignment after a control-tower evaluation (3.14): an older panel may run every
+# episode to episode_s, reach the AI server over HTTP (SSH tunnel), or skip the alignment.
+PANEL_MIN_VERSION = (3, 14, 0)
 # The panel PINGs the AI server about every 5 s (up to ~15 s on a slow GPU tunnel) and stamps
 # gpu_link.infer.udp.at with its clock (time.time(); same PC as the Host). Older than this → stale.
 AI_LINK_FRESH_S = 20.0
@@ -130,17 +131,33 @@ def _hold_code(result: dict) -> str:
     return "PANEL_HOLD"
 
 
-# Mission outcome after a clean evaluation (agreed 2026-11-16):
-#   loaded and aligned                    → completed, evidence "shelf_align"
-#   loaded, not aligned in time, arms home → completed, evidence "shelf_load_not_aligned"
-#   not loaded (or arms not back home)     → failed
+# Shelf loading mission (agreed 2026-11-16); the box alignment is part of it:
+#   loaded and aligned                            → MISSION_COMPLETE (evidence "shelf_align")
+#   on the shelf, not aligned in time, arms home   → MISSION_COMPLETE_NOT_ALIGNED
+#   not loaded, evaluation failed, arms not home  → MISSION_FAILED: arms sent back to the start pose,
+#                                                   reported without HOLD once they are home
+#   shelf unreadable, emergency stop, unknown, …  → MISSION_HOLD: a person checks first
 NOT_ALIGNED = "shelf_load_not_aligned"
-# Alignment outcomes that leave a loaded box merely unaligned (the arms are judged separately).
-NOT_ALIGNED_ERRORS = {
+# Failures that wait for a person; any other failure first sends the arms home (panel /api/home/return).
+HOLD_ERRORS = {
+    "PANEL_EMERGENCY_STOP",
+    "PANEL_KILLED",
+    "PANEL_HOLD",
+    "PANEL_ALIGN_RELEASE_FAILED",
+    "PANEL_SHELF_UNREADABLE",
     "PANEL_ALIGN_SKIPPED",
-    "PANEL_ALIGN_FAILED",
     "PANEL_ALIGN_NOT_RUN",
+    "RESULT_UNAVAILABLE",
 }
+HOME_RETURN_TIMEOUT_S = 90.0
+
+
+def _home_and_released(arms: dict) -> bool:
+    return all(
+        (arms.get(name) or {}).get("returned") is True
+        and (arms.get(name) or {}).get("grasping") is False
+        for name in ARMS
+    )
 
 
 def _align_error(align: dict, slot: str | None) -> str | None:
@@ -228,6 +245,7 @@ class PanelExecutor:
         self.repo_id: str | None = None
         self.slot: str | None = None
         self._missing_since: float | None = None
+        self._recovery: dict | None = None  # a failed mission's arms on their way home
         self._models: tuple[float, set[str]] = (float("-inf"), set())
 
     def _call(self, method: str, path: str, body: dict | None = None, timeout=None):
@@ -342,12 +360,14 @@ class PanelExecutor:
         if not isinstance(reply.get("repo_id"), str) or not reply["repo_id"]:
             raise RuntimeError("panel did not return the run's repo_id")
         self.repo_id, self._missing_since = reply["repo_id"], None
-        self.slot = task["slot_id"]
+        self.slot, self._recovery = task["slot_id"], None
 
     def observe(self) -> dict:
         if self.repo_id is None:
             return {"state": "idle"}
         status = self._call("GET", "/api/status")
+        if self._recovery is not None:
+            return self._recovering(status)
         job = status.get("job") or {}
         info = job.get("info") or {}
         if job.get("running") and info.get("repo_id") == self.repo_id:
@@ -382,13 +402,45 @@ class PanelExecutor:
                             flags[flag] = live.get(name, {}).get(flag)
                     if flags["grasping"] is False:
                         flags["grasping"] = live.get(name, {}).get("grasping")
-            return observation
+                if not _home_and_released(observation["arms"]):
+                    return self._recover("ARM_NOT_RETURNED")
+                return observation
+            if observation.get("operator_stop") or observation["error"] in HOLD_ERRORS:
+                return observation
+            return self._recover(observation["error"])
         # Between the job ending and last_result appearing; give up only after a grace period.
         now = time.monotonic()
         self._missing_since = self._missing_since or now
         if now - self._missing_since < RESULT_GRACE_S:
             return {"state": "running", "step": "finishing"}
         return {"state": "failed", "error": "RESULT_UNAVAILABLE", "arms": {}}
+
+    def _recover(self, error: str) -> dict:
+        """Mission failed: send both arms back to the start pose, then report it without HOLD."""
+        live = self._arms_now()
+        if _home_and_released(live):
+            return {"state": "failed", "error": error, "arms": live, "recovered": True}
+        try:
+            # the run's start pose, grippers opened (panel 3.14: [홈 위치로 이동])
+            self._call("POST", "/api/home/return", {})
+        except Exception as exc:  # noqa: BLE001 - no way home: a person takes over (HOLD)
+            detail = f"home return refused: {exc}"[:200]
+            return {"state": "failed", "error": error, "arms": live, "detail": detail}
+        self._recovery = {"error": error, "since": time.monotonic()}
+        return {"state": "running", "step": "home_return"}
+
+    def _recovering(self, status: dict) -> dict:
+        error, since = self._recovery["error"], self._recovery["since"]
+        if (status.get("job") or {}).get("running"):
+            if time.monotonic() - since < HOME_RETURN_TIMEOUT_S:
+                return {"state": "running", "step": "home_return"}
+            self._recovery = None
+            detail = "home return did not finish"
+            return {"state": "failed", "error": error, "arms": {}, "detail": detail}
+        self._recovery = None
+        live = self._arms_now()  # only the motors tell whether the arms are home now
+        recovered = _home_and_released(live)
+        return {"state": "failed", "error": error, "arms": live, "recovered": recovered}
 
     @staticmethod
     def _result(result: dict, slot: str | None = None) -> dict:
@@ -416,8 +468,9 @@ class PanelExecutor:
                 "safe": safe,
             }
         if exit_ok:
-            # No alignment ran at all (no aligner set up on this PC): loaded, not aligned.
-            error = _align_error(align, slot) if align else "PANEL_ALIGN_NOT_RUN"
+            if align is None:  # no aligner on this PC: nobody looked at the shelf
+                return {"state": "failed", "error": "PANEL_ALIGN_NOT_RUN", "arms": arms}
+            error = _align_error(align, slot)
             if error is None:
                 return {
                     "state": "finished",
@@ -425,15 +478,20 @@ class PanelExecutor:
                     "arms": arms,
                     "evidence": "shelf_align",
                 }
-            if error in NOT_ALIGNED_ERRORS:
-                # Completed only if the arms are home with grippers released (the Host checks).
-                return {
-                    "state": "finished",
-                    "step": "rest" if align else "home",
-                    "arms": arms,
-                    "evidence": NOT_ALIGNED,
-                    "align_error": error,
-                }
+            if error in {"PANEL_ALIGN_SKIPPED", "PANEL_ALIGN_FAILED"}:
+                if align.get("on_shelf") is True:
+                    # Completed only if the arms are home with grippers released (observe checks).
+                    return {
+                        "state": "finished",
+                        "step": "rest",
+                        "arms": arms,
+                        "evidence": NOT_ALIGNED,
+                        "align_error": error,
+                    }
+                if (
+                    error == "PANEL_ALIGN_FAILED"
+                ):  # the cameras could not tell where the box is
+                    error = "PANEL_SHELF_UNREADABLE"
             stopped = align.get("stopped_by") in OPERATOR_STOPS
             return {
                 "state": "failed",

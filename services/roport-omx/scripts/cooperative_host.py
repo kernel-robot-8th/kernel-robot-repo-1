@@ -1,7 +1,7 @@
 """Run the shelf-01 COOPERATIVE Host: broker ↔ CooperativeHost ↔ executor.
 
 --executor mock (default) simulates the arms. --executor panel runs each task through the local OMX
-control panel (v3.13+, armed switch on the panel screen) with the model routed for its slot; the
+control panel (v3.14+, armed switch on the panel screen) with the model routed for its slot; the
 arms move, so a person stays by them. Broker settings come from ROPORT_MQTT_* like the control
 server; secrets stay in the env.
 

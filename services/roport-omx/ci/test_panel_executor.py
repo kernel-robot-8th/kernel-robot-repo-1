@@ -61,6 +61,7 @@ def align(*, far=(), check="ok", **change):
         "returncode": 0,
         "stopped_by": None,
         "shelf": "ok",
+        "on_shelf": True,
         "align": "aligned",
         "released": True,
         "skipped": None,
@@ -78,7 +79,7 @@ def align(*, far=(), check="ok", **change):
 class FakePanel:
     def __init__(self):
         self.status = {
-            "version": "3.13.0",
+            "version": "3.14.5",
             "armed": True,
             "job": {"running": False},
             "last_result": None,
@@ -90,9 +91,10 @@ class FakePanel:
                 },
             },
         }
-        self.udp_age = (
-            1.0  # seconds since the panel's last UDP check; None keeps "at" as set
-        )
+        # seconds since the panel's last UDP check; None keeps "at" as set
+        self.udp_age = 1.0
+        self.home_returns = 0  # POST /api/home/return calls
+        self.home_return_error = None
         self.models = [MODEL]
         self.starts = []
         self.start_error = None
@@ -141,7 +143,18 @@ class FakePanel:
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                if self.path != "/api/eval/start":
+                if self.path == "/api/home/return":
+                    if panel.home_return_error:
+                        self._json({"error": panel.home_return_error}, 400)
+                        return
+                    panel.home_returns += 1
+                    panel.status["job"] = {
+                        "running": True,
+                        "kind": "home",
+                        "info": {"phase": "홈 위치로 이동 중"},
+                    }
+                    self._json({"ok": True, "mode": "return_home"})
+                elif self.path != "/api/eval/start":
                     self._json({"error": "unknown"}, 404)
                 elif panel.start_error:
                     self._json({"error": panel.start_error}, 400)
@@ -372,7 +385,7 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertEqual(event["payload"]["error_code"], "BOX_MARKER_UNKNOWN")
         self.assertEqual(self.panel.starts, [])
 
-    def test_arm_away_from_home_or_closed_gripper_fails_and_holds(self):
+    def test_arm_away_from_home_or_closed_gripper_fails(self):
         both = {"OMX 1": arm("left"), "OMX 2": arm("right")}
         for arms, rest in (
             (
@@ -395,19 +408,26 @@ class PanelExecutorTest(unittest.TestCase):
                     events[-1]["payload"]["error_code"], "ARM_NOT_RETURNED"
                 )
                 self.assertIs(events[-1]["payload"]["departure_ready"], False)
-                self.assertIsNotNone(self.host.hold)
+                self.assertEqual(
+                    events[-1]["payload"]["mission_result"], "MISSION_FAILED"
+                )
+                self.assertIsNone(self.host.hold)  # live read: both arms home, released
 
     def test_panel_error_or_stop_fails_with_its_code(self):
         self.send(self.inbound())
         self.panel.finish(exit_ok=False, err={"code": "err_code_7", "name": "E7"})
         (failed,) = self.host.poll()
         self.assertEqual(failed["payload"]["error_code"], "PANEL_ERR_CODE_7")
-        self.assertIs(failed["payload"]["arms"]["omx1"]["safe"], False)
-        self.host.clear_hold()
+        # arms already home and released (live read): no home move needed, no HOLD
+        self.assertEqual(failed["payload"]["mission_result"], "MISSION_FAILED")
+        self.assertEqual(self.panel.home_returns, 0)
+        self.assertIsNone(self.host.hold)
         self.send(self.inbound())
         self.panel.finish(exit_ok=False, stopped_by="비상 정지")
         (failed,) = self.host.poll()
         self.assertEqual(failed["payload"]["error_code"], "PANEL_EMERGENCY_STOP")
+        self.assertEqual(failed["payload"]["mission_result"], "MISSION_HOLD")
+        self.assertEqual(self.panel.home_returns, 0)  # a frozen arm waits for a person
         self.assertIsNotNone(self.host.hold)
 
     def test_operator_stop_is_reported_without_hold(self):
@@ -465,17 +485,46 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertEqual(p["evidence"], "shelf_align")
         self.assertIs(p["arms"]["omx1"]["returned"], True)
 
-    def test_alignment_rest_cannot_replace_live_home_observation(self):
+    def test_failed_mission_sends_arms_home_then_reports_without_hold(self):
+        def fail_with_arm_away(home):
+            self.panel.arms = {"OMX 1": live("left"), "OMX 2": live("right", home=home)}
+            self.send(self.inbound())
+            self.panel.finish(align=align(on_shelf=False, ok=False), final=True)
+            (progress,) = self.host.poll()  # the panel moves the arms home first
+            self.assertEqual(progress["payload"]["step"], "home_return")
+            self.assertEqual(self.panel.home_returns, self.homes + 1)
+            self.homes += 1
+            self.assertEqual(self.host.poll(), [])  # still moving: same step, no new event
+
+        self.homes = 0
         for home in (False, None):
             with self.subTest(home=home):
-                self.host.clear_hold()
-                self.panel.arms = {"OMX 1": live("left"), "OMX 2": live("right")}
-                self.send(self.inbound())
-                self.panel.arms["OMX 2"]["at_home"] = home
-                self.panel.finish(align=align(), final=True)
-                event = self.host.poll()[-1]
-                self.assertEqual(event["type"], "shelf_inbound.failed")
-                self.assertFalse(event["payload"]["departure_ready"])
+                fail_with_arm_away(home)
+                self.panel.status["job"] = {"running": False, "kind": "home"}
+                self.panel.arms["OMX 2"] = live("right")  # read at home afterwards
+                (failed,) = self.host.poll()
+                p = failed["payload"]
+                self.assertEqual(p["error_code"], "PANEL_BOX_NOT_ON_SHELF")
+                self.assertEqual(p["mission_result"], "MISSION_FAILED")
+                self.assertIs(p["arms"]["omx2"]["returned"], True)
+                self.assertFalse(p["departure_ready"])
+                self.assertIsNone(self.host.hold)
+        # the move ended but an arm is still away: a person takes over
+        fail_with_arm_away(False)
+        self.panel.status["job"] = {"running": False, "kind": "home"}
+        (failed,) = self.host.poll()
+        self.assertEqual(failed["payload"]["mission_result"], "MISSION_HOLD")
+        self.assertIsNotNone(self.host.hold)
+        self.host.clear_hold()
+        # the panel refuses the home move (e.g. no start pose recorded): HOLD at once
+        self.panel.home_return_error = "돌아갈 홈 자세 기록이 없습니다."
+        self.panel.arms = {"OMX 1": live("left"), "OMX 2": live("right", home=False)}
+        self.send(self.inbound())
+        self.panel.finish(exit_ok=False, err={"code": "err_code_7"})
+        (failed,) = self.host.poll()
+        self.assertEqual(failed["payload"]["mission_result"], "MISSION_HOLD")
+        self.assertIn("home return refused", failed["payload"]["detail"])
+        self.assertIsNotNone(self.host.hold)
 
     def test_alignment_failures(self):
         stopped = {"ok": False, "returncode": 2, "shelf": None, "align": None}
@@ -543,10 +592,15 @@ class PanelExecutorTest(unittest.TestCase):
                 events = self.host.poll()
                 self.assertEqual(events[-1]["type"], "shelf_inbound.failed")
                 self.assertEqual(events[-1]["payload"]["error_code"], code)
-                if code == "PANEL_ALIGN_STOPPED":  # a person's stop, arms set down
-                    self.assertIsNone(self.host.hold)
-                else:
+                result = events[-1]["payload"]["mission_result"]
+                if (
+                    code == "PANEL_EMERGENCY_STOP"
+                ):  # frozen in place until a person acts
+                    self.assertEqual(result, "MISSION_HOLD")
                     self.assertIsNotNone(self.host.hold)
+                else:  # a person's stop, or arms read back home: the next mission may start
+                    self.assertEqual(result, "MISSION_FAILED")
+                    self.assertIsNone(self.host.hold)
 
     def test_hold_waiting_for_a_person_fails_at_once(self):
         stopped = {"ok": False, "returncode": 2, "released": None, "rest": None}
@@ -589,52 +643,67 @@ class PanelExecutorTest(unittest.TestCase):
         return event["payload"]
 
     def test_loaded_but_not_aligned_completes_without_hold(self):
-        self.send(self.inbound())
-        self.assertIs(self.panel.starts[-1]["end_on_return"], True)
-        self.assertIs(self.panel.starts[-1]["shelf_align"], True)
-        returned = {"last_episode": {"episode": 0, "returned": True, "elapsed_s": 21.9}}
         cases = [
-            # no aligner set up on this PC: the panel reports no alignment at all
-            ("PANEL_ALIGN_NOT_RUN", returned),
-            # armed turned off (or another job) before the aligner started
-            ("PANEL_ALIGN_SKIPPED", {"align": align(ran=False, ok=False, rest=None)}),
+            # armed turned off before the aligner started; the camera-only read saw the box
+            ("PANEL_ALIGN_SKIPPED", align(ran=False, ok=False, rest=None)),
             # on the shelf, but not straightened within the aligner's time limit
-            ("PANEL_ALIGN_FAILED", {"align": align(ok=False, align="timeout", taps=7)}),
-            # cameras unreadable: the box cannot be called off the shelf
-            (
-                "PANEL_ALIGN_FAILED",
-                {
-                    "align": align(
-                        ok=False, shelf="marker_not_found", on_shelf=None, align=None
-                    )
-                },
-            ),
+            ("PANEL_ALIGN_FAILED", align(ok=False, align="timeout", taps=7)),
         ]
-        for code, change in cases:
-            with self.subTest(code=code, change=change):
-                if code != "PANEL_ALIGN_NOT_RUN":
-                    self.send(self.inbound())
-                    change = change | {"stage": "done", "final": True}
-                self.panel.finish(**change)
+        for code, result in cases:
+            with self.subTest(code=code):
+                self.send(self.inbound())
+                self.assertIs(self.panel.starts[-1]["end_on_return"], True)
+                self.assertIs(self.panel.starts[-1]["shelf_align"], True)
+                self.panel.finish(align=result, stage="done", final=True)
                 events = self.host.poll()
                 p = events[-1]["payload"]
                 self.assertEqual(
                     (events[-1]["type"], p["phase"]),
                     ("shelf_inbound.completed", "COMPLETE"),
                 )
+                self.assertEqual(p["mission_result"], "MISSION_COMPLETE_NOT_ALIGNED")
                 self.assertEqual(p["evidence"], "shelf_load_not_aligned")
                 self.assertEqual(p["align_error"], code)
                 self.assertIs(p["departure_ready"], True)
                 self.assertIsNone(self.host.hold)
-        # not aligned and an arm not home (live read after the alignment): failed and held
+
+    def test_shelf_unknown_holds_for_a_person(self):
+        # Nobody could tell whether the box is on the shelf: the mission cannot go on.
+        returned = {"last_episode": {"episode": 0, "returned": True, "elapsed_s": 21.9}}
+        unread = {
+            "ok": False,
+            "shelf": "marker_not_found",
+            "on_shelf": None,
+            "align": None,
+        }
+        cases = [
+            (
+                "PANEL_SHELF_UNREADABLE",
+                {"align": align(**unread)},
+            ),  # cameras unreadable
+            # another job took the robot first: no alignment, no shelf read
+            (
+                "PANEL_ALIGN_SKIPPED",
+                {"align": align(ran=False, ok=False, on_shelf=None, rest=None)},
+            ),
+        ]
+        for code, change in cases:
+            with self.subTest(code=code):
+                self.host.clear_hold()
+                self.send(self.inbound())
+                self.panel.finish(stage="done", final=True, **change)
+                (failed,) = self.host.poll()
+                self.assertEqual(failed["payload"]["error_code"], code)
+                self.assertEqual(failed["payload"]["mission_result"], "MISSION_HOLD")
+                self.assertIsNotNone(self.host.hold)
+        # no aligner set up on this PC: the panel never looked at the shelf
+        self.host.clear_hold()
         self.send(self.inbound())
-        self.panel.arms["OMX 2"] = live("right", home=False)
-        self.panel.finish(
-            align=align(ok=False, align="timeout"), stage="done", final=True
-        )
-        events = self.host.poll()
-        self.assertEqual(events[-1]["payload"]["error_code"], "ARM_NOT_RETURNED")
-        self.assertIsNotNone(self.host.hold)
+        self.panel.finish(**returned)
+        (failed,) = self.host.poll()
+        self.assertEqual(failed["payload"]["error_code"], "PANEL_ALIGN_NOT_RUN")
+        self.assertEqual(failed["payload"]["mission_result"], "MISSION_HOLD")
+        self.assertEqual(self.panel.home_returns, 0)
 
     def test_alignment_at_another_slot_fails(self):
         # The panel aligns at the slot of its own config; a 2b mission aligned at 2A failed.
@@ -643,7 +712,8 @@ class PanelExecutorTest(unittest.TestCase):
         events = self.host.poll()
         self.assertEqual(events[-1]["type"], "shelf_inbound.failed")
         self.assertEqual(events[-1]["payload"]["error_code"], "PANEL_ALIGN_WRONG_SLOT")
-        self.assertIsNotNone(self.host.hold)
+        self.assertEqual(events[-1]["payload"]["mission_result"], "MISSION_FAILED")
+        self.assertIsNone(self.host.hold)
 
     def test_status_reports_live_arms_with_closed_grippers_as_empty(self):
         payload = self.status()
@@ -674,15 +744,15 @@ class PanelExecutorTest(unittest.TestCase):
         )
         self.assertIsNone(arms["omx2"]["connected"])
 
-    def test_panel_older_than_3_13_is_not_ready(self):
-        # 3.12 still reached the AI server over HTTP (SSH tunnel) by default
-        for version in ("3.12.0", "3.11.0", "3.9.1", None, "dev"):
+    def test_panel_older_than_3_14_is_not_ready(self):
+        # 3.12 reached the AI server over HTTP (SSH tunnel); 3.13 ignores "shelf_align" in a start
+        for version in ("3.13.0", "3.12.0", "3.11.0", "3.9.1", None, "dev"):
             with self.subTest(version):
                 self.panel.status["version"] = version
                 payload = self.status()
                 self.assertFalse(payload["ready"])
                 self.assertIn("PANEL_VERSION", payload["executor_error"])
-        for version in ("3.13.0", "3.14.5"):
+        for version in ("3.14.0", "3.14.5"):
             self.panel.status["version"] = version
             self.assertTrue(self.status()["ready"])
 

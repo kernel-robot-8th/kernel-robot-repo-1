@@ -320,6 +320,11 @@ class CooperativeHost:
                 if isinstance(seen.get("evidence"), str)
                 else "arm_return_only",
             }
+            payload["mission_result"] = (
+                "MISSION_COMPLETE_NOT_ALIGNED"
+                if payload["evidence"] == "shelf_load_not_aligned"
+                else "MISSION_COMPLETE"
+            )
             if isinstance(seen.get("align_error"), str):
                 # completed but not aligned: why the alignment did not finish
                 payload["align_error"] = seen["align_error"]
@@ -327,11 +332,15 @@ class CooperativeHost:
                 record, self._event(record, "completed", "COMPLETE", payload)
             )
         code = seen.get("error") if state == "failed" else "ARM_NOT_RETURNED"
-        # A person's stop that the executor finished safely is reported but does not hold:
-        # the executor's own interlock (e.g. the panel's armed switch) gates the next start.
-        operator_stop = state == "failed" and seen.get("operator_stop") is True
+        # No HOLD when a person's stop was finished safely by the executor (its own interlock,
+        # e.g. the panel's armed switch, gates the next start), or when the executor brought the
+        # arms back home after a failed mission and read them there ("recovered").
+        settled = state == "failed" and (
+            seen.get("operator_stop") is True or seen.get("recovered") is True
+        )
+        detail = seen.get("detail") if isinstance(seen.get("detail"), str) else None
         return self._finish(
-            record, code or "EXECUTION_FAILED", arms, hold=not operator_stop
+            record, code or "EXECUTION_FAILED", arms, detail, hold=not settled
         )
 
     def _finish(
@@ -353,6 +362,8 @@ class CooperativeHost:
             "arms": arms,
             "grasp_released": _released(arms),
             "departure_ready": False,
+            # MISSION_FAILED: arms home, next mission can start; MISSION_HOLD: a person checks first
+            "mission_result": "MISSION_HOLD" if hold else "MISSION_FAILED",
         }
         if detail:
             payload["detail"] = detail[:200]
