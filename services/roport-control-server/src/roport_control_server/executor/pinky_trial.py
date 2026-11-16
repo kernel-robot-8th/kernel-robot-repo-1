@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
 from queue import Empty
+from threading import Event, Thread
 from time import monotonic
 from uuid import uuid4
 
@@ -58,6 +59,7 @@ from roport_control_server.executor.plans import (
 from roport_control_server.executor.trial_socket import TrialSocket
 
 LOG = logging.getLogger(__name__)
+HOST_METRICS_RETRY_S = 5
 
 NAV_RETRY_FAULTS = frozenset(
     (
@@ -90,18 +92,39 @@ def start_host_metrics(config, connection):
     settings = config.get("host_metrics")
     if settings is None:
         return None, None
-    transport = MqttTransport(
-        replace(connection, client_id=connection.client_id + "-host"),
-        [field_wire.topic(host, "host") for host in settings["hosts"]],
-    )
-    receiver = HostMetricsReceiver(
-        transport, settings["hosts"], settings["stale_after_s"]
-    )
-    try:
-        transport.start()
-    except (ConnectionError, OSError):
-        print("Host metrics unavailable; task connection is unchanged.", flush=True)
-    return receiver, transport
+    connection = replace(connection, client_id=connection.client_id + "-host")
+    subscriptions = [field_wire.topic(host, "host") for host in settings["hosts"]]
+    receiver = HostMetricsReceiver(None, settings["hosts"], settings["stale_after_s"])
+    stopped = Event()
+
+    def subscribe():
+        while not stopped.is_set():
+            transport = None
+            try:
+                transport = MqttTransport(connection, subscriptions)
+                transport.start()
+            except OSError as exc:
+                LOG.warning(
+                    "Host metrics subscription failed (%s); retrying.",
+                    type(exc).__name__,
+                )
+            else:
+                receiver.transport = transport
+                stopped.wait()
+                return
+            finally:
+                if transport is not None:
+                    transport.stop()
+            stopped.wait(HOST_METRICS_RETRY_S)
+
+    worker = Thread(target=subscribe, name="host-metrics-subscription")
+    worker.start()
+
+    def stop():
+        stopped.set()
+        worker.join()
+
+    return receiver, stop
 
 
 def validate_config(config, *, require_field_verification=True):
@@ -1106,7 +1129,7 @@ def main():
     selector = selectors.DefaultSelector()
     if not args.socket:
         selector.register(sys.stdin, selectors.EVENT_READ)
-    web = motion_transport = host_transport = None
+    web = motion_transport = stop_host_metrics = None
     owner = ExitStack()
     started = False
 
@@ -1157,7 +1180,7 @@ def main():
             print(
                 "Display motion unavailable; task connection is unchanged.", flush=True
             )
-        control.host_metrics, host_transport = start_host_metrics(config, connection)
+        control.host_metrics, stop_host_metrics = start_host_metrics(config, connection)
         if web:
             print(
                 "Trial web owner ready; waiting for explicit operator commands.",
@@ -1223,8 +1246,8 @@ def main():
             transport.stop()
             if motion_transport:
                 motion_transport.stop()
-            if host_transport:
-                host_transport.stop()
+            if stop_host_metrics:
+                stop_host_metrics()
             if web:
                 web.close()
             owner.close()

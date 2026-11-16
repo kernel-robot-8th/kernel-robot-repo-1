@@ -5,6 +5,7 @@ import logging
 import subprocess
 import sys
 from queue import Empty
+from time import monotonic, sleep
 
 import pytest
 
@@ -15,6 +16,7 @@ from roport_control_server.adapters.mqtt.host_metrics import (
     read_host_metrics,
 )
 from roport_control_server.adapters.mqtt.mqtt import Delivery, MqttConfig, MqttTransport
+from roport_control_server.executor import pinky_trial
 
 MEMINFO = "MemTotal:        3884000 kB\nMemFree:  100 kB\nMemAvailable:    2710000 kB\n"
 METRICS = (
@@ -43,6 +45,48 @@ def proc(tmp_path, meminfo=MEMINFO, loadavg="0.42 0.31 0.20 1/123 4567\n", zones
         "loadavg": tmp_path / "loadavg",
         "thermal_root": thermal,
     }
+
+
+def test_host_metrics_recovers_after_initial_subscription_timeout(monkeypatch):
+    created = []
+
+    class Transport:
+        def __init__(self, _config, _subscriptions):
+            self.ready = False
+            self.incoming = [delivery(sample())]
+            created.append(self)
+
+        def start(self):
+            if len(created) == 1:
+                raise ConnectionError("initial subscription timed out")
+            self.ready = True
+
+        def receive(self, _timeout):
+            if not self.ready or not self.incoming:
+                raise Empty
+            return self.incoming.pop()
+
+        def stop(self):
+            self.ready = False
+
+    monkeypatch.setattr(pinky_trial, "MqttTransport", Transport)
+    monkeypatch.setattr(pinky_trial, "HOST_METRICS_RETRY_S", 0)
+    receiver, stop = pinky_trial.start_host_metrics(
+        {"host_metrics": {"hosts": ["pinky1"], "stale_after_s": 5}},
+        MqttConfig("localhost", "control-01"),
+    )
+    try:
+        deadline = monotonic() + 2
+        while not receiver.diagnostics()["connected"] and monotonic() < deadline:
+            receiver.poll()
+            sleep(0.01)
+        receiver.poll()
+        assert receiver.diagnostics()["connected"]
+        assert receiver.snapshot()["pinky1"]["cpu_count"] == 4
+        assert len(created) == 2
+    finally:
+        stop()
+    assert not any(transport.ready for transport in created)
 
 
 def test_reads_proc_values_in_contract_units(tmp_path):

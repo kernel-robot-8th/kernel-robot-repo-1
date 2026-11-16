@@ -175,9 +175,12 @@ class HostMetricsReceiver:
         }
 
     def poll(self):
+        transport = self.transport
+        if transport is None:
+            return
         for _ in range(MAX_POLL):
             try:
-                delivery = self.transport.receive(0)
+                delivery = transport.receive(0)
             except (Empty, ConnectionError):
                 break
             try:
@@ -189,7 +192,7 @@ class HostMetricsReceiver:
 
     def diagnostics(self):
         return {
-            "connected": bool(self.transport.ready),
+            "connected": self.transport is not None and self.transport.ready,
             "rejected": dict(self.rejected),
         }
 
