@@ -53,17 +53,27 @@ class LeRobotOmx:
         self._gripper_goal: float | None = None
 
     def connect(self) -> None:
-        self.robot.connect(calibrate=False)
-        # 파일과 모터 값이 다르면 학습과 다른 관절 값이 나온다
-        if not self.robot.is_calibrated:
-            self.robot.disconnect()
-            raise RuntimeError(
-                f"calibration mismatch: {self.robot.calibration_fpath} (패널에서 확인)"
-            )
+        try:
+            self.robot.connect(calibrate=False)
+            # 파일과 모터 값이 다르면 학습과 다른 관절 값이 나온다
+            if not self.robot.is_calibrated:
+                raise RuntimeError(
+                    f"calibration mismatch: {self.robot.calibration_fpath} (패널에서 확인)"
+                )
+        except BaseException:
+            self.disconnect()  # 모터만 열리고 카메라가 실패한 경우도 닫아야 다시 연결된다(#91 리뷰)
+            raise
 
     def disconnect(self) -> None:
-        if self.robot.is_connected:
-            self.robot.disconnect()
+        """열린 것만 각각 닫는다(부분 연결 포함). 토크는 끄지 않는다."""
+        # OmxFollower.disconnect()는 버스와 카메라가 모두 연결돼야 불리므로 직접 닫는다
+        if self.robot.bus.is_connected:
+            self.robot.bus.disconnect(disable_torque=False)
+        for cam in self.robot.cameras.values():
+            if (
+                cam.is_connected or cam.thread is not None
+            ):  # OpenCVCamera.disconnect 조건
+                cam.disconnect()
 
     def ready(self) -> str | None:
         return None if self.robot.is_connected else "not connected"

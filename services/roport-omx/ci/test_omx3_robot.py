@@ -12,7 +12,16 @@ sys.path.insert(0, str(ROOT / "src"))
 class FakeBus:
     def __init__(self):
         self.present = {"shoulder_pan": 1.0, "gripper": 58.0}
-        self.writes = []
+        self.writes, self.is_connected, self.closed_torque = [], False, []
+
+    def connect(self):
+        if self.is_connected:
+            raise RuntimeError("already connected")  # vendor check_if_already_connected
+        self.is_connected = True
+
+    def disconnect(self, disable_torque=True):
+        self.closed_torque.append(disable_torque)
+        self.is_connected = False
 
     def sync_read(self, name):
         assert name == "Present_Position"
@@ -22,23 +31,45 @@ class FakeBus:
         self.writes.append((name, goal))
 
 
+class FakeCamera:
+    def __init__(self):
+        self.is_connected, self.thread, self.fail = False, None, False
+
+    def connect(self):
+        if self.fail:
+            raise ConnectionError("camera open failed")
+        self.is_connected, self.thread = True, object()
+
+    def disconnect(self):
+        self.is_connected, self.thread = False, None
+
+
 class FakeOmxFollower:
+    """vendored OmxFollower와 같은 순서: 버스 연결 → 카메라 연결, 둘 다 열려야 is_connected."""
+
     calibrated = True
 
     def __init__(self, config):
         self.config, self.bus, self.actions = config, FakeBus(), []
-        self.is_connected, self.connect_args = False, None
+        self.cameras = {"front": FakeCamera()}
+        self.connect_args = None
         self.calibration_fpath = "cal.json"
+
+    @property
+    def is_connected(self):
+        return self.bus.is_connected and all(
+            c.is_connected for c in self.cameras.values()
+        )
 
     @property
     def is_calibrated(self):
         return self.calibrated
 
     def connect(self, calibrate=True):
-        self.connect_args, self.is_connected = calibrate, True
-
-    def disconnect(self):
-        self.is_connected = False
+        self.connect_args = calibrate
+        self.bus.connect()
+        for cam in self.cameras.values():
+            cam.connect()
 
     def get_observation(self):
         obs = {f"{j}.pos": float(i) for i, j in enumerate(JOINTS)}
@@ -105,6 +136,29 @@ class Connect(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             r.connect()
         self.assertEqual(r.ready(), "not connected")
+        self.assertFalse(r.robot.bus.is_connected)
+        self.assertFalse(r.robot.cameras["front"].is_connected)
+
+    def test_camera_failure_closes_bus_and_allows_reconnect(self):
+        # 모터 버스가 열린 뒤 카메라가 실패: 버스도 닫아야 다음 연결이 막히지 않는다(#91 리뷰)
+        r = LeRobotOmx("p", 0)
+        cam = r.robot.cameras["front"]
+        cam.fail = True
+        with self.assertRaises(ConnectionError):
+            r.connect()
+        self.assertFalse(r.robot.bus.is_connected)
+        self.assertEqual(r.robot.bus.closed_torque, [False])  # 토크는 끄지 않는다
+        cam.fail = False
+        r.connect()
+        self.assertIsNone(r.ready())
+
+    def test_disconnect_keeps_torque(self):
+        r = LeRobotOmx("p", 0)
+        r.connect()
+        r.disconnect()
+        self.assertEqual(r.ready(), "not connected")
+        self.assertEqual(r.robot.bus.closed_torque, [False])
+        r.disconnect()  # 이미 닫혀도 예외 없음
 
 
 class Motion(unittest.TestCase):
