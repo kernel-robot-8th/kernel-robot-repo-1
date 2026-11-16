@@ -40,6 +40,8 @@ jobs:
             node scripts/check-commit-message.mjs "$message_file"
           fi
           if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != 0000000000000000000000000000000000000000 ]; then
+            # A force push can leave the previous head outside checkout's fetched refs.
+            git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || git fetch --no-tags origin "$BASE_SHA"
             git rev-list --no-merges "$BASE_SHA..$HEAD_SHA" > "$RUNNER_TEMP/commit-shas.txt"
           else
             git rev-list --no-merges --no-walk "$HEAD_SHA" > "$RUNNER_TEMP/commit-shas.txt"
