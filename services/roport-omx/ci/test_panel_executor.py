@@ -26,6 +26,26 @@ MODEL = "/models/real_act_2b/pretrained_model"
 ROUTES = {
     ("INBOUND", "2b"): Route(MODEL, "INBOUND tray->shelf 2B | marker {box}", 40, 15)
 }
+OUT_MODEL = "/models/outbound_act_re1112x37_60k_1113/pretrained_model"
+OUT_ROUTE = {
+    ("OUTBOUND", "2b"): Route(
+        OUT_MODEL, "OUTBOUND shelf 2B->pinky | marker {box}", 40, 15
+    )
+}
+
+
+def pinky(on_pinky=True, on_shelf=False, **change):
+    """last_result.pinky of the panel's camera-only check after an unloading evaluation."""
+    return {
+        "ran": True,
+        "on_pinky": on_pinky,
+        "on_shelf": on_shelf,
+        "pinky": "ok" if on_pinky else "marker_not_found",
+        "shelf": "ok" if on_shelf else "marker_not_found",
+        "box": 16,
+        "returncode": 0,
+        "skipped": None,
+    } | change
 
 
 def arm(side, *, home=True, gripper_open=True):
@@ -494,7 +514,9 @@ class PanelExecutorTest(unittest.TestCase):
             self.assertEqual(progress["payload"]["step"], "home_return")
             self.assertEqual(self.panel.home_returns, self.homes + 1)
             self.homes += 1
-            self.assertEqual(self.host.poll(), [])  # still moving: same step, no new event
+            self.assertEqual(
+                self.host.poll(), []
+            )  # still moving: same step, no new event
 
         self.homes = 0
         for home in (False, None):
@@ -714,6 +736,110 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertEqual(events[-1]["payload"]["error_code"], "PANEL_ALIGN_WRONG_SLOT")
         self.assertEqual(events[-1]["payload"]["mission_result"], "MISSION_FAILED")
         self.assertIsNone(self.host.hold)
+
+    def outbound(self):
+        message = self.inbound()
+        message["type"] = "shelf_outbound.requested"
+        message["payload"]["operation"] = "OUTBOUND"
+        return message
+
+    def use_unload_route(self):
+        self.executor.routes = ROUTES | OUT_ROUTE
+        self.panel.models.append(OUT_MODEL)
+
+    def test_unload_checks_pinky_and_completes_when_the_box_is_on_it(self):
+        self.use_unload_route()
+        (accepted,) = self.send(self.outbound())
+        self.assertEqual(accepted["payload"]["phase"], "ACCEPTED")
+        start = self.panel.starts[-1]
+        self.assertEqual(start["model_path"], OUT_MODEL)
+        self.assertEqual(start["task"], "OUTBOUND shelf 2B->pinky | marker 16")
+        self.assertEqual((start["pinky_check"], start["shelf_align"]), (True, False))
+        for change in (
+            {},  # ended on its return
+            {"exit_ok": False, "err": {"code": "err_code_7"}},  # no time or error rule
+        ):
+            with self.subTest(change=change):
+                if change:
+                    self.send(self.outbound())
+                self.panel.finish(pinky=pinky(), stage="done", final=True, **change)
+                events = self.host.poll()
+                p = events[-1]["payload"]
+                self.assertEqual(events[-1]["type"], "shelf_outbound.completed")
+                self.assertEqual(p["mission_result"], "MISSION_COMPLETE")
+                self.assertEqual(p["evidence"], "pinky_load")
+                self.assertIs(p["departure_ready"], True)
+                self.assertIsNone(self.host.hold)
+
+    def test_unload_box_dropped_or_left_on_shelf_fails_and_arms_go_home(self):
+        self.use_unload_route()
+        cases = [
+            ("PANEL_BOX_DROPPED", pinky(on_pinky=False, on_shelf=False)),
+            ("PANEL_BOX_STILL_ON_SHELF", pinky(on_pinky=False, on_shelf=True)),
+        ]
+        for code, check in cases:
+            with self.subTest(code=code):
+                self.send(self.outbound())
+                self.panel.finish(pinky=check, stage="done", final=True)
+                (failed,) = self.host.poll()
+                self.assertEqual(failed["type"], "shelf_outbound.failed")
+                self.assertEqual(failed["payload"]["error_code"], code)
+                self.assertEqual(failed["payload"]["mission_result"], "MISSION_FAILED")
+                self.assertIsNone(self.host.hold)
+        # an arm left away from home: sent home first, then reported without HOLD
+        self.panel.arms["OMX 1"] = live("left", home=False)
+        self.send(self.outbound())
+        self.panel.finish(pinky=pinky(on_pinky=False), stage="done", final=True)
+        (progress,) = self.host.poll()
+        self.assertEqual(progress["payload"]["step"], "home_return")
+        self.panel.status["job"] = {"running": False, "kind": "home"}
+        self.panel.arms["OMX 1"] = live("left")
+        (failed,) = self.host.poll()
+        self.assertEqual(failed["payload"]["mission_result"], "MISSION_FAILED")
+        self.assertEqual(self.panel.home_returns, 1)
+        self.assertIsNone(self.host.hold)
+
+    def test_unload_unknown_pinky_holds_for_a_person(self):
+        self.use_unload_route()
+        unread = pinky(on_pinky=None, on_shelf=None, ran=False, skipped="시간 초과")
+        cases = [
+            ("PANEL_PINKY_UNREADABLE", {"pinky": unread}),
+            (
+                "PANEL_PINKY_CHECK_NOT_RUN",
+                {},
+            ),  # panel before pinky_check: no key at all
+            (
+                "PANEL_PINKY_CHECK_CONFLICT",
+                {"pinky": pinky(on_pinky=True, on_shelf=True)},
+            ),
+            (
+                "PANEL_EMERGENCY_STOP",
+                {"exit_ok": False, "stopped_by": "비상 정지", "pinky": unread},
+            ),
+        ]
+        for code, change in cases:
+            with self.subTest(code=code):
+                self.host.clear_hold()
+                self.send(self.outbound())
+                self.panel.finish(stage="done", final=True, **change)
+                (failed,) = self.host.poll()
+                self.assertEqual(failed["payload"]["error_code"], code)
+                self.assertEqual(failed["payload"]["mission_result"], "MISSION_HOLD")
+                self.assertIsNotNone(self.host.hold)
+        self.assertEqual(self.panel.home_returns, 0)
+
+    def test_failed_mission_never_moves_arms_while_armed_is_off(self):
+        # The panel's home move does not check armed; the Host does.
+        self.panel.arms["OMX 2"] = live("right", home=False)
+        self.send(self.inbound())
+        self.panel.status["armed"] = False  # e.g. the panel turned it off on an anomaly
+        self.panel.finish(align=align(on_shelf=False, ok=False), final=True)
+        (failed,) = self.host.poll()
+        self.assertEqual(failed["payload"]["error_code"], "PANEL_NOT_ARMED_FOR_HOME")
+        self.assertIn("PANEL_BOX_NOT_ON_SHELF", failed["payload"]["detail"])
+        self.assertEqual(failed["payload"]["mission_result"], "MISSION_HOLD")
+        self.assertEqual(self.panel.home_returns, 0)
+        self.assertIsNotNone(self.host.hold)
 
     def test_status_reports_live_arms_with_closed_grippers_as_empty(self):
         payload = self.status()

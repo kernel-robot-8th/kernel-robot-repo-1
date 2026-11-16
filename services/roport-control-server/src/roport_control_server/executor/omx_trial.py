@@ -48,8 +48,14 @@ def validate_settings(settings):
 # Completion evidence a shelf-01 Host may report. Shelf loading (2026-11-16):
 # "shelf_align" = loaded and aligned (Mission Complete); "shelf_load_not_aligned" = loaded but not
 # aligned in time, arms home (Mission Complete, Not Aligned; the Host adds "align_error").
+# Unloading: "pinky_load" = the cameras saw the box on the Pinky tray (Mission Complete).
 # "arm_return_only" comes from the simulated executor. Anything else holds.
-OMX_COMPLETIONS = {"arm_return_only", "shelf_align", "shelf_load_not_aligned"}
+OMX_COMPLETIONS = {
+    "arm_return_only",
+    "shelf_align",
+    "shelf_load_not_aligned",
+    "pinky_load",
+}
 
 
 def returned(payload):

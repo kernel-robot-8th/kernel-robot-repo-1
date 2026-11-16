@@ -92,6 +92,22 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 - 제어판은 PC 설정(`shelf_align.slot`, 현재 2B 하나)의 칸에서 정렬합니다. 다른 칸 미션은 `PANEL_ALIGN_WRONG_SLOT`으로 실패하므로, 칸별 정렬은 제어판이 명령의 칸을 받도록 바뀐 뒤 사용합니다.
 - 관제(`omx_trial`)는 `arm_return_only`(모의 실행부)·`shelf_align`·`shelf_load_not_aligned`만 완료로 받고, Not Aligned 사유를 이송 기록의 `align_error`에 남깁니다. 관제는 현재 모든 `failed`를 HOLD로 처리합니다(`MISSION_FAILED` 후 관제 흐름은 관제 담당과 합의 필요).
 
+### 하차 미션 판정 (2026-11-16 합의)
+
+하차는 선반의 상품을 관제 명령으로 대기 중인 Pinky 쟁반에 상차하는 작업입니다(`shelf_outbound.requested`, 예: 2b 칸 모델 `outbound_act_re1112x37_60k_1113`). Host는 시작 요청에 `pinky_check: true`, `shelf_align: false`를 보내고, 평가 뒤 제어판이 카메라만으로 확인한 결과(`last_result.pinky`)로 판정합니다. 시간 기준은 쓰지 않습니다.
+
+- 확인: 위 카메라(`front`)로 쟁반 위 상자 윗면 마커(`on_pinky`), 선반 정면 카메라(`front_2`)로 상자가 칸에 남았는지(`on_shelf`)를 읽습니다(정렬 실행기 `--step pinky_read`, 로봇 구동 없음). 제어판은 비상 정지·강제 종료가 아니면 평가가 어떻게 끝났든 확인합니다.
+
+| `mission_result` | 조건 | 비고 |
+| --- | --- | --- |
+| `MISSION_COMPLETE` | `on_pinky: true`, 양팔 홈·그리퍼 놓음(확인 뒤 `/api/arms` 실측) | `evidence: "pinky_load"` |
+| `MISSION_FAILED` | `on_pinky: false`: 선반에 남음(`PANEL_BOX_STILL_ON_SHELF`) 또는 떨어뜨림(`PANEL_BOX_DROPPED`) | 양팔 홈 복귀 후 HOLD 없음 |
+| `MISSION_HOLD` | `on_pinky: null`(`PANEL_PINKY_UNREADABLE`), 확인 없음(`PANEL_PINKY_CHECK_NOT_RUN`), 쟁반과 선반 둘 다 있음(`PANEL_PINKY_CHECK_CONFLICT`), 비상 정지 | 현장 확인 후 `--clear-hold` |
+
+### 실패 뒤 홈 복귀 안전 조건
+
+`MISSION_FAILED`의 홈 복귀(`/api/home/return`)는 제어판 armed가 켜져 있을 때만 요청합니다. 제어판의 홈 이동 자체는 armed를 보지 않으므로, armed가 꺼져 있으면(작업자 정지, 이상 감지) Host는 팔을 움직이지 않고 `PANEL_NOT_ARMED_FOR_HOME`, `MISSION_HOLD`로 보고합니다.
+
 ### AI 추론 연결 확인
 
 추론은 제어판이 GPU AI 추론 서버로 UDP(`RPI1`)만 사용합니다(제어판 3.13.0부터). Host는 제어판 `/api/status`의 `gpu_link.infer`를 읽어 다음이 모두 맞을 때만 준비 상태입니다. Host는 추론 서버에 직접 PING하지 않습니다(공유 키를 제어판 한 곳에만 둠).
