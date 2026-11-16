@@ -139,7 +139,8 @@ def test_host_metrics_poll_error_is_isolated_from_control_loop(local_owner, capl
 
 
 def test_host_metrics_owner_without_profile_key_is_not_configured(local_owner):
-    client, *_ = local_owner
+    client, _, channel, _ = local_owner
+    assert view(channel.path).rpc({"action": "snapshot"})["host_metrics_ready"] is None
     data = client.get("/api/hosts/metrics").json()
     assert data["receiver"] == "not_configured"
     assert all(h["status"] == "unknown" for h in data["hosts"])
@@ -186,13 +187,15 @@ def test_host_metrics_profile_key_is_validated(single_profile, settings):
 
 
 def test_host_metrics_subscriber_is_separate_and_optional(
-    single_profile, monkeypatch, caplog
+    single_profile, local_owner, monkeypatch, caplog
 ):
     from roport_control_server.adapters.mqtt.mqtt import MqttConfig
     from roport_control_server.executor import pinky_trial
 
     created = []
     attempted = threading.Event()
+    release = threading.Event()
+    failed = threading.Event()
 
     class Transport:
         ready = False
@@ -202,12 +205,15 @@ def test_host_metrics_subscriber_is_separate_and_optional(
 
         def start(self):
             attempted.set()
+            if not release.wait(5):
+                raise TimeoutError("test did not release the subscription attempt")
             raise ConnectionError("broker unavailable")
 
         def stop(self):
-            pass
+            failed.set()
 
     monkeypatch.setattr(pinky_trial, "MqttTransport", Transport)
+    monkeypatch.setattr(pinky_trial, "HOST_METRICS_RETRY_S", 60)
     connection = MqttConfig("127.0.0.1", "control-x")
     assert pinky_trial.start_host_metrics(single_profile, connection) == (None, None)
     assert created == []
@@ -216,11 +222,22 @@ def test_host_metrics_subscriber_is_separate_and_optional(
         "host_metrics": {"hosts": ["pinky1", "shelf-01"], "stale_after_s": 15},
     }
     receiver, stop = pinky_trial.start_host_metrics(profile, connection)
+    client, control, channel, _ = local_owner
+    control.host_metrics = receiver
+    trial_view = view(channel.path)
     try:
         assert attempted.wait(2)
         assert receiver.stale_after_s == 15
-        assert receiver.diagnostics()["connected"] is False
+        for phase in ("connecting", "failed"):
+            if phase == "failed":
+                release.set()
+                assert failed.wait(2)
+            assert trial_view.rpc({"action": "snapshot"})["host_metrics_ready"] is False
+            response = client.get("/api/hosts/metrics")
+            assert response.status_code == 200
+            assert response.json()["receiver"] == "disconnected"
     finally:
+        release.set()
         stop()
     assert created == [
         (

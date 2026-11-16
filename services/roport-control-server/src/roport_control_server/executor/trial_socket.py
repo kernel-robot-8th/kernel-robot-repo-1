@@ -41,6 +41,9 @@ class TrialSocket:
         c = self.control
         state = c.state
         now = time.monotonic()
+        host_metrics_diagnostics = (
+            c.host_metrics.diagnostics() if c.host_metrics else None
+        )
         config = {
             key: deepcopy(c.config[key])
             for key in (
@@ -123,11 +126,9 @@ class TrialSocket:
             else {"rejected": 0, "reasons": {}},
             # None = not configured; display-only, never read by gates.
             "hosts": c.host_metrics.snapshot() if c.host_metrics else {},
-            "host_metrics_diagnostics": c.host_metrics.diagnostics()
-            if c.host_metrics
-            else None,
-            "host_metrics_ready": c.host_metrics.transport.ready
-            if c.host_metrics
+            "host_metrics_diagnostics": host_metrics_diagnostics,
+            "host_metrics_ready": host_metrics_diagnostics["connected"]
+            if host_metrics_diagnostics is not None
             else None,
             "events": [
                 {k: e[k] for k in ("message_id", "type", "source", "sent_at")}
