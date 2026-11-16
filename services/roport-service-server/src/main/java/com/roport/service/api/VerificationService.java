@@ -49,17 +49,26 @@ class VerificationService {
 
     private final JdbcClient db;
     private final Clock clock;
+    private final VerifyAttemptLimiter limiter;
 
-    VerificationService(JdbcClient db, Clock clock) {
+    VerificationService(JdbcClient db, Clock clock, VerifyAttemptLimiter limiter) {
         this.db = db;
         this.clock = clock;
+        this.limiter = limiter;
     }
 
+    /**
+     * 처음 쓰는 요청 ID만 카트별 실패 제한(429)을 받는다. 같은 ID 재전송은 이미 기록된 결과라 제한·집계하지 않는다.
+     * 예약 없음(404)과 새 거절(REJECTED)을 실패로 센다.
+     */
     @Transactional
     Outcome verify(String cartId, VerifyRequest req) {
         String actorRef = "cart:" + cartId;
         Instant now = clock.instant();
         Optional<Stored> existing = stored(req.verificationRequestId());
+        if (existing.isEmpty()) {
+            limiter.check(cartId);
+        }
         Target target;
         try {
             target = resolve(req, now);
@@ -67,6 +76,9 @@ class VerificationService {
             // 이미 쓴 요청 ID에 없는 값을 보내도 "같은 ID, 다른 요청"이다. 존재하는 다른 값과 같은 409로 답한다.
             if (existing.isPresent() && "RESERVATION_NOT_FOUND".equals(e.code)) {
                 throw conflict();
+            }
+            if ("RESERVATION_NOT_FOUND".equals(e.code)) {
+                limiter.recordFailure(cartId);
             }
             throw e;
         }
@@ -89,7 +101,10 @@ class VerificationService {
             // 같은 ID의 동시 요청이 먼저 저장했다. 그 결과를 같은 규칙으로 돌려준다.
             return replay(row, actorRef, req.method(), target);
         }
-        return new Outcome(toResponse(row), true);
+        if (!verified) {
+            limiter.recordFailure(cartId);
+        }
+        return new Outcome(toResponse(row, true), true);
     }
 
     private Outcome replay(Stored row, String actorRef, Method method, Target target) {
@@ -98,7 +113,9 @@ class VerificationService {
                 || !Objects.equals(row.credentialId(), target.credentialId())) {
             throw conflict();
         }
-        return new Outcome(toResponse(row), false);
+        // 재전송 시점에 QR이 만료·폐기됐거나 예약이 더 이상 확인되지 않으면 저장된 결과만 돌려주고
+        // 최신 예약 정보(바뀐 게이트 등)는 조회하지 않는다. 확인이 유효한 동안의 응답 유실 재시도는 그대로 정보를 준다.
+        return new Outcome(toResponse(row, target.reasonCode() == null), false);
     }
 
     private static ApiException conflict() {
@@ -163,8 +180,8 @@ class VerificationService {
                 .optional();
     }
 
-    private Verification toResponse(Stored row) {
-        VerifiedPickup pickup = "VERIFIED".equals(row.result()) ? pickup(row.pickupId()) : null;
+    private Verification toResponse(Stored row, boolean withPickup) {
+        VerifiedPickup pickup = withPickup && "VERIFIED".equals(row.result()) ? pickup(row.pickupId()) : null;
         return new Verification(row.verificationId(), row.verificationRequestId(), row.result(), row.reasonCode(), row.verifiedAt(), false, pickup);
     }
 
