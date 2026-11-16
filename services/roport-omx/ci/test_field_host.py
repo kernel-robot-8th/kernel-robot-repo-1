@@ -31,6 +31,16 @@ def stationary_sample():
     return {"observed_at": datetime.now(UTC).isoformat(), "stopped": True}
 
 
+def wait_until(read, predicate, timeout=2):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = read()
+        if predicate(result):
+            return result
+        time.sleep(0.005)
+    raise AssertionError(f"condition not reached: {result}")
+
+
 def expiry():
     return (datetime.now(UTC) + timedelta(seconds=10)).isoformat()
 
@@ -522,6 +532,25 @@ class FieldHostTest(unittest.TestCase):
             expires_at=expiry(),
         )
 
+    def test_local_reconciliation_preserves_history_and_never_resumes_motion(self):
+        self.host.handle(self.command())
+        with self.assertRaisesRegex(ValueError, "pending device stop"):
+            self.host.release_hold("checked")
+        self.host.handle(self.stop_command())
+        self.host.poll()
+        saved = deepcopy(self.host.data)
+        self.executors["shelf-01"].unreturned.add("omx2")
+        with self.assertRaisesRegex(ValueError, "returned"):
+            self.host.release_hold("checked")
+        self.assertEqual(self.host.data, saved)
+        self.executors["shelf-01"].unreturned.clear()
+        self.host.release_hold("operator checked both arms and removed the package")
+        self.assertIsNone(self.host.data["hold"])
+        self.assertEqual(self.host.data["commands"], saved["commands"])
+        self.assertEqual(self.host.data["outbox"], saved["outbox"])
+        self.assertEqual(len(self.executors["shelf-01"].tasks), 1)
+        self.assertTrue(self.host.data["recoveries"])
+
     def test_second_stop_keeps_first_stop_until_confirmation(self):
         self.host.handle(self.command())
         first = self.stop_command()
@@ -597,6 +626,63 @@ class FieldHostTest(unittest.TestCase):
         self.assertIsNone(self.host.data.get("recovery_command_id"))
         self.assertTrue(self.host.data["hold"])
 
+    def test_restarted_managed_panel_cancels_original_id_before_delayed_start(self):
+        from test_panel_executor import ROUTES
+
+        from roport_omx.managed_panel import ManagedPanelExecutor
+        from roport_omx.panel_command_api import PanelCommandAPI
+        from roport_omx.panel_commands import PanelCommands
+
+        self.host.handle(self.command())
+        ledger = PanelCommands(Path(self.temp.name) / "panel.sqlite")
+        self.addCleanup(ledger.close)
+        starts = []
+        api = PanelCommandAPI(
+            ledger,
+            validate_payload=lambda payload: None,
+            begin=starts.append,
+            stop=lambda: None,
+        )
+        client = ManagedPanelExecutor(ROUTES, box_marker=17)
+
+        def call(method, path, body=None, **kwargs):
+            return api.handle(method, path, body)[1]
+
+        client._call = call
+        adapter = PanelFieldExecutor(
+            client,
+            model_version="sim-model",
+            calibration_version="sim-cal",
+            stop=lambda: None,
+            stop_status=stationary_sample,
+        )
+        self.addCleanup(adapter.close)
+        self.executors["shelf-01"] = adapter
+        self.host = FieldOmxHost(self.journal, self.executors)
+        adapter.stop_future.result(timeout=2)
+        self.assertEqual(client.command_id, "command-1")
+        self.assertEqual(ledger.get("command-1")["state"], "cancelled")
+        self.host.handle(self.stop_command())
+        wait_until(
+            self.host.poll,
+            lambda events: any(
+                event["payload"]["status"] == "completed" for event in events
+            ),
+        )
+        self.assertTrue(self.host.data["hold"])
+        # A POST sent by the previous Host may arrive after the fresh stop sample.
+        api.handle(
+            "POST",
+            "/api/control/commands",
+            {
+                "command_id": "command-1",
+                "expires_at": expiry(),
+                "payload": {},
+            },
+        )
+        self.assertFalse(starts)
+        self.assertEqual(ledger.get("command-1")["state"], "cancelled")
+
     def test_failed_abort_keeps_command_available_for_stop_retry(self):
         self.host.handle(self.command())
         executor = self.executors["shelf-01"]
@@ -622,9 +708,46 @@ class FieldHostTest(unittest.TestCase):
         )
         self.assertEqual(self.host.poll()[-1]["command_id"], "stop-2")
 
+    def test_busy_panel_reports_unknown_pose_without_inventing_an_arm_fault(self):
+        self.host.handle(self.command())
+        panel = self.executors["shelf-01"]
+        panel.readiness = lambda: {
+            "armed": True,
+            "busy": True,
+            "error": None,
+            "arms": {},
+        }
+        for target in ("omx1", "omx2"):
+            state = self.host.state(target)["payload"]["state"]
+            self.assertIsNone(state["fault"])
+            self.assertFalse(state["ready"])
+            self.assertFalse(state["stopped"])
+            self.assertFalse(state["home_reached"])
+            self.assertEqual(state["holding_state"], "unknown")
+        panel.readiness = lambda: {
+            "armed": True,
+            "busy": True,
+            "error": None,
+            "arms": {"omx1": {"connected": False}},
+        }
+        self.assertEqual(
+            self.host.state("omx1")["payload"]["state"]["fault"],
+            "arm_observation_unavailable",
+        )
+        panel.readiness = lambda: {
+            "armed": True,
+            "busy": True,
+            "error": "panel_read_failed",
+            "arms": {},
+        }
+        self.assertEqual(
+            self.host.state("omx2")["payload"]["state"]["fault"], "panel_read_failed"
+        )
+
     def test_panel_completion_proof_must_match_actual_visit_and_be_fresh(self):
         panel = self.executors["shelf-01"]
-        panel.check = lambda task: None
+        panel.check = lambda task, **kwargs: None
+        panel.prepare = panel.readiness
         wrong = {
             "command_id": "command-1",
             "package_id": "wrong-package",
@@ -642,8 +765,11 @@ class FieldHostTest(unittest.TestCase):
             completion=lambda task: wrong,
             stop=panel.abort,
         )
+        self.addCleanup(adapter.close)
         self.host.executors["shelf-01"] = adapter
+        wait_until(adapter.readiness, lambda r: r.get("armed"))
         self.host.handle(self.command())
+        wait_until(adapter.observe, lambda r: r["state"] == "finished")
         valid = {**wrong, "package_id": "package-17"}
         changes = [
             {key: "another-visit"}
@@ -689,6 +815,9 @@ class FieldHostTest(unittest.TestCase):
                 sample.clear()
                 sample.update(stationary_sample())
                 adapter.abort()
+                if isinstance(adapter, PanelFieldExecutor):
+                    self.addCleanup(adapter.close)
+                    adapter.stop_future.result(timeout=2)
                 self.assertNotEqual(adapter.observe().get("state"), "stopped")
                 for bad in (
                     {},
@@ -896,11 +1025,13 @@ class FieldHostTest(unittest.TestCase):
         panel = self.executors["shelf-01"]
         clock = datetime.now(UTC)
 
-        def delayed_check(task):
+        def delayed_check(task, *, cached=False):
             nonlocal clock
-            clock += timedelta(seconds=20)
+            if not cached:
+                clock += timedelta(seconds=20)
 
         panel.check = delayed_check
+        panel.prepare = panel.readiness
         adapter = PanelFieldExecutor(
             panel,
             model_version="sim-model",
@@ -908,11 +1039,19 @@ class FieldHostTest(unittest.TestCase):
             stop_status=stationary_sample,
             stop=panel.abort,
         )
+        self.addCleanup(adapter.close)
         self.host.executors["shelf-01"] = adapter
+        wait_until(adapter.readiness, lambda r: r.get("armed"))
+        adapter.stop_status = lambda: {
+            "observed_at": clock.isoformat(),
+            "stopped": True,
+        }
         with patch("roport_omx.field_executors.datetime") as clock_type:
             clock_type.now.side_effect = lambda tz: clock
             clock_type.fromisoformat = datetime.fromisoformat
             self.host.handle(self.command())
+            with self.assertRaisesRegex(ValueError, "expired_command"):
+                adapter.start_future.result(timeout=2)
         self.assertFalse(panel.tasks)
 
     def test_independent_actual_runner_adapter_uses_one_arm(self):
@@ -953,13 +1092,18 @@ class FieldHostTest(unittest.TestCase):
             )
             self.host.executors["shelf-01"] = adapter
             command = self.command(slot_id="2b")
+            wait_until(adapter.readiness, lambda r: r.get("armed"))
             self.host.handle(command)
+            adapter.start_future.result(timeout=2)
             panel.finish()
-            result = self.host.poll()[0]
+            result = wait_until(
+                self.host.poll, lambda r: r and r[-1]["payload"]["status"] == "failed"
+            )[-1]
             self.assertEqual(
                 result["payload"]["reason"], "placement_or_release_unconfirmed"
             )
         finally:
+            adapter.close()
             panel.server.shutdown()
             panel.server.server_close()
 

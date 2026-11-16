@@ -1,8 +1,11 @@
 """Adapters preserve the team's device owners; no simulated evidence in a hardware executor."""
 
+from concurrent.futures import Future
 from copy import deepcopy
 from datetime import UTC, datetime
-from threading import RLock
+from logging import getLogger
+from threading import Lock, RLock, Thread
+from time import monotonic
 
 from .omx3 import judge
 from .omx3.contract import Phase
@@ -12,6 +15,19 @@ from .omx3.target import resolve_marker_id
 
 def _expired(task):
     return datetime.fromisoformat(task["expires_at"]) <= datetime.now(UTC)
+
+
+def _background(call):
+    future = Future()
+
+    def run():
+        try:
+            future.set_result(call())
+        except Exception as exc:  # noqa: BLE001 - hand the device failure back to the owner
+            future.set_exception(exc)
+
+    Thread(target=run, name="omx-panel-io", daemon=True).start()
+    return future
 
 
 def _stopped(sensor, since=None):
@@ -191,9 +207,59 @@ class PanelFieldExecutor:
         self.panel, self.completion, self.stop = panel, completion, stop
         self.task = None
         self.stop_status, self.stop_requested_at = stop_status, None
+        self.lock, self.io_lock = RLock(), Lock()
+        self.closed = False
+        self.start_future = self.stop_future = None
+        self.reads = {}
+        self.start_unknown = self.stop_again = False
+        self.stop_running = False
+
+    def _sample(self, name, read):
+        """One bounded outstanding read per kind; stale replies are never re-dated."""
+        with self.lock:
+            entry = self.reads.setdefault(
+                name, {"future": None, "sample": None, "since": monotonic()}
+            )
+            future = entry["future"]
+            if future and future.done():
+                entry["future"] = None
+                entry["sample"] = None
+                entry["sample"] = future.result()
+            sample = entry["sample"]
+            if entry["future"] is None and not self.closed:
+
+                def fetch():
+                    with self.io_lock:
+                        if self.closed:
+                            return monotonic(), {}
+                        observed = monotonic()
+                        return observed, read()
+
+                entry["future"] = _background(fetch)
+            if sample and monotonic() - sample[0] <= 3:
+                return deepcopy(sample[1])
+            if monotonic() - (sample[0] if sample else entry["since"]) > 3:
+                raise TimeoutError("panel observation stale")
+            return None
 
     def readiness(self):
-        result = self.panel.readiness()
+        if self.start_future is not None and not self.start_future.done():
+            return {"armed": False, "busy": True, "error": None, "arms": {}}
+        error = None
+        try:
+            result = self._sample("ready", self.panel.prepare)
+        except Exception:  # noqa: BLE001 - failed reads cannot assert readiness
+            result = None
+            error = "panel_observation_failed"
+        if result is None or self.closed or self.stop_requested_at is not None:
+            result = {
+                "armed": False,
+                "busy": self.task is not None
+                and not self.closed
+                and self.stop_requested_at is None,
+                "error": error,
+                "arms": {},
+            }
         stopped = _stopped(self.stop_status)
         for arm in result.get("arms", {}).values():
             arm["stopped"] = stopped
@@ -204,25 +270,101 @@ class PanelFieldExecutor:
             raise ValueError("independent_panel_driver_unavailable")
         if self.stop is None:
             raise ValueError("physical_stop_adapter_unavailable")
-        self.panel.check(task)
+        self.panel.check(task, cached=True)
 
     def start(self, task):
         self.check(task)
         if _expired(task):
             raise ValueError("expired_command")
-        self.task = deepcopy(task)
-        self.stop_requested_at = None
-        self.panel.start(task)
+        with self.lock:
+            if (
+                self.closed
+                or self.start_unknown
+                or self.stop_requested_at is not None
+                or (self.start_future and not self.start_future.done())
+            ):
+                raise ValueError("panel_held_or_starting")
+            self.task = deepcopy(task)
+            self.reads.pop("ready", None)
+            self.reads.pop("observe", None)
+            self.start_future = _background(self._start)
+
+    def _start(self):
+        sent = False
+        try:
+            with self.io_lock:
+                self.panel.check(self.task)
+                ready = self.panel.readiness()
+                if (
+                    ready.get("armed") is not True
+                    or ready.get("busy")
+                    or ready.get("error")
+                ):
+                    raise ValueError("executor_not_ready")
+                if not _stopped(self.stop_status) or any(
+                    any(
+                        ready.get("arms", {}).get(arm, {}).get(key) is not expected
+                        for key, expected in (
+                            ("connected", True),
+                            ("safe", True),
+                            ("returned", True),
+                            ("grasping", False),
+                        )
+                    )
+                    for arm in self.task["robot_ids"]
+                ):
+                    raise ValueError("arm_not_safely_home")
+                with self.lock:
+                    if self.closed or self.stop_requested_at is not None:
+                        return
+                    if _expired(self.task):
+                        raise ValueError("expired_command")
+                    sent = True
+                self.panel.start(self.task)
+        except Exception:
+            # A timeout does not cancel a POST already received by the panel.
+            self.start_unknown = sent
+            raise
+        finally:
+            with self.lock:
+                if sent and self.stop_requested_at is not None:
+                    self._request_stop()
 
     def observe(self):
-        stopped = _stopped(self.stop_status, self.stop_requested_at)
-        if self.stop_requested_at is not None:
-            return (
-                {"state": "stopped", "stopped": True}
-                if stopped
-                else {"state": "stopping"}
-            )
-        result = self.panel.observe()
+        with self.lock:
+            stopped = _stopped(self.stop_status, self.stop_requested_at)
+            if self.stop_requested_at is not None:
+                cancel_settled = getattr(self.panel, "cancellation_settled", None)
+                if cancel_settled and self.panel.command_id is not None:
+                    try:
+                        self.start_unknown = (
+                            self._sample("cancel", cancel_settled) is not True
+                        )
+                    except Exception:  # noqa: BLE001 - a query failure cannot prove cancellation
+                        self.start_unknown = True
+                settled = self.start_future is None or self.start_future.done()
+                stop_done = (
+                    self.stop_future
+                    and self.stop_future.done()
+                    and self.stop_future.exception() is None
+                )
+                return (
+                    {"state": "stopped", "stopped": True}
+                    if stopped and settled and stop_done and not self.start_unknown
+                    else {"state": "stopping"}
+                )
+        if self.start_future is None:
+            return {"state": "idle"}
+        if not self.start_future.done():
+            return {"state": "running", "step": "starting"}
+        if self.start_future.exception() is not None:
+            return {"state": "failed", "error": "panel_start_unconfirmed"}
+        try:
+            result = self._sample("observe", self.panel.observe)
+        except Exception:  # noqa: BLE001 - preserve uncertain device outcomes
+            return {"state": "failed", "error": "panel_observation_failed"}
+        if result is None:
+            return {"state": "running", "step": "observing"}
         for arm in result.get("arms", {}).values():
             arm["stopped"] = stopped
         # The panel's return evidence alone is not an independent placement sensor.
@@ -257,11 +399,62 @@ class PanelFieldExecutor:
                 }
         return result
 
+    def recover(self, command_id):
+        """Restore cancellation identity only; a previous start must never be replayed."""
+        with self.lock:
+            self.start_unknown = True
+            if getattr(self.panel, "cancellation_settled", None):
+                self.panel.command_id = command_id
+
     def abort(self):
-        self.stop_requested_at = datetime.now(UTC)
         if self.stop is None:
             raise RuntimeError("physical_stop_adapter_unavailable")
-        self.stop()
+        with self.lock:
+            self._request_stop()
+
+    def _request_stop(self):
+        self.stop_requested_at = datetime.now(UTC)
+        if self.stop_running:
+            self.stop_again = True
+        else:
+            self.stop_running = True
+            self.stop_future = _background(self._stop)
+
+    def _stop(self):
+        # This path never waits for the HTTP start/read lock.
+        while True:
+            with self.lock:
+                self.stop_again = False
+                self.stop_requested_at = datetime.now(UTC)
+            try:
+                cancel = getattr(self.panel, "cancel", None)
+                try:
+                    self.stop()
+                finally:
+                    if cancel:
+                        cancel()
+            except Exception:
+                with self.lock:
+                    self.stop_running = False
+                raise
+            with self.lock:
+                if not self.stop_again:
+                    self.stop_running = False
+                    return
+
+    def close(self):
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
+            if self.start_future is not None:
+                self._request_stop()
+            stop = self.stop_future
+        if stop:
+            try:
+                stop.result(timeout=3)
+            except Exception:  # noqa: BLE001 - shutdown cannot certify a failed/timed-out stop
+                getLogger(__name__).warning("Panel shutdown stop remains unconfirmed")
 
 
 class IndependentArmExecutor:
