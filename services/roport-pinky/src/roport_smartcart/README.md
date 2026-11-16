@@ -626,6 +626,120 @@ N12·N08은 물류 Pinky와 공유하는 구간이다. 감독 시험에서는 �
 등록점은 명목 그래프와 5cm/0.1rad 이내인지 검사하고, 주행 때는 그 실측 등록점을 기준으로
 기존 자세·연속 정지·실제 IR 획득 조건을 다시 확인한다.
 
+## 종이인형 외형 인식 · FFT1-86
+
+`doll_recognition`은 **PC의 저장 영상**에서 등록한 그림 A(아이돌), B(소방관), C(축구선수)를
+찾는 비교용 검출기다. YOLO 학습 모델·얼굴인식·사람 Re-ID·로봇 추종은 아니다.
+기존 OpenCV SIFT 특징과 RANSAC 평면 변환을 이용한다.
+[OpenCV 알고리즘 설명](https://docs.opencv.org/4.6.0/d1/de0/tutorial_py_feature_homography.html).
+
+기준 이미지·마스크·원본·결과 영상은 저장소 밖에 둔다. 앞/뒤 그림 각각을 준비하고,
+마스크는 인형 부분만 255, 손·배경은 0으로 칠한다. 기준 JSON 경로를 기준으로 파일을 읽는다.
+촬영자나 주변 사람이 찍힐 수 있으므로 원본·평가·결과 영상은 공개 저장소와 PR에 올리지 않는다.
+
+```json
+[
+  {"label":"A","view":"front","image":"references/a-front.png","mask":"references/a-front-mask.png"},
+  {"label":"A","view":"back","image":"references/a-back.png","mask":"references/a-back-mask.png"}
+]
+```
+
+B/C도 같은 형식으로 추가한다. OpenCV와 NumPy가 설치된 PC에서 실행:
+
+```bash
+python -m roport_smartcart.doll_recognition \
+  --references /absolute/private/references.json \
+  --video /absolute/private/crossing.mp4 \
+  --output /absolute/private/new-result-directory
+```
+
+새 출력 폴더에 `preview.mp4`, 프레임별 `detections.json`, 처리시간·검출 프레임 수
+`summary.json`을 저장한다. 기존 폴더에는 덮어쓰지 않는다. 표시 사각형은 **기준 그림 영역**이며
+전신 박스·거리값이 아니다. 일치점 수는 확률이 아니다. 기준 영상과 평가 영상을 분리해야 하며,
+검출 프레임 수 자체를 정확도/재현율로 해석하면 안 된다.
+JSON 결과는 프레임마다 파일에 기록해 메모리에 쌓지 않는다. 파일 크기는 영상 길이에 따라 증가한다.
+
+회전·작은 크기·흐림·가림으로 충분한 특징이 남지 않으면 미검출 처리한다.
+현재 클래스마다 인형 하나를 가정하며 동일 그림 두 개의 개별 추적은 지원하지 않는다.
+이 오프라인 명령에는 프레임 간 ID 유지·선택 UI·주행 출력이 없다. 실물 적용 전 다른 배경/조명에서의
+오검출, 가림과 재등장, CPU 처리속도를 별도로 확인한다.
+
+### 감독하 실물 추종 영상 시험
+
+`doll_follow_demo`는 위 A/B/C 그림 중 **한 종류만** 카메라에서 찾아 저속으로 따라가는
+30초짜리 현장 시험이다. 배송·관제·Nav2 기능과 연결되지 않는다.
+임시 브라우저 UI·SSH·bringup 버튼은 포함하지 않는다. 사용자 UI는 아래 ROS 토픽에 연결한다.
+
+핑키와 PC의 `ROS_DOMAIN_ID`를 같게 하고, **두 기기의 NTP/chrony 시계 동기화**를 확인한다.
+`timedatectl status`의 동기화 상태와 실제 두 기기의 시각을 확인한다.
+카메라·초음파·라이다 송신기는 `header.stamp`에 실제 취득 시각을 기록해야 한다(0 시각 거부).
+외부 카메라 스크립트의 특정 경로에는 의존하지 않는다.
+핑키에는 기존 bringup·카메라 송신·`trial_guard`를 각각 한 번만 실행하고,
+기존 관제 runner, 라인 주행, Nav2 목표 실행은 모두 정지시킨다.
+`/camera/image_raw/compressed`, `/scan`, `/us_sensor/range`, `/trial/guard_state`와
+`base_link`에서 scan의 `header.frame_id`까지 TF가 보이는지 확인한다.
+`trial_guard`는 로봇 쪽에서 실행해 PC 통신이 끊겨도 속도 명령을 0으로 내리게 한다.
+
+PC에서 이 브랜치를 빌드하고 실행한다. 기준 그림과 마스크는 공개 저장소 밖에 둔다.
+
+```bash
+cd services/roport-pinky
+source /opt/ros/jazzy/setup.bash
+colcon build --packages-ignore pinky_gz_sim --packages-select roport_smartcart
+source install/setup.bash
+export ROS_DOMAIN_ID=13  # 현장 핑키 설정과 동일하게
+ros2 run roport_smartcart doll_follow_demo \
+  --references /absolute/private/references.json --target A
+```
+
+| 토픽 | 타입 | 용도 |
+| --- | --- | --- |
+| `/doll_follow/control` | `std_msgs/msg/String` | 입력: `calibrate`, `start`, `stop` |
+| `/doll_follow/status` | `std_msgs/msg/String` | 출력: JSON 상태·정지 사유·센서 거리·속도 |
+| `/doll_follow/preview/compressed` | `sensor_msgs/msg/CompressedImage` | 출력: 인식 표시 JPEG(처리 결과 확인용) |
+
+같은 ROS 환경의 별도 터미널에서 상태를 확인한다.
+넓고 빈 바닥에서 인형 A를 원하는 정차 거리에 놓고 A 인식을 확인한 뒤 기준을 저장한다.
+기준에는 그림 크기와 초음파 거리가 함께 저장된다.
+
+```bash
+ros2 topic echo /doll_follow/status
+# 아래 명령은 각각 별도 실행한다.
+ros2 topic pub --once /doll_follow/control std_msgs/msg/String '{data: calibrate}'
+# 인형을 10~15cm 멀리 옮긴 뒤 시작한다.
+ros2 topic pub --once /doll_follow/control std_msgs/msg/String '{data: start}'
+ros2 topic pub --once /doll_follow/control std_msgs/msg/String '{data: stop}'
+```
+
+시작할 때 먼저 속도 0으로 제어권을 요청한다. 0.3초 안에 guard의 `owner=line` 응답이
+없거나 이후 소유권을 잃으면 정지하며 자동 재출발하지 않는다. 시계를 고친 뒤 준비 상태를
+확인하고 명시적으로 다시 `start`해야 한다. PC·로봇 시계 불일치는 상태 사유로 표시한다.
+
+핑키가 최대 0.025m/s로 전진·회전하고, 인형이 기준 크기로 돌아오면 전진을 멈춘다.
+같은 인형의 앞·뒷면은 각각의 기준 그림 크기로 보정해 이어서 추종한다. 저장한 초음파
+거리보다 가까워지면 그림 크기와 관계없이 전진을 멈춘다.
+종료는 실행 터미널에서 Ctrl+C를 누른다. 다른 인형을 고르려면 로봇을 정지시킨 뒤 데모를 종료하고,
+**로봇의 `trial_guard`도 재시작**한 다음 `--target B` 또는 `C`로 실행해 다시 기준 저장한다.
+데모 재실행은 새 session을 만들며 이전 session을 받은 guard는 재시작 전까지 차단된다.
+
+그림을 놓치면 즉시 속도 0, 2초 넘게 보이지 않으면 다시 `start`해야 한다.
+영상·라이다·초음파 취득 시각이 0.4초 넘게 오래되거나 초음파가 전방 5cm 이하,
+라이다가 전방 25cm 미만의 물체를 감지하면 정지한다. 센서 구독 큐는 최신 한 개만 유지한다.
+라이다 전방 ±30°는 원래 scan 각도가 아니라 TF로 `base_link` 기준으로 회전해 선택한다.
+Pinky의 `rplidar_link`는 yaw=π이므로 scan 각도 0을 정면으로 취급하지 않는다.
+TF가 없거나 오래된 입력이면 출발하지 않는다. 실물 재시험에서는
+`ros2 run tf2_ros tf2_echo base_link rplidar_link`와 앞·뒤 물체 배치로 방향을 확인한다.
+30초 제한·25cm 정지는 유지하며 로컬 시험 도구에서 완화했던 값은 이 PR에 반영하지 않는다.
+
+거리 제어는 **실측 거리 추정이 아니라 화면 속 그림 크기 비교**라서 각도·조명에 민감하다.
+초음파 5cm 임계값은 물리적 5cm 간격을 보장하지 않는다. 기준 거리는 현장에서 직접 맞춰야 한다.
+정지 명령도 단일 ROS 루프에서 SIFT 처리 뒤 수신될 수 있어 즉시 물리 정지를 보장하지 않는다.
+처리가 지연되거나 Ctrl+C로 ROS context가 먼저 종료되면 종료 명령 전송에 의존할 수 없으며,
+로봇 guard의 0.3초 속도 watchdog(lease 단절 차단은 1초)이 정지 경로다.
+운행 중 guard 자체가 죽으면 Pinky 기본 드라이버에는 모터 타임아웃이 없으므로 사람이 전원을 꺼야 한다.
+인형은 바닥에서 들어 화면에 유지하고, 핑키 앞에 장애물을 놓지 않는다.
+한 사람이 옆에서 즉시 전원을 끌 수 있어야 하며 이 시험을 무인 주행으로 쓰지 않는다.
+
 ### 단일 거리 입력과 출발 전 주변 탐색 · FFT1-150
 
 좁은 정면 초음파만으로는 진행 방향 옆의 낮은 상자를 처음부터 보지 못할 수 있다.
