@@ -57,15 +57,29 @@ FAKE_CV2 = types.SimpleNamespace(
 )
 FAKE_NP = types.SimpleNamespace(ascontiguousarray=lambda img: img, ndarray=object)
 
-_saved = {k: sys.modules.get(k) for k in ("cv2", "numpy")}
-sys.modules.update(cv2=FAKE_CV2, numpy=FAKE_NP)
-from roport_omx.omx3.adapters.marker import ArucoTargetMarker  # noqa: E402
+import roport_omx.omx3.adapters as _adapters  # noqa: E402
 
-for _k, _v in _saved.items():
-    if _v is None:
-        sys.modules.pop(_k)
-    else:
-        sys.modules[_k] = _v
+# 가짜 cv2로 어댑터를 따로 불러오고, import 캐시와 패키지 속성은 원래대로 되돌린다(#95 리뷰).
+# 앞서 진짜 어댑터가 불러와져 있어도 캐시를 거치지 않고, 뒤 테스트도 가짜를 받지 않는다.
+_ISOLATED = (
+    "cv2",
+    "numpy",
+    f"{_adapters.__name__}.marker",
+    f"{_adapters.__name__}.target_mark",
+)
+_saved_mods = {k: sys.modules.pop(k, None) for k in _ISOLATED}
+_saved_attrs = {k: vars(_adapters).pop(k, None) for k in ("marker", "target_mark")}
+sys.modules.update(cv2=FAKE_CV2, numpy=FAKE_NP)
+try:
+    from roport_omx.omx3.adapters.marker import ArucoTargetMarker
+finally:
+    for _k in _ISOLATED:
+        sys.modules.pop(_k, None)
+    sys.modules.update({k: v for k, v in _saved_mods.items() if v is not None})
+    for _k, _v in _saved_attrs.items():
+        vars(_adapters).pop(_k, None)
+        if _v is not None:
+            setattr(_adapters, _k, _v)
 
 
 def tree(name):
@@ -110,6 +124,17 @@ class TargetMarkValues(unittest.TestCase):
             }
             with self.subTest(path.name):
                 self.assertFalse(names & {"cv2", "numpy"})
+
+
+class FakeIsolation(unittest.TestCase):
+    def test_fake_libs_do_not_leak_into_later_imports(self):
+        try:
+            from roport_omx.omx3.adapters import marker
+        except ImportError:  # cv2 없는 CI: 진짜 import를 시도했다 = 가짜가 남지 않았다
+            self.assertNotIn("cv2", sys.modules)
+            return
+        self.assertIsNot(marker.ArucoTargetMarker, ArucoTargetMarker)
+        self.assertIsNot(sys.modules["cv2"], FAKE_CV2)
 
 
 class MarkerBehaviour(unittest.TestCase):
