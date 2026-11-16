@@ -12,6 +12,7 @@ from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
+from ...contracts.robots import HOST_IDS, unknown_host
 from .display import ROBOTS
 
 PHASES = {
@@ -184,7 +185,32 @@ class TrialView:
         ]
         return result
 
-    def snapshot(self):
+    def host_metrics(self):
+        """Read-only display telemetry; never used for start, gates or HOLD."""
+        data, received, available = self._latest()
+        data = data if available and data else {}
+        ready = data.get("host_metrics_ready")  # None: owner has no host_metrics key
+        rows = []
+        for host in HOST_IDS:
+            row = deepcopy(data.get("hosts", {}).get(host)) or unknown_host(host)
+            if row["age_s"] is not None:
+                row["age_s"] += time.monotonic() - received
+            rows.append(row)
+        return {
+            "receiver": "disconnected"
+            if not available
+            else "not_configured"
+            if ready is None
+            else "connected"
+            if ready
+            else "disconnected",
+            "rejected": (data.get("host_metrics_diagnostics") or {}).get(
+                "rejected", {}
+            ),
+            "hosts": rows,
+        }
+
+    def _latest(self):
         with self._snapshot_lock:
             if time.monotonic() >= self._next_snapshot:
                 try:
@@ -197,6 +223,10 @@ class TrialView:
                 self._next_snapshot = time.monotonic() + 0.2
             available = self._available
             data, received = deepcopy(self.last) if self.last else (None, None)
+        return data, received, available
+
+    def snapshot(self):
+        data, received, available = self._latest()
         error = None if available else "시험 실행부 미연결 · 조작 비활성"
         rows, tasks, trial = [], [], None
         if data:

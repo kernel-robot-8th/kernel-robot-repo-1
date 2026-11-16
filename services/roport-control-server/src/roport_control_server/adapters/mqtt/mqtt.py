@@ -200,6 +200,8 @@ class MqttTransport:
 
     def publish(self, destination: str, message: dict, timeout: float = 5) -> None:
         """QoS1, non-retained task messages. Waits for broker PUBACK only."""
+        if message.get("type") in {"robot_pose", "host_metrics"}:
+            raise ValueError("display samples use QoS0 sample publishers")
         with self._publish_lock:
             self._publish(destination, message, timeout)
 
@@ -215,15 +217,29 @@ class MqttTransport:
                 raise ValueError("motion topic mismatch")
         else:
             raw = encode_motion(destination, message)
+        self._publish_sample(destination, raw, 1)
+
+    def publish_host_metrics(self, destination, message, expiry_s):
+        """Display-only host telemetry, QoS0; a lost sample is simply replaced."""
+        from . import field_wire
+
+        raw = field_wire.encode(message)
+        if message["type"] != "host_metrics" or destination != field_wire.topic(
+            message["source"], "host"
+        ):
+            raise ValueError("host metrics topic mismatch")
+        self._publish_sample(destination, raw, max(1, math.ceil(expiry_s)))
+
+    def _publish_sample(self, destination, raw, expiry_s):
         if not self.ready:
-            raise ConnectionError("motion transport unavailable")
+            raise ConnectionError("sample transport unavailable")
         properties = Properties(PacketTypes.PUBLISH)
-        properties.MessageExpiryInterval = 1
+        properties.MessageExpiryInterval = expiry_s
         info = self._client.publish(
             destination, raw, qos=0, retain=False, properties=properties
         )
         if info.rc != mqtt.MQTT_ERR_SUCCESS:
-            raise ConnectionError("motion sample not sent")
+            raise ConnectionError("display sample not sent")
 
     def _publish(self, destination: str, message: dict, timeout: float) -> None:
         if not self.ready:

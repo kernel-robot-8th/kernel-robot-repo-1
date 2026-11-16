@@ -101,6 +101,7 @@ def test_handoff_manifest_matches_exported_files_and_map(handoff):
     for name, checksum in manifest["files"].items():
         assert hashlib.sha256((kit / name).read_bytes()).hexdigest() == checksum
     assert not (kit / "pinky_mqtt/state.py").exists()
+    assert "pinky_mqtt/host_metrics.py" in manifest["files"]
     pinky = SERVICE.parent / "roport-pinky"
     expected = hashlib.sha256(
         (pinky / "maps/airport_map.yaml").read_bytes()
