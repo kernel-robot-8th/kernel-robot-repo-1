@@ -43,6 +43,10 @@ def check(schema, value, path="$"):
     errors = []
     for sub in schema.get("allOf", []):
         errors += check(sub, value, path)
+    if "oneOf" in schema:
+        matches = sum(not check(sub, value, path) for sub in schema["oneOf"])
+        if matches != 1:
+            errors.append(f"{path}: expected exactly one schema match")
     kind = schema.get("type")
     kinds = {
         "object": dict,
@@ -140,6 +144,23 @@ def test_every_s1_type_has_a_valid_example():
     assert {r["message"]["type"] for r in ROWS} == S1_TYPES
     for row in ROWS:
         assert validate(row["message"]) == [], row["label"]
+
+
+def test_ack_operations_allow_both_directions():
+    ack_ref = "#/channels/control/messages/message.ack"
+    ack_actions = {
+        operation["action"]
+        for operation in SPEC["operations"].values()
+        if {"$ref": ack_ref} in operation["messages"]
+    }
+    assert ack_actions == {"send", "receive"}
+
+
+@pytest.mark.parametrize("role", ["service", "control"])
+def test_ack_rejects_same_source_and_target(role):
+    ack = message_of("message.ack")
+    ack.update(source=role, target=role)
+    assert validate(ack)
 
 
 def test_spec_declares_exactly_the_s1_types():

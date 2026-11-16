@@ -39,6 +39,7 @@ operations:
     messages:
       - $ref: '#/channels/control/messages/session.opened'
       - $ref: '#/channels/control/messages/task.requested'
+      - $ref: '#/channels/control/messages/message.ack'
   controlSendsToService:
     action: receive
     channel:
@@ -46,11 +47,6 @@ operations:
     messages:
       - $ref: '#/channels/control/messages/task.rejected'
       - $ref: '#/channels/control/messages/command.conflict'
-  ackBothWays:
-    action: send
-    channel:
-      $ref: '#/channels/control'
-    messages:
       - $ref: '#/channels/control/messages/message.ack'
 components:
   schemas:
@@ -129,7 +125,18 @@ components:
       payload:
         allOf:
           - $ref: '#/components/schemas/Envelope'
-          - properties:
+          - oneOf:
+              - properties:
+                  source:
+                    const: service
+                  target:
+                    const: control
+              - properties:
+                  source:
+                    const: control
+                  target:
+                    const: service
+            properties:
               type:
                 const: message.ack
               payload:
