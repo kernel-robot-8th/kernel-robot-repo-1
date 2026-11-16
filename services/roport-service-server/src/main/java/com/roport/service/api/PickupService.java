@@ -1,5 +1,6 @@
 package com.roport.service.api;
 
+import com.roport.service.control.ControlExchange;
 import java.security.SecureRandom;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -53,13 +54,15 @@ class PickupService {
 
     private final JdbcClient db;
     private final Clock clock;
+    private final ControlExchange control;
     private final ObjectMapper json;
     private final SecureRandom random = new SecureRandom();
 
-    PickupService(JdbcClient db, Clock clock, ObjectMapper json) {
+    PickupService(JdbcClient db, Clock clock, ObjectMapper json, ControlExchange control) {
         this.db = db;
         this.clock = clock;
         this.json = json;
+        this.control = control;
     }
 
     static Instant ts(ResultSet rs, String col) throws SQLException {
@@ -199,6 +202,7 @@ class PickupService {
                     .param(OffsetDateTime.ofInstant(req.pickupAt(), ZoneOffset.UTC))
                     .update();
             if (rows == 1) {
+                control.reservationCreated(pickupId);
                 return pickup(memberId, pickupId).orElseThrow();
             }
             if (attempt >= 10) {

@@ -10,11 +10,11 @@ Java 21 / Spring Boot 4.1.2 / Gradle(wrapper). 업무 데이터는 PostgreSQL(JD
 
 고객 웹 첫 슬라이스: 세션 로그인, 주문·수령 위치·항공편 조회, 예약 가능 시간, 수령 예약 생성(요청 ID 없음, 주문당 활성 예약 1개 — 두 번째 요청·재전송은 409 `ACTIVE_PICKUP_EXISTS`)과 조회(`/api/**`, 오류는 ProblemDetail + `code`).
 업무 code가 없는 오류는 상태별 일반 code를 씁니다: 404 `NOT_FOUND`, 405 `METHOD_NOT_ALLOWED`, 406 `NOT_ACCEPTABLE`, 409 `CONFLICT`, 415 `UNSUPPORTED_MEDIA_TYPE`, 그 밖의 4xx `BAD_REQUEST`, 5xx `INTERNAL_ERROR`(내부 정보는 응답에 넣지 않고 서버 로그에만 남깁니다).
-예약은 `REQUESTED`(예약 접수됨 – 현장 배정 전)까지만 만듭니다. 카트 확보·관제 수락·수령 완료가 아닙니다. 관제 WSS 연동은 아직 없습니다.
+예약은 `REQUESTED`(예약 접수됨 – 현장 배정 전)까지만 만듭니다. 카트 확보·관제 수락·수령 완료가 아닙니다. 관제 WSS는 명시적으로 활성화할 수 있습니다. 예약과 같은 트랜잭션에 `task.requested` outbox를 저장하고, 관제의 접수·진행·완료는 별도 읽기 사본(`control_task_views`)으로 받습니다.
 
-예약 QR·카트 확인(FFT1-178): `POST /api/pickups/{pickupId}/qr-token`은 본인 활성 예약에 새 QR 토큰을 발급하고 이전 토큰을 폐기합니다(원문은 응답에만, DB에는 SHA-256 해시만, 만료 시간 미정).
+예약 QR·카트 확인(FFT1-178): `POST /api/pickups/{pickupId}/qr-token`은 본인 활성 예약에 새 QR 토큰을 발급하고 이전 토큰을 폐기합니다(원문은 응답에만, DB에는 SHA-256 해시만, 기본 10분 만료, `service.qr.ttl`로 조정).
 `POST /cart-api/verifications`는 QR 토큰 또는 예약번호로 예약을 찾아 `verifications`에 결과를 기록합니다(새 확인 201, 같은 `verificationRequestId` 재전송 200, 다른 내용 409 `IDEMPOTENCY_CONFLICT`, 예약 없음 404 `RESERVATION_NOT_FOUND`). 이미 쓴 요청 ID에 없는 값을 보내면 404보다 409가 우선합니다.
-**확인은 인도 승인이 아닙니다.** 카트 배정 대조(`cartAssignmentChecked=false`)·인도 승인·수령 기록은 관제 연동 후입니다. 예약번호 반복 시도 제한도 아직 없습니다.
+**확인은 인도 승인이 아닙니다.** verification 응답의 `cartAssignmentChecked=false`는 그대로이며, 별도 명시적 수령 API에서 현재 카트 배정을 대조합니다. 카트별 1분 내 실패 5회부터 새 검증을 429 `TOO_MANY_ATTEMPTS`로 제한합니다(`service.verify.max-failures`/`failure-window`). 기존 요청 재전송은 같은 결과를 반환합니다. 제한 상태는 서버 메모리이므로 재시작/여러 인스턴스의 운영 제한은 별도입니다.
 카트 인증도 개발 전용입니다. `X-Cart-Id` 헤더만 확인하며(비밀값 없음) 기본으로 꺼져 있어(모든 `/cart-api/**` 401) 로컬에서만 `SERVICE_DEV_CART=true`로 켭니다.
 
 **인증은 개발 전용입니다.** `login_id`만으로 로그인하는 세션 쿠키이며 비밀번호·Spring Security가 없으므로 공개 배포하지 않습니다.
@@ -52,3 +52,18 @@ psql -v ON_ERROR_STOP=1 -d <개발 DB> -f src/main/resources/db/dev/seed.sql
 ```
 
 상태 확인: `http://127.0.0.1:8080/actuator/health`.
+
+
+## 관제 WSS 연결
+
+서비스 설정은 `SERVICE_CONTROL_ENABLED=true`, `SERVICE_CONTROL_SITE`, `SERVICE_CONTROL_TOKEN`입니다. 토큰은 별도로 발급해 환경변수로만 전달합니다. 관제가 `/ws/v1/sites/{site}/control`로 연결하며 서비스는 사이트당 하나의 연결을 허용합니다. 외부 연결은 HTTPS/WSS가 필요합니다(로컬 TLS 프록시 뒤에서 운영할 때도 외부 TLS는 배포 책임입니다). HTTP 시험은 loopback에서만 허용합니다.
+
+예약 생성의 `task.requested`에는 주문·예약·잠금 완료된 활성 포장품 목록(포장품 하나당 quantity=1)·`pickup_locations.control_point_ref`·예약시각이 들어갑니다. 관제의 보정된 목표점 키와 `control_point_ref`를 맞춰야 합니다. 빈 포장품 목록은 관제에서 `WAITING_MANIFEST`로 남으며 로봇을 출발시키지 않습니다. `POST /api/pickups/{pickupId}/manifest-refresh`는 본인 예약의 DB에 확정된 포장 명세를 다시 전달합니다. 포장 업무 자체는 별도이며, 관제는 작업 생성 전에만 새 목록을 적용합니다. 응답의 `submitted=true`는 outbox 등록이며 실제 적용은 관제 회신으로 확인합니다.
+
+양쪽은 처리 내용을 DB에 commit한 뒤 `message.ack`를 보냅니다. ACK를 잃거나 연결이 끊기면 동일 메시지를 다시 보내고, `message_id` 중복을 제거합니다. 관제 상태는 `task_revision`이 증가할 때만 갱신하며 완료 상태를 과거 진행으로 되돌리지 않습니다. 완료 메시지는 `orders.business_status`나 고객 수령을 바꾸지 않습니다.
+
+`POST /cart-api/receipts`는 `{ "verificationId": "검증 결과 ID", "confirmationRequestId": "확인 요청의 고유 ID" }`를 받습니다. 같은 카트의 5분 이내 성공 검증(`service.handover.verification-age`), QR 유효성, 관제 진행 사본의 카트 배정/도착을 확인하고 해당 포장품 수령을 기록합니다. HTTP 200은 `{receiptId, packageIds, orderComplete}`이며 같은 요청은 동일 receipt를 반환합니다. 실제 수령 의사 확인 후에만 호출합니다. 확정된 수령 근거는 `handover.receipt_recorded`로 관제에 전달하고, 관제는 자체 최신 도착 상태를 다시 검사합니다.
+
+검증: `./gradlew --no-daemon build`는 격리 PostgreSQL에서 예약/outbox 원자성, 실제 WebSocket 인증·저장 후 ACK, 재전송·순서 역전·고객 수령 분리를 검사합니다.
+
+`V3__package_deliveries.sql`은 주문당 receipt 1개 제약을 제거해 카트가 여러 번 나누어 운송할 수 있게 합니다. 기존 receipt 행은 보존하며, package_id·confirmation_request_id 중복 금지는 유지합니다. 마지막 활성 포장품의 수령 시에만 주문 RECEIVED/예약 CLOSED가 됩니다. 관제와 서비스 상태가 어긋나면 자동 재처리로 복귀를 승인하지 않으므로 운영자 확인이 필요합니다. 정책/전송의 교체 경계와 남은 현장 항목은 [관제 서비스 연결](../roport-control-server/docs/service-link.md)을 참조하세요.
