@@ -76,9 +76,10 @@ class ScriptPolicy:
 
     def __init__(self, away=30, fail_at=None):
         self.away, self.fail_at, self.n, self.frames = away, fail_at, 0, []
+        self.marker_id = None
 
-    def reset(self):
-        self.n = 0
+    def reset(self, marker_id):
+        self.n, self.marker_id = 0, marker_id
 
     def act(self, state, marked_front):
         self.n += 1
@@ -128,6 +129,7 @@ class Success(unittest.TestCase):
         self.assertEqual(markers[0].resets, 1)
         # 정책에는 매번 원 그린 프레임이 들어간다
         self.assertTrue(all("marked" in f for f in policy.frames))
+        self.assertEqual(policy.marker_id, 17)
 
     def test_needs_consecutive_done_frames(self):
         # 트레이 검출이 한 프레임씩 끊기면 완료가 아니다. 끊김 없이 15프레임이어야 완료

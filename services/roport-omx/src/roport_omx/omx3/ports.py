@@ -43,7 +43,8 @@ class Marker(Protocol):
 
 
 class Policy(Protocol):
-    def reset(self) -> None: ...
+    def reset(self, marker_id: int) -> None:
+        """명령 시작: 남은 동작을 비운다. 추론 서버에 보낼 작업 문장에 마커 번호가 들어간다."""
 
     def act(self, state: Sequence[float], marked_front: Any) -> Sequence[float]:
         """다음 한 스텝의 JOINTS 순서 절대 목표값."""

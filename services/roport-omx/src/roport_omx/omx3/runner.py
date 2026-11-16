@@ -104,7 +104,7 @@ class Runner:
             return end(Phase.FAILED, ErrorCode.ROBOT_ERROR, detail=repr(exc))
 
         marker.reset()  # 학습 데이터처럼 에피소드 시작에서 원 상태를 비운다
-        self.policy.reset()
+        self.policy.reset(marker_id)
         emit(Phase.RUNNING, {})
         period, held = 1.0 / s.fps, 0
         start = next_tick = self.clock()
