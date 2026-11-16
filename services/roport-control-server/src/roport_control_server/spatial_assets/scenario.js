@@ -2,8 +2,9 @@
 const $ = (id) => document.getElementById(id);
 const copy = (value) => structuredClone(value);
 let current, connected, token, draft, draftSession, templates = [], generatedRequest = null, pending = false, revision;
-let dirty = false;
+let dirty = false, appliedSession;
 export function hasUnappliedChanges() { return dirty; }
+export function awaitingPlanState() { return appliedSession !== undefined; }
 export function newRequestId() {
   // getRandomValues also works on remote HTTP simulation pages.
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
@@ -27,6 +28,7 @@ export async function send(action, extra = {}) {
 }
 export function acceptServicePlan(plan, session) {
   draft = copy(plan); draftSession = session; dirty = false; generatedRequest = null;
+  appliedSession = current?.session_id === session ? undefined : session;
   renderSteps(); document.dispatchEvent(new Event('scenario-draft-change'));
 }
 function refreshEnabled() {
@@ -144,6 +146,7 @@ $('scenario-apply').addEventListener('click', () => perform(async () => {
   if (generatedRequest) extra.request = generatedRequest;
   const result = await send(generatedRequest ? 'submit_delivery' : 'configure', extra);
   draftSession = result.session_id;
+  appliedSession = current?.session_id === result.session_id ? undefined : result.session_id;
   dirty = false;
   document.dispatchEvent(new Event('scenario-draft-change'));
   return '계획 적용 완료 · 상태 확인 후 시나리오 출발을 누르세요.';
@@ -157,6 +160,7 @@ $('delivery-generate').addEventListener('click', () => perform(async () => {
 }));
 export function renderComposer(state, online, operationToken) {
   current = state; connected = online; token = operationToken;
+  if (state?.session_id === appliedSession) appliedSession = undefined;
   refreshEnabled();
   if (!state?.catalogue || !state.plan) return;
   const presets = state.catalogue.presets ?? {};

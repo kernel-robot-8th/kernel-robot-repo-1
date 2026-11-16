@@ -201,8 +201,18 @@ test(`common owner/${selected}: select preset and edit nodes without scenario CL
       child.once('exit', code => {clearTimeout(timer); reject(new Error(`fixture ${code}: ${diagnostics}`));});
     });
     const errors = []; page.on('pageerror', e => errors.push(e.message));
+    let holdSnapshots = false, queuedSnapshot, browserSocket;
+    await page.routeWebSocket('**/api/state**', socket => {
+      browserSocket = socket;
+      const server = socket.connectToServer();
+      server.onMessage(message => {
+        if (holdSnapshots) queuedSnapshot = message;
+        else socket.send(message);
+      });
+    });
     await page.goto(`${url}/ui/`);
     await page.locator('#trial-key').fill(token);
+    if (selected === 'two') await expect(page.locator('[data-action=start]')).toBeEnabled();
     await page.locator('#scenario-editor > summary').click();
     await expect(page.locator('#scenario-preset option')).toHaveCount(3);
     // Switching drafts does not start or apply a plan.
@@ -225,12 +235,19 @@ test(`common owner/${selected}: select preset and edit nodes without scenario CL
     await expect(page.locator('[data-action=start]')).toBeDisabled();
     await page.locator('#scenario-validate').click();
     await expect(page.locator('#scenario-feedback')).toContainText('설정 검증 통과');
+    holdSnapshots = true;
     await page.locator('#scenario-apply').click();
     await expect(page.locator('#scenario-feedback')).toContainText('계획 적용 완료');
+    // Check immediately, before the unrelated disconnect timeout disables controls.
+    expect(await page.locator('[data-action=start]').isDisabled()).toBe(true);
+    holdSnapshots = false;
+    if (queuedSnapshot) browserSocket.send(queuedSnapshot);
     const snapshot = await (await page.request.get(`${url}/api/snapshot?mode=trial`)).json();
     expect(snapshot.trial.plan.steps[0].payload.route).toEqual(edited.split(' '));
     await expect(page.locator('[data-action=start]')).toBeEnabled();
+    const started = page.waitForRequest(request => request.url().endsWith('/api/trial/commands') && request.postDataJSON()?.action === 'start');
     await page.locator('[data-action=start]').click();
+    expect((await started).postDataJSON().session_id).toBe(snapshot.trial.session_id);
     await expect(page.locator('#scenario-preset-load')).toBeDisabled();
     if (selected === 'two') {
       await expect(page.locator('#trial-phase')).toHaveText('WAIT_LOAD');
