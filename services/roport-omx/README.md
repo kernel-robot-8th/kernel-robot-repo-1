@@ -135,7 +135,7 @@ uv run python scripts/field_host.py --mock --host 127.0.0.1 --port 1883 \
 
 ## 현장 적용 준비
 
-[OMX 현장 매뉴얼](../../docs/field/omx.md)에 배포·factory 연결·센서 계약·실행 순서를 정리했다. `panel_command_api.PanelCommandAPI`는 기존 패널 HTTP 라우터에 붙일 수신부이며 실제 프로세스 소유자 내부에 설치해야 한다. 상태 보고만 받는 관제 `tools/check_field.py`는 명령이나 작업 ACK를 발행하지 않는다. Host client ID는 담당 target 목록으로 구분하므로 창고/인도장 Host를 분리해도 서로 연결을 끊지 않는다.
+[OMX 현장 매뉴얼](https://github.com/kernel-robot-8th/kernel-robot-repo-1/blob/51f48d53e5c0a1012733a612f3914105e4d88b22/docs/field/omx.md)에 배포·factory 연결·센서 계약·실행 순서를 정리했다. `panel_command_api.PanelCommandAPI`는 기존 패널 HTTP 라우터에 붙일 수신부이며 실제 프로세스 소유자 내부에 설치해야 한다. 상태 보고만 받는 관제 `tools/check_field.py`는 명령이나 작업 ACK를 발행하지 않는다. Host client ID는 담당 target 목록으로 구분하므로 창고/인도장 Host를 분리해도 서로 연결을 끊지 않는다.
 
 ## shelf-01 협업 Host 연결 (시험 단계, FFT1-153)
 
