@@ -35,7 +35,7 @@ class QrVerificationApiTest {
     String reservationNo;
     String receivedNo;
 
-    record Res(int status, String cacheControl, JsonNode body) {}
+    record Res(int status, String cacheControl, String retryAfter, JsonNode body) {}
 
     @BeforeEach
     void seed() throws Exception {
@@ -89,6 +89,7 @@ class QrVerificationApiTest {
         if (cartId != null) b.header("X-Cart-Id", cartId);
         HttpResponse<String> r = c.send(b.build(), HttpResponse.BodyHandlers.ofString());
         return new Res(r.statusCode(), r.headers().firstValue("Cache-Control").orElse(""),
+                r.headers().firstValue("Retry-After").orElse(""),
                 r.body().isEmpty() ? null : json.readTree(r.body()));
     }
 
@@ -262,10 +263,35 @@ class QrVerificationApiTest {
         assertThat(verify("rq-lim-5-" + s, "RESERVATION_NO", receivedNo).status()).isEqualTo(200);
 
         // 기준에 이르면 올바른 예약번호라도 새 요청은 429.
-        problem(verify("rq-lim-6-" + s, "RESERVATION_NO", reservationNo), 429, "TOO_MANY_ATTEMPTS");
+        Res limited = verify("rq-lim-6-" + s, "RESERVATION_NO", reservationNo);
+        problem(limited, 429, "TOO_MANY_ATTEMPTS");
+        assertThat(Integer.parseInt(limited.retryAfter())).isBetween(1, 61);
         // 이미 기록된 요청의 재전송은 막지 않는다(패드의 응답 유실 재시도).
         assertThat(verify("rq-lim-ok-" + s, "RESERVATION_NO", reservationNo).status()).isEqualTo(200);
         // 다른 카트는 영향이 없다.
         assertThat(verifyAs("other-" + s, "rq-lim-other-" + s, "RESERVATION_NO", reservationNo).status()).isEqualTo(201);
+    }
+
+    @Test
+    void replayOfExpiredQrDoesNotReadLatestPickup() throws Exception {
+        String token = issue(alice, "pa" + s).body().path("token").asString("");
+        Res first = verify("rq-rp-" + s, "QR", token);
+        assertThat(first.status()).isEqualTo(201);
+        assertThat(first.body().path("pickup").path("flight").path("gateCode").asString("")).isEqualTo("G2");
+
+        // 만료 전 재시도: 저장된 결과와 함께 예약 정보를 준다(응답 유실 재시도).
+        Res beforeExpiry = verify("rq-rp-" + s, "QR", token);
+        assertThat(beforeExpiry.status()).isEqualTo(200);
+        assertThat(beforeExpiry.body().path("pickup").path("flight").path("gateCode").asString("")).isEqualTo("G2");
+
+        // 만료 후 게이트가 바뀌어도 재전송은 저장된 결과만 돌려주고 최신 예약 정보를 조회하지 않는다.
+        db.sql("UPDATE qr_credentials SET expires_at = now() - interval '1 second' WHERE token_hash = ?")
+                .param(QrTokens.hash(token)).update();
+        db.sql("UPDATE flights SET gate_code = 'G9' WHERE flight_id = ?").param("fa" + s).update();
+        Res afterExpiry = verify("rq-rp-" + s, "QR", token);
+        assertThat(afterExpiry.status()).isEqualTo(200);
+        assertThat(afterExpiry.body().path("result").asString("")).isEqualTo("VERIFIED");
+        assertThat(afterExpiry.body().path("verificationId").asString("")).isEqualTo(first.body().path("verificationId").asString(""));
+        assertThat(afterExpiry.body().path("pickup").isNull()).as(String.valueOf(afterExpiry.body())).isTrue();
     }
 }

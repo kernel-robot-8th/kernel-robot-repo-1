@@ -104,7 +104,7 @@ class VerificationService {
         if (!verified) {
             limiter.recordFailure(cartId);
         }
-        return new Outcome(toResponse(row), true);
+        return new Outcome(toResponse(row, true), true);
     }
 
     private Outcome replay(Stored row, String actorRef, Method method, Target target) {
@@ -113,7 +113,9 @@ class VerificationService {
                 || !Objects.equals(row.credentialId(), target.credentialId())) {
             throw conflict();
         }
-        return new Outcome(toResponse(row), false);
+        // 재전송 시점에 QR이 만료·폐기됐거나 예약이 더 이상 확인되지 않으면 저장된 결과만 돌려주고
+        // 최신 예약 정보(바뀐 게이트 등)는 조회하지 않는다. 확인이 유효한 동안의 응답 유실 재시도는 그대로 정보를 준다.
+        return new Outcome(toResponse(row, target.reasonCode() == null), false);
     }
 
     private static ApiException conflict() {
@@ -178,8 +180,8 @@ class VerificationService {
                 .optional();
     }
 
-    private Verification toResponse(Stored row) {
-        VerifiedPickup pickup = "VERIFIED".equals(row.result()) ? pickup(row.pickupId()) : null;
+    private Verification toResponse(Stored row, boolean withPickup) {
+        VerifiedPickup pickup = withPickup && "VERIFIED".equals(row.result()) ? pickup(row.pickupId()) : null;
         return new Verification(row.verificationId(), row.verificationRequestId(), row.result(), row.reasonCode(), row.verifiedAt(), false, pickup);
     }
 
