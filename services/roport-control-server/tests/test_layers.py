@@ -13,20 +13,19 @@ STDLIB = set(sys.stdlib_module_names) - DB_DRIVERS
 P = f"{PACKAGE}."
 
 # folder -> (third-party top-level names, internal module prefixes). stdlib is always
-# allowed except DB drivers. A folder may always import itself. Rules for folders
-# that do not exist yet (domain, executor) apply automatically once they appear.
+# allowed except DB drivers. A folder may always import itself.
 RULES = {
     "": (set(), set()),  # package root __init__ and adapters/__init__
     "contracts": (set(), set()),
-    "domain": (set(), set()),
     "executor": (
         set(),
-        {P + "domain", P + "contracts", P + "adapters.mqtt", P + "adapters.udp"}
+        {P + "contracts", P + "adapters.mqtt", P + "adapters.udp"}
         | {P + "adapters.db", P + "adapters.wss"},
     ),
     "adapters.mqtt": ({"paho"}, set()),
     "adapters.udp": (set(), set()),
     "adapters.db": ({"psycopg"}, {P + "contracts"}),
+    "adapters.wss": ({"websockets"}, set()),
     "adapters.api": ({"fastapi", "PIL", "yaml"}, {P + "contracts", P + "adapters.db"}),
 }
 
@@ -94,7 +93,6 @@ def test_layer_imports(module, path, is_package):
         (P + "adapters.ui.window", f"from {P}adapters.mqtt import mqtt"),
         (P + "adapters.api.app", "import mqtt_demo"),
         (P + "adapters.api.app", "from tests import fakes"),
-        (P + "domain.rules", "import paho.mqtt.client"),
         (P + "executor.run", f"from {P}adapters.ui import window"),
         (P + "adapters.newthing.x", "import json"),
         (P + "app", "import json"),
@@ -112,6 +110,5 @@ def test_checker_flags_package_relative_import_across_adapters():
 def test_checker_allows_expected_imports():
     assert not violations(P + "adapters.api.app", f"from {P}contracts import x")
     assert not violations(P + "adapters.udp.udp_frame_sender", "from .x import y")
-    assert not violations(P + "executor.run", f"from {P}domain.state import Step")
     ui_init = P + "adapters.api"
     assert not violations(ui_init, "from .app import app", is_package=True)

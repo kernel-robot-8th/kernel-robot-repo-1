@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ...contracts.pinky_settings import validate_job, validate_registration
 from .display import ROBOTS, Display
+from .fleet import FleetView
 from .maps import load_map
 from .pinky_settings import NOT_CONNECTED, settings_view
 from .trial import TrialView
@@ -38,6 +39,7 @@ def create_app(
     trial_layout=None,
     trial_token=None,
     virtual_reset_path=None,
+    fleet_socket=None,
 ):
     # shortcut: per-worker demo limit; measure with AI load before scaling out.
     stream_slots = asyncio.BoundedSemaphore(8)
@@ -57,6 +59,11 @@ def create_app(
                 virtual_reset_path=virtual_reset_path,
             )
             if trial_socket
+            else None
+        )
+        app.state.fleet = (
+            FleetView(fleet_socket, trial_token, app.state.map)
+            if fleet_socket
             else None
         )
         yield
@@ -84,10 +91,16 @@ def create_app(
 
     @app.get("/api/bootstrap")
     def bootstrap(
-        mode: Literal["auto", "offline", "demo", "trial"] = "auto",
+        mode: Literal["auto", "offline", "demo", "trial", "fleet"] = "auto",
     ):
         if mode == "auto":
-            mode = "trial" if app.state.trial else "offline"
+            mode = (
+                "fleet"
+                if app.state.fleet
+                else "trial"
+                if app.state.trial
+                else "offline"
+            )
         result = {
             "mode": mode,
             "map": app.state.map,
@@ -95,6 +108,13 @@ def create_app(
             "demo": mode == "demo",
             "robots": ROBOTS,
         }
+        if mode == "fleet":
+            if not app.state.fleet:
+                return JSONResponse({"detail": "fleet UI is not configured"}, 503)
+            try:
+                result.update(app.state.fleet.bootstrap())
+            except (OSError, ValueError):
+                return JSONResponse({"detail": "fleet owner/map unavailable"}, 503)
         if mode == "trial":
             if not app.state.trial:
                 return JSONResponse({"detail": "trial UI is not configured"}, 503)
@@ -107,7 +127,11 @@ def create_app(
         return result
 
     @app.get("/api/snapshot")
-    def snapshot(mode: Literal["offline", "trial"] = "offline"):
+    def snapshot(mode: Literal["offline", "trial", "fleet"] = "offline"):
+        if mode == "fleet":
+            if not app.state.fleet:
+                return JSONResponse({"detail": "fleet UI is not configured"}, 503)
+            return app.state.fleet.snapshot()
         if mode == "trial":
             if not app.state.trial:
                 return JSONResponse({"detail": "trial UI is not configured"}, 503)
@@ -167,9 +191,14 @@ def create_app(
             return JSONResponse({"detail": str(e)}, 400)
         return JSONResponse({"detail": NOT_CONNECTED, "value": value}, 503)
 
+    @app.post("/api/fleet/commands")
     @app.post("/api/trial/commands")
     async def trial_command(request: Request):
-        trial = app.state.trial
+        trial = (
+            app.state.fleet
+            if request.url.path == "/api/fleet/commands"
+            else app.state.trial
+        )
         if trial is None:
             return JSONResponse({"detail": "trial UI is not configured"}, 503)
         if (
@@ -210,7 +239,8 @@ def create_app(
 
     @app.websocket("/api/state")
     async def state(
-        websocket: WebSocket, mode: Literal["offline", "demo", "trial"] = "offline"
+        websocket: WebSocket,
+        mode: Literal["offline", "demo", "trial", "fleet"] = "offline",
     ):
         scheme = "https" if websocket.url.scheme == "wss" else "http"
         if (
@@ -225,25 +255,32 @@ def create_app(
         if mode == "trial" and app.state.trial is None:
             await websocket.close(code=1008)
             return
+        if mode == "fleet" and app.state.fleet is None:
+            await websocket.close(code=1008)
+            return
         display = Display(demo=mode == "demo", map_geometry=app.state.map)
 
         async def send():
             while True:
                 data = (
-                    await asyncio.to_thread(app.state.trial.snapshot)
-                    if mode == "trial"
+                    await asyncio.to_thread(
+                        (
+                            app.state.fleet if mode == "fleet" else app.state.trial
+                        ).snapshot
+                    )
+                    if mode in {"trial", "fleet"}
                     else display.snapshot()
                 )
                 # No unbounded broadcast queue: slow clients time out independently.
                 await asyncio.wait_for(websocket.send_json(data), 3)
-                await asyncio.sleep(0.25 if mode == "trial" else 0.1)
+                await asyncio.sleep(0.25 if mode in {"trial", "fleet"} else 0.1)
 
         async def receive():
             while True:
                 message = await websocket.receive()
                 if message["type"] == "websocket.disconnect":
                     return
-                if mode == "trial":
+                if mode in {"trial", "fleet"}:
                     await websocket.close(code=1008)
                     return
                 raw = message.get("text")
@@ -286,6 +323,7 @@ def create_app_from_env(environment):
         trial_layout=environment.get("ROPORT_TRIAL_LAYOUT"),
         trial_token=environment.get("ROPORT_TRIAL_TOKEN"),
         virtual_reset_path=environment.get("ROPORT_VIRTUAL_RESET_FILE"),
+        fleet_socket=environment.get("ROPORT_FLEET_SOCKET"),
     )
 
 

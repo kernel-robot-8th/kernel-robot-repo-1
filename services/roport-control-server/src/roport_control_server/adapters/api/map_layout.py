@@ -93,13 +93,62 @@ def load_layout(path, grid):
                     raise ValueError(
                         "layout links must be symmetric and reference known nodes"
                     )
+        geometry = []
+        defaults = value["defaults"]
+        for item in value.get("walls", []):
+            start, end = pair(item["from"]), pair(item["to"])
+            dx, dy = end[0] - start[0], end[1] - start[1]
+            length = math.hypot(dx, dy)
+            if length == 0:
+                raise ValueError("layout wall requires distinct endpoints")
+            height = number(item.get("height", defaults["wall_height"]), 0.1, 1000)
+            thickness = number(
+                item["thickness"]
+                if "thickness" in item
+                else defaults["wall_thickness"],
+                0.1,
+                1000,
+            )
+            geometry.append(
+                {
+                    "name": name(item["name"]),
+                    "kind": "wall",
+                    "position": position(
+                        (start[0] + end[0]) / 2, (start[1] + end[1]) / 2
+                    )
+                    + [height / 200],
+                    "size": [length / 100, thickness / 100, height / 100],
+                    "yaw": yaw + math.atan2(dy, dx),
+                }
+            )
         mounts = []
         for item in value.get("objects", []):
-            if item["name"] not in ("omx12_left", "omx12_right"):
-                continue
             low, high = pair(item["min"]), pair(item["max"])
             if any(a >= b for a, b in zip(low, high, strict=True)):
-                raise ValueError("invalid OMX support bounds")
+                raise ValueError("invalid object/support bounds")
+            height = number(
+                item["height"] if "height" in item else defaults["object_height"],
+                0.1,
+                1000,
+            )
+            geometry.append(
+                {
+                    "name": name(item["name"]),
+                    "kind": "object",
+                    "position": position((low[0] + high[0]) / 2, (low[1] + high[1]) / 2)
+                    + [height / 200],
+                    "size": [
+                        (high[0] - low[0]) / 100,
+                        (high[1] - low[1]) / 100,
+                        height / 100,
+                    ],
+                    "yaw": yaw,
+                    "provisional": item.get("provisional") is True,
+                    "height_assumed": "height" not in item,
+                }
+            )
+            if item["name"] not in ("omx12_left", "omx12_right"):
+                continue
             robot_id = "omx1" if item["name"] == "omx12_left" else "omx2"
             if any(m["robot_id"] == robot_id for m in mounts):
                 raise ValueError("duplicate OMX support")
@@ -107,16 +156,7 @@ def load_layout(path, grid):
                 {
                     "robot_id": robot_id,
                     "edge_center": position((low[0] + high[0]) / 2, high[1])
-                    + [
-                        number(
-                            item["height"]
-                            if "height" in item
-                            else value["defaults"]["object_height"],
-                            0.1,
-                            1000,
-                        )
-                        / 100
-                    ],
+                    + [height / 100],
                     "edge_yaw": yaw,
                     "yaw": yaw + (0 if robot_id == "omx1" else math.pi),
                 }
@@ -128,6 +168,7 @@ def load_layout(path, grid):
             "wall_height": number(value["defaults"]["wall_height"], 0.1, 1000) / 100,
             "nodes": nodes,
             "mounts": mounts,
+            "geometry": geometry,
         }
     except (KeyError, TypeError) as exc:
         raise ValueError("invalid measured layout") from exc

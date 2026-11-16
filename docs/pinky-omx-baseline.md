@@ -1,8 +1,7 @@
 # Pinky·OMX 공통 시험 배포 기준
 
-이 문서는 기존 trial-v1 고정 배포본(`111984aa`)의 재현 기록이다. 아래 검사기는 그 배포본과 비교하므로 새 패널 코드에서는 MISMATCH가 정상이다. 현재 PR66의 패널 설치·안전 조건은 [OMX README](../services/roport-omx/README.md)를 따른다. 과거 검사 결과를 새 코드의 실물 승인으로 사용하지 않는다.
-
-이 문서를 PC별 설치·실행의 시작점으로 사용한다. 이전 채팅의 경로와 명령을 섞지 않는다.
+이 문서는 **기존 trial-v1 고정 배포 환경의 재현 기록**이다. 아래 SHA와 절차는 당시 배포본에만 적용한다.
+현재 작업 브랜치의 새 배포는 [요청 기반 통합 관제](../services/roport-control-server/docs/field-control.md)와 [field-v2 MQTT](../services/roport-control-server/docs/mqtt-field.md)를 따른다. 과거 키트·trial-v1 OMX Host와 새 fleet 실행부를 섞지 않는다.
 
 ## 1. 공통 버전과 적용 범위
 
@@ -15,7 +14,7 @@
 | 통신 계약 | Pinky `roport-pinky-driving-trial-v1`, OMX `roport-omx-task-v1`, 표시 `roport-state-dev-v1` |
 | 환경 | 관제·OMX Python 3.12 + 각 uv.lock, 자산 준비 Node 24, Pinky Ubuntu 24.04 / ROS Jazzy |
 
-**공통 시험 기준이며, 실물 OMX 자동 작업을 인수한 최종 릴리스는 아니다.** PR55는 main 병합 전이다.
+**공통 시험 기준이며, 실물 OMX 자동 작업을 인수한 최종 릴리스는 아니다.** 아래 기준을 기록한 당시 PR55는 main 병합 전이었다.
 문서/검사 도구 변경으로 배포 커밋이 실행 소스 기준과 달라도 서비스 내용이 같으면 검사에 통과한다.
 브랜치 이름만 같다고 같은 코드가 아니다. 시험 중 `git pull`하지 않는다.
 

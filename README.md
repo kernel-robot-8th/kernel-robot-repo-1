@@ -1,5 +1,35 @@
 # RO:PORT (로포트)
 
+## 관제 통합 시험 브랜치
+
+`task/control-integration-test`는 사용자 서비스 연결 전 관제 통합본을 모아 시험할 기준 브랜치입니다.
+초기 통합 PR의 feature 브랜치는 `feature/inyup-baek/control-integration-test`입니다.
+**초기 PR 병합 전에는 아래 feature 브랜치를 사용하세요.** 병합 후에는 clone 명령의 브랜치를
+`task/control-integration-test`로 바꾸면 됩니다. main 릴리스·실물 인수 완료 버전은 아닙니다.
+
+```bash
+git clone --branch feature/inyup-baek/control-integration-test https://github.com/kernel-robot-8th/kernel-robot-repo-1.git roport-control-test
+cd roport-control-test/services/roport-control-server
+npm ci --ignore-scripts
+npm run prepare:assets
+bash tools/start_virtual_ui.sh
+```
+
+필수 환경은 Ubuntu 24.04, Python 3.12, uv, Node.js 24, Mosquitto입니다.
+터미널의 URL과 조작 키로 접속합니다. 기본 URL은 `http://127.0.0.1:8000/ui/?mode=fleet`입니다.
+실물 로봇·운영 DB 없이 가상 Pinky·OMX와 로컬 MQTT로 시험하며 Ctrl+C로 종료합니다.
+시험 결과에는 `git rev-parse HEAD`를 기록하고, 생성된 키·로그·DB는 공개하지 마세요.
+
+포함: 요청 기반 배정·동시 주행·입출고·N12 왕복, 원본 관제 웹 UI, 최소 MQTT v2,
+OMX 장치 어댑터·복구·패널 수신 모듈, 서비스 WSS·운영 DB·수령 처리, 현장 배포/점검 도구입니다.
+**고객 웹·카트 패드의 전체 흐름 연결은 다음 작업입니다.** 현재 가상 UI 명령은 서비스 서버를 띄우지 않습니다.
+실물은 장치 factory·센서·모델/캘리브레이션·현장 확인이 별도로 필요합니다.
+
+설치·브랜치 운용·검증 범위는 [통합 시험 안내](docs/control-integration-test.md),
+장비별 적용은 [현장 매뉴얼](docs/field/README.md)을 따릅니다.
+기존 `feature/inyup-baek/control-test-current`는 과거 시험 기준으로 보존합니다.
+직접 수정하지 않은 시험 clone은 `git pull --ff-only` 후 위 실행 명령을 다시 사용합니다.
+
 **공항 면세품 물류와 고객 안내를 연결하는 로봇 서비스 프로젝트**
 
 커널아카데미 로보틱스 심화 캠프 주말 야간반 1기 1팀 **GATE CREW (게이트크루)**의 개발 저장소입니다.
@@ -37,7 +67,7 @@ OMX 로봇팔과 Pinky 이동로봇을 연동해 면세품 보관·운송·인�
 - 구성요소별 초기 코드·실행 안내·CI가 등록되어 있습니다. 업무 기능·실로봇 연동은 아직 구현·검증 전입니다.
 - 시나리오와 설계 문서의 작성 상태를 기능 구현·통합 검증 상태와 구분합니다.
 
-통합관제의 2026-11-03 변경: PR #24 계층 구조를 바탕으로 PyQt를 3D 웹 UI + FastAPI로 전환했습니다. 현재 OFFLINE/DEMO 표시·조회·상태 스트림과 독립 MQTT/UDP 모듈을 제공하며, 원본 UI에 Unix socket으로 연결한 Pinky MQTT 시험 실행부를 제공합니다. 운영 DB 연결은 보류하며 공유 등록 계약·PostgreSQL 저장소만 별도로 제공하고 API/UI에는 연결하지 않았습니다. 운영 실행부·영상 웹 중계는 후속입니다. [실행 및 현재 범위](services/roport-control-server/README.md)를 확인하세요. 위의 프로젝트 전체 진행 이력과 구분합니다.
+통합관제는 원본 3D 웹 UI + FastAPI + 별도 실행부 1개를 사용합니다. 실행부가 MQTT 기체 상태, 3대 Pinky 역할, 6칸 선반, 입출고·N12 왕복을 판단하며 운영 PostgreSQL과 서비스 WSS를 소유합니다. UI는 Unix socket으로 같은 상태를 조회·조작합니다. 기존 구간별 주행 시험과 새 요청 기반 가상 시험을 함께 제공합니다. 점유 해제 기반 동시 주행을 지원하며, 시간 최적화·현장 장치 보정·운영 복구는 후속입니다. [실행 및 현재 범위](services/roport-control-server/README.md), [요청 기반 통합 관제](services/roport-control-server/docs/field-control.md)를 확인하세요.
 
 ## 팀
 

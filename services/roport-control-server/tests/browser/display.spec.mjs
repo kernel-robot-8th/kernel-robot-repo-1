@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 
-test('measured layout: map origin, node labels and height survive view changes', async ({ page }) => {
+for (const exactGeometry of [false, true]) {
+test(`measured layout: ${exactGeometry ? 'exact geometry' : 'occupancy fallback'} survives view changes`, async ({ page }) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/api/bootstrap?*', async route => {
@@ -16,12 +17,18 @@ test('measured layout: map origin, node labels and height survive view changes',
       {id: 'N01', place: 'P4', position: [-1, 0], links: ['N12']},
       {id: 'N12', nav2_switch: true, position: [0, 0], links: ['N01']},
     ]};
+    if (exactGeometry) data.map.layout.geometry = [
+      {name: 'thin_wall', kind: 'wall', position: [-0.5, 0.2, 0.12], size: [1.5, 0.005, 0.24], yaw: 0.1},
+      {name: 'low_box', kind: 'object', position: [-1, -0.5, 0.055], size: [0.5, 0.4, 0.11], yaw: 0.1},
+      {name: 'shelf_02', kind: 'object', position: [-0.5, -0.5, 0.12], size: [0.5, 0.21, 0.24], yaw: 0.1},
+    ];
     await route.fulfill({response, json: data});
   });
   await page.goto('/ui/');
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
   await expect(page.locator('#map-detail')).toContainText('24cm');
   await expect(page.locator('#map-name')).toContainText('실측 fixture-v1');
+  await expect(page.locator('.map-note')).toContainText(exactGeometry ? '벽·받침 외곽 표시' : '점유셀 돌출 표시');
   const point = page.locator('[data-node="N01"]');
   await expect(point).toHaveText('P4 · N01');
   await expect(point).toBeVisible();
@@ -41,6 +48,7 @@ test('measured layout: map origin, node labels and height survive view changes',
   await expect(page.locator('[data-robot="omx3"]')).toBeHidden();
   expect(errors).toEqual([]);
 });
+}
 
 test('OFFLINE loads local 3D assets and retains detail tabs', async ({ page }) => {
   const errors = [];
