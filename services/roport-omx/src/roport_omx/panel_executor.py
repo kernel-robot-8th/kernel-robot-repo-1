@@ -471,7 +471,8 @@ class PanelExecutor:
             }
         try:
             # the run's start pose, grippers opened (panel 3.14: [홈 위치로 이동])
-            self._call("POST", "/api/home/return", {})
+            # "source": "mqtt" lets the panel refuse it while armed is off (its button stays free)
+            self._call("POST", "/api/home/return", {"source": "mqtt"})
         except Exception as exc:  # noqa: BLE001 - no way home: a person takes over (HOLD)
             detail = f"home return refused: {exc}"[:200]
             return {"state": "failed", "error": error, "arms": live, "detail": detail}

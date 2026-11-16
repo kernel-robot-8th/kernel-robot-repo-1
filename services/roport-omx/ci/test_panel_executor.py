@@ -114,6 +114,7 @@ class FakePanel:
         # seconds since the panel's last UDP check; None keeps "at" as set
         self.udp_age = 1.0
         self.home_returns = 0  # POST /api/home/return calls
+        self.home_return_bodies = []
         self.home_return_error = None
         self.models = [MODEL]
         self.starts = []
@@ -168,6 +169,7 @@ class FakePanel:
                         self._json({"error": panel.home_return_error}, 400)
                         return
                     panel.home_returns += 1
+                    panel.home_return_bodies.append(body)
                     panel.status["job"] = {
                         "running": True,
                         "kind": "home",
@@ -797,6 +799,7 @@ class PanelExecutorTest(unittest.TestCase):
         (failed,) = self.host.poll()
         self.assertEqual(failed["payload"]["mission_result"], "MISSION_FAILED")
         self.assertEqual(self.panel.home_returns, 1)
+        self.assertEqual(self.panel.home_return_bodies, [{"source": "mqtt"}])
         self.assertIsNone(self.host.hold)
 
     def test_unload_unknown_pinky_holds_for_a_person(self):
