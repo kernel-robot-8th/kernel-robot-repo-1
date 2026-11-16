@@ -9,7 +9,7 @@ import yaml
 
 from roport_control_server.adapters.mqtt import field_wire as wire
 
-INTERFACES = Path(__file__).resolve().parents[3] / "interfaces/mqtt"
+INTERFACES = Path(__file__).resolve().parents[1] / "interfaces/mqtt"
 
 
 def test_all_twelve_types_have_valid_documented_examples():

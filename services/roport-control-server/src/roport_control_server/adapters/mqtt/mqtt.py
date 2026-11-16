@@ -205,8 +205,6 @@ class MqttTransport:
 
     def publish_motion(self, destination, message):
         """Best-effort latest display sample; never wait for PUBACK or replay it."""
-        from .motion import encode_motion
-
         if message.get("type") == "robot_pose":
             from . import field_wire
 
@@ -214,6 +212,8 @@ class MqttTransport:
             if destination != field_wire.topic(message["source"], "motion"):
                 raise ValueError("motion topic mismatch")
         else:
+            from .motion import encode_motion
+
             raw = encode_motion(destination, message)
         if not self.ready:
             raise ConnectionError("motion transport unavailable")

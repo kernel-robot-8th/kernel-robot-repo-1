@@ -5,6 +5,7 @@ import time
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from queue import Empty
+from types import SimpleNamespace
 
 import pytest
 from test_virtual_pinky import simulation_profile
@@ -341,8 +342,16 @@ def test_docking_selector_is_preserved_at_driver_boundary(endpoint):
     )
 
 
-def test_v2_navigation_retry_waits_for_terminal_result_and_preserves_failure(endpoint):
+def test_v2_navigation_retry_waits_for_terminal_result_and_preserves_failure(
+    endpoint, monkeypatch
+):
     client, driver = endpoint
+    # No sensor thread runs in this fixture; disk fsync time must not age its samples.
+    wall, monotonic = time.time(), time.monotonic()
+    clock = SimpleNamespace(time=lambda: wall, monotonic=lambda: monotonic)
+    monkeypatch.setattr("virtual_pinky.time", clock)
+    monkeypatch.setattr("roport_pinky.trial_driver.time", clock)
+    monkeypatch.setattr(driver.logic, "now", clock.monotonic)
     driver.mode = "nav2"
     nav = deepcopy(client.profile["nav_goal"])
     nav.pop("map_id")
