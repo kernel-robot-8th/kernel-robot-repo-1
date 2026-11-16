@@ -26,7 +26,9 @@ LABELS = {
     'omx12_back': '',
 }
 # 02 인도장 확대도(map_measured_<version>_02.png)에만 그리는 치수(재측정 기록지 번호)
-DETAIL_02 = {'[2]', '[3]', '[4]', '[6]', '[8]', '[10]', '[15]', '[13]', 'B1', 'B2'}
+# M1~M6 = 2026-11-16 실측(테이프 가운데 → 가운데). M4 = 벽 기준(선반 벽이 휘어 안 씀)
+DETAIL_02 = {'[2]', '[3]', '[4]', '[6]', '[8]', '[10]', '[15]', '[13]', 'B1', 'B2',
+             'M1', 'M2', 'M3', 'M4'}
 
 
 def _korean_font():
@@ -176,6 +178,8 @@ def draw(layout, path, detail=False):
     sh, ol, orr, bk = (next(o for o in raw['objects'] if o['name'] == i)
                        for i in ('shelf_02', 'omx12_left', 'omx12_right', 'omx12_back'))
     n11, n21, n22 = (next(k for k in layout.nodes if k.id == i) for i in ('N11', 'N21', 'N22'))
+    n19, n23, n24, n09, n08 = (next(k for k in layout.nodes if k.id == i)
+                               for i in ('N19', 'N23', 'N24', 'N09', 'N08'))
     bar11 = n11.y - hw_
     t_ = raw['defaults']['wall_thickness'] / 2   # 벽 면 = 중심 ± 0.25 cm
     dims = [
@@ -230,10 +234,22 @@ def draw(layout, path, detail=False):
         ((201, t_), (201, bk['max'][1]), '[10]', '31.5', '통로 벽 면 → 오목 바닥(가운데 받침 앞면)',
          '', (0, -2), 90),
         ((215, t_), (215, bar11), '[15]', '35.7', '통로 벽 면 → N11 가로선 선반 쪽 가장자리',
-         '[16] W 41(간선 → 가로선)과 5 cm 다름', (0, -2), 90),
+         '[16] W 41과 5 cm 차이 = 선반 벽 휨(11-16)', (0, -2), 90),
         ((219, bk['max'][1]), (219, bar11), '[13]', '3.8', 'N11 가로선 ↔ 오목 바닥(V)',
          '11-05. [15]·[10]으로는 4.2',
          (8, 0), 0),
+        ((n21.x + 3, n21.y), (n23.x + 3, n23.y), 'M1', '41.2', 'N23 → N21 가로선(가운데 → 가운데)',
+         '11-16 본선 기준. v14 36.05', (3, 0), 90),
+        ((n11.x - 3, n11.y), (n19.x - 3, n19.y), 'M2', '38.75', 'N19 → N11 가로선(가운데 → 가운데)',
+         '11-16 (38.7~38.8). 지도 36.05(N11 v14 유지)', (-3.5, 8), 90),
+        ((n22.x + 3, n22.y), (n24.x + 3, n24.y), 'M3', '41.5', 'N24 → N22 가로선(가운데 → 가운데)',
+         '11-16 본선 기준. v14 36.05', (3, 0), 90),
+        ((n22.x - 3, t_), (n22.x - 3, n22.y), 'M4', '36', '통로 벽 면 → N22 가로선 가운데',
+         '11-16. 선반 벽 휨 → 안 씀(N21 37)', (-3.5, 0), 90),
+        ((n09.x - 5, n09.y), (n09.x - 5, h1.y), 'M5', '40.2', 'N09 → H1 가로선(가운데 → 가운데)',
+         '11-16. v14 U 40', (-4, 0), 90),
+        ((n08.x - 5, n08.y), (n08.x - 5, h2.y), 'M6', '40.2', 'N08 → H2 가로선(가운데 → 가운데)',
+         '11-16. v14 U 40', (-4, 0), 90),
         ((20.5, 64), (64.1, 64), None, '43.6', '루프 왼쪽 바깥선 → P4 세로선 바깥선', '',
          (0, -4), 0),
         ((0, y1 + 3), (n21.x - hw_, y1 + 3), 'L-b', '160', '왼쪽 벽 면 → N21 세로선 왼쪽 가장자리',
@@ -258,7 +274,8 @@ def draw(layout, path, detail=False):
             _dim(ax, p0, p1, f'{key} {value}', offset=off, rot=rot)
         drows.append([key, value, desc, note + (' (02 확대도)' if key in DETAIL_02 else '')])
     if detail:
-        ax.set_title(f'02 인도장 확대 {layout.version} (단위 cm, [n] = 2026-11-03 재측정 기록지 번호 · '
+        ax.set_title(f'02 인도장 확대 {layout.version} (단위 cm, [n] = 2026-11-03 재측정 기록지 번호, '
+                     'M = 2026-11-16 실측 · '
                      f'통로 벽 면 y 0.25, 02 왼쪽 칸막이 면 x 138.25)', fontsize=13, loc='left')
         fig.savefig(path, dpi=110, metadata={'Software': None})
         plt.close(fig)
@@ -297,7 +314,7 @@ def draw(layout, path, detail=False):
     rows = []
     for n in sorted(layout.nodes, key=lambda k: (k.id[0] != 'N', int(k.id[1:]))):
         note = 'Nav2 전환' if n.nav2_switch else ('위치 추정' if n.provisional else '')
-        rows.append([n.id, n.place or '—', n.role, f'{n.x:.1f}', f'{n.y:.1f}',
+        rows.append([n.id, n.place or '—', n.role, f'{n.x:g}', f'{n.y:g}',
                      ' · '.join(n.links), note])
     tab = tax.table(cellText=rows, colLabels=['노드', '운영 위치', '역할', 'x (cm)', 'y (cm)',
                                               '연결', '비고'],
@@ -314,7 +331,8 @@ def draw(layout, path, detail=False):
         dax.axis('off')
         dtab = dax.table(cellText=part, colLabels=['기호', '값 (cm)', '구간', '비고'],
                          colWidths=[0.07, 0.1, 0.46, 0.37], loc='upper center', cellLoc='center')
-        _style_table(dtab, [C['text']] * len(part))
+        # v14 한 단 19행 높이에 맞춘다(v15 는 11-16 실측 M1~M6 이 늘어 칸 높이를 줄임)
+        _style_table(dtab, [C['text']] * len(part), yscale=min(1.22, 1.22 * 19 / half_rows))
         for (r, c), cell in dtab.get_celld().items():
             if r > 0 and c >= 2:
                 cell.set_text_props(ha='left')
@@ -324,10 +342,10 @@ def draw(layout, path, detail=False):
     plt.close(fig)
 
 
-def _style_table(tab, row_colors):
+def _style_table(tab, row_colors, yscale=1.22):
     tab.auto_set_font_size(False)
     tab.set_fontsize(9)
-    tab.scale(1, 1.22)
+    tab.scale(1, yscale)
     for (r, _c), cell in tab.get_celld().items():
         cell.set_edgecolor('#bbbbbb')
         if r == 0:
