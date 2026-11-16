@@ -96,9 +96,9 @@ def fleet_mqtt(broker, tmp_path):
                     client.poll(0)
                     if client.transport.ready and not client.halted:
                         client.driver.heartbeat()
-                    # Faster virtual sensor time; the real driver and its wall-clock
-                    # stopping/mode-transition checks remain unchanged.
-                    for _ in range(100):
+                    # Bound accelerated CPU work so the next MQTT-owner heartbeat
+                    # runs before the real one-second drive lease expires on CI.
+                    for _ in range(10):
                         client.driver.tick()
                     for command, phase, details in client.driver.drain_results():
                         client.report(command, phase, **details)
@@ -150,6 +150,27 @@ def fleet_mqtt(broker, tmp_path):
             tmp_path=tmp_path,
             stack=stack,
         )
+
+
+def test_accelerated_sensors_yield_before_drive_lease_expires(fleet_mqtt, monkeypatch):
+    env = fleet_mqtt
+    env.submit("slow-cpu", "inbound")
+    env.pump(lambda: any(c.journal.data["active"] for c in env.clients))
+    client = next(c for c in env.clients if c.journal.data["active"])
+    tick = client.driver.tick
+    samples = 0
+
+    def slow_tick():
+        nonlocal samples
+        if samples < 20:
+            time.sleep(0.055)
+        samples += 1
+        tick()
+
+    monkeypatch.setattr(client.driver, "tick", slow_tick)
+    env.pump(lambda: samples >= 20)
+    assert client.driver.observe()["fault"] is None
+    assert not env.control.data["fault"]
 
 
 def test_three_pinkies_all_shelf_columns_and_nav2_return_over_mqtt(fleet_mqtt):

@@ -187,6 +187,11 @@ class Rig:
             self.consume(self.host.poll())
             time.sleep(0.01)
 
+    def wait_for_panel_start(self):
+        # Acceptance schedules a worker; fault injection must follow its actual POST.
+        self.panel.executor.start_future.result(timeout=2)
+        assert len(self.panel.panel.starts) == 1
+
     def calls(self):
         return {
             k: d.robot.sent if k != "shelf-01" else len(d.panel.starts)
@@ -355,7 +360,7 @@ def test_drive_reactivation_during_transfer_holds_inventory(rig_factory, fault):
     r = rig_factory()
     r.consume(r.host.handle(r.command))
     assert r.events[0]["payload"]["status"] == "accepted"
-    assert len(r.panel.panel.starts) == 1
+    r.wait_for_panel_start()
     mutate(r, fault)
     r.finish()
     assert r.evidence(
@@ -372,6 +377,7 @@ def test_drive_reactivation_during_transfer_holds_inventory(rig_factory, fault):
 def test_device_result_fault_cannot_release_pinky(rig_factory, fault):
     r = rig_factory()
     r.consume(r.host.handle(r.command))
+    r.wait_for_panel_start()
     if fault in {"wrong_package", "wrong_slot"}:
         original = r.panel.executor.completion
 
