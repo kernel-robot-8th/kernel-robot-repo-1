@@ -148,8 +148,8 @@ class Leg:
     sides: frozenset = field(default_factory=frozenset)
 
 
-def plan_route(graph, route):
-    """노드 id 목록 → Leg 목록. 연결이 없거나 중간 U턴·마지막이 정차 노드가 아니면 GraphError."""
+def plan_route(graph, route, *, allow_junction_stop=False):
+    """노드 목록 → Leg 목록. 기본은 가로선 도착, 명시한 경우만 교차점 정차 허용."""
     route = [str(r) for r in route]
     if len(route) < 2:
         raise GraphError('route needs at least 2 nodes')
@@ -164,9 +164,9 @@ def plan_route(graph, route):
         h = graph.heading(a, b)
         last = i == len(route) - 2
         if last:
-            if not graph.nodes[b].bar:
+            if not graph.nodes[b].bar and not allow_junction_stop:
                 raise GraphError(f'route must end at a stop node with a bar: {b}')
-            action = graph.arrival_action(b)
+            action = graph.arrival_action(b) if graph.nodes[b].bar else STOP
         else:
             action = turn_of(h, graph.heading(b, route[i + 2]))
             if action == BACK:

@@ -32,6 +32,14 @@ places:
     measured: false
     pose: null
     marker_id: 27
+  return_entry:
+    measured: false
+    pose: null
+    marker_id: null
+  return_n12:
+    measured: false
+    pose: null
+    marker_id: null
   handoff_n12:
     measured: false
     pose: null

@@ -1,5 +1,6 @@
 import math
 import os
+from types import SimpleNamespace
 
 import pytest
 from sim import Sim
@@ -17,6 +18,46 @@ def graph():
     return Graph.load(LAYOUT)
 
 
+def test_confirmed_n12_start_rejects_early_noise_but_accepts_expected_branch(graph):
+    from roport_pinky_line.line_sensor import LineReading
+    runner = RouteExecutor(graph)
+    runner.start(['N12', 'N08', 'N09', 'H1'], start_offset_cm=0., confirmed_start=True)
+    runner._odo = runner._ref_odo+25.
+    side = LineReading((300,)*3, (1., 1., 0.), (True, True, False), -.5, False, False)
+    for _ in range(2):
+        runner._follow(side)
+    assert not any(e['event'] == 'node' for e in runner.events)
+    runner._odo = runner._ref_odo+35.
+    # _arrive dispatch needs an established odom heading.
+    runner._pose, runner._hold_yaw = (0., 0., math.pi), math.pi
+    for _ in range(2):
+        runner._follow(side)
+    assert any(e['event'] == 'node' and e['detail'].startswith('N08') for e in runner.events)
+
+
+@pytest.mark.parametrize('offset', [None, -1., math.nan, math.inf, 1000.])
+def test_confirmed_start_rejects_unmeasured_offsets(graph, offset):
+    runner = RouteExecutor(graph)
+    with pytest.raises(ValueError):
+        runner.start(['N12', 'N08'], start_offset_cm=offset, confirmed_start=True)
+    assert runner.state == 'idle'
+
+
+@pytest.mark.parametrize('centered', [None, False])
+@pytest.mark.parametrize('heading', ['N', 'S', 'W'])
+def test_reverse_junction_memory_does_not_assume_centered_axle(graph, centered, heading):
+    runner = RouteExecutor(graph)
+    # Reverse arrival keeps the sensor at the line and needs its own pre_center handling.
+    end = {'node': 'N23', 'facing': 'E', 's0': runner.cfg.half_line_cm,
+           'center': (0., 0.)}
+    if centered is not None:
+        end['centered'] = centered
+    _, pre, s0 = runner._start_plan(SimpleNamespace(frm='N23', heading=heading), end)
+    assert pre is not None
+    expected = 2 * runner.cfg.ir_ahead_cm + runner.cfg.half_line_cm if heading == 'W' else None
+    assert s0 == expected
+
+
 def _axle_to(sim, node_id):
     n = sim.graph.nodes[node_id]
     return math.hypot(sim.x - n.x, sim.y - n.y)
@@ -28,6 +69,35 @@ def _heading_deg(sim):
 
 def _done(ex):
     return not ex.active
+
+
+@pytest.mark.parametrize('first, heading, continuation', [
+    (['N16', 'N14', 'N02', 'N10', 'N18'], 'S', ['N18', 'N07', 'N23', 'N19', 'N11']),
+    (['N01', 'N18'], 'N', ['N18', 'N10', 'N02', 'N14', 'N16']),
+    (['N01', 'N18'], 'N', ['N18', 'N07', 'N23', 'N19', 'N11']),
+    (['N01', 'N18'], 'N', ['N18', 'N01']),
+])
+@pytest.mark.parametrize('speed', [0.03, 0.08])
+def test_junction_hold_centers_then_continues(graph, first, heading, continuation, speed):
+    sim = Sim(graph)
+    sim.place(first[0], heading, 0.0)
+    ex = RouteExecutor(graph, NavConfig(base_speed=speed, max_linear=max(0.06, speed)))
+    with pytest.raises(GraphError, match='must end at a stop node'):
+        ex.start(first)
+    ex.start(first, hold_at_goal=True)
+    assert sim.run(ex, _done)
+    assert ex.state == ARRIVED, ex.as_dict()
+    assert _axle_to(sim, first[-1]) < 3.0
+    assert ex._end['centered'] is True
+    position = (sim.x, sim.y, sim.yaw)
+    for _ in range(20):
+        sim.tick(ex)
+    assert sim.cmd == (0.0, 0.0)
+    assert (sim.x, sim.y, sim.yaw) == position
+    ex.start(continuation)
+    assert sim.run(ex, _done, on_loading=lambda _: True)
+    assert ex.state == ARRIVED, ex.as_dict()
+    assert _axle_to(sim, continuation[-1]) < 7.0
 
 
 def run_route(graph, route, start_heading, start_offset, skip=(), loading=None, sim_kw=None,

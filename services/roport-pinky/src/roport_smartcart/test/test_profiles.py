@@ -44,6 +44,7 @@ def test_sim_merge_clocks_pose_and_upstream_unchanged():
         assert c['inflation_layer']['cost_scaling_factor'] == scaling
         assert json.loads(c['footprint']) == [[.08, .08], [.08, -.08],
                                              [-.08, -.08], [-.08, .08]]
+        assert c['footprint_padding'] == .04
         assert c['inflation_layer']['plugin'] == 'nav2_costmap_2d::InflationLayer'
     assert p['local_costmap']['local_costmap']['ros__parameters']['resolution'] == .01
     f = p['controller_server']['ros__parameters']['FollowPath']
@@ -157,9 +158,23 @@ def test_range_layers_are_sim_only_and_before_inflation():
             assert ('sonar_layer' in c['plugins']) is (mode == 'sim')
             if mode == 'sim':
                 assert c['plugins'][-2:] == ['sonar_layer', 'inflation_layer']
-                assert c['sonar_layer']['plugin'] == 'nav2_costmap_2d::ObstacleLayer'
-                source = c['sonar_layer']['sonar_proxy']
-                assert source['topic'] == '/sim/sonar_scan'
-                assert source['marking'] and source['clearing'] and source['inf_is_valid']
-                assert source['expected_update_rate'] == .5
-                assert source['obstacle_max_range'] < source['raytrace_max_range'] == .95
+                layer = c['sonar_layer']
+                assert layer['plugin'] == 'roport_range_layer::FreshRangeLayer'
+                assert layer['topics'] == ['/us_sensor/range']
+                assert layer['input_sensor_type'] == 'VARIABLE'
+                assert layer['no_readings_timeout'] == .5
+                assert layer['clear_on_max_reading'] is True
+                assert layer['clear_threshold'] == .2 and layer['mark_threshold'] == .8
+                assert '/sim/sonar_scan' not in str(c)
+
+
+
+def test_short_tracking_candidate_is_simulation_only():
+    from roport_pinky.navigation_policy import RPP_TRACKING, SIM_RPP_TRACKING
+    args = dict(footprint=FOOTPRINT, max_linear=.08, max_angular=.4)
+    for mode in ('sim', 'real'):
+        follower = profile(mode, **args)['controller_server']['ros__parameters']['FollowPath']
+        expected = SIM_RPP_TRACKING if mode == 'sim' else RPP_TRACKING
+        assert {key: follower[key] for key in expected} == expected
+    assert RPP_TRACKING['min_lookahead_dist'] == .15
+    assert SIM_RPP_TRACKING['min_lookahead_dist'] == .08

@@ -8,6 +8,7 @@ import math
 import sys
 import threading
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,19 +18,21 @@ for package in ("roport_pinky", "roport_line_nav", "roport_pinky_line"):
     sys.path.insert(0, str(PINKY / "src" / package))
 sys.path.insert(0, str(PINKY / "src/roport_line_nav/test"))
 
-from roport_line_nav.executor import RouteExecutor
+from roport_line_nav.executor import NavConfig, RouteExecutor
 from roport_line_nav.graph import Graph
-from roport_pinky.trial_driver import TrialDriver, TrialLogic
+from roport_pinky.trial_driver import NAV_RETRY_FAULTS, TrialDriver, TrialLogic
 from sim import Sim
 
 
 class SimulatedNav:
     """Explicitly simulated, obstacle-free motion; real completion checks stay in TrialDriver."""
 
-    def __init__(self, pose, ready=True):
+    def __init__(self, pose, ready=True, *, speed_mps):
         self.pose = pose
         self.ready = ready
+        self.speed_mps = speed_mps
         self.goal = self.result = None
+        self.navigation = None
         self.stopped = True
         self.observed_at = time.time()
 
@@ -42,10 +45,29 @@ class SimulatedNav:
             "observed_at": datetime.fromtimestamp(self.observed_at, UTC).isoformat(),
         }
 
+    def diagnostic(self):
+        return dict(self.navigation) if self.navigation else None
+
     def start(self, payload):
+        self.navigation = {
+            "phase": "navigating",
+            "goal_id": payload["goal_id"],
+            "target_pose": dict(payload["pose"]),
+            "current_pose": dict(self.pose),
+            "recoveries": 0,
+            "max_recoveries": 2,
+            "recovery_elapsed_s": 0.0,
+            "recovery_timeout_s": 30.0,
+            "nav2_error_code": 0,
+            "action_status": 0,
+            "error_code": None,
+        }
         self.goal = payload["pose"]
         self.result = None
         self.stopped = False
+
+    def quiescent(self):
+        return self.goal is None and self.stopped
 
     def cancel(self):
         self.goal = None
@@ -53,12 +75,14 @@ class SimulatedNav:
 
     def tick(self, dt):
         self.observed_at = time.time()
+        if self.navigation is not None:
+            self.navigation["current_pose"] = dict(self.pose)
         if self.goal is None:
             return
         dx, dy = (self.goal[k] - self.pose[k] for k in ("x", "y"))
         distance = math.hypot(dx, dy)
         if distance > 0.001:
-            fraction = min(1, 0.03 * dt / distance)
+            fraction = min(1, self.speed_mps * dt / distance)
             self.pose["x"] += dx * fraction
             self.pose["y"] += dy * fraction
         else:
@@ -67,6 +91,9 @@ class SimulatedNav:
                 math.cos(self.goal["yaw"] - self.pose["yaw"]),
             )
             self.pose["yaw"] += max(-0.4 * dt, min(0.4 * dt, error))
+            self.pose["yaw"] = math.atan2(
+                math.sin(self.pose["yaw"]), math.cos(self.pose["yaw"])
+            )
             if abs(error) <= 0.01:
                 self.goal = None
                 self.stopped = True
@@ -97,10 +124,16 @@ class VirtualPinky(TrialDriver):
         heading = self.graph.heading(start, self.graph.nodes[start].links[0])
         self.sim = Sim(self.graph)
         self.sim.place(start, heading)
-        self.ex = RouteExecutor(self.graph)
+        speed = route["speed_limit_mps"]
+        config = NavConfig()
+        self.ex = RouteExecutor(
+            self.graph,
+            replace(config, base_speed=speed, max_linear=max(config.max_linear, speed)),
+        )
         self.mode, self.nav_command = "line", None
         self.pose_source = "simulation"
         self.halted, self.runner_seen = None, time.monotonic()
+        self.failed_navigation = None
         self.guard = {"owner": "none", "blocked": False}
         self.lease_at = None
         self.last = None
@@ -109,7 +142,9 @@ class VirtualPinky(TrialDriver):
         self.logic = TrialLogic(
             self.graph, profile, send=self._send, zero=self._zero, start_node=start
         )
-        self.nav = SimulatedNav(self.map_pose(), ready=nav2)
+        self.nav = SimulatedNav(
+            self.map_pose(), ready=nav2, speed_mps=route["speed_limit_mps"]
+        )
         self._feed()
         self.done = threading.Event()
         self.thread = None
@@ -137,7 +172,12 @@ class VirtualPinky(TrialDriver):
         try:
             {
                 "speed": lambda: self.ex.set_speed(body["base_speed"]),
-                "start": lambda: self.ex.start(body["route"]),
+                "start": lambda: self.ex.start(
+                    body["route"],
+                    start_offset_cm=body.get("start_offset_cm"),
+                    confirmed_start=body.get("confirmed_start", False),
+                    hold_at_goal=body.get("hold_at_goal", False),
+                ),
                 "load_done": self.ex.load_done,
                 "stop": self.ex.stop,
             }[body["cmd"]]()
@@ -145,20 +185,29 @@ class VirtualPinky(TrialDriver):
         except ValueError as exc:
             self.last = {"cmd": body["cmd"], "ok": False, "detail": str(exc)}
 
-    def _guard_fault(self):
+    def _guard_fault(self, *, navigation_retry=False):
         # shortcut: in-process lease model; independent ROS guard/process death needs hardware/HIL.
         if self.lease_at is not None and time.monotonic() - self.lease_at > 1:
             self.guard.update(blocked=True, owner="none")
-        return self.halted or ("drive_lease_expired" if self.guard["blocked"] else None)
+        fault = (
+            None
+            if navigation_retry and self.halted in NAV_RETRY_FAULTS
+            else self.halted
+        )
+        return fault or ("drive_lease_expired" if self.guard["blocked"] else None)
 
     def _lease(self, owner):
         if not self._guard_fault():
             self.guard["owner"] = owner
             self.lease_at = time.monotonic()
 
-    def _feed(self):
+    def _feed(self, reading=None):
         state = self.ex.as_dict()
         state.update(graph_version=self.graph.version, last_command=self.last)
+        state.update(
+            ir=(reading or self.sim.sensor.update(self.sim.raw())).as_dict(),
+            ir_observed_at=time.time(),
+        )
         self.logic.on_state(state)
         if not (self.fault == "odom-stale" and self.motion_time >= 5):
             self.logic.on_odom(*self.sim.cmd)
@@ -173,15 +222,27 @@ class VirtualPinky(TrialDriver):
                 self.motion_time += self.sim.dt
             if self.fault == "line-loss" and self.motion_time >= 5:
                 self.sim.rects = []
+            reading = None
             if self.mode == "line":
-                self.sim.tick(self.ex)
+                reading = self.sim.tick(self.ex)
                 self.nav.pose = self.map_pose()
                 self.nav.observed_at = time.time()
             else:
                 self.sim.cmd = (0.0, 0.0)
                 self.sim.t += self.sim.dt
                 self.nav.tick(self.sim.dt)
-            self._feed()
+                a = math.radians(self.frame["yaw_deg"])
+                x, y = (
+                    self.nav.pose["x"] - self.frame["x_m"],
+                    self.nav.pose["y"] - self.frame["y_m"],
+                )
+                self.sim.x, self.sim.y = (
+                    (math.cos(a) * x + math.sin(a) * y) * 100,
+                    (-math.sin(a) * x + math.cos(a) * y) * 100,
+                )
+                self.sim.yaw = self.nav.pose["yaw"] - a
+                self.sim.odom = (self.sim.x, self.sim.y, self.sim.yaw)
+            self._feed(reading)
             self.sim.trace.clear()  # Persistent MQTT journals hold progress; avoid unbounded tick history.
 
     def _run(self):

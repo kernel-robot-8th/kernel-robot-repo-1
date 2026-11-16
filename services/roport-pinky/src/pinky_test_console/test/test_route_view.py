@@ -297,3 +297,69 @@ def test_console_return_newer_return_replaces_older():
     import time
     time.sleep(0.4)
     assert sum(c['cmd'] == 'start' for c in fake.sent) == 1, fake.sent
+
+
+# ---------------- 정밀 도킹(FFT1-112) ----------------
+def test_parse_dock_ok():
+    assert parse_route_command({'cmd': 'dock', 'node': 'N11', 'advance_cm': 1.5,
+                                'rotate_deg': 96, 'move_cm': -2.0, 'extra': 'dropped'}) == {
+        'cmd': 'dock', 'node': 'N11', 'advance_cm': 1.5, 'rotate_deg': 96.0, 'move_cm': -2.0}
+    for node in ('N01', 'N21', 'N22'):
+        assert parse_route_command({'cmd': 'dock', 'node': node, 'advance_cm': -6,
+                                    'rotate_deg': 60, 'move_cm': 6})['node'] == node
+    assert parse_route_command({'cmd': 'dock', 'node': 'N01', 'reset': True}) == {
+        'cmd': 'dock', 'node': 'N01', 'reset': True}
+
+
+@pytest.mark.parametrize('data', [
+    {'cmd': 'dock', 'node': 'N12', 'advance_cm': 0, 'rotate_deg': 90, 'move_cm': 0},
+    {'cmd': 'dock', 'node': 'N16', 'advance_cm': 0, 'rotate_deg': 90, 'move_cm': 0},
+    {'cmd': 'dock', 'node': 'N07', 'reset': True},
+    {'cmd': 'dock', 'advance_cm': 0, 'rotate_deg': 90, 'move_cm': 0},
+    {'cmd': 'dock', 'node': 'N11', 'advance_cm': 6.01, 'rotate_deg': 90, 'move_cm': 0},
+    {'cmd': 'dock', 'node': 'N11', 'advance_cm': 0, 'rotate_deg': 59.9, 'move_cm': 0},
+    {'cmd': 'dock', 'node': 'N11', 'advance_cm': 0, 'rotate_deg': 120.1, 'move_cm': 0},
+    {'cmd': 'dock', 'node': 'N11', 'advance_cm': 0, 'rotate_deg': 90, 'move_cm': -6.5},
+    {'cmd': 'dock', 'node': 'N11', 'advance_cm': float('nan'), 'rotate_deg': 90, 'move_cm': 0},
+    {'cmd': 'dock', 'node': 'N11', 'advance_cm': 0, 'rotate_deg': float('inf'), 'move_cm': 0},
+    {'cmd': 'dock', 'node': 'N11', 'advance_cm': True, 'rotate_deg': 90, 'move_cm': 0},
+    {'cmd': 'dock', 'node': 'N11', 'advance_cm': '1', 'rotate_deg': 90, 'move_cm': 0},
+    {'cmd': 'dock', 'node': 'N11', 'rotate_deg': 90, 'move_cm': 0},
+    {'cmd': 'dock', 'node': 'N11', 'reset': 'yes'},
+    {'cmd': 'dock', 'node': 'N11', 'reset': True, 'advance_cm': 1},
+])
+def test_parse_dock_rejects(data):
+    with pytest.raises(RouteCommandError):
+        parse_route_command(data)
+
+
+def test_parse_start_cross():
+    assert parse_route_command({'cmd': 'start', 'route': ['N07', 'N18', 'N01'],
+                                'start_cross': True, 'start_facing': 'S'}) == {
+        'cmd': 'start', 'route': ['N07', 'N18', 'N01'], 'start_cross': True, 'start_facing': 'S'}
+    # start_cross: false 는 지금과 같음(키를 보내지 않음)
+    assert parse_route_command({'cmd': 'start', 'route': ['N14', 'N16'],
+                                'start_cross': False}) == {'cmd': 'start', 'route': ['N14', 'N16']}
+
+
+@pytest.mark.parametrize('extra', [
+    {'start_cross': True},                                  # 방향 없음
+    {'start_cross': True, 'start_facing': 'SE'},
+    {'start_cross': True, 'start_facing': 's'},
+    {'start_cross': 1, 'start_facing': 'S'},
+    {'start_cross': 'true', 'start_facing': 'S'},
+    {'start_facing': 'S'},                                  # start_cross 없이
+    {'start_cross': False, 'start_facing': 'S'},
+    {'start_cross': True, 'start_facing': 'S', 'start_offset_cm': 3},
+])
+def test_parse_start_cross_rejects(extra):
+    with pytest.raises(RouteCommandError):
+        parse_route_command(dict({'cmd': 'start', 'route': ['N07', 'N18', 'N01']}, **extra))
+
+
+def test_dock_nodes_match_layout_load_nodes():
+    """route_view.DOCK_NODES(명령 검사) = 배치의 LOAD 노드(line_nav 규칙: arrival: load 또는 P4·P7)."""
+    from pinky_test_console.route_view import DOCK_NODES
+    g = graph_view(LAYOUT)
+    assert set(g['dock_nodes']) == set(DOCK_NODES)
+    assert g['bar_length'] == 12.0 and g['line_width'] == 2.4

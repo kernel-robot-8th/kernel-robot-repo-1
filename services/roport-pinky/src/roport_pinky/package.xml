@@ -20,6 +20,8 @@
   <exec_depend>lifecycle_msgs</exec_depend>
   <exec_depend>python3-pil</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
@@ -32,5 +34,6 @@
   <exec_depend>nav2_velocity_smoother</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <test_depend>python3-pytest</test_depend>
+  <test_depend>nav2_behavior_tree</test_depend>
   <export><build_type>ament_python</build_type></export>
 </package>

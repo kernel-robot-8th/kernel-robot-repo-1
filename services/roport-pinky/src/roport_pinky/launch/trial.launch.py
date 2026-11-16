@@ -1,5 +1,6 @@
 """Trial-only stack. Bringup and calibration remain explicit operator actions."""
 import math
+import os
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -14,11 +15,34 @@ CONTROLLER_OVERRIDES = {
     'FollowPath.desired_linear_vel': 0.03,
     'FollowPath.min_approach_linear_velocity': 0.01,
     'FollowPath.rotate_to_heading_angular_vel': 0.4,
+    # Keep the supplied base profile's tracking distances until hardware validation.
+    'FollowPath.use_collision_detection': True,
     'progress_checker_plugins': ['progress_checker'],
     'progress_checker.plugin': 'nav2_controller::PoseProgressChecker',
     'progress_checker.required_movement_radius': 0.05,
     'progress_checker.required_movement_angle': 0.15,
     'progress_checker.movement_time_allowance': 15.0,
+}
+
+
+DOCK_CONTROLLER_OVERRIDES = {
+    'controller_plugins': ['FollowPath', 'GateDock'],
+    'goal_checker_plugins': ['general_goal_checker', 'gate_dock_goal_checker'],
+    'gate_dock_goal_checker.plugin': 'nav2_controller::SimpleGoalChecker',
+    'gate_dock_goal_checker.xy_goal_tolerance': .01,
+    'gate_dock_goal_checker.yaw_goal_tolerance': .05,
+    'gate_dock_goal_checker.stateful': True,
+    'GateDock.plugin': 'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController',
+    'GateDock.desired_linear_vel': .02,
+    'GateDock.min_approach_linear_velocity': .005,
+    'GateDock.regulated_linear_scaling_min_speed': .005,
+    'GateDock.lookahead_dist': .05,
+    'GateDock.min_lookahead_dist': .03,
+    'GateDock.max_lookahead_dist': .10,
+    'GateDock.use_velocity_scaled_lookahead_dist': False,
+    'GateDock.rotate_to_heading_angular_vel': .15,
+    'GateDock.use_collision_detection': True,
+    'GateDock.allow_reversing': False,
 }
 
 
@@ -37,6 +61,9 @@ def _nodes(context):
     line_rotate_speed = float(LaunchConfiguration('line_rotate_speed').perform(context))
     if not math.isfinite(line_rotate_speed) or not .15 <= line_rotate_speed <= .4:
         raise ValueError('line_rotate_speed must be finite and in [0.15, 0.4] rad/s')
+    goal_xy_tolerance = float(LaunchConfiguration('goal_xy_tolerance').perform(context))
+    if not math.isfinite(goal_xy_tolerance) or not .01 <= goal_xy_tolerance <= .1:
+        raise ValueError('goal_xy_tolerance must be finite and in [0.01, 0.1] m')
     config = LaunchConfiguration('params_file')
     nodes = [
         Node(package='roport_pinky', executable='trial_guard', output='screen'),
@@ -61,12 +88,18 @@ def _nodes(context):
         if name == 'bt_navigator':
             # Goal acknowledgements must survive short scheduling delays on the Pi.
             overrides['default_server_timeout'] = 500  # milliseconds
+            overrides['default_nav_to_pose_bt_xml'] = LaunchConfiguration('recovery_bt')
         if name == 'planner_server':
             # The public-space goal is near the map edge; a .5 m search crosses it.
             overrides['GridBased.tolerance'] = 0.1  # meters
+            overrides['GridBased.plugin'] = LaunchConfiguration('planner_plugin')
         if name == 'controller_server':
             overrides.update(CONTROLLER_OVERRIDES)
+            overrides['general_goal_checker.xy_goal_tolerance'] = goal_xy_tolerance
             overrides['FollowPath.desired_linear_vel'] = max_linear
+            if os.environ.get('ROPORT_GATE_DOCK_CONFIG'):
+                overrides.update(DOCK_CONTROLLER_OVERRIDES)
+                overrides['GateDock.desired_linear_vel'] = min(.02, max_linear)
             overrides['FollowPath.rotate_to_heading_angular_vel'] = max_angular
         if name in ('controller_server', 'behavior_server', 'velocity_smoother'):
             overrides['enable_stamped_cmd_vel'] = False
@@ -88,6 +121,9 @@ def _nodes(context):
 
 def generate_launch_description():
     args = [DeclareLaunchArgument('robot'), DeclareLaunchArgument('map'),
+            DeclareLaunchArgument('planner_plugin', default_value='nav2_navfn_planner::NavfnPlanner'),
+            DeclareLaunchArgument('recovery_bt', default_value=PathJoinSubstitution([
+                FindPackageShare('roport_pinky'), 'behavior_trees', 'bounded_recovery.xml'])),
             DeclareLaunchArgument('layout_file'),
             DeclareLaunchArgument('ir_node', default_value='false'),
             DeclareLaunchArgument('line_speed', default_value='0.03',
@@ -98,6 +134,8 @@ def generate_launch_description():
                                   description='Nav2 controller/smoother cap in m/s'),
             DeclareLaunchArgument('max_angular', default_value='0.4',
                                   description='Nav2 rotation cap in rad/s; use field-verified value'),
+            DeclareLaunchArgument('goal_xy_tolerance', default_value='0.08',
+                                  description='Map pose XY tolerance in m; not measured wall clearance'),
             DeclareLaunchArgument('params_file', default_value=PathJoinSubstitution([
                 FindPackageShare('pinky_navigation'), 'params', 'nav2_params.yaml']))]
     return LaunchDescription(args + [OpaqueFunction(function=_nodes)])

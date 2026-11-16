@@ -3,6 +3,8 @@
 import json
 import math
 
+from roport_pinky.navigation_policy import RPP_TRACKING, SIM_RPP_TRACKING
+
 from .goals import _read_yaml
 
 
@@ -77,6 +79,8 @@ def build_params(base_params_file, overrides_file, mode, *, footprint=None,
         raise ValueError('speed limits must be finite positive numbers')
 
     params = _read_yaml(base_params_file)
+    params['controller_server']['ros__parameters']['FollowPath'].update(
+        SIM_RPP_TRACKING if mode == 'sim' else RPP_TRACKING)
     _merge(params, _read_yaml(overrides_file))
     simulated = mode == 'sim'
     params.setdefault('map_server', {'ros__parameters': {}})
@@ -93,23 +97,24 @@ def build_params(base_params_file, overrides_file, mode, *, footprint=None,
         costmap.pop('robot_radius', None)
         costmap['footprint'] = polygon
         if simulated:
+            # The planner must leave room for the collision monitor's 24 cm
+            # stop envelope. Cost-aware planning prefers extra turning room
+            # without making the initial narrow corridor geometrically invalid.
+            costmap['footprint_padding'] = .04
             costmap['plugins'].insert(-1, 'sonar_layer')
             costmap['sonar_layer'] = {
-                # The simulated fan already provides rays; retain their clearing geometry.
-                # ObstacleLayer recovers its current state after delayed observations.
-                'plugin': 'nav2_costmap_2d::ObstacleLayer',
-                'observation_sources': 'sonar_proxy',
-                'sonar_proxy': {
-                    'topic': '/sim/sonar_scan', 'data_type': 'LaserScan',
-                    'marking': True, 'clearing': True, 'inf_is_valid': True,
-                    'expected_update_rate': .5, 'observation_persistence': 0.,
-                    'obstacle_min_range': .02, 'obstacle_max_range': .94,
-                    'raytrace_min_range': .02, 'raytrace_max_range': .95,
-                    'max_obstacle_height': .2,
-                },
+                # Consume one distance and its field of view directly. A sonar
+                # echo cannot identify every bearing along an occupied arc.
+                'plugin': 'roport_range_layer::FreshRangeLayer',
+                'topics': ['/us_sensor/range'], 'input_sensor_type': 'VARIABLE',
+                'clear_on_max_reading': True, 'no_readings_timeout': .5,
+                'clear_threshold': .2, 'mark_threshold': .8,
             }
 
     if simulated:
+        planner = params['planner_server']['ros__parameters']['GridBased']
+        if planner.get('plugin') == 'nav2_smac_planner::SmacPlanner2D':
+            planner['cost_travel_multiplier'] = 10.0
         # Trial closer, more precise stops without changing the hardware profile.
         checker = params['controller_server']['ros__parameters']['general_goal_checker']
         checker.update(xy_goal_tolerance=.03, yaw_goal_tolerance=.08)

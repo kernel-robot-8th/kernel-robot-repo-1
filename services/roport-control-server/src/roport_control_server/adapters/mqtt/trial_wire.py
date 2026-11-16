@@ -81,8 +81,8 @@ SCHEMAS = {
     "mode_switch.requested": obj(
         **FENCE,
         node_id=enum("N12"),
-        from_mode=enum("line"),
-        to_mode=enum("nav2"),
+        from_mode=enum("line", "nav2"),
+        to_mode=enum("line", "nav2"),
         map_id=ID,
         map_version=ID,
     ),
@@ -114,6 +114,25 @@ SCHEMAS["navigate.completed"] = obj(
     pose=POSE,
     nav2_result=enum("SUCCEEDED"),
 )
+
+
+# Optional diagnostics require an updated consumer; legacy reports remain valid.
+NAVIGATION = obj(
+    phase=enum("navigating", "recovering", "completed", "failed"),
+    goal_id=ID,
+    target_pose=POSE,
+    current_pose={**POSE, "type": ["object", "null"]},
+    recoveries=UINT,
+    max_recoveries=UINT,
+    recovery_elapsed_s={"type": "number", "minimum": 0, "maximum": 1000000},
+    recovery_timeout_s={"type": "number", "minimum": 0, "maximum": 1000000},
+    nav2_error_code=UINT,
+    action_status=UINT,
+    error_code=STATE["fault"],
+)
+for _kind, _schema in SCHEMAS.items():
+    if _kind != "event.ack" and not _kind.endswith(".requested"):
+        _schema["properties"]["navigation"] = NAVIGATION
 
 
 def _check(value, schema, path="payload"):
@@ -150,7 +169,9 @@ def _check(value, schema, path="payload"):
     ):
         raise ValueError(f"{path}: invalid identifier")
     if type(value) is dict:
-        if set(value) != set(schema["properties"]):
+        if not set(schema["required"]).issubset(value) or not set(value).issubset(
+            schema["properties"]
+        ):
             raise ValueError(f"{path}: missing or unexpected fields")
         for key, item in value.items():
             _check(item, schema["properties"][key], f"{path}.{key}")
@@ -314,6 +335,17 @@ def check_result(request, event):
         ):
             raise ValueError("route completion requires goal stop and disabled line")
     if kind in {"mode_switch", "navigate"} and phase == "completed":
+        if kind == "mode_switch" and p["to_mode"] == "line":
+            if (
+                result["mode"] != "line"
+                or result["node_id"] != "N12"
+                or not result["stopped"]
+                or result["line_enabled"]
+                or result["drive_owner"] != "none"
+                or any(result[k] != p[k] for k in ("map_id", "map_version"))
+            ):
+                raise ValueError("line handoff requires confirmed N12 stop")
+            return
         if (
             result["mode"] != "nav2"
             or not result["stopped"]

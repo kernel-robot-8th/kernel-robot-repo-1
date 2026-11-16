@@ -138,6 +138,7 @@ ros2 launch pinky_test_console console.launch.py mode:=nav map:=$HOME/roport_map
 | `repo_dir` | `~/dev_ws/roport/kernel-robot-repo-1` | `mode:=fleet`에서 `git archive`할 노트북 저장소 |
 | `ssh_key` | `~/.ssh/pinky_ed25519` | `mode:=fleet` SSH 키. 비밀번호는 받지 않음(BatchMode) |
 | `fleet_log_dir` | `~/roport_fleet_logs` | `mode:=fleet` 날짜별 로그 CSV 폴더. 로봇에서 가져온 파일은 `<폴더>/<로봇 이름>/` |
+| `dock_dir` | `~/roport_dock` | `mode:=fleet` 정밀 도킹 탭의 `cameras.json`·`calib_*.json` 폴더(없으면 기본 카메라 2대) |
 | `nav_log_dir` | `~/roport_logs` | `mode:=route`·`test` 경로 상세 기록(route_*.csv) 폴더(line_nav `log_dir`) |
 | `line_max_linear` | `0.06` | `mode:=route`·`test` line_nav 직선 속도 상한(m/s, 코드 상한 0.15). 화면 속도 슬라이더 최대. 0.08 시험: `line_max_linear:=0.08` |
 | `approach_lead_cm` | `5.0` | `mode:=route`·`test` 예상 노드 위치 몇 cm 전부터 0.03 m/s로 감속(line_nav) |
@@ -398,6 +399,31 @@ colcon test-result --verbose
 
 `test_node_ros.py`는 **ROS_DOMAIN_ID 199 + 전용 namespace**(`/pinky_console_pytest/cmd_vel`)로 발행합니다. 로봇 위에서 bringup이 켜진 채 실행해도 실제 `/cmd_vel`에는 발행되지 않습니다.
 
+## 정밀 도킹 (mode:=fleet 「정밀 도킹」 탭, FFT1-112)
+
+**실로봇·실카메라 미검증**(가짜 카메라·가짜 로봇 상태로 화면·API만 확인). 로봇 쪽 `dock` 명령·교차선 출발은 `roport_line_nav`가 처리합니다.
+
+통합 화면 위쪽 로봇을 고르고 「정밀 도킹」 탭(`dock.html`, 노트북 화면)을 엽니다.
+1. 탑뷰 카메라를 고르고 「실시간」 또는 「사진 1장」. 보정(`dock_dir`의 `calib_*.json`, 없으면 「보정 JSON 직접 불러오기」)으로 지도·로봇 박스를 겹칩니다.
+   주황 = 지금 코드 예상, 초록 = 목표(끌기·앞쪽 원 끌기·방향키·`[` `]`), 파랑 점선 = 로봇에 적용된 값(`line_nav/state`의 `dock`), 보라 = 주행 중 `pose_est`, 빨강 = 실제(사진 위에 끌어 맞춤).
+2. ①(가로선에서 멈춘 뒤 선 따라)·②(반시계 회전)·③(새 방향 직진) 계산값이 범위(|①|·|③| ≤ 6 cm, 60° ≤ ② ≤ 120°) 안이면 「로봇에 적용」 → 로봇에 `{"cmd": "dock", "node", "advance_cm", "rotate_deg", "move_cm"}`. 「로봇 값 지우기」 = `reset`. 상차 뒤에는 ③·①을 되돌린 다음 선을 찾습니다(③ 되돌림 → 시계 방향 ② 회전 → ① 되돌림 → 선 찾기, line_nav).
+3. 시험 주행: N07에서 남쪽을 보고 IR 3개가 동서 선 위 → N11(N07 N23 N19 N11) 또는 N01(N07 N18 N01). `start_cross: true, start_facing: "S"`로 시작. 상차 완료·정지·P5 복귀.
+4. 「도착 사진 찍기」(지금 장 고정) → 「실제 위치 표시」로 빨간 박스를 로봇에 맞춤 → 실제 − 목표(선 따라·옆·각) → 「결과 기록」(`~/roport_fleet_logs/dock/dock_<노드>_<시각>.json`, 사진은 저장 안 함).
+
+카메라 설정 `~/roport_dock/cameras.json`(없으면 아래 두 대가 기본, 보정 파일은 이 폴더에 복사):
+
+```json
+[{"id": "omx12", "label": "OMX1·2 탑뷰", "host": "omen", "device": "/dev/video4", "size": "1280x720", "node": "N11", "calib": "calib_N11_20261107_184517.json"},
+ {"id": "omx3", "label": "OMX3 탑뷰", "host": "gpu", "device": "/dev/video0", "size": "1280x720", "node": "N01", "calib": "calib_N01_20261107_190226.json"}]
+```
+
+- `host`는 노트북 `~/.ssh/config` 별칭(키 로그인). `StrictHostKeyChecking=yes`라서 처음 한 번은 터미널에서 `ssh <별칭>`으로 호스트 키를 확인·등록합니다.
+- 실행: `ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=6 … -- <host> ffmpeg -hide_banner -loglevel error -f v4l2 -input_format mjpeg -video_size <size> -i <device>`
+  + 사진 `-frames:v 1 -c:v mjpeg -q:v 3 -f image2pipe -`(15 s 제한) / 실시간 `-an -vf fps=5 -c:v mjpeg -q:v 5 -f mpjpeg -`. host·device·size는 정규식으로 검사하고, 셸 문자열 없이 인자 목록으로 실행합니다.
+- 카메라당 ssh ffmpeg 하나를 여러 화면이 같이 봅니다. 실시간 중 사진 요청은 그 장을 돌려줍니다. 보는 화면이 없으면 3 s 뒤, 서버를 끄면 바로 이 서버가 띄운 ssh만 끕니다.
+- 카메라 사진·실시간 GET은 ssh·장치를 여는 부작용이 있어 브라우저 `Sec-Fetch-Site`가 `same-origin`·`none`이 아니면 403입니다(다른 사이트의 `<img>` 요청 차단). 이 헤더가 없는 curl 등은 허용합니다.
+- 카메라가 OMX 팀 프로그램과 같이 쓰입니다. 장치가 사용 중이면 409 「사용 중」을 보여 주고 **다른 프로그램은 끄지 않습니다**. 반대로 이 탭이 실시간으로 보는 동안에는 OMX 프로그램이 카메라를 못 열 수 있으니 다 보면 끕니다(10분 뒤 자동으로 끔).
+
 ## HTTP API
 
 | 메서드 | 경로 | 설명 |
@@ -425,7 +451,7 @@ colcon test-result --verbose
 | POST | `/api/ir/record` `{label, duration}` / `/api/ir/cancel` | IR 기록 시작(1–60 s) / 취소 |
 | GET | `/api/ir/records`, `/api/ir/records/<파일>` | 기록 목록·통계·참고 임계값 / CSV 다운로드 |
 | GET | `/api/route`, `/api/route/graph` | `line_nav/state`(없으면 `stale`) / 노드 그래프·경로 예시 |
-| POST | `/api/route/command` `{cmd: start\|stop\|load_done\|speed, route?, start_offset_cm?, base_speed?, rotate_speed?}` | `line_nav/command`로 보냄 (`mode:=route`·`test`) |
+| POST | `/api/route/command` `{cmd: start\|stop\|load_done\|speed\|dock, route?, start_offset_cm?, start_cross?, start_facing?, base_speed?, rotate_speed?}` | `line_nav/command`로 보냄 (`mode:=route`·`test`). `dock` = `{node: N01\|N11\|N21\|N22, advance_cm, rotate_deg, move_cm}` 또는 `{node, reset: true}`. `start_facing`(E·N·W·S)은 `start_cross: true`와만 |
 | GET | `/api/fleet`, `/api/fleet/jobs`, `/api/fleet/branches` | (`mode:=fleet`) 등록 목록·로봇 상태·작업 기록 / 작업 / `origin/*` 브랜치 |
 | POST | `/api/fleet/robots` `{name, ip, role, domain, calib, rmw?, home?}`, `/api/fleet/robots/delete` `{name}` | 등록·수정 / 삭제 |
 | POST | `/api/fleet/job` `{name, action: check\|read_domain\|set_domain\|deploy\|build, ref?, release?, domain?}` | SSH·git 작업(로봇마다 한 번에 하나) |
@@ -437,6 +463,9 @@ colcon test-result --verbose
 | GET | `/api/logs?after=<seq>`, `/api/logs/files` | (로봇) `/rosout` 최근 2000줄 / 경로 상세 기록·ROS 로그 폴더 목록 |
 | GET | `/api/fleet/files?name=<로봇>` | (`mode:=fleet`) 그 로봇의 로그 파일 목록 |
 | POST | `/api/fleet/job` `{name, action: fetch_log\|fetch_roslog\|console_start\|console_stop, file?, dir?, mode?}` | 로그 파일 가져오기 / 콘솔 켜기·끄기 |
+| GET | `/api/dock/cameras`, `/api/dock/calib/<id>` | (`mode:=fleet`) 탑뷰 카메라 목록·중계 상태 / 보정(`floor_to_img` 3×3) |
+| GET | `/api/dock/camera/<id>/snapshot.jpg`, `/api/dock/camera/<id>/stream` | 사진 1장 / MJPEG(`multipart/x-mixed-replace`). 장치 사용 중 409, SSH 실패 502, 시간 초과 504 |
+| POST·GET | `/api/dock/result`, `/api/dock/results` | 정밀 도킹 결과 JSON 저장(`fleet_log_dir/dock`, 홈 밖 폴더는 거부) / 최근 50건 |
 | GET·POST | `/robot/<이름>/<화면 또는 api/...>` | (`mode:=fleet`) 등록된 로봇 콘솔의 화면 파일·`api/`만 중계(통합 화면 탭) |
 
 POST는 `Content-Type: application/json`만 받습니다. 다른 웹사이트가 숨은 form으로 로봇을 움직이는 CSRF를 막기 위해서입니다.

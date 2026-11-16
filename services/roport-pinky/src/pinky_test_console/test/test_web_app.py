@@ -197,7 +197,8 @@ def test_index_and_assets(client):
     for path in ('/', '/app.js', '/style.css', '/index.html', '/ir.html', '/ir.js',
                  '/marker.html', '/marker.js', '/amcl.html', '/amcl.js', '/route.html',
                  '/route.js', '/routemap.js', '/fleet.html', '/fleet.js', '/settings.html',
-                 '/settings.js', '/test.html', '/test.js'):
+                 '/settings.js', '/test.html', '/test.js', '/dock.html', '/dock.js',
+                 '/dock_core.js'):
         r = client.get(path)
         assert r.status_code == 200, path
 
@@ -216,7 +217,8 @@ def test_security_headers(client):
 
 
 @pytest.mark.parametrize('page', ['index.html', 'ir.html', 'marker.html', 'amcl.html',
-                                  'route.html', 'fleet.html', 'settings.html', 'test.html'])
+                                  'route.html', 'fleet.html', 'settings.html', 'test.html',
+                                  'dock.html'])
 def test_html_has_no_external_or_inline_code(page):
     html = open(os.path.join(WEB_DIR, page)).read()
     assert 'http://' not in html.split('-->', 1)[1]
@@ -575,3 +577,139 @@ def test_route_return_endpoint():
     assert node.calls[-1] == ('return', None, None)
     assert client.post('/api/route/return', json={'start': 'x;y'}).status_code == 400
     assert client.post('/api/route/return', json={'goal': 5}).status_code == 400
+
+
+# ---------------- 정밀 도킹 (mode:=fleet) ----------------
+@pytest.fixture
+def dock_client(node, tmp_path):
+    import json as _json
+    from test_dock_camera import CALIB, CAM, FakeRunner
+    from test_fleet import FakeClient, GOOD
+    from test_fleet import FakeRunner as FleetRunner
+    from pinky_test_console.dock_camera import DockCameras, DockResults
+    from pinky_test_console.fleet import Commands, FleetManager, FleetStore
+    store = FleetStore(str(tmp_path / 'fleet.json'))
+    store.upsert(GOOD)
+    mgr = FleetManager(store, Commands('/repo', '/k'), client=FakeClient(), runner=FleetRunner())
+    dock_dir = tmp_path / 'roport_dock'
+    dock_dir.mkdir()
+    (dock_dir / 'cameras.json').write_text(_json.dumps([CAM]))
+    (dock_dir / CAM['calib']).write_text(_json.dumps(CALIB))
+    runner = FakeRunner()
+    cams = DockCameras(str(dock_dir), runner=runner, idle_sec=0.05)
+    results = DockResults(str(tmp_path / 'roport_fleet_logs' / 'dock'), home=str(tmp_path))
+    app = create_app(node, WEB_DIR, fleet=mgr, allowed_hosts={'127.0.0.1:8080'},
+                     dock=(cams, results))
+    app.testing = True
+    return app.test_client(), mgr, runner, tmp_path
+
+
+H = {'Host': '127.0.0.1:8080'}
+
+
+def test_dock_routes_absent_without_fleet(client):
+    for path in ('/api/dock/cameras', '/api/dock/camera/omx12/snapshot.jpg',
+                 '/api/dock/calib/omx12', '/api/dock/results'):
+        assert client.get(path).status_code == 404, path
+    assert client.post('/api/dock/result', json={}).status_code == 404
+
+
+def test_dock_cameras_snapshot_calib(dock_client):
+    c, _, runner, _ = dock_client
+    d = c.get('/api/dock/cameras', headers=H).get_json()
+    assert [x['id'] for x in d['cameras']] == ['omx12'] and d['cameras'][0]['calib_found']
+    r = c.get('/api/dock/camera/omx12/snapshot.jpg', headers=H)
+    assert r.status_code == 200 and r.mimetype == 'image/jpeg' and r.data[:2] == b'\xff\xd8'
+    assert r.headers['Cache-Control'] == 'no-store'
+    assert c.get('/api/dock/camera/nope/snapshot.jpg', headers=H).status_code == 404
+    assert c.get('/api/dock/camera/omx12/snapshot.jpg',
+                 headers={'Host': 'evil.example'}).status_code == 403
+    runner.run_result = (1, b'', b'/dev/video4: Device or resource busy')
+    r = c.get('/api/dock/camera/omx12/snapshot.jpg', headers=H)
+    assert r.status_code == 409 and '사용 중' in r.get_json()['msg']
+    cal = c.get('/api/dock/calib/omx12', headers=H).get_json()
+    assert cal['node'] == 'N11' and len(cal['floor_to_img']) == 3
+
+
+@pytest.mark.parametrize('site,code', [
+    ('cross-site', 403), ('same-site', 403), ('same-origin', 200), ('none', 200), (None, 200)])
+def test_dock_camera_sec_fetch_site(dock_client, site, code):
+    """다른 사이트의 <img> 가 ssh·카메라를 열지 못함. 헤더 없는 클라이언트(curl)는 허용."""
+    c, _, runner, _ = dock_client
+    headers = dict(H, **({'Sec-Fetch-Site': site} if site else {}))
+    r = c.get('/api/dock/camera/omx12/snapshot.jpg', headers=headers)
+    assert r.status_code == code
+    assert len(runner.runs) == (1 if code == 200 else 0)      # 403 이면 ssh 를 실행하지 않음
+    if code == 403:
+        assert c.get('/api/dock/camera/omx12/stream', headers=headers).status_code == 403
+        assert runner.popens == []
+
+
+def test_dock_result_save_failure_is_clear_error(dock_client, monkeypatch):
+    from test_dock_camera import RESULT
+    c, _, _, _ = dock_client
+
+    def exists(src, dst):
+        raise FileExistsError(17, 'File exists')
+    monkeypatch.setattr('pinky_test_console.dock_camera.os.link', exists)
+    r = c.post('/api/dock/result', headers=H, json=RESULT)
+    assert r.status_code == 409 and '이미 있음' in r.get_json()['msg']
+
+
+def test_dock_stream_busy_409(dock_client):
+    import threading
+    c, _, runner, _ = dock_client
+    runner.next_stderr = b'Device or resource busy'
+    threading.Timer(0.05, lambda: runner.procs[0].finish(1)).start()
+    r = c.get('/api/dock/camera/omx12/stream', headers=H)
+    assert r.status_code == 409
+
+
+def test_dock_stream_mjpeg(dock_client):
+    import threading
+    from test_dock_camera import JPEG, mpjpeg
+    c, _, runner, _ = dock_client
+    threading.Timer(0.05, lambda: runner.procs[0].stdout.put(mpjpeg([JPEG, JPEG]))).start()
+    r = c.get('/api/dock/camera/omx12/stream', headers=H, buffered=False)
+    assert r.status_code == 200 and r.mimetype == 'multipart/x-mixed-replace'
+    first = next(r.response)
+    assert first.startswith(b'--dockframe\r\nContent-Type: image/jpeg') and JPEG in first
+    r.close()
+
+
+def test_dock_result_api(dock_client):
+    from test_dock_camera import RESULT
+    c, _, _, tmp = dock_client
+    r = c.post('/api/dock/result', headers=H, json=RESULT)
+    assert r.status_code == 200, r.get_json()
+    name = r.get_json()['file']
+    assert (tmp / 'roport_fleet_logs' / 'dock' / name).is_file()
+    assert c.get('/api/dock/results', headers=H).get_json()['results'][0]['file'] == name
+    assert c.post('/api/dock/result', headers=H,
+                  json=dict(RESULT, node='../../x')).status_code == 400
+    assert c.post('/api/dock/result', headers=H, data='x').status_code == 400
+
+
+def test_dock_command_via_fleet_route(dock_client):
+    c, mgr, _, _ = dock_client
+    body = {'name': 'pinky1', 'cmd': 'dock', 'node': 'N11', 'advance_cm': 1.5,
+            'rotate_deg': 96.0, 'move_cm': 2.0}
+    r = c.post('/api/fleet/route', headers=H, json=body)
+    assert r.status_code == 200
+    assert mgr.client.calls[-1][1:] == ('/api/route/command', {
+        'cmd': 'dock', 'node': 'N11', 'advance_cm': 1.5, 'rotate_deg': 96.0, 'move_cm': 2.0})
+    assert c.post('/api/fleet/route', headers=H,
+                  json=dict(body, advance_cm=7)).status_code == 400
+    r = c.post('/api/fleet/route', headers=H, json={
+        'name': 'pinky1', 'cmd': 'start', 'route': ['N07', 'N23', 'N19', 'N11'],
+        'start_cross': True, 'start_facing': 'S'})
+    assert r.status_code == 200
+    assert mgr.client.calls[-1][2]['start_facing'] == 'S'
+
+
+def test_robot_console_route_command_accepts_dock(client, node):
+    r = client.post('/api/route/command', json={'cmd': 'dock', 'node': 'N01', 'reset': True})
+    assert r.status_code == 200 and node.calls[-1] == ('route', {'cmd': 'dock', 'node': 'N01',
+                                                                 'reset': True})
+    bad = {'cmd': 'dock', 'node': 'N12', 'reset': True}
+    assert client.post('/api/route/command', json=bad).status_code == 400

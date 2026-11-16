@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
-test('service: inbound then outbound through the same MQTT owner and PR45 Host', async ({page}, testInfo) => {
+test('service: inbound then outbound through the same MQTT owner and PR45 Host', async ({page}) => {
   const child = spawn('.venv/bin/python', ['-u','tests/trial_web_fixture.py','line-only','two','all','omx'], {stdio:['ignore','pipe','pipe']});
   const lines = createInterface({input: child.stdout});
   let diagnostics = ''; child.stderr.on('data', d => diagnostics += d);
@@ -40,7 +40,6 @@ test('service: inbound then outbound through the same MQTT owner and PR45 Host',
       expect(snapshot.trial.transfers.at(-1).placement_confirmed).toBe(null);
       expect(snapshot.trial.plan.steps.every(s => s.role === (operation === 'inbound' ? 'logistics' : 'smartcart'))).toBeTruthy();
     }
-    await page.screenshot({path:testInfo.outputPath('service-complete.png'), fullPage:true});
     expect(errors).toEqual([]);
   } finally {
     lines.close(); child.kill('SIGINT');

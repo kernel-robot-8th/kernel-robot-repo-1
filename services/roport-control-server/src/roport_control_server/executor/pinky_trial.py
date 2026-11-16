@@ -28,7 +28,6 @@ from uuid import uuid4
 from roport_control_server.adapters.mqtt.journal import Journal
 from roport_control_server.adapters.mqtt.messages import decode, timestamp, topic
 from roport_control_server.adapters.mqtt.motion import MotionReceiver, motion_topic
-from roport_control_server.adapters.mqtt.mqtt import MqttTransport
 from roport_control_server.adapters.mqtt.trial_wire import (
     PROFILE,
     check_result,
@@ -53,6 +52,17 @@ from roport_control_server.executor.plans import (
     validate_plan,
 )
 from roport_control_server.executor.trial_socket import TrialSocket
+
+NAV_RETRY_FAULTS = frozenset(
+    (
+        "nav2_goal_failed",
+        "nav2_recovery_limit",
+        "nav2_recovery_timeout",
+        "gate_dock_marker_missing",
+        "gate_dock_marker_lost",
+        "gate_dock_timeout",
+    )
+)
 
 ROUTES = (
     "to_loading",
@@ -191,7 +201,6 @@ class TrialControl:
         self.scope = scope
         validate_config(config)
         self.config, self.transport, self.journal = deepcopy(config), transport, journal
-        self.single_robot = config.get("scenario") == "single_pinky"
         self.smartcart_only = smartcart_only
         self.robots = {
             role: robot
@@ -205,7 +214,6 @@ class TrialControl:
             allowed_roles=self.allowed_robots,
         )
         self.robots = self._plan_robots(self.plan)
-        self.start_step = self.plan["steps"][0]["id"]
         if journal.data and journal.data.get("config") != config:
             raise ValueError("journal configuration changed; reconcile old trial first")
         if not journal.data:
@@ -257,6 +265,76 @@ class TrialControl:
         state.update(phase="HOLD", fault=reason)
         self.journal.save(state)
         # Stop renewing the active robot's lease. Its local controller must stop.
+
+    def retry_navigation(self, execution_id, *, reconciled=False):
+        """CLI-only, explicit field reconciliation; never clears other HOLDs."""
+        old = self.state["active"]
+        if (
+            reconciled is not True
+            or not self.transport.ready
+            or self.state["phase"] != "HOLD"
+            or self.state["fault"] not in NAV_RETRY_FAULTS
+            or not old
+            or old["type"] != "navigate.requested"
+            or old["execution_id"] != execution_id
+        ):
+            raise ValueError("explicit navigation failure reconciliation required")
+        failures = [
+            e
+            for e in self.state["events"].values()
+            if e["command_id"] == old["command_id"]
+            and e["type"] == "navigate.failed"
+            and e["payload"]["error_code"] == self.state["fault"]
+        ]
+        if not failures:
+            raise ValueError("navigation terminal failure not confirmed")
+        robot = self._robot(old["step_id"])
+        status = self.state["statuses"].get(robot["robot_id"])
+        if (
+            not status
+            or monotonic() - self.heard.get(robot["robot_id"], -math.inf) > 3
+            or not -0.5
+            <= (datetime.now(UTC) - timestamp(status["observed_at"])).total_seconds()
+            <= 3
+            or status["fault"] != self.state["fault"]
+            or not status["stopped"]
+            or status["line_enabled"]
+            or status["mode"] != "nav2"
+            or not status["nav2_ready"]
+            or not status["localization_ready"]
+            or status["drive_owner"] != "nav2"
+            or status["boot_id"] != old["payload"]["expected_boot_id"]
+            or any(status[k] != old["payload"][k] for k in ("map_id", "map_version"))
+        ):
+            raise ValueError(
+                "navigation retry requires fresh stopped state in same boot/map"
+            )
+        cmd = command(
+            site=self.config["site_id"],
+            control=self.config["control_id"],
+            robot=robot["robot_id"],
+            task=old["task_id"],
+            step=old["step_id"],
+            kind="navigate",
+            payload=deepcopy(old["payload"]),
+        )
+        state = deepcopy(self.state)
+        state.setdefault("navigation_retries", []).append(
+            {
+                "failed_execution_id": old["execution_id"],
+                "failed_command": deepcopy(old),
+                "fault": self.state["fault"],
+                "execution_id": cmd["execution_id"],
+                "goal_id": old["payload"]["goal_id"],
+                "reconciled_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        state.update(phase=old["step_id"], fault=None, active=cmd)
+        self.journal.save(state)  # Persist the new attempt before publication.
+        self.deadline = monotonic() + self.config["command_timeout_s"]
+        self.transport.publish(
+            topic(self.config["site_id"], "robot", robot["robot_id"], "cmd"), cmd
+        )
 
     def _step(self, step=None):
         if step is None:
@@ -345,7 +423,6 @@ class TrialControl:
                 request=None,
                 fault=None,
             )
-            self.pending_status.clear()
         state.update(
             plan=plan,
             plan_index=0,
@@ -372,7 +449,6 @@ class TrialControl:
         self.robots = self._plan_robots(plan)
         self.pending_status.clear()
         self.last_poll = 0.0
-        self.start_step = plan["steps"][0]["id"]
         self.discovery_robots = {}
         self.service_preview = None
 
@@ -547,8 +623,7 @@ class TrialControl:
         if not self.transport.ready:
             return "MQTT subscriptions not ready"
         try:
-            for role, robot in self.robots.items():
-                self._status(robot)
+            for role in self.robots:
                 first = next((s for s in self.plan["steps"] if s["role"] == role), None)
                 if first is not None:
                     self._step_status(first)
@@ -756,8 +831,28 @@ class TrialControl:
             state["statuses"][device], state["boot_ids"][device] = p, p["boot_id"]
             self.journal.save(state)
             self.heard[device] = monotonic()
-            if p["fault"] is not None:
-                self.hold("robot_fault")
+            retry_pending = (
+                self.state.get("active")
+                and any(
+                    r["execution_id"] == self.state["active"]["execution_id"]
+                    for r in self.state.get("navigation_retries", [])
+                )
+                and not any(
+                    e["command_id"] == self.state["active"]["command_id"]
+                    and e["type"] == "navigate.accepted"
+                    for e in self.state["events"].values()
+                )
+            )
+            if p["fault"] is not None and not (
+                retry_pending and p["fault"] in NAV_RETRY_FAULTS
+            ):
+                self.hold(
+                    p["fault"]
+                    if self.state.get("active")
+                    and self.state["active"]["type"] == "navigate.requested"
+                    and p["fault"] in NAV_RETRY_FAULTS
+                    else "robot_fault"
+                )
             return
         cmd = self.state["active"]
         if not cmd or event["command_id"] != cmd["command_id"]:
@@ -789,6 +884,32 @@ class TrialControl:
         self.heard[device] = monotonic()
         self._ack(event)  # Application ACK only after fsync; separate from PUBACK.
         phase = event["type"].split(".")[1]
+        retry = next(
+            (
+                retry
+                for retry in self.state.get("navigation_retries", [])
+                if retry["execution_id"] == cmd["execution_id"]
+            ),
+            None,
+        )
+        if (
+            self.state["phase"] != "HOLD"
+            and phase == "rejected"
+            and p["error_code"] == "recovery_required"
+            and retry
+            and retry.get("failed_command")
+            and retry.get("fault")
+        ):
+            # The robot did not start this attempt; keep the confirmed failure retryable.
+            state = deepcopy(self.state)
+            state.update(
+                phase="HOLD",
+                fault=retry["fault"],
+                active=retry["failed_command"],
+            )
+            self.deadline = None
+            self.journal.save(state)
+            return
         if phase in {"failed", "rejected"}:
             self.hold(p["error_code"])
         elif phase == "completed" and self.state["phase"] != "HOLD":
@@ -824,7 +945,15 @@ class TrialControl:
                 for r in self.robots.values()
             ):
                 self.hold("robot_status_timeout")
-            if now - self.last_poll >= 1 and self.state["phase"] != "HOLD":
+            retry_wait = (
+                self.state["phase"] == "HOLD"
+                and self.state.get("active")
+                and self.state["active"]["type"] == "navigate.requested"
+                and self.state["fault"] in NAV_RETRY_FAULTS
+            )
+            if now - self.last_poll >= 1 and (
+                self.state["phase"] != "HOLD" or retry_wait
+            ):
                 # A fresh response can arrive after the next 1 Hz request.
                 utc_now = datetime.now(UTC)
                 self.pending_status = {
@@ -912,7 +1041,11 @@ def main():
     if config["mode"] == "hardware" and not args.hardware_authorized:
         parser.error("hardware trial requires field checks and --hardware-authorized")
     journal = Journal(args.journal)
-    transport = MqttTransport(
+    from roport_control_server.adapters.mqtt.field_trial_transport import (
+        FieldTrialTransport,
+    )
+
+    transport = FieldTrialTransport(
         connection,
         [
             topic(config["site_id"], "robot", r["robot_id"], "event")
@@ -924,6 +1057,8 @@ def main():
             if "omx" in config
             else []
         ),
+        config,
+        lambda: journal.data,
     )
     control = TrialControl(
         config, transport, journal, scope=args.scope, smartcart_only=args.smartcart_only
@@ -966,12 +1101,14 @@ def main():
             web = TrialSocket(args.socket, control)
         transport.start()
         started = True
-        motion_transport = MqttTransport(
+        motion_transport = FieldTrialTransport(
             replace(connection, client_id=connection.client_id + "-motion"),
             [
                 motion_topic(config["site_id"], r["robot_id"])
                 for r in config["robots"].values()
             ],
+            config,
+            lambda: journal.data,
         )
         control.motion = MotionReceiver(config, motion_transport)
         try:
@@ -989,7 +1126,7 @@ def main():
                 control.poll(0.05)
                 web.poll()
         print(
-            "Inputs: start | dummy <stop_session_id> | request <package_id> | status | stop",
+            "Inputs: start | dummy <stop_session_id> | request <package_id> | retry <failed_execution_id> reconciled | status | stop",
             flush=True,
         )
         previous = None
@@ -1021,6 +1158,12 @@ def main():
                         control.dummy(fields[1])
                     elif len(fields) == 2 and fields[0] == "request":
                         control.request([{"package_id": fields[1], "quantity": 1}])
+                    elif (
+                        len(fields) == 3
+                        and fields[0] == "retry"
+                        and fields[2] == "reconciled"
+                    ):
+                        control.retry_navigation(fields[1], reconciled=True)
                     elif fields == ["status"]:
                         print(json.dumps(control.state, ensure_ascii=False), flush=True)
                     elif fields == ["stop"]:

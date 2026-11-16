@@ -17,6 +17,7 @@ import os
 from flask import Flask, Response, abort, jsonify, redirect, request, send_from_directory
 
 from .amcl_check import AmclCheckError
+from .dock_camera import BOUNDARY, DockError
 from .fleet import FleetError
 from .ir_record import IrRecordError
 from .map_store import MapNameError
@@ -27,7 +28,8 @@ from .route_view import NODE_ID, RouteCommandError, parse_route_command, plan_vi
 STATIC_FILES = {'index.html', 'app.js', 'style.css', 'ir.html', 'ir.js',
                 'marker.html', 'marker.js', 'amcl.html', 'amcl.js', 'route.html', 'route.js',
                 'routemap.js', 'fleet.html', 'fleet.js', 'settings.html', 'settings.js',
-                'test.html', 'test.js', 'smartcart.html', 'smartcart.js'}
+                'test.html', 'test.js', 'smartcart.html', 'smartcart.js',
+                'dock.html', 'dock.js', 'dock_core.js'}
 POSE_CM_LIMIT = 1000.0   # 실측 좌표 입력 허용 범위(cm, 시연 공간 444.5 x 221)
 
 SECURITY_HEADERS = {
@@ -86,8 +88,9 @@ def _pose_cm(data, need_yaw=True):
     return x, y, yaw
 
 
-def create_app(node, web_dir, fleet=None, allowed_hosts=None):
+def create_app(node, web_dir, fleet=None, allowed_hosts=None, dock=None):
     """fleet: fleet.FleetManager(mode:=fleet 일 때만). allowed_hosts: Host 헤더 허용 목록.
+    dock: (dock_camera.DockCameras, dock_camera.DockResults) — 정밀 도킹 탭(fleet 일 때만).
 
     fleet 모드는 SSH 로 로봇에 설치·설정하므로 127.0.0.1 에만 열고, DNS rebinding 으로 다른 사이트가
     localhost 에 요청하지 못하게 Host 헤더를 검사한다(allowed_hosts).
@@ -107,6 +110,10 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
     @app.errorhandler(FleetError)
     def _bad_value(e):
         return jsonify({'success': False, 'msg': str(e)}), 400
+
+    @app.errorhandler(DockError)
+    def _dock_error(e):
+        return jsonify({'success': False, 'msg': str(e)}), e.status
 
     @app.before_request
     def _check_host():
@@ -548,6 +555,51 @@ def create_app(node, web_dir, fleet=None, allowed_hosts=None):
     def api_fleet_stop_all():
         _json_body()
         return jsonify({'success': True, 'result': _fleet().stop_all()})
+
+    # ---------------- 정밀 도킹 (mode:=fleet, 노트북) ----------------
+    def _dock():
+        if fleet is None or dock is None:
+            abort(404)
+        return dock
+
+    @app.route('/api/dock/cameras')
+    def api_dock_cameras():
+        return jsonify(_dock()[0].listing())
+
+    def _same_site_only():
+        # 카메라 GET 은 ssh 를 열고 장치를 잡는다(부작용). 다른 사이트의 <img> 요청은 막는다.
+        # 브라우저는 Sec-Fetch-Site 를 보낸다: same-origin(이 화면)·none(주소창 직접)만 허용.
+        # 헤더가 없는 클라이언트(curl 등)는 허용(이 서버는 127.0.0.1 + Host 검사).
+        site = request.headers.get('Sec-Fetch-Site')
+        if site is not None and site not in ('same-origin', 'none'):
+            abort(403)
+
+    @app.route('/api/dock/camera/<cam_id>/snapshot.jpg')
+    def api_dock_snapshot(cam_id):
+        _same_site_only()
+        jpeg = _dock()[0].snapshot(cam_id)
+        return Response(jpeg, mimetype='image/jpeg')
+
+    @app.route('/api/dock/camera/<cam_id>/stream')
+    def api_dock_stream(cam_id):
+        """MJPEG(multipart/x-mixed-replace). 첫 장을 받은 뒤 응답 시작, 실패는 JSON 오류."""
+        _same_site_only()
+        gen = _dock()[0].open_stream(cam_id)
+        return Response(gen, mimetype=f'multipart/x-mixed-replace; boundary={BOUNDARY}',
+                        direct_passthrough=True)
+
+    @app.route('/api/dock/calib/<cam_id>')
+    def api_dock_calib(cam_id):
+        return jsonify(_dock()[0].calib(cam_id))
+
+    @app.route('/api/dock/result', methods=['POST'])
+    def api_dock_result():
+        res = _dock()[1].save(_json_body())
+        return jsonify({'success': True, 'file': res['file'], 'record': res['record']})
+
+    @app.route('/api/dock/results')
+    def api_dock_results():
+        return jsonify(_dock()[1].recent())
 
     return app
 

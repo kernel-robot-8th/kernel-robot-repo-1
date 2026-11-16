@@ -37,7 +37,8 @@ def test_both_sensors_slow_stop_and_missing_sensor_holds(monkeypatch, tmp_path):
     scan = node.create_publisher(LaserScan, 'scan', qos_profile_sensor_data)
     velocity = node.create_publisher(Twist, 'cmd_vel', 10)
     output = []
-    node.create_subscription(Twist, 'cmd_vel_safe', lambda m: output.append(m.linear.x), 10)
+    node.create_subscription(Twist, 'cmd_vel_safe',
+                             lambda m: output.append((m.linear.x, m.angular.z)), 10)
     config = Path(__file__).parents[1] / 'config/collision_monitor_sim.yaml'
     with (tmp_path / 'monitor.log').open('w') as log:
         child = subprocess.Popen([
@@ -56,7 +57,8 @@ def test_both_sensors_slow_stop_and_missing_sensor_holds(monkeypatch, tmp_path):
                 executor.spin_until_future_complete(future, timeout_sec=5)
                 assert future.done() and future.result().success
 
-            def expect(us_distance, laser_distance, expected, *, omit_sonar=False):
+            def expect(us_distance, laser_distance, expected, *, omit_sonar=False,
+                       linear=.1, angular=0., expected_angular=0.):
                 output.clear()
                 started = time.monotonic()
                 while time.monotonic() - started < 4:
@@ -73,16 +75,22 @@ def test_both_sensors_slow_stop_and_missing_sensor_holds(monkeypatch, tmp_path):
                     s.range_min, s.range_max, s.ranges = .05, 8., [laser_distance]
                     scan.publish(s)
                     v = Twist()
-                    v.linear.x = .1
+                    v.linear.x, v.angular.z = linear, angular
                     velocity.publish(v)
                     executor.spin_once(timeout_sec=.02)
                     elapsed = time.monotonic() - started
                     if elapsed > (.8 if omit_sonar else .3) and len(output) >= 3:
-                        if all(v == pytest.approx(expected) for v in output[-3:]):
+                        if all(v == pytest.approx((expected, expected_angular))
+                               for v in output[-3:]):
                             return
                 pytest.fail(f'expected {expected}, last outputs={output[-5:]}')
 
             expect(.8, 2., .1)
+            # A wall outside the padded rotation sweep must not trap departure.
+            expect(.22, .25, 0., linear=0., angular=.5, expected_angular=.15)
+            # Rotation remains blocked inside the padded body and on sensor loss.
+            expect(.1, 2., 0., linear=0., angular=.5)
+            expect(.8, 2., 0., linear=0., angular=.5, omit_sonar=True)
             expect(.3, 2., .03)
             expect(.1, 2., 0.)
             expect(.8, .1, 0.)

@@ -500,3 +500,30 @@ canvas {
 /* 통합 화면 안에서 연 테스트 관제·설정: 위쪽 헤더(전체 정지 중복)를 숨김 */
 body.tt-embedded > #topbar { display: none; }
 .tt-note { padding: 4px 16px; }
+
+/* ---------- 정밀 도킹 탭 (dock.html, mode:=fleet) ---------- */
+.dk-page { overflow: auto; }
+.dk-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 12px; padding: 12px 16px; }
+@media (max-width: 1000px) { .dk-wrap { grid-template-columns: 1fr; } }
+.dk-card { background: var(--card-bg); border: 1px solid var(--border-subtle); border-radius: 12px;
+  padding: 10px 12px; margin-bottom: 10px; }
+.dk-card h3 { margin: 0 0 8px; font-size: 13px; color: var(--accent); }
+.dk-stage { position: relative; background: #000; border-radius: 10px; overflow: hidden; }
+.dk-stage canvas { display: block; width: 100%; height: auto; max-width: none; aspect-ratio: auto;
+  border-radius: 0; border: 0; }
+.dk-live { position: absolute; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.dk-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.dk-select { flex: 0 1 280px; }
+.dk-big { font-size: 18px; font-weight: 600; }
+.dk-t { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+.dk-t td, .dk-t th { padding: 3px 4px; border-bottom: 1px solid var(--border-subtle); text-align: left; }
+.dk-leg { margin: 0 0 6px; }
+.dk-sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin: 0 3px -1px 8px; }
+.dk-sw-pred { background: #d97706; }
+.dk-sw-want { background: #16a34a; }
+.dk-sw-applied { background: #38bdf8; }
+.dk-sw-est { background: #c084fc; }
+.dk-sw-meas { background: #ef4444; }
+.dk-ev { max-height: 150px; overflow: auto; font-size: 11px; font-family: ui-monospace, monospace;
+  color: var(--text-muted); }
+.dk-err { color: var(--err); }

@@ -12,8 +12,18 @@ import yaml
 
 NODE_ID = re.compile(r'^[A-Z][A-Z0-9]{0,7}$')
 MAX_ROUTE = 64
-COMMANDS = ('start', 'stop', 'load_done', 'speed')
+COMMANDS = ('start', 'stop', 'load_done', 'speed', 'dock')
 SPEED_CAPS = {'base_speed': 0.15, 'rotate_speed': 1.5}   # 형식 검사용(실제 상한은 line_nav 설정)
+
+# 정밀 도킹(FFT1-112, 계약 01_dock_contract.md 1·2절): 상차(LOAD) 노드별 ① 선 따라 ② 반시계 회전 ③ 직진.
+# 대상 = 경로 끝 동작이 LOAD 인 노드(운영 위치 P4·P7 또는 arrival: load). 지금 그래프 v14 기준.
+# test_route_view 가 배치 yaml 의 LOAD 노드와 같은지 확인한다.
+DOCK_NODES = ('N01', 'N11', 'N21', 'N22')
+LOAD_PLACES = ('P4', 'P7')       # roport_line_nav graph.LOAD_PLACES 와 같게
+DOCK_LIMITS = {'advance_cm': (-6.0, 6.0), 'rotate_deg': (60.0, 120.0), 'move_cm': (-6.0, 6.0)}
+DOCK_DEFAULT = {'advance_cm': 0.0, 'rotate_deg': 90.0, 'move_cm': 0.0}   # = 지금 동작
+# 교차선 위 출발(계약 3절): 로봇이 보는 방향
+FACINGS = ('E', 'N', 'W', 'S')
 
 # 테스트 관제의 출발 위치(대기·충전 칸). 운영 위치 → 노드
 START_PLACES = ('P1', 'P2', 'P5', 'P6')
@@ -81,7 +91,8 @@ def list_ros_log_dirs(path, limit=10):
 
 
 def parse_route_command(data):
-    """{cmd, route?, start_offset_cm?} → line_nav/command 로 보낼 dict. 잘못되면 RouteCommandError."""
+    """{cmd, route?, start_offset_cm?, start_cross?, start_facing?} 또는 dock 명령
+    → line_nav/command 로 보낼 dict(알려진 키만). 잘못되면 RouteCommandError."""
     if not isinstance(data, dict):
         raise RouteCommandError('JSON object required')
     cmd = data.get('cmd')
@@ -100,6 +111,8 @@ def parse_route_command(data):
         if len(out) == 1:
             raise RouteCommandError('speed needs base_speed and/or rotate_speed')
         return out
+    if cmd == 'dock':
+        return _parse_dock(data)
     if cmd != 'start':
         return {'cmd': cmd}
     route = data.get('route')
@@ -114,6 +127,49 @@ def parse_route_command(data):
                 or not math.isfinite(offset) or not 0.0 <= offset <= 50.0:
             raise RouteCommandError('start_offset_cm must be a number in 0..50')
         out['start_offset_cm'] = float(offset)
+    cross, facing = data.get('start_cross'), data.get('start_facing')
+    if cross is not None and not isinstance(cross, bool):
+        raise RouteCommandError('start_cross must be true or false')
+    if cross:
+        # 교차선 위 출발: route[0] 이 가로선 노드면 line_nav 가 거부한다(그래프는 로봇 쪽에 있음)
+        if facing not in FACINGS:
+            raise RouteCommandError(f"start_cross needs start_facing one of {', '.join(FACINGS)}")
+        if offset is not None:
+            raise RouteCommandError('start_offset_cm cannot be used with start_cross')
+        out['start_cross'] = True
+        out['start_facing'] = facing
+    elif facing is not None:
+        raise RouteCommandError('start_facing is only allowed with start_cross: true')
+    return out
+
+
+def _dock_number(data, key):
+    v = data.get(key)
+    lo, hi = DOCK_LIMITS[key]
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) \
+            or not lo <= v <= hi:
+        raise RouteCommandError(f'{key} must be a number in {lo:g}..{hi:g}')
+    return float(v)
+
+
+def _parse_dock(data):
+    """{cmd: dock, node, advance_cm, rotate_deg, move_cm} 또는 {cmd: dock, node, reset: true}.
+
+    범위 밖·유한값 아님·LOAD 노드 아님은 거부. 주행 중 거부와 저장은 line_nav 가 한다.
+    """
+    node = data.get('node')
+    if node not in DOCK_NODES:
+        raise RouteCommandError(f"dock node must be one of {', '.join(DOCK_NODES)}")
+    reset = data.get('reset')
+    if reset is not None and not isinstance(reset, bool):
+        raise RouteCommandError('reset must be true or false')
+    if reset:
+        if any(k in data for k in DOCK_LIMITS):
+            raise RouteCommandError('reset cannot be combined with dock values')
+        return {'cmd': 'dock', 'node': node, 'reset': True}
+    out = {'cmd': 'dock', 'node': node}
+    for k in DOCK_LIMITS:
+        out[k] = _dock_number(data, k)
     return out
 
 
@@ -136,15 +192,28 @@ def graph_view(path):
             'links': [str(v) for v in it.get('links') or []],
             'role': str(it.get('role', '')), 'place': str(it.get('place', '')),
             'bar': str(it.get('bar', '')), 'nav2_switch': bool(it.get('nav2_switch', False)),
+            'arrival': str(it.get('arrival', '')),
         })
     ids = {n['id'] for n in nodes}
     presets = [p for p in PRESETS if all(r in ids for r in p['route'])]
     starts = [{'place': n['place'], 'node': n['id']} for n in nodes if n['place'] in START_PLACES]
     starts.sort(key=lambda s: s['place'])
     out = {'version': str(spec.get('graph_version', '')), 'nodes': nodes, 'presets': presets,
-           'starts': starts, 'goals': [n['id'] for n in nodes if n['bar']]}
+           'starts': starts, 'goals': [n['id'] for n in nodes if n['bar']],
+           'dock_nodes': [n['id'] for n in nodes if is_load_node(n)],
+           'bar_length': float(spec.get('bar_length', 12.0)),
+           'line_width': float((data.get('defaults') or {}).get('line_width', 2.4))}
     out.update(_layout_view(data))
     return out
+
+
+def is_load_node(n):
+    """graph_view 노드가 경로 끝 상차(LOAD) 노드인지. roport_line_nav graph.arrival_action 과 같은 규칙."""
+    if not n['bar'] or n['nav2_switch']:
+        return False
+    if n['arrival']:
+        return n['arrival'] == 'load'
+    return n['place'] in LOAD_PLACES
 
 
 def _layout_view(data):

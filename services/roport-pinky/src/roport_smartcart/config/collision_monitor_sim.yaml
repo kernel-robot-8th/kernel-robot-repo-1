@@ -11,14 +11,25 @@ collision_monitor:
     transform_tolerance: 0.2
     source_timeout: 0.5
     stop_pub_timeout: 2.0
-    polygons: [Stop, Slow]
+    polygons: [Stop, Approach, Slow]
     Stop:
       type: polygon
-      points: '[[0.22, 0.12], [0.22, -0.12], [-0.10, -0.12], [-0.10, 0.12]]'
+      # 16 cm simulated footprint plus 4 cm on every side. The approach
+      # zone below projects this envelope along translation AND rotation.
+      points: '[[0.12, 0.12], [0.12, -0.12], [-0.12, -0.12], [-0.12, 0.12]]'
       action_type: stop
       min_points: 1
       visualize: true
       polygon_pub_topic: stop_zone
+    Approach:
+      type: polygon
+      points: '[[0.12, 0.12], [0.12, -0.12], [-0.12, -0.12], [-0.12, 0.12]]'
+      action_type: approach
+      time_before_collision: 2.0
+      simulation_time_step: 0.05
+      min_points: 1
+      visualize: true
+      polygon_pub_topic: approach_zone
     Slow:
       type: polygon
       points: '[[0.45, 0.16], [0.45, -0.16], [-0.10, -0.16], [-0.10, 0.16]]'

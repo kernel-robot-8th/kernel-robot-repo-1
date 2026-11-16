@@ -12,9 +12,12 @@ from zipfile import ZipFile
 import pytest
 import yaml
 
+from roport_control_server.adapters.mqtt.field_trial_transport import (
+    FieldTrialTransport,
+)
 from roport_control_server.adapters.mqtt.journal import Journal
 from roport_control_server.adapters.mqtt.messages import topic
-from roport_control_server.adapters.mqtt.mqtt import MqttConfig, MqttTransport
+from roport_control_server.adapters.mqtt.mqtt import MqttConfig
 from roport_control_server.executor.pinky_trial import TrialControl
 
 SERVICE = Path(__file__).resolve().parents[1]
@@ -228,14 +231,16 @@ def test_published_runner_with_current_control_over_mqtt(
     profile = profiles[f"{config_scenario}/simulation"]
     config_path = kit / "scenarios" / config_scenario / "simulation/trial.json"
     connection = MqttConfig("127.0.0.1", profile["control_id"], port=broker[0])
-    transport = MqttTransport(
+    journal = Journal(tmp_path / "control.json")
+    transport = FieldTrialTransport(
         connection,
         [
             topic(profile["site_id"], "robot", r["robot_id"], "event")
             for r in profile["robots"].values()
         ],
+        profile,
+        lambda: journal.data,
     )
-    journal = Journal(tmp_path / "control.json")
     control = TrialControl(profile, transport, journal, smartcart_only=smartcart_only)
     processes, logs = [], []
     env = {

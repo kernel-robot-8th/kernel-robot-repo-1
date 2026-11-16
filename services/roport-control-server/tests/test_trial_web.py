@@ -437,7 +437,7 @@ def test_real_mqtt_web_full_trial_and_exclusive_owner(
             )
             if scope == "line-only":
                 assert all(
-                    record["command"]["type"] == "route.requested"
+                    record["command"]["type"] == "line_route_command"
                     for record in robot_journal["records"].values()
                 )
         owner.send_signal(signal.SIGTERM if scope == "nav2" else signal.SIGINT)
@@ -863,6 +863,7 @@ def test_late_owner_snapshot_supplies_routes(local_owner):
 def test_startup_failure_keeps_unused_journal_ready_and_cleans_socket(
     tmp_path, single_profile, monkeypatch
 ):
+    from roport_control_server.adapters.mqtt import field_trial_transport
     from roport_control_server.executor import pinky_trial
 
     profile = tmp_path / "trial.json"
@@ -893,7 +894,7 @@ def test_startup_failure_keeps_unused_journal_ready_and_cleans_socket(
         def start(self):
             raise ConnectionError("broker unavailable")
 
-    monkeypatch.setattr(pinky_trial, "MqttTransport", Unavailable)
+    monkeypatch.setattr(field_trial_transport, "FieldTrialTransport", Unavailable)
     previous_handler = signal.getsignal(signal.SIGTERM)
     for _ in range(2):
         with pytest.raises(ConnectionError, match="broker unavailable"):

@@ -255,6 +255,7 @@ class CooperativeHost:
             check = getattr(self.executor, "check", None)
             if check is not None:
                 check(task)  # executor-specific refusal (e.g. no model for this slot)
+            check_expiry(message)
         except ValueError as exc:
             code = exc.args[0] if isinstance(exc, Rejected) else "INVALID_REQUEST"
             detail = {} if isinstance(exc, Rejected) else {"detail": str(exc)}
@@ -269,6 +270,7 @@ class CooperativeHost:
             message, record, "accepted", "ACCEPTED", self._echo(task)
         )
         try:
+            check_expiry(message)  # durable acceptance can also outlive the command
             self.executor.start(task)
         except Exception as exc:  # noqa: BLE001 - any refusal ends this execution
             return events + self._finish(record, "EXECUTOR_START_FAILED", {}, str(exc))
@@ -418,6 +420,7 @@ class CooperativeHost:
             **task,
             "command_id": message["command_id"],
             "execution_id": message["execution_id"],
+            "expires_at": message["expires_at"],
         }
 
     def _readiness(self) -> dict:

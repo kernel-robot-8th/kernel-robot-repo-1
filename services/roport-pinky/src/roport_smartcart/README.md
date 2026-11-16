@@ -2,7 +2,78 @@
 
 스마트카트 담당 강지원. [구현 계획·강사 설정 복구 기록](IMPLEMENTATION_PLAN.md), [FFT1-83](https://fp-team1.atlassian.net/browse/FFT1-83).
 업무 범위는 **라인 상차 → 적재 후 대기 복귀 → 관제 호출 → Nav2 배송 → 하차 확인 → 복귀**다.
-QR·고객 추종은 현재 구현 범위에 넣지 않는다.
+QR·고객 추종 주행은 미구현이다. 마커 없는 대상 검출·선택·추적의 PC 시험 화면은 아래 절차로 준비했다.
+
+## 마커 없는 대상 추적 준비 · FFT1-86
+
+`target_preview`는 **관찰 전용**이다. ROS·MQTT·Nav2·`cmd_vel`을 연결하거나 로봇을 기동하지 않는다.
+PC의 카메라 번호, 영상 파일, OpenCV에서 지원하는 스트림 URL을 입력받아 YOLO + ByteTrack 결과를 표시한다.
+검출 상자를 클릭하면 한 ID를 선택한다. 대상 누락, 다른 상자와 겹침, 급격한 위치 변화,
+영상 지연·종료·오류가 있으면 선택을 해제하고 **직접 재선택**해야 한다. 자동 재획득은 하지 않는다.
+클릭 위치가 여러 상자에 걸쳐도 선택하지 않는다. `R`은 선택 해제, `Q`/Esc는 종료다.
+
+저장소 루트에서 PC 전용 가상환경으로 설치한다. ROS 기본 설치와 CI에는 AI 의존성을 추가하지 않는다.
+
+```bash
+python3 -m venv .venv-target-preview
+.venv-target-preview/bin/python -m pip install -e 'services/roport-pinky/src/roport_smartcart[preview]'
+.venv-target-preview/bin/target_preview --source 0 --model /absolute/path/to/yolo11n.pt
+# 녹화 영상: --source /absolute/path/to/test.mp4
+# 인형용 추가 학습 모델: --model /absolute/path/to/doll.pt --class-id 0
+```
+
+가상환경 `.venv-*/`는 Git 제외 대상이다. 녹화 영상(`.mp4` 등)·캡처·모델은 **저장소 밖**에 보관한다.
+`git add -A` 전에 `git status --short`로 확인한다. 일반 `.mp4` 확장자 전체를 무시하지 않으므로
+저장소 안 임의 경로에 영상을 두면 추적 대상이 될 수 있다.
+
+인증정보가 포함된 스트림 주소는 `--source`에 직접 쓰지 않고 `--source-env`로 전달한다.
+다음은 Bash에서 셸 기록·명령 인자에 주소를 직접 남기지 않는 입력 예시다.
+
+```bash
+read -r -s -p 'Stream URL: ' PINKY_VIDEO_SOURCE; echo
+export PINKY_VIDEO_SOURCE
+.venv-target-preview/bin/target_preview --source-env PINKY_VIDEO_SOURCE --model /absolute/path/to/yolo11n.pt
+unset PINKY_VIDEO_SOURCE
+```
+
+두 입력 옵션은 동시 지정할 수 없으며, 없는 변수·빈 값은 실행 전에 거부한다.
+환경변수도 접근 권한이 있는 프로세스에서 읽힐 수 있고 OpenCV 등 외부 라이브러리의 진단 출력은 별도다.
+앱은 환경변수 값을 상태 표시나 오류 메시지에 출력하지 않는다.
+
+사용자가 확보한 **신뢰할 수 있는 로컬 검출 모델 `.pt`**를 지정한다. 가중치·현장 원본 영상은 커밋하지 않는다.
+기본 class ID `0`은 COCO person 기준이며, 사용자 모델은 해당 모델의 인형 클래스 ID를 지정한다.
+가중치를 자동으로 다운로드하지 않는다. 기본 CPU 추론이며 첫 추론이 느리면 선택 불가 상태로 기다린다.
+Ultralytics 설치가 GUI를 지원하는 OpenCV를 함께 설치한다. 화면이 있는 PC에서 실행한다.
+선택 의존성은 [Ultralytics 설치 문서](https://docs.ultralytics.com/quickstart/)와
+[추적 API](https://docs.ultralytics.com/modes/track/)를 사용한다. Ultralytics 코드·모델의
+[라이선스](https://www.ultralytics.com/license)는 이 패키지와 별도로 적용된다.
+Ultralytics는 AGPL-3.0/Enterprise 조건을 안내한다. 선택 설치나 교육용 시연이라는 이유만으로
+조건 충족을 가정하지 않는다. 현재 범위는 PC 관찰용 평가 코드이며 **팀의 시연·배포 사용 조건은 미확정**이다.
+이 패키지의 `LicenseRef-Proprietary` 선언을 바꾸거나 전체 프로젝트의 AGPL 적합성을 확정하지 않았다.
+시연·배포 범위, 해당 코드·모델의 조건, 대응 소스 공개 범위 또는 Enterprise 사용 여부를
+팀이 FFT1-86에 기록한 뒤 배포 방식을 정한다. 충족하기 어려우면 검출기 대체를 검토한다.
+모델·AI 포함 실행 환경을 기본 ROS 설치나 배포 산출물에 포함하지 않는다.
+
+`--max-age` 기본 0.5초(최대 2초)는 **로컬 프레임 읽기 시작부터 추론 결과 표시까지**의 허용 시간이다.
+캡처/추론은 별도 worker가 담당하여 읽기가 멈춰도 화면이 이전 프레임을 만료 처리한다.
+카메라 자체·네트워크 버퍼의 지연이나 원본 촬영 시각을 보증하지 않으므로,
+이 값은 실물 제어용 센서 timestamp/watchdog를 대신하지 않는다. 영상 파일은 원래 FPS 이하로 재생한다.
+
+**추적 ID는 신원 확인이 아니다.** 현재 appearance Re-ID·얼굴인식은 없고,
+부드러운 ID 뒤바뀜·검출 누락된 다른 대상은 이 검사만으로 판별할 수 없다.
+일반 person 모델이 작은 종이 인형을 검출하는지도 미검증이다. 검출 실패 시 현장 영상으로 추가 학습을 검토한다.
+거리 추정, 카메라 보정·TF, 지도 좌표 변환, 추종 Nav2 목표·구역 제한,
+실제 모터 정지 및 기존 trial_guard 소유권 연결은 후속 작업이다.
+이 화면의 선택 해제는 **로봇 정지 명령이 아니다**.
+
+실물 확인 순서: 로봇 정지 상태에서 인형 2~3개를 비추고 선택 → 좌우 이동 → 서로 교차 → 가림/재등장
+→ 영상 연결 해제. 검출·ID 전환·지연을 확인한 뒤 거리 추정과 저속 추종을 연결한다.
+작은 인형(리뷰 기준 높이 7.8~11.8 cm)은 거리별 검출률도 기록한다.
+예를 들어 20/40/60/80 cm에서 앞·뒤·옆 방향별로 10초씩 촬영하고,
+화면에 보이는 평가 프레임 수·올바른 검출 수·오검출 수·ID 전환 수·처리 지연을 적는다.
+검출률은 `올바르게 검출한 프레임 / 대상이 보이는 평가 프레임`으로 계산하며,
+모델·confidence·해상도·조명을 함께 남긴다. 중복된 한 영상으로 학습·평가하지 않고,
+거리별 결과를 보고 사용 거리와 추가 학습 필요 여부를 정한다.
 
 ## 운행 흐름 · 2026-11-05 사용자 확인
 
@@ -305,9 +376,9 @@ Gazebo 전용이다. 원본 Pinky xacro를 포함한 팀 wrapper에 전방 거�
 웹 지도는 기존처럼 `http://127.0.0.1:8081`에서 확인한다.
 
 - `/scan`은 기존 라이다, `/sim/sonar_scan`은 낮은 수평 광선, `/us_sensor/range`는 Range 변환 출력이다.
-- 시뮬의 두 costmap에 낮은 `/sim/sonar_scan`을 받는 `ObstacleLayer`를 추가해 장애물 표시·광선 지우기를 수행한다. Range 출력은 Collision Monitor에서 계속 사용한다.
+- 시뮬의 두 costmap은 `/us_sensor/range` 한 거리와 감지각을 Nav2 Range 센서 모델로 직접 처리한다. 감지각 전체를 확정 장애물 호로 만드는 변환은 사용하지 않는다. 원본 광선별 `/sim/sonar_scan`은 Range 생성에만 사용한다. 0.5초 센서 timeout과 Collision Monitor 정지는 유지한다. 최대 거리값은 무반환이므로 실물 적용 전 규약 보정이 필요하다.
 - Nav2 출력은 Collision Monitor → `/cmd_vel_safe` → Gazebo bridge 순서다. 원래 `/cmd_vel`이 구동 bridge로 직접 가지 않는다.
-- 후보 전방 감속 영역45cm에서는 속도를30%로 줄이고 정지 영역22cm에서는0을 보낸다. 거리는 로봇 중심 기준 영역이며 실물 제동거리 설정이 아니다.
+- 후보 전방 감속 영역45cm에서는 속도를30%로 줄인다. 모의 몸체16cm에 각 방향4cm 여유를 더한 영역 안에서는 정지하며, 같은 영역의 2초 이동·회전 궤적에 충돌이 예상되면 감속한다. 벽이 회전 궤적 밖에 있으면 제자리 회전을 허용한다. 이는 시뮬 후보 설정이며 실물 제동거리 검증을 대신하지 않는다.
 - 라이다 또는 Range가0.5초 이상 오래되면 명령 처리 시 정지한다. 정상 관측이 돌아오면 필터가 다시 통과시킬 수 있다. 임무 복구/재출발 승인은 별도 실행부 책임이다.
 - Gazebo 무반환(+inf)은 유한한 최대 거리로 변환해 센서 정상/장애물 없음과 센서 끊김을 구별한다. 너무 가까운 반환(-inf)은 최소 거리로 취급하고, NaN/범위 밖 프레임은 버려 timeout 정지를 유도한다.
 
@@ -436,10 +507,13 @@ H1/H2 가로선과 바퀴 축은 IR 장착 거리만큼 다르며 충전 접점 
 관제의 로봇 목표·속도에는 접근하지 않는다. 상태 수신이1초 이상 끊기면 상자 이동도 멈춘다.
 `stationary_line:=true`는 상자를 계속 두어 라인 차단 실패를 시험한다.
 
-Nav2는 기존 라이다와 낮은 모의 거리 스캔을 장애물 지도에 반영해 재계획하고, 마지막 Collision Monitor가 감속·정지한다.
-`inf_is_valid`로 생성되는 최대 거리의 지우기용 점을 장애물로 표시하지 않도록, 표시 최대0.94m와 광선 지우기0.95m를 구분한다.
-초음파의 acoustic 반사·흡수·재질 특성은 구현하지 않았다. 실물 초음파 Range를 이 LaserScan 경로에 그대로 연결하면 안 된다.
-이전 RangeSensorLayer의 초기 관측 지연 후 current 상태 복구 문제는 실제 Nav2 controller 회귀 시험으로 재현·교체 검증했다.
+Nav2는 라이다와 한 초음파 거리/감지각의 확률 센서 모델을 지도에 반영해 재계획하고, 마지막 Collision Monitor가 감속·정지한다.
+감지각 전체를 확정 장애물 호로 표시하던 경로는 모서리에서 지나갈 공간도 막을 수 있어 시뮬 기본 경로에서 제거했다.
+`range_scan` 실행 파일은 기존 외부 사용자를 위한 도구로 남겨두며 기본 launch는 실행하지 않는다.
+설치된 Jazzy RangeSensorLayer를 상속한 `roport_range_layer::FreshRangeLayer`가 유효한 새 관측만 전달하고,
+TF 변환까지 처리한 새 관측이 있을 때 timeout 뒤 current 상태를 회복한다. 지도/라이다 cost 합성과 0.5초 timeout은 원본을 유지한다.
+첫 관측 지연 후 복구 및 입력 중단·오래된 timestamp·NaN 시 실제 Nav2 controller가 실패하는 회귀 시험을 수행한다.
+초음파의 반사·흡수·재질 특성은 구현하지 않았다. 실물 거리·TF·감지각·무반환 규약 확인 전에는 이 경로를 실물에 활성화하지 않는다.
 참고: [Nav2 Jazzy RangeSensorLayer 구현](https://github.com/ros-navigation/navigation2/blob/jazzy/nav2_costmap_2d/plugins/range_sensor_layer.cpp).
 
 라인 구간은 탈선 우회하지 않는다. 감지된 장애물 때문에 정지한 동안 이동·회전 odom이 진행되지 않으면 기다리며,
@@ -475,3 +549,217 @@ H1의 라인 상자는 분기 진입 뒤3초 후 이동시키는 초기 fixture�
 두 성공 실행은 중간 위치 재배치·명령 재시도 없이 공용공간에서 출발했다. 영구 차단 시험만 별도로 N12에 배치한 실패 경로 검증이다.
 Contact 센서 경로는 성공 시험 뒤 별도 접촉 probe를 상자와 겹쳐 실제 이벤트가 수신되는 것도 확인했다(로봇과의 접촉 시험이 아님).
 각 결과는 반복 신뢰성·충전 접점·실물 검증을 대체하지 않는다.
+
+
+## 실물 N12 → H1/H2 복귀 · FFT1-81
+
+실물 전용 `real_return_stack`은 SmacPlanner2D와 `bounded_field_recovery.xml`을 사용한다.
+경로/추종 복구가 가능한 오류 때 1초 대기 → Nav2의 충돌 검사를 거친 8cm 후진(0.02m/s)
+→ costmap 갱신 → 전체 경로 재계산을 최대 두 번 수행한다. 위쪽 길을 강제로 지정하지 않으며,
+관측된 전체 지도에서 열린 경로를 찾는다. 후진 공간이 막혔거나 대안 경로가 없으면 정지한다.
+후진 제한은 회당18초다. 시뮬레이션의 Collision Monitor 30% 감속에서도 거리를 완료할 시간이며,
+감속·충돌 검사·footprint를 완화하지 않는다. 일반 trial과 기존 시뮬레이션의 기본 BT는 유지한다.
+
+N12에서는 지도 격자 안의 미세한 이동이 생략되는 경우를 위해, Nav2 정지 후 현재 자세가
+목표에서8cm/0.1rad 이내일 때만 정확한 끝점의 FollowPath 정렬을 최대 두 번(회당25초) 시도한다.
+Nav2 컨트롤러의 충돌 검사를 유지하고, 실제 정지·최종 위치·기존 새 IR 0.5초 획득 조건을
+만족하지 못하면 라인으로 전환하지 않는다. 무한 전진 탐색은 하지 않는다.
+실제 IR로 확인한 N12 출발은 교차점 예상 위치5cm 전부터 판정해 이른 옆선 오인식을 줄인다.
+실물 좌표 보정 파일은 현장에 보관하며, 수동 N12 정렬 뒤 H1 복귀 성공을 자동 왕복 성공으로 간주하지 않는다.
+
+동일한 복구 BT의 격리 시뮬레이션 검사는 `navigation.launch.py mode:=sim`에
+`recovery_bt:=/path/bounded_field_recovery.xml`을 명시한다. 기본값 변경이 아닌 시험 선택이다.
+
+`real_return`은 관제와 분리한 감독 시험 명령이다. 게이트 등 공용공간에서 시작해
+`return_entry` → `return_n12`까지 Nav2로 이동한 뒤, 실제 `ir_sensor/range`와 wheel odom을
+사용하는 공용 `RouteExecutor`로 `N12 → N08 → H2`를 주행한다.
+`--bay H1`이면 `N12 → N08 → N09 → H1`이며, 대기칸 예약·고객 수령 확인은 호출자/관제 책임이다.
+이 실행부는 MQTT 계약이나 관제의 mode switch를 자동 변경하지 않는다.
+
+```bash
+# bringup은 별도로 실행. 기존 관제/라인 구동 실행부와 중복 실행하지 않는다.
+export ROS_DOMAIN_ID=13
+# 도메인은 예시다. 현장 기체에 배정한 값과 아래 --domain-id를 함께 맞춘다.
+ros2 launch roport_smartcart real_return_stack.launch.py \
+  robot:=ROBOT_NAME map:=/path/airport_map.yaml \
+  layout_file:=/path/roport_airport.yaml params_file:=/path/nav2.yaml \
+  max_linear:=0.03 max_angular:=0.15
+
+# 기본은 설정 확인만 수행한다. 실제 이동은 현장 확인 후 --drive를 명시한다.
+ros2 run roport_smartcart real_return \
+  --domain-id "$ROS_DOMAIN_ID" \
+  --robot ROBOT_NAME --calibration /path/robots.yaml --bay H2 \
+  --map /path/airport_map.yaml --layout /path/roport_airport.yaml \
+  --places /path/field-places.yaml
+```
+
+실기 장소 파일은 map YAML/이미지 해시와 `environment: real`이 맞아야 하며,
+`return_entry`·`return_n12`는 현장 확인 후에만 `measured: true`로 등록한다.
+`return_n12`는 복귀 방향(N08 방향)을 바라보고 실제 중앙 IR이 N12 테이프 위에 오는
+바퀴 축 자세다(기본 IR 전방 거리 3cm). 출발 방향의 `handoff_n12`와 구별한다.
+시뮬레이션 장소 파일의 `environment`만 변경해 사용하지 않는다.
+
+전용 stack의 일반 Nav2 허용 오차는 기존 8cm를 유지한다. 실행부는 `return_n12` 목표에만
+controller의 위치 허용 오차를 1cm로 일시 변경하고, 성공 후 실제 정지를 확인한 뒤 원래 값으로 복원한다.
+실패·취소 때는 action 종료와 실제 정지 확인 후 정리 단계에서 복원한다. 파라미터 조회·변경·복원 실패는 오류로 종료한다.
+2026-11-09 실물에서는 N12 실측 보정 후 1cm 설정으로 IR 획득과 H2 주차를 재시도 1회 성공했다.
+반복 성공률과 모든 장소의 1cm 정차를 검증한 것은 아니므로 다른 목표에 이 설정을 일괄 적용하지 않는다.
+Nav2 성공 결과·실제 연속 정지 0.5초·N12 자세(5cm/0.1rad 이내)와 실제 중앙 IR 정렬을
+새 센서 샘플로 연속 0.5초 확인한 뒤에만 lease를 `none`에서 `line`으로 전환한다.
+제한된 정밀 정렬 후에도 IR 획득이 안 되면, 획득 단계의10초 제한 안에 정지 상태로 종료한다.
+IR 판정을 생략하거나 선을 찾을 때까지 무한 전진하지 않는다.
+IR 0.3초/odom 0.5초 초과 지연, 센서 오류, 구동권 충돌, guard 재시작, 취소는 주행을 중단한다.
+주차 완료는 기존 라인 실행부의 180도 회전·후진·실제 IR 가로선 감지와 실제 정지로 판정한다.
+라인 속도는 기본 0.03m/s(`--line-speed 0.06` 선택 가능), 회전 상한은 0.15rad/s다.
+N12·N08은 물류 Pinky와 공유하는 구간이다. 감독 시험에서는 다른 기체를 해당 구간 밖에 정지시키고,
+관제 통합 시에는 구간 점유·예약을 별도로 연결해야 한다.
+`trial_guard`만 최종 `cmd_vel`을 발행하며, lease 단절 1초/속도 단절 0.3초 감시를 유지한다.
+`smartcart/return_state`에 단계·선택 칸·라인 상태 및 위치 정보 출처를 발행한다.
+
+실행부와 모의 검증은 실기 주행 검증 완료를 뜻하지 않는다. 실제 N12 선 획득·전환·주차는
+현장에서 별도로 확인하며, 앞선 Nav2 단독 H2 왕복 결과와 구분한다.
+
+단계별 실기 검증에서 N12에 직접 놓은 경우에는 `--from-n12`를 추가한다. Nav2 이동만 생략하며,
+실기 `return_n12` 장소 등록·지도 일치·실제 자세·연속 정지·새 IR 선 감지·구동권 확인은 동일하게 적용한다.
+
+실측 N12 가로선에서 확인한 정지 자세와 IR 전방 거리로 복귀 정차점을 보정할 수 있다.
+등록점은 명목 그래프와 5cm/0.1rad 이내인지 검사하고, 주행 때는 그 실측 등록점을 기준으로
+기존 자세·연속 정지·실제 IR 획득 조건을 다시 확인한다.
+
+## 종이인형 외형 인식 · FFT1-86
+
+`doll_recognition`은 **PC의 저장 영상**에서 등록한 그림 A(아이돌), B(소방관), C(축구선수)를
+찾는 비교용 검출기다. YOLO 학습 모델·얼굴인식·사람 Re-ID·로봇 추종은 아니다.
+기존 OpenCV SIFT 특징과 RANSAC 평면 변환을 이용한다.
+[OpenCV 알고리즘 설명](https://docs.opencv.org/4.6.0/d1/de0/tutorial_py_feature_homography.html).
+
+기준 이미지·마스크·원본·결과 영상은 저장소 밖에 둔다. 앞/뒤 그림 각각을 준비하고,
+마스크는 인형 부분만 255, 손·배경은 0으로 칠한다. 기준 JSON 경로를 기준으로 파일을 읽는다.
+촬영자나 주변 사람이 찍힐 수 있으므로 원본·평가·결과 영상은 공개 저장소와 PR에 올리지 않는다.
+
+```json
+[
+  {"label":"A","view":"front","image":"references/a-front.png","mask":"references/a-front-mask.png"},
+  {"label":"A","view":"back","image":"references/a-back.png","mask":"references/a-back-mask.png"}
+]
+```
+
+B/C도 같은 형식으로 추가한다. OpenCV와 NumPy가 설치된 PC에서 실행:
+
+```bash
+python -m roport_smartcart.doll_recognition \
+  --references /absolute/private/references.json \
+  --video /absolute/private/crossing.mp4 \
+  --output /absolute/private/new-result-directory
+```
+
+새 출력 폴더에 `preview.mp4`, 프레임별 `detections.json`, 처리시간·검출 프레임 수
+`summary.json`을 저장한다. 기존 폴더에는 덮어쓰지 않는다. 표시 사각형은 **기준 그림 영역**이며
+전신 박스·거리값이 아니다. 일치점 수는 확률이 아니다. 기준 영상과 평가 영상을 분리해야 하며,
+검출 프레임 수 자체를 정확도/재현율로 해석하면 안 된다.
+JSON 결과는 프레임마다 파일에 기록해 메모리에 쌓지 않는다. 파일 크기는 영상 길이에 따라 증가한다.
+
+회전·작은 크기·흐림·가림으로 충분한 특징이 남지 않으면 미검출 처리한다.
+현재 클래스마다 인형 하나를 가정하며 동일 그림 두 개의 개별 추적은 지원하지 않는다.
+이 오프라인 명령에는 프레임 간 ID 유지·선택 UI·주행 출력이 없다. 실물 적용 전 다른 배경/조명에서의
+오검출, 가림과 재등장, CPU 처리속도를 별도로 확인한다.
+
+### 감독하 실물 추종 영상 시험
+
+`doll_follow_demo`는 위 A/B/C 그림 중 **한 종류만** 카메라에서 찾아 저속으로 따라가는
+30초짜리 현장 시험이다. 배송·관제·Nav2 기능과 연결되지 않는다.
+임시 브라우저 UI·SSH·bringup 버튼은 포함하지 않는다. 사용자 UI는 아래 ROS 토픽에 연결한다.
+
+핑키와 PC의 `ROS_DOMAIN_ID`를 같게 하고, **두 기기의 NTP/chrony 시계 동기화**를 확인한다.
+`timedatectl status`의 동기화 상태와 실제 두 기기의 시각을 확인한다.
+카메라·초음파·라이다 송신기는 `header.stamp`에 실제 취득 시각을 기록해야 한다(0 시각 거부).
+외부 카메라 스크립트의 특정 경로에는 의존하지 않는다.
+핑키에는 기존 bringup·카메라 송신·`trial_guard`를 각각 한 번만 실행하고,
+기존 관제 runner, 라인 주행, Nav2 목표 실행은 모두 정지시킨다.
+`/camera/image_raw/compressed`, `/scan`, `/us_sensor/range`, `/trial/guard_state`와
+`base_link`에서 scan의 `header.frame_id`까지 TF가 보이는지 확인한다.
+`trial_guard`는 로봇 쪽에서 실행해 PC 통신이 끊겨도 속도 명령을 0으로 내리게 한다.
+
+PC에서 이 브랜치를 빌드하고 실행한다. 기준 그림과 마스크는 공개 저장소 밖에 둔다.
+
+```bash
+cd services/roport-pinky
+source /opt/ros/jazzy/setup.bash
+colcon build --packages-ignore pinky_gz_sim --packages-select roport_smartcart
+source install/setup.bash
+export ROS_DOMAIN_ID=13  # 현장 핑키 설정과 동일하게
+ros2 run roport_smartcart doll_follow_demo \
+  --references /absolute/private/references.json --target A
+```
+
+| 토픽 | 타입 | 용도 |
+| --- | --- | --- |
+| `/doll_follow/control` | `std_msgs/msg/String` | 입력: `calibrate`, `start`, `stop` |
+| `/doll_follow/status` | `std_msgs/msg/String` | 출력: JSON 상태·정지 사유·센서 거리·속도 |
+| `/doll_follow/preview/compressed` | `sensor_msgs/msg/CompressedImage` | 출력: 인식 표시 JPEG(처리 결과 확인용) |
+
+같은 ROS 환경의 별도 터미널에서 상태를 확인한다.
+넓고 빈 바닥에서 인형 A를 원하는 정차 거리에 놓고 A 인식을 확인한 뒤 기준을 저장한다.
+기준에는 그림 크기와 초음파 거리가 함께 저장된다.
+
+```bash
+ros2 topic echo /doll_follow/status
+# 아래 명령은 각각 별도 실행한다.
+ros2 topic pub --once /doll_follow/control std_msgs/msg/String '{data: calibrate}'
+# 인형을 10~15cm 멀리 옮긴 뒤 시작한다.
+ros2 topic pub --once /doll_follow/control std_msgs/msg/String '{data: start}'
+ros2 topic pub --once /doll_follow/control std_msgs/msg/String '{data: stop}'
+```
+
+시작할 때 먼저 속도 0으로 제어권을 요청한다. 0.3초 안에 guard의 `owner=line` 응답이
+없거나 이후 소유권을 잃으면 정지하며 자동 재출발하지 않는다. 시계를 고친 뒤 준비 상태를
+확인하고 명시적으로 다시 `start`해야 한다. PC·로봇 시계 불일치는 상태 사유로 표시한다.
+
+핑키가 최대 0.025m/s로 전진·회전하고, 인형이 기준 크기로 돌아오면 전진을 멈춘다.
+같은 인형의 앞·뒷면은 각각의 기준 그림 크기로 보정해 이어서 추종한다. 저장한 초음파
+거리보다 가까워지면 그림 크기와 관계없이 전진을 멈춘다.
+종료는 실행 터미널에서 Ctrl+C를 누른다. 다른 인형을 고르려면 로봇을 정지시킨 뒤 데모를 종료하고,
+**로봇의 `trial_guard`도 재시작**한 다음 `--target B` 또는 `C`로 실행해 다시 기준 저장한다.
+데모 재실행은 새 session을 만들며 이전 session을 받은 guard는 재시작 전까지 차단된다.
+
+그림을 놓치면 즉시 속도 0, 2초 넘게 보이지 않으면 다시 `start`해야 한다.
+영상·라이다·초음파 취득 시각이 0.4초 넘게 오래되거나 초음파가 전방 5cm 이하,
+라이다가 전방 25cm 미만의 물체를 감지하면 정지한다. 센서 구독 큐는 최신 한 개만 유지한다.
+라이다 전방 ±30°는 원래 scan 각도가 아니라 TF로 `base_link` 기준으로 회전해 선택한다.
+Pinky의 `rplidar_link`는 yaw=π이므로 scan 각도 0을 정면으로 취급하지 않는다.
+TF가 없거나 오래된 입력이면 출발하지 않는다. 실물 재시험에서는
+`ros2 run tf2_ros tf2_echo base_link rplidar_link`와 앞·뒤 물체 배치로 방향을 확인한다.
+30초 제한·25cm 정지는 유지하며 로컬 시험 도구에서 완화했던 값은 이 PR에 반영하지 않는다.
+
+거리 제어는 **실측 거리 추정이 아니라 화면 속 그림 크기 비교**라서 각도·조명에 민감하다.
+초음파 5cm 임계값은 물리적 5cm 간격을 보장하지 않는다. 기준 거리는 현장에서 직접 맞춰야 한다.
+정지 명령도 단일 ROS 루프에서 SIFT 처리 뒤 수신될 수 있어 즉시 물리 정지를 보장하지 않는다.
+처리가 지연되거나 Ctrl+C로 ROS context가 먼저 종료되면 종료 명령 전송에 의존할 수 없으며,
+로봇 guard의 0.3초 속도 watchdog(lease 단절 차단은 1초)이 정지 경로다.
+운행 중 guard 자체가 죽으면 Pinky 기본 드라이버에는 모터 타임아웃이 없으므로 사람이 전원을 꺼야 한다.
+인형은 바닥에서 들어 화면에 유지하고, 핑키 앞에 장애물을 놓지 않는다.
+한 사람이 옆에서 즉시 전원을 끌 수 있어야 하며 이 시험을 무인 주행으로 쓰지 않는다.
+
+### 단일 거리 입력과 출발 전 주변 탐색 · FFT1-150
+
+좁은 정면 초음파만으로는 진행 방향 옆의 낮은 상자를 처음부터 보지 못할 수 있다.
+`sim_return_h1`은 공용공간에서 각 Nav2 목표로 출발하기 전에 정지 위치에서 한 바퀴 회전해 주변을 관측한다.
+회전량은 odometry로 확인하고, 회전 명령도 기존 Collision Monitor를 통과한다.
+센서/위치 freshness와 관제 예약 검사를 유지하며, 막혀서 90초 안에 끝내지 못하면 정지·실패한다.
+N12 이후 라인 복귀에서는 이 탐색 회전을 하지 않는다.
+
+이 변경은 domain 198의 명시적 시뮬레이션 복귀 명령에만 적용된다. 출발 전 관측은 주행 중 새로 측면에 들어오는
+물체나 센서 사각지대 전체의 안전을 보장하지 않는다. 실물과 동일한 **거리값 하나**만 소비하지만 초음파의 음향 특성까지
+같아진 것은 아니다. 실물 설치·반복 주행·측면 감지 보강 필요성은 별도 확인해야 한다.
+
+리뷰 반영: 짧은 RPP lookahead(0.15m, 최소0.08m·최대0.20m)는 시뮬레이션 후보에만 사용한다.
+standalone real은 기존0.30m(최소0.15m·최대0.45m), trial은 공급된 기본 Nav2 설정의 추종 거리를 유지한다.
+RPP의 충돌 예측은 carrot까지 제한되므로 짧은 lookahead는 예측 범위를 줄일 수 있으며,
+이번 시뮬레이션 성공을 실물 공통값 변경의 근거로 삼지 않는다. 충돌 검사는 계속 활성화한다.
+
+시뮬레이션 costmap은 Collision Monitor의 24cm 정지 영역을 포함하도록 padding을 4cm로 맞춘다.
+Smac2D 선택 시 `cost_travel_multiplier=10`으로 모서리에 붙는 경로보다 여유 있는 경로를 선호한다.
+실물 footprint/padding에는 이 시뮬레이션 값을 복사하지 않는다. 실제 구동기·센서 여유는 별도 실측한다.
+관제의 실패 보고·현장 대조 후 동일 목적지 재시도와 선택형 ArUco 주차 설정은
+[관제 시험 가이드](../../../roport-control-server/docs/pinky-trial.md)의 마지막 두 절을 따른다.
+마커 주차는 앞면–벽 5cm를 목표로 하며 실물 보정 전에는 비활성 상태다.

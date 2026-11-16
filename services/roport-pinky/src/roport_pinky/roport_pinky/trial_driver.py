@@ -73,6 +73,7 @@ class TrialLogic:
         self.seq_at_dispatch = 0
         self.results = []
         self.lock = threading.Lock()
+        self.confirmed_return = False
 
     # ---------------------------------------------------------------- 입력
     def on_state(self, st):
@@ -97,7 +98,7 @@ class TrialLogic:
             if p['start_maneuver'] != 'none':
                 raise ValueError('unsupported_maneuver')
             try:
-                legs = plan_route(self.graph, p['route'])
+                legs = plan_route(self.graph, p['route'], allow_junction_stop=True)
             except GraphError:
                 raise ValueError('invalid_route') from None
             if p['graph_version'] != self.graph.version:
@@ -115,6 +116,14 @@ class TrialLogic:
                     raise ValueError('loading_heading_mismatch')
             elif st['state'] in MOVING:
                 raise ValueError('line_nav_busy')
+            elif (self.own and st['state'] == 'arrived' and st.get('route')
+                  and self.node == p['start_node'] == st['route'][-1]
+                  and not self.graph.nodes[p['start_node']].bar
+                  and (st.get('last_command') or {}).get('cmd') != 'stop'):
+                # 교차점 hold 뒤에는 executor가 기억한 자세에서 필요한 회전을 한다.
+                if not self._stopped(self.now()) or abs(_wrap(
+                        self._observe()['heading_rad'] - p['start_heading_rad'])) > 0.35:
+                    raise ValueError('junction_heading_mismatch')
             elif abs(_wrap(HEADING[legs[0].heading] + self.frame_yaw
                            - p['start_heading_rad'])) > 0.35:
                 raise ValueError('start_heading_not_first_leg')
@@ -153,7 +162,10 @@ class TrialLogic:
         p = command['payload']
         base = min(self.st['speed']['base_speed'], p['speed_limit_mps'])
         self.send({'cmd': 'speed', 'base_speed': base})
-        self.send({'cmd': 'start', 'route': list(p['route'])})
+        self.send({'cmd': 'start', 'route': list(p['route']), **(
+            {'start_offset_cm': 0.0, 'confirmed_start': True} if self.confirmed_return else {}),
+            **({'hold_at_goal': True} if not self.graph.nodes[p['route'][-1]].bar else {})})
+        self.confirmed_return = False
         self.sent_at = self.now()
         self.node = p['route'][0]
         self.own = True
@@ -243,7 +255,7 @@ class TrialLogic:
 
     @staticmethod
     def _details(route, seq):
-        return {'seq': seq, 'total': len(route),
+        return {'node_id': route[seq], 'seq': seq, 'total': len(route),
                 'prev_node': route[seq - 1] if seq else None,
                 'next_node': route[seq + 1] if seq + 1 < len(route) else None}
 
@@ -252,6 +264,10 @@ class TrialLogic:
         self.active = self.pending = None
         self.node = None
 
+
+NAV_RETRY_FAULTS = frozenset(('nav2_goal_failed', 'nav2_recovery_limit',
+    'nav2_recovery_timeout', 'gate_dock_marker_missing', 'gate_dock_marker_lost',
+    'gate_dock_timeout'))
 
 class TrialDriver:
     """rclpy 연결부. 별도 스레드에서 spin, 키트의 MQTT 스레드는 hook 만 부른다."""
@@ -283,6 +299,7 @@ class TrialDriver:
         self.mode, self.nav_command = 'line', None
         self.guard, self.guard_at = None, None
         self.halted, self.runner_seen = None, None
+        self.failed_navigation = None
         self.session, self.lease_seq = str(uuid4()), 0
         self.lease_pub = self.node.create_publisher(String, 'trial/lease', 1)
         self.nav = Nav2Bridge(self.node, profile, map_path, self.lock)
@@ -331,8 +348,8 @@ class TrialDriver:
                 self.halted = 'drive_guard_restarted'
             self.guard, self.guard_at = state, time.monotonic()
 
-    def _guard_fault(self):
-        if self.halted:
+    def _guard_fault(self, *, navigation_retry=False):
+        if self.halted and not (navigation_retry and self.halted in NAV_RETRY_FAULTS):
             return self.halted
         if self.guard is None or time.monotonic() - self.guard_at > 0.3:
             return 'drive_guard_unavailable'
@@ -353,9 +370,12 @@ class TrialDriver:
 
     def heartbeat(self):
         with self.lock:
-            if self._guard_fault():
+            if self._guard_fault(navigation_retry=self.failed_navigation is not None):
                 return
             self.runner_seen = time.monotonic()
+            if self.halted:
+                self._lease('none')
+                return
             owner = 'line' if self.logic.active else 'none'
             if self.nav_command and self.nav_command['type'] == 'navigate.requested' and not self.nav.result:
                 owner = 'nav2'
@@ -371,9 +391,14 @@ class TrialDriver:
                 state['drive_owner'] = 'nav2'
                 state['stopped'] = state['stopped'] and nav['stopped']
                 if nav['pose']:
-                    state['heading_rad'] = nav['pose']['yaw']
+                    state['heading_rad'] = _wrap(nav['pose']['yaw'])
                 if not nav['nav2_ready'] or not nav['localization_ready']:
                     state['fault'] = 'nav2_not_ready'
+            # Existing trial consumers reject unknown fields; enable only after both sides update.
+            if os.environ.get('ROPORT_NAV_DIAGNOSTICS') == '1':
+                diagnostic = self.nav.diagnostic()
+                if diagnostic is not None:
+                    state['navigation'] = diagnostic
             state['fault'] = self._guard_fault() or state['fault']
             if self.runner_seen is None or time.monotonic() - self.runner_seen > 1:
                 state['fault'] = state['fault'] or 'runner_heartbeat_missing'
@@ -410,8 +435,25 @@ class TrialDriver:
                 'pose_source': source, 'pose': pose, 'velocity': None, 'joints': {},
             }
 
+    def validate_navigation_retry(self, command):
+        """Read-only admission for an explicit new command to the failed goal."""
+        with self.lock:
+            previous = self.failed_navigation
+            if (previous is None or self.halted not in NAV_RETRY_FAULTS
+                    or command['type'] != 'navigate.requested'
+                    or command['payload'] != previous['payload']
+                    or any(command.get(k) == previous.get(k) for k in ('command_id', 'execution_id'))
+                    or self.mode != 'nav2' or self.nav_command or self.logic.active
+                    or self._guard_fault(navigation_retry=True) or not self.nav.quiescent()):
+                return False
+            line, nav = self.logic.observe(), self.nav.snapshot()
+            return bool(line['fault'] is None and line['stopped'] and not line['line_enabled']
+                        and nav['stopped'] and nav['nav2_ready'] and nav['localization_ready'])
+
     def validate_action(self, command):
         with self.lock:
+            if self.validate_navigation_retry(command):
+                return
             state = self.observe()
             if state['fault']:
                 raise ValueError(state['fault'])
@@ -427,20 +469,31 @@ class TrialDriver:
             if not state['nav2_ready'] or not state['localization_ready']:
                 raise ValueError('nav2_not_ready')
             if command['type'] == 'mode_switch.requested':
-                if self.mode != 'line' or state['node_id'] != 'N12' or self.logic.st['state'] != 'handoff':
+                if p['to_mode'] == 'line':
+                    if self.mode != 'nav2' or not self.nav.quiescent() or not self._return_aligned():
+                        raise ValueError('N12_physical_alignment_required')
+                elif self.mode != 'line' or state['node_id'] != 'N12' or self.logic.st['state'] != 'handoff':
                     raise ValueError('not_at_switch_node')
             elif command['type'] != 'navigate.requested' or self.mode != 'nav2' or p['frame_id'] != 'map':
                 raise ValueError('unsupported_operation')
 
     def dispatch(self, command):
         with self.lock:
+            if self.halted:
+                if not self.validate_navigation_retry(command):
+                    raise ValueError('recovery_required')
+                self.halted = None
+                self.failed_navigation = None
             if command['type'] == 'route.requested':
                 self._lease('line')
                 return self.logic.dispatch(command)
             self.nav_command = command
             if command['type'] == 'mode_switch.requested':
                 self._lease('none')
-                self.mode = 'nav2'
+                if command['payload']['to_mode'] == 'nav2':
+                    self.mode = 'nav2'
+                else:
+                    self.return_since = self.return_sample = None
             else:
                 self.logic.node = None
                 self.nav.start(command['payload'])
@@ -448,6 +501,11 @@ class TrialDriver:
 
     def safe_stop(self, reason):
         with self.lock:
+            if (reason in NAV_RETRY_FAULTS and self.nav_command
+                    and self.nav_command['type'] == 'navigate.requested'):
+                self.failed_navigation = self.nav_command
+            elif reason not in NAV_RETRY_FAULTS:
+                self.failed_navigation = None
             self.halted = reason
             self.nav_command = None
             self.nav.cancel()
@@ -458,6 +516,8 @@ class TrialDriver:
             active = self.nav_command or self.logic.active
             state = self.observe()
             if active and state['fault']:
+                if self.nav.navigation:
+                    self.nav.navigation.update(phase='failed', error_code=state['fault'])
                 self.safe_stop(state['fault'])
                 return [(active, 'failed', {'error_code': state['fault']})]
             results = self.logic.drain_results()
@@ -465,6 +525,24 @@ class TrialDriver:
             if cmd is None:
                 return results
             if cmd['type'] == 'mode_switch.requested':
+                if cmd['payload']['to_mode'] == 'line':
+                    if not self._return_aligned() or self.guard['owner'] != 'none' or not state['stopped']:
+                        self.return_since = None
+                        return results
+                    sample = self.logic.st['ir_observed_at']
+                    if self.return_sample != sample:
+                        self.return_sample = sample
+                        now = time.monotonic()
+                        if self.return_since is None:
+                            self.return_since = now
+                        if now - self.return_since >= .5:
+                            self.mode = 'line'
+                            self.logic.node, self.logic.heading = 'N12', _wrap(math.pi + self.logic.frame_yaw)
+                            self.logic.own = False
+                            self.logic.confirmed_return = True
+                            self.nav_command = None
+                            results.append((cmd, 'completed', {}))
+                    return results
                 if self.guard['owner'] == 'none' and state['stopped']:
                     self.nav_command = None
                     results.append((cmd, 'completed', {}))
@@ -481,17 +559,40 @@ class TrialDriver:
                     if time.monotonic() - ended < 3:
                         return results  # allow the final odom/TF sample to arrive
                     code = 'nav2_goal_not_reached'
-                self.nav_command = None
                 self._lease('none')
                 if code != 'SUCCEEDED':
+                    if self.nav.navigation is not None:
+                        self.nav.navigation.update(phase='failed', error_code=code)
                     self.safe_stop(code)
+                    self.nav_command = None
                     results.append((cmd, 'failed', {'error_code': code}))
                 else:
+                    self.nav_command = None
+                    if self.nav.navigation is not None:
+                        self.nav.navigation.update(phase='completed', error_code=None)
                     results.append((cmd, 'completed', {
                         'goal_id': p['goal_id'], 'goal_version': p['goal_version'],
                         'frame_id': 'map', 'pose': pose, 'nav2_result': 'SUCCEEDED',
                     }))
             return results
+
+    def _return_aligned(self):
+        """Use measured pose AND fresh calibrated IR; a map coordinate alone is insufficient."""
+        snap = self.nav.snapshot()
+        pose, st = snap.get('pose'), self.logic.st or {}
+        ir, observed = st.get('ir'), st.get('ir_observed_at')
+        if not pose or not ir or observed is None or not 0 <= time.time() - observed <= .3:
+            return False
+        n = self.logic.graph.nodes['N12']
+        a = self.logic.frame_yaw
+        x, y = (n.x + 3.) / 100, n.y / 100
+        target = (self.frame['x_m'] + math.cos(a)*x - math.sin(a)*y,
+                  self.frame['y_m'] + math.sin(a)*x + math.cos(a)*y)
+        return (snap['localization_ready'] and snap['stopped']
+                and math.hypot(pose['x']-target[0], pose['y']-target[1]) <= .05
+                and abs(_wrap(pose['yaw'] - math.pi - a)) <= .1
+                and not ir['lost'] and ir['on_line'][1]
+                and math.isfinite(ir['error']) and abs(ir['error']) <= .25)
 
     def close(self):
         import rclpy

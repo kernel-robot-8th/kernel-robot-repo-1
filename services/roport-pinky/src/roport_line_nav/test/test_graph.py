@@ -48,6 +48,15 @@ def test_plan_straight_through_branch(graph):
     assert legs[0].sides == {RIGHT}       # N18: P4 분기가 오른쪽(통로 쪽)
 
 
+def test_junction_stop_is_opt_in_and_keeps_bar_arrivals(graph):
+    from roport_line_nav.graph import STOP
+    with pytest.raises(GraphError, match='must end at a stop node'):
+        plan_route(graph, ['N01', 'N18'])
+    leg, = plan_route(graph, ['N01', 'N18'], allow_junction_stop=True)
+    assert leg.action == STOP and leg.detect == 'side'
+    assert plan_route(graph, ['N18', 'N01'], allow_junction_stop=True)[-1].action == LOAD
+
+
 def test_arrival_override_is_checked():
     data = {'nodes': {'items': [
         {'id': 'A', 'at': [0, 0], 'links': ['B']},

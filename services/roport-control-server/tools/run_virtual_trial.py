@@ -25,6 +25,7 @@ SERVICE = Path(__file__).resolve().parents[1]
 PINKY = SERVICE.parent / "roport-pinky"
 MAP = PINKY / "maps/airport_map.yaml"
 LAYOUT = PINKY / "src/roport_gz_world/layout/roport_airport.yaml"
+VIRTUAL_SPEED_MPS = 0.08
 
 
 def simulation_profile(scenario, record=None):
@@ -74,11 +75,16 @@ def simulation_profile(scenario, record=None):
             "sha256": hashlib.sha256(raw).hexdigest(),
             "phase": data["phase"],
             "results": rows,
+            "replay_scope": "configuration_only",
+            "recorded_scope": data.get("scope"),
+            "recorded_smartcart_only": data.get("smartcart_only"),
+            "recorded_plan": deepcopy(data.get("plan")),
+            "source_code_verified": False,
         }
     else:
-        # Reproduce the field run's 0.03 cap, not the later unverified 0.06 setting.
+        # --record keeps the recorded limit instead of this virtual default.
         for route in profile["routes"].values():
-            route["speed_limit_mps"] = 0.03
+            route["speed_limit_mps"] = VIRTUAL_SPEED_MPS
     identity = uuid4().hex[:12]
     profile.update(
         mode="simulation",
@@ -151,7 +157,9 @@ def main():
         help="default two provides all three editable presets in the UI",
     )
     parser.add_argument(
-        "--record", type=Path, help="hardware control journal; never modified"
+        "--record",
+        type=Path,
+        help="reuse hardware config only; custom plan/start pose/source code are not replayed",
     )
     parser.add_argument("--scope", choices=("line-only", "nav2"), default="nav2")
     parser.add_argument("--nav2", choices=("simulated", "off"), default="simulated")

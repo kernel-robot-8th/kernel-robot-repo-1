@@ -25,6 +25,7 @@ docker compose -f deploy/compose.yaml --env-file deploy/.env ps
 | AI 서버 | `http://LAN_IP:8001/healthz` |
 | 서비스 서버 | `http://LAN_IP:8080/actuator/health` |
 | 고객용 웹 / 관리자용 웹 | `http://LAN_IP:8090` / `http://LAN_IP:8091` |
+| 카트 패드 웹 (데모 데이터) | `http://LAN_IP:8092` |
 
 ## 접속 대역 제한 (필수)
 
