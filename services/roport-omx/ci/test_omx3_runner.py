@@ -76,9 +76,10 @@ class ScriptPolicy:
 
     def __init__(self, away=30, fail_at=None):
         self.away, self.fail_at, self.n, self.frames = away, fail_at, 0, []
+        self.marker_id = None
 
-    def reset(self):
-        self.n = 0
+    def reset(self, marker_id):
+        self.n, self.marker_id = 0, marker_id
 
     def act(self, state, marked_front):
         self.n += 1
@@ -128,6 +129,7 @@ class Success(unittest.TestCase):
         self.assertEqual(markers[0].resets, 1)
         # 정책에는 매번 원 그린 프레임이 들어간다
         self.assertTrue(all("marked" in f for f in policy.frames))
+        self.assertEqual(policy.marker_id, 17)
 
     def test_needs_consecutive_done_frames(self):
         # 트레이 검출이 한 프레임씩 끊기면 완료가 아니다. 끊김 없이 15프레임이어야 완료
@@ -277,6 +279,38 @@ class Failed(unittest.TestCase):
 
         policy.act = act_then_abort
         self.check(FakeRobot(), policy, ErrorCode.CANCELED, abort=abort)
+
+    def test_action_received_during_cancel_is_not_sent(self):
+        # 정책 호출(추론 대기) 중 취소: 돌려받은 동작을 보내지 않는다(#96 리뷰 P1)
+        abort, policy, robot = threading.Event(), ScriptPolicy(away=10**6), FakeRobot()
+        act = policy.act
+
+        def act_aborted_inside(state, front):
+            if policy.n == 3:
+                abort.set()
+            return act(state, front)
+
+        policy.act = act_aborted_inside
+        self.check(robot, policy, ErrorCode.CANCELED, abort=abort)
+        self.assertEqual(robot.sent, 3)  # 4번째 동작(취소 중 받은 것)은 안 보냄
+
+    def test_no_send_while_policy_has_no_action(self):
+        # None = 추론 대기: 그 주기는 보내지 않고 다음 주기에 다시 관측한다
+        robot, policy = FakeRobot(), ScriptPolicy(away=10)
+        act, waits = policy.act, []
+
+        def wait_first(state, front):
+            if len(waits) < 5:
+                waits.append(robot.sent)
+                return None
+            return act(state, front)
+
+        policy.act = wait_first
+        runner, _ = make(robot, policy, box_until(robot, 10))
+        out = runner.run(17)
+        self.assertEqual(out.phase, Phase.COMPLETE)
+        self.assertEqual(waits, [0] * 5)  # 기다리는 동안 전송 0회
+        self.assertEqual(robot.sent, policy.n)  # 받은 동작만 보냈다
 
     def test_verify_failed_when_marker_leaves_tray(self):
         # 사전 점검 1회 + 루프 15프레임은 트레이에 보이고, VERIFY 재확인에서 사라짐
