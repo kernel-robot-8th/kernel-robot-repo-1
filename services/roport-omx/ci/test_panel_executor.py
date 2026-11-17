@@ -285,6 +285,7 @@ class PanelExecutorTest(unittest.TestCase):
                 "target_marker": 16,
                 "end_on_return": True,
                 "shelf_align": True,
+                "fast_release": True,
             },
         )
         (progress,) = self.host.poll()
@@ -767,6 +768,9 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertEqual(start["model_path"], OUT_MODEL)
         self.assertEqual(start["task"], "OUTBOUND shelf 2B->pinky | marker 16")
         self.assertEqual((start["pinky_check"], start["shelf_align"]), (True, False))
+        self.assertNotIn(
+            "fast_release", start
+        )  # no aligner after unloading: full safe stop
         for change in (
             {},  # ended on its return
             {"exit_ok": False, "err": {"code": "err_code_7"}},  # no time or error rule
