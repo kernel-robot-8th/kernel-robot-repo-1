@@ -49,6 +49,9 @@ def snapshot():
         active = fresh and latest.get('phase') not in ('DONE', 'STOPPED')
         coordinate_mode = (ROOT/'coordinate-recording.lock').exists()
         return_resume = (latest.get('phase') == 'STOPPED' and latest.get('direction') == 'RETURN'
+                         and isinstance(latest.get('n12_handoff_id'), str)
+                         and re.fullmatch('[0-9a-f]{32}', latest['n12_handoff_id']) is not None
+                         and isinstance(latest.get('n12_return_pose'), dict)
                          and any(text in (latest.get('error') or '') for text in ('N12', 'Physical tape'))
                          and parked and now-guard_seen < .5 and guard.get('owner') == 'none'
                          and not restarting and not restart_failed)

@@ -41,6 +41,23 @@ Spin→DriveOnHeading→Spin으로 한 번 보정한 뒤, 필요할 때만 6cm �
 이 시험 launch의 Nav2 상한은 0.12m/s, 라인 실행부는 0.06m/s입니다.
 bringup·모터 초기화·목표 전송은 launch나 웹 서버 기동만으로 실행하지 않습니다.
 
+N12 복귀 목표는 고정 `return_n12`를 사용하지 않습니다. **이번 출발의 실제
+라인→Nav2 전환점**에서 정지·위치 추정·N12 handoff 상태·새 IR 가로선 감지를
+0.5초 확인한 뒤 기록합니다. IR 센서와 바퀴 축 사이 거리(`ir_ahead_cm`) 및
+방향 반전을 반영해 복귀 중심 좌표를 계산하고, 실제로 통과한 공항 진입점도
+복귀 경유점으로 저장합니다. 지도상 N12 근처 8cm·선 방향 0.1rad 범위를
+벗어난 가로선은 N12로 학습하지 않습니다.
+
+관측은 현장 폴더 `n12-handoffs/<왕복ID>.json`, 해당 실행의 파생 Nav2 목표는
+`runtime/<실행ID>-places.yaml`에 저장합니다. Nav2 목표 전송·N12 자세 보정·최종
+IR 획득의 위치 기준이 모두 이 기록을 사용합니다. 원본 `field-places.yaml`의
+실측값과 지도 해시·검증 플래그는 변경하지 않습니다. 재시도에서는 원래 왕복ID,
+기체, 부팅ID, 지도 버전, layout·원본 목적지 파일 해시, IR 오프셋이 같은 기록만
+사용합니다. 기록이 없거나 설정이 바뀌면 고정 좌표로 추측하지 않고 정지합니다.
+새 배포 시 `roundtrip.py`와 **`mission_handoff.py`를 함께** 복사해야 합니다.
+좌표 재사용은 AMCL의 왕복 중 오차 변화나 좁은 곳의 회전 충돌까지 해결한다는
+뜻이 아니며, 실제 복귀에서도 신선한 IR·정지·구동권·충돌 검사를 유지합니다.
+
 운영자가 검증한 지도와 `layout.yaml`, `field-places.yaml`, `h1-confirmed.json`,
 `camera_calibration.yaml`, `mission-target.json`(`"G1"`)을 별도 현장 폴더에 둡니다.
 거리 보정에는 그 지도·보정 파일에 대응하는 `gate-distance-reference.json`의

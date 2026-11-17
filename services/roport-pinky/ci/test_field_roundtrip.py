@@ -5,6 +5,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -43,6 +44,30 @@ class Goal:
 
 
 class FieldChecks(unittest.TestCase):
+    def test_handoff_identity_rejects_field_asset_edits_during_a_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assets = {key: root/key for key in ('layout_sha256', 'places_sha256', 'ir_sha256')}
+            for file in assets.values():
+                file.write_bytes(b'original')
+            expected = {k: hashlib.sha256(v.read_bytes()).hexdigest() for k, v in assets.items()}
+            (root/'map.yaml').write_bytes(b'map')
+            (root/'map.pgm').write_bytes(b'image')
+            profile = {'map_version': hashlib.sha256(b'mapimage').hexdigest()[:16]}
+            ns = {'handoff_id': 'a'*32, 're': re, 'hashlib': hashlib, 'Path': Path,
+                  'options': NS(robot='test_robot'), 'asset_paths': assets,
+                  'asset_hashes': expected, 'path': root/'map.yaml',
+                  'map_data': {'image': 'map.pgm'}, 'profile': profile}
+            context = helper('handoff_context', ns)
+            self.assertEqual(context()['trip_id'], 'a'*32)
+            assets['ir_sha256'].write_bytes(b'changed')
+            with self.assertRaisesRegex(RuntimeError, 'assets changed'):
+                context()
+            assets['ir_sha256'].write_bytes(b'original')
+            (root/'map.pgm').write_bytes(b'new map')
+            with self.assertRaisesRegex(RuntimeError, 'assets changed'):
+                context()
+
     def test_ui_only_releases_live_stopped_current_delivery_wait(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
                 'ROPORT_FIELD_CONFIG_DIR': directory, 'ROPORT_FIELD_REMOTE_DIR': '/field',
@@ -93,7 +118,8 @@ class FieldChecks(unittest.TestCase):
             ast.parse(recovery)
             self.assertIn('--resume-n12', recovery)
             self.assertIn('a'*32, recovery)
-            ui.latest.update(direction='RETURN', error='N12 realignment exceeds 8cm', phase='STOPPED')
+            ui.latest.update(direction='RETURN', error='N12 realignment exceeds 8cm', phase='STOPPED',
+                             n12_handoff_id='a'*32, n12_return_pose={'x': 0., 'y': 0., 'yaw': 0.})
             self.assertTrue(ui.snapshot()['return_resume_enabled'])
             self.assertFalse(ui.snapshot()['start_enabled'])
             ui.command('/delivery-complete', {'mission_id': 'a'*32})

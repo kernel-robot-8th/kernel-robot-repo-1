@@ -6,6 +6,7 @@ delivery-complete command matching this exact mission, and physical IR at N12.
 """
 import argparse
 import os
+import re
 import hashlib
 import json
 import math
@@ -94,7 +95,8 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
     from std_srvs.srv import Empty
     from action_msgs.msg import GoalStatus
     from nav2_msgs.action import BackUp, Spin, DriveOnHeading
-    from roport_smartcart.real_return import HardwareReturn, n12_target, measured_handoff
+    import mission_handoff as handoff
+    from roport_smartcart.real_return import HardwareReturn, Acquisition, n12_target, measured_handoff
     from roport_smartcart.goals import Destination, load_destination
     from roport_gz_world.layout import Layout
     from roport_line_nav.graph import Graph
@@ -106,21 +108,36 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         places=str(ROOT/'field-places.yaml'), bay='H1', line_speed=.06, from_n12=True)
     graph = Graph.load(options.layout)
     layout = Layout(yaml.safe_load(Path(options.layout).read_text()))
-    line_cal = load_calibration(str(Path(get_package_share_directory('roport_pinky_line'))/
-                                   'config/robots.yaml'), options.robot)
+    ir_calibration = Path(get_package_share_directory('roport_pinky_line'))/'config/robots.yaml'
+    line_cal = load_calibration(str(ir_calibration), options.robot)
     nominal = n12_target(layout, graph)
-    target = measured_handoff(load_destination(options.places, options.map,
-                                              'return_n12', environment='real'), nominal)
-    for name in ('outbound_entry', GOAL, 'return_entry', 'return_n12'):
-        load_destination(options.places, options.map, name, environment='real')
+    base_places = Path(options.places)
+    for name in ('outbound_entry', GOAL):
+        load_destination(base_places, options.map, name, environment='real')
+    entry_reference = load_destination(base_places, options.map, 'outbound_entry', environment='real')
+    expected_entry = {k: getattr(entry_reference, k) for k in ('x', 'y', 'yaw')}
+    n12 = graph.nodes['N12']
+    hint_x, hint_y = layout.frame.to_world(n12.x, n12.y)
+    line_hint = {'x': hint_x, 'y': hint_y}
+    outbound_heading = handoff.wrap(nominal.yaw+math.pi)
     path = Path(options.map)
     map_data = yaml.safe_load(path.read_text())
     profile = {'map_id': path.stem, 'map_version': hashlib.sha256(path.read_bytes()+
         (path.parent/map_data['image']).read_bytes()).hexdigest()[:16]}
+    asset_paths = {'layout_sha256': Path(options.layout), 'places_sha256': base_places,
+                   'ir_sha256': ir_calibration}
+    asset_hashes = {key: hashlib.sha256(file.read_bytes()).hexdigest()
+                    for key, file in asset_paths.items()}
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = rclpy.create_node('supervised_h1_g3_ui_trial')
-    runner = HardwareReturn(node, options, graph, line_cal, target, profile)
+    runner = HardwareReturn(node, options, graph, line_cal, nominal, profile)
     mission_id = uuid4().hex
+    resume = resume_nav or resume_entry or resume_return or resume_return_transit or resume_delivery or resume_n12
+    previous_result = json.loads((ROOT/'result.json').read_text()) if resume else {}
+    handoff_id = previous_result.get('n12_handoff_id') if resume else mission_id
+    n12_record = None
+    return_target = None
+    ir_ahead = runner.line.cfg.ir_ahead_cm/100.
     progress = node.create_publisher(String, 'smartcart/roundtrip_state', 1)
     refresh = node.create_client(Empty, 'request_nomotion_update')
     parameters = AsyncParameterClient(node, 'controller_server')
@@ -162,6 +179,8 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
             packet = {'mission_id': mission_id, 'phase': runner.phase,
                 'direction': direction, 'goal': TARGET, 'elapsed_s': now-started,
                 'operator_return_resume': resume_return,
+                'n12_handoff_id': handoff_id,
+                'n12_return_pose': None if n12_record is None else n12_record['return_n12'],
                 'stopped': state['stopped'], 'pose': state.get('pose'),
                 'localization_ready': state['localization_ready'],
                 'line_index': runner.line.index, 'route': runner.line.route,
@@ -206,6 +225,62 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
                                            ((0, .01), (7, .01), (35, .04)))):
                 return state
         raise RuntimeError('Localization did not settle while stopped')
+
+    def handoff_context():
+        if not isinstance(handoff_id, str) or not re.fullmatch('[0-9a-f]{32}', handoff_id):
+            raise RuntimeError('No N12 handoff record for this trip; start a new H1 trip')
+        current_assets = {key: hashlib.sha256(file.read_bytes()).hexdigest()
+                          for key, file in asset_paths.items()}
+        current_map = hashlib.sha256(path.read_bytes()+
+            (path.parent/map_data['image']).read_bytes()).hexdigest()[:16]
+        if current_assets != asset_hashes or current_map != profile['map_version']:
+            raise RuntimeError('Field assets changed during this trip; remaining stopped')
+        return {'trip_id': handoff_id, 'robot': options.robot,
+                'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                'map_version': profile['map_version'], **asset_hashes}
+
+    def activate_handoff(record):
+        nonlocal n12_record, return_target
+        record = handoff.validate(record, handoff_context(), ir_ahead, line_hint,
+                                  outbound_heading, expected_entry, require_entry=False)
+        folder = ROOT/'n12-handoffs'
+        folder.mkdir(exist_ok=True)
+        saved = folder/(handoff_id+'.json')
+        pending = saved.with_suffix('.tmp')
+        pending.write_text(json.dumps(record, allow_nan=False, indent=2))
+        pending.replace(saved)
+        runtime = ROOT/'runtime'/(mission_id+'-places.yaml')
+        handoff.write_places(base_places, record, runtime)
+        options.places = str(runtime)
+        return_target = load_destination(options.places, options.map, 'return_n12', environment='real')
+        runner.target = return_target
+        n12_record = record
+        print('DYNAMIC_N12', json.dumps(record['return_n12']), flush=True)
+
+    def capture_n12():
+        runner.owner = 'none'
+        runner.stop_confirmed()
+        runner.phase = 'RECORD_N12'
+        stable = Acquisition()
+        end = time.monotonic()+5
+        while time.monotonic() < end:
+            state = spin()
+            runner.require_guard()
+            now = time.monotonic()
+            age = math.inf if runner.ir_at is None else now-runner.ir_at
+            good = (state['nav2_ready'] and state['localization_ready']
+                    and runner.line.state == 'handoff' and runner.line.route[-1:] == ['N12']
+                    and runner.reading is not None and runner.reading.node
+                    and centered(runner.reading, age))
+            if stable.update(now=now, sample_time=runner.ir_at, good=good,
+                             stopped=state['stopped']):
+                activate_handoff(handoff.capture(handoff_context(), state, runner.reading.as_dict(),
+                    age, ir_ahead, line_hint, outbound_heading))
+                return
+        raise RuntimeError('Actual N12 IR handoff was not stable; no return coordinate learned')
+
+    def capture_entry():
+        activate_handoff(handoff.set_entry(n12_record, settle(), expected_entry))
 
     def navigate(place):
         for attempt in range(2):
@@ -451,6 +526,14 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         if runner.guard.get('owner') != 'none':
             raise RuntimeError('Drive already owned')
         state = settle()
+        if resume:
+            handoff_context()  # Identity is checked before selecting a private record path.
+            saved = ROOT/'n12-handoffs'/(handoff_id+'.json')
+            if saved.stat().st_size > 65536:
+                raise RuntimeError('N12 handoff record too large')
+            record = handoff.validate(json.loads(saved.read_text()), handoff_context(),
+                ir_ahead, line_hint, outbound_heading, expected_entry, require_entry=not resume_entry)
+            activate_handoff(record)
         if resume_return_transit or resume_n12:
             previous = json.loads((ROOT/'result.json').read_text())
             if (previous.get('phase') != 'STOPPED' or not (
@@ -492,11 +575,14 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
                 if not resume_nav:
                     print('START H1 physical line -> N09 -> N08 -> N12', flush=True)
                     runner.follow_line(['H1', 'N09', 'N08', 'N12'])
+                    capture_n12()
                     navigate('outbound_entry')
+                    capture_entry()
                 else:
                     print('RESUME Nav2 from stopped field pose', flush=True)
                     if resume_entry:
                         navigate('outbound_entry')
+                        capture_entry()
                 navigate(GOAL)
             try:
                 start_gate_camera()
@@ -526,6 +612,10 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
                 raise RuntimeError('Delivery wait expired; remaining stopped')
         else:
             print('OPERATOR RETURN: surveyed gate pose/standstill verified; marker docking NOT claimed', flush=True)
+        if n12_record is None or n12_record['return_entry'] is None:
+            raise RuntimeError('No complete N12 handoff for this trip; staying stopped')
+        activate_handoff(handoff.validate(n12_record, handoff_context(), ir_ahead, line_hint,
+                                         outbound_heading, expected_entry))
         direction = 'RETURN'
         if not resume_return_transit and not resume_n12:
             back = BackUp.Goal()
@@ -561,7 +651,7 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         pose = state['pose']
         if not state['localization_ready'] or not pose:
             raise RuntimeError('Acquired N12 pose unavailable')
-        runner.target = measured_handoff(Destination(pose['x'], pose['y'], pose['yaw']), nominal)
+        runner.target = measured_handoff(Destination(pose['x'], pose['y'], pose['yaw']), return_target)
         runner.options.from_n12 = True
         runner.run()  # fresh centered IR stable for 0.5 s, then actual line to H1
         success = runner.phase == 'ARRIVED'
@@ -596,6 +686,7 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         final = {'mission_id': mission_id, 'success': success and failure is None,
                  'failure': failure, 'phase': runner.phase, 'final_state': state,
                  'marker_verified': marker_verified, 'arrival_warning': arrival_warning,
+                 'n12_handoff_id': handoff_id,
                  'scope': ('Operator-authorized return from validated stopped checkpoint; no marker docking claim' if resume_return else 'Surveyed gate pose + stopped marker attempt (see marker_verified) + explicit delivery release + IR line H1 return')}
         (ROOT/'result.json').write_text(json.dumps(final, indent=2))
         (ROOT/'samples.json').write_text(json.dumps(rows))
