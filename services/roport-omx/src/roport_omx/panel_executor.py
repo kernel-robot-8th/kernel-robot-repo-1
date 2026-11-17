@@ -150,6 +150,7 @@ HOLD_ERRORS = {
     "PANEL_ALIGN_SKIPPED",
     "PANEL_ALIGN_NOT_RUN",
     "PANEL_PINKY_UNREADABLE",
+    "PANEL_SLOT_UNREADABLE",
     "PANEL_PINKY_CHECK_NOT_RUN",
     "PANEL_PINKY_CHECK_CONFLICT",
     "PANEL_NOT_ARMED_FOR_HOME",
@@ -158,24 +159,42 @@ HOLD_ERRORS = {
 HOME_RETURN_TIMEOUT_S = 90.0
 
 
-# Unloading mission (shelf → waiting Pinky, agreed 2026-11-16): judged only by the cameras, no time
-# limit. The panel (pinky_check) reads the box's top marker on the Pinky tray with the top camera
-# (front) and whether the box is still in its shelf slot with the shelf-facing camera (front_2):
-#   on the Pinky tray                    → MISSION_COMPLETE (evidence "pinky_load")
-#   not on the tray (dropped / left)     → MISSION_FAILED, arms sent home
-#   unreadable, check not run, conflict  → MISSION_HOLD
+# Unloading mission (shelf → waiting Pinky; completion rule agreed 2026-11-17): judged only by the
+# cameras after the evaluation, no time limit. The panel (pinky_check) reports
+#   slot_empty — the commanded shelf slot holds no box any more (shelf-facing camera, front_2)
+#   on_pinky   — the tray reference marker (ArUco 18) is hidden by 1/3 or more (top camera, front)
+# Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot, or slot empty but the
+# tray marker visible (dropped) → MISSION_FAILED, arms sent home. Anything unread → MISSION_HOLD.
 PINKY_LOAD = "pinky_load"
+
+
+def _slot_empty(pinky: dict) -> bool | None:
+    """The commanded slot is empty; older pickers only give the shelf-wide on_shelf."""
+    if "slot_empty" in pinky:
+        value = pinky.get("slot_empty")
+    else:
+        on_shelf = pinky.get("on_shelf")
+        value = None if not isinstance(on_shelf, bool) else not on_shelf
+    return value if isinstance(value, bool) else None
 
 
 def _pinky_error(pinky) -> str | None:
     if not isinstance(pinky, dict):  # panel older than the check, or it never reported
         return "PANEL_PINKY_CHECK_NOT_RUN"
-    on_pinky, on_shelf = pinky.get("on_pinky"), pinky.get("on_shelf")
+    on_pinky, slot_empty = pinky.get("on_pinky"), _slot_empty(pinky)
+    if slot_empty is False:
+        # the tray marker covered while the box still sits in its slot: a camera is wrong
+        return (
+            "PANEL_PINKY_CHECK_CONFLICT"
+            if on_pinky is True
+            else "PANEL_BOX_STILL_ON_SHELF"
+        )
+    if slot_empty is None:
+        return "PANEL_SLOT_UNREADABLE"
     if on_pinky is True:
-        # the box cannot be on the tray and in its slot at once: a camera is wrong
-        return "PANEL_PINKY_CHECK_CONFLICT" if on_shelf is True else None
+        return None
     if on_pinky is False:
-        return "PANEL_BOX_STILL_ON_SHELF" if on_shelf is True else "PANEL_BOX_DROPPED"
+        return "PANEL_BOX_DROPPED"
     return "PANEL_PINKY_UNREADABLE"
 
 

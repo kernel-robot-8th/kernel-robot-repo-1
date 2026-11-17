@@ -812,11 +812,57 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertEqual(self.panel.home_return_bodies, [{"source": "mqtt"}])
         self.assertIsNone(self.host.hold)
 
+    def test_unload_needs_the_slot_empty_and_the_tray_marker_hidden(self):
+        # 2026-11-17 rule: commanded slot empty AND tray marker 18 hidden by 1/3 or more.
+        self.use_unload_route()
+        cases = [
+            ("completed", None, {"slot_empty": True, "on_pinky": True}),
+            (
+                "failed",
+                "PANEL_BOX_STILL_ON_SHELF",
+                {"slot_empty": False, "on_pinky": False},
+            ),
+            ("failed", "PANEL_BOX_DROPPED", {"slot_empty": True, "on_pinky": False}),
+            (
+                "held",
+                "PANEL_PINKY_CHECK_CONFLICT",
+                {"slot_empty": False, "on_pinky": True},
+            ),
+            ("held", "PANEL_SLOT_UNREADABLE", {"slot_empty": None, "on_pinky": True}),
+            # slot_empty wins over the shelf-wide on_shelf when the picker reports both
+            (
+                "completed",
+                None,
+                {"slot_empty": True, "on_shelf": True, "on_pinky": True},
+            ),
+        ]
+        for outcome, code, values in cases:
+            with self.subTest(values=values):
+                self.host.clear_hold()
+                self.send(self.outbound())
+                check = pinky(tray_marker_hidden_ratio=0.4, **values)
+                self.panel.finish(pinky=check, stage="done", final=True)
+                (event,) = self.host.poll()
+                p = event["payload"]
+                if outcome == "completed":
+                    self.assertEqual(p["mission_result"], "MISSION_COMPLETE")
+                    self.assertEqual(p["evidence"], "pinky_load")
+                else:
+                    self.assertEqual(p["error_code"], code)
+                    held = outcome == "held"
+                    self.assertEqual(
+                        p["mission_result"],
+                        "MISSION_HOLD" if held else "MISSION_FAILED",
+                    )
+                    self.assertIs(self.host.hold is not None, held)
+
     def test_unload_unknown_pinky_holds_for_a_person(self):
         self.use_unload_route()
         unread = pinky(on_pinky=None, on_shelf=None, ran=False, skipped="시간 초과")
+        tray_unread = pinky(on_pinky=None, slot_empty=True, tray_marker="no_frame")
         cases = [
-            ("PANEL_PINKY_UNREADABLE", {"pinky": unread}),
+            ("PANEL_SLOT_UNREADABLE", {"pinky": unread}),
+            ("PANEL_PINKY_UNREADABLE", {"pinky": tray_unread}),
             (
                 "PANEL_PINKY_CHECK_NOT_RUN",
                 {},
