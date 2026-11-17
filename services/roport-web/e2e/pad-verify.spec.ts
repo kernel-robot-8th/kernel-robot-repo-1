@@ -93,4 +93,3 @@ test('같은 카트의 확인 실패가 많으면 서버 시도 제한(429)을 �
   await enterReservationNo(page, reservationNo);
   await expect(page.getByRole('alert')).toHaveText(/^확인에 여러 번 실패해 잠시 멈췄습니다\. 약 \d+초 후 다시 시도해 주세요\.$/);
 });
-
