@@ -610,6 +610,7 @@ Nav2 성공 결과·실제 연속 정지 0.5초·N12 자세(5cm/0.1rad 이내)�
 IR 판정을 생략하거나 선을 찾을 때까지 무한 전진하지 않는다.
 IR 0.3초/odom 0.5초 초과 지연, 센서 오류, 구동권 충돌, guard 재시작, 취소는 주행을 중단한다.
 주차 완료는 기존 라인 실행부의 180도 회전·후진·실제 IR 가로선 감지와 실제 정지로 판정한다.
+N12에서 시작하는 라인 구간은 `confirmed_start`로 출발하며 `roport_line_nav`의 옆선 켜짐 확인(`side_rise_only`, 기본 켬)이 적용된다. 출발할 때부터 옆 IR이 본선 가장자리를 계속 밟고 그 run이 N08 옆선까지 이어지면 N08을 노드로 보지 않고 `node_missed`로 정지한다(안전 정지). 조건은 [roport_line_nav README](../roport_line_nav/README.md) 「옆선 켜짐 확인」 절에 있다. 실물 복귀에서의 빈도는 아직 재지 않았다.
 라인 속도는 기본 0.03m/s(`--line-speed 0.06` 선택 가능), 회전 상한은 0.15rad/s다.
 N12·N08은 물류 Pinky와 공유하는 구간이다. 감독 시험에서는 다른 기체를 해당 구간 밖에 정지시키고,
 관제 통합 시에는 구간 점유·예약을 별도로 연결해야 한다.
@@ -721,6 +722,7 @@ ros2 topic pub --once /doll_follow/control std_msgs/msg/String '{data: stop}'
 종료는 실행 터미널에서 Ctrl+C를 누른다. 다른 인형을 고르려면 로봇을 정지시킨 뒤 데모를 종료하고,
 **로봇의 `trial_guard`도 재시작**한 다음 `--target B` 또는 `C`로 실행해 다시 기준 저장한다.
 데모 재실행은 새 session을 만들며 이전 session을 받은 guard는 재시작 전까지 차단된다.
+데모를 마치고 관제 trial(`trial_driver`·MQTT runner)로 넘어갈 때도 같은 이유로 로봇의 `trial_guard`를 먼저 재시작한다.
 
 그림을 놓치면 즉시 속도 0, 2초 넘게 보이지 않으면 다시 `start`해야 한다.
 영상·라이다·초음파 취득 시각이 0.4초 넘게 오래되거나 초음파가 전방 5cm 이하,

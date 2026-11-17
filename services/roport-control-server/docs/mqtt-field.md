@@ -51,6 +51,17 @@ Nav2로 N12 복귀 골에 이동 → 정지 → `nav2 → line` 전환 → 라�
 
 드라이버는 실제 localization 준비, 정지, 목표 오차 5cm/0.1rad 이내, 0.3초 이내 IR 센터 선 검출·오차 0.25 이내를 확인하고 0.5초 연속 확인 후 라인으로 바꾼다. 다음 시작은 N12와 sensor offset=0을 검증한 `confirmed_start`로 전달한다. 실제 IR/위치 정합·캘리브레이션이 맞지 않으면 전환하지 않는다.
 
+`confirmed_start`에도 `roport_line_nav`의 옆선 켜짐 확인(`side_rise_only`, 기본 켬)이 적용된다. 출발할 때부터 옆 IR이 본선 가장자리를 계속 밟고 그 run이 N08 옆선까지 이어지면 N08을 노드로 보지 않고 `node_missed`로 정지한다(안전 정지, 관제는 HOLD). 조건은 [roport_line_nav README](../../roport-pinky/src/roport_line_nav/README.md) 「옆선 켜짐 확인」 절에 있다. 실로봇에서 N12 출발 때 이 경우가 얼마나 자주 생기는지는 아직 재지 않았다.
+
+## 알려진 제한 (2026-11-17 연동 검토)
+
+main 96e05fa 기준 코드와 `VirtualPinky` 재현으로 확인했다. 실로봇·실브로커에서는 확인하지 않았다.
+
+- **운영자 정지·HOLD는 정지 명령이 아니다.** 관제 시험 실행부(`field_trial_transport.py`)는 `robot_stop_command`를 보내지 않고, 정지·HOLD 때 `keep_running_command_id` 상태 요청만 멈춘다. Pinky는 마지막 유효 요청 뒤 3초가 지나야 `control_link_lost`로 정지하므로 0.06 m/s에서 최대 약 18 cm를 더 간다. 그동안 `trial_guard`는 로봇 안의 lease로 열려 있다.
+- **Pinky endpoint가 일부 stop을 거절한다.** `field_pinky.py`는 `robot_stop_command`도 일반 명령과 같은 순서로 `sent_at` 신선도(−0.5~3초), boot, 기록 1024개 한도를 먼저 검사한다. 늦게 도착한 stop은 `stale_message`, 기록이 찬 뒤의 stop은 `command_history_full`, 이미 끝난 명령을 가리키는 stop은 `stop_target_mismatch`로 거절되고, 주행 중이었다면 그대로 간다.
+- **수정 제안(미구현, 관제 담당 결정).** Pinky endpoint는 OMX 쪽(`task/control-integration-test` 91c0a84)처럼 stop을 신선도·기록 한도 검사보다 먼저 처리하고, 이미 끝난 명령을 가리키는 stop에는 「이미 정지」로 completed를 보낸다. 관제는 HOLD·운영자 정지 때 keep-running을 끊으면서 `robot_stop_command`도 한 번 보낸다. fleet runtime에서 stop을 보내게 되면 endpoint도 함께 고쳐야 한다.
+- **host 토픽 ACL.** `--host-metrics-period-s`를 켜면 현장 브로커 ACL에 `roport/robot/{pinky}/host` 발행 권한이 있어야 한다. 없으면 QoS0이라 조용히 버려지고 관제 화면에는 `unknown`·`stale`만 보인다. 정지·HOLD·출발 판정에는 영향이 없다.
+
 ## 가상 시험 범위
 
 `VirtualPinky`는 같은 TrialDriver, RouteExecutor, 실측 그래프, wire·중복 방지·watchdog·도착 판단을 쓴다. 센서·모터·Nav2 action만 가상 I/O다. 가상 Nav2는 장애물 없는 이동 모델이며 실제 Nav2 recovery·마커 인식·모터 지연·무선 품질·독립 ROS guard 프로세스 종료는 실물/HIL 검증이 필요하다. 시험 JSON과 코드 체크섬을 보관하고 결과를 실물 완료로 표기하지 않는다.
