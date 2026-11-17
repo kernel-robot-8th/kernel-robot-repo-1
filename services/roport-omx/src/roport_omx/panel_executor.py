@@ -162,9 +162,12 @@ HOME_RETURN_TIMEOUT_S = 90.0
 # Unloading mission (shelf → waiting Pinky; completion rule agreed 2026-11-17): judged only by the
 # cameras after the evaluation, no time limit. The panel (pinky_check) reports
 #   slot_empty — the commanded shelf slot holds no box any more (shelf-facing camera, front_2)
-#   on_pinky   — the tray reference marker (ArUco 18) is hidden by 1/3 or more (top camera, front)
+#   on_pinky   — the box is on the Pinky tray (top camera, front): the box top marker is read inside
+#                the tray area, or else the tray differs from that Pinky's empty-tray reference photo
+#                (tray_changed >= 0.25). No marker is stuck on the tray: the unload policy was trained
+#                on a bare tray and does not start when one is there.
 # Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot, or slot empty but the
-# tray marker visible (dropped) → MISSION_FAILED, arms sent home. Anything unread → MISSION_HOLD.
+# tray unchanged (dropped) → MISSION_FAILED, arms sent home. Anything unread → MISSION_HOLD.
 PINKY_LOAD = "pinky_load"
 
 
@@ -183,7 +186,7 @@ def _pinky_error(pinky) -> str | None:
         return "PANEL_PINKY_CHECK_NOT_RUN"
     on_pinky, slot_empty = pinky.get("on_pinky"), _slot_empty(pinky)
     if slot_empty is False:
-        # the tray marker covered while the box still sits in its slot: a camera is wrong
+        # a box seen on the tray while it still sits in its slot: a camera is wrong
         return (
             "PANEL_PINKY_CHECK_CONFLICT"
             if on_pinky is True

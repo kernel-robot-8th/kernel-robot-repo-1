@@ -40,7 +40,7 @@ def pinky(on_pinky=True, on_shelf=False, **change):
         "ran": True,
         "on_pinky": on_pinky,
         "on_shelf": on_shelf,
-        "pinky": "ok" if on_pinky else "marker_not_found",
+        "pinky": "ok" if on_pinky else "tray_empty",
         "shelf": "ok" if on_shelf else "marker_not_found",
         "box": 16,
         "returncode": 0,
@@ -818,8 +818,9 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertEqual(self.panel.home_return_bodies, [{"source": "mqtt"}])
         self.assertIsNone(self.host.hold)
 
-    def test_unload_needs_the_slot_empty_and_the_tray_marker_hidden(self):
-        # 2026-11-17 rule: commanded slot empty AND tray marker 18 hidden by 1/3 or more.
+    def test_unload_needs_the_slot_empty_and_the_box_on_the_tray(self):
+        # 2026-11-17 rule: commanded slot empty AND box on the tray (box marker on the tray, or
+        # the tray changed from its empty reference photo); no marker on the tray itself.
         self.use_unload_route()
         cases = [
             ("completed", None, {"slot_empty": True, "on_pinky": True}),
@@ -846,7 +847,7 @@ class PanelExecutorTest(unittest.TestCase):
             with self.subTest(values=values):
                 self.host.clear_hold()
                 self.send(self.outbound())
-                check = pinky(tray_marker_hidden_ratio=0.4, **values)
+                check = pinky(tray_changed=0.7, box_on_tray=True, **values)
                 self.panel.finish(pinky=check, stage="done", final=True)
                 (event,) = self.host.poll()
                 p = event["payload"]
@@ -865,7 +866,7 @@ class PanelExecutorTest(unittest.TestCase):
     def test_unload_unknown_pinky_holds_for_a_person(self):
         self.use_unload_route()
         unread = pinky(on_pinky=None, on_shelf=None, ran=False, skipped="시간 초과")
-        tray_unread = pinky(on_pinky=None, slot_empty=True, tray_marker="no_frame")
+        tray_unread = pinky(on_pinky=None, slot_empty=True, pinky="no_reference")
         cases = [
             ("PANEL_SLOT_UNREADABLE", {"pinky": unread}),
             ("PANEL_PINKY_UNREADABLE", {"pinky": tray_unread}),
