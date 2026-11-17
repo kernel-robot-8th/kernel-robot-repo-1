@@ -132,6 +132,12 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
     node = rclpy.create_node('supervised_h1_g3_ui_trial')
     runner = HardwareReturn(node, options, graph, line_cal, nominal, profile)
     mission_id = uuid4().hex
+    ui_control_id = os.environ.get('ROPORT_UI_CONTROL_ID')
+    ui_monitor = None
+    cleaning_up = False
+    if ui_control_id:
+        from ui_control import Control, LeaseMonitor
+        ui_monitor = LeaseMonitor(Control(ROOT, ui_control_id), runner)
     resume = resume_nav or resume_entry or resume_return or resume_return_transit or resume_delivery or resume_n12
     previous_result = json.loads((ROOT/'result.json').read_text()) if resume else {}
     handoff_id = previous_result.get('n12_handoff_id') if resume else mission_id
@@ -174,12 +180,14 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
 
     def spin():
         nonlocal last_status
+        if ui_monitor is not None and not cleaning_up:
+            ui_monitor.check()
         for _ in range(8):
             rclpy.spin_once(node, timeout_sec=0.)
         state = original_spin()
         now = time.monotonic()
         if now-last_status >= .2:
-            packet = {'mission_id': mission_id, 'phase': runner.phase,
+            packet = {'mission_id': mission_id, 'ui_control_id': ui_control_id, 'phase': runner.phase,
                 'direction': direction, 'goal': TARGET, 'elapsed_s': now-started,
                 'operator_return_resume': resume_return,
                 'n12_handoff_id': handoff_id,
@@ -510,6 +518,8 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, interrupt)
     try:
+        if ui_monitor is not None:
+            ui_monitor.start()
         end = time.monotonic()+30
         while time.monotonic() < end:
             state = spin()
@@ -669,6 +679,7 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         import traceback
         traceback.print_exc()
     finally:
+        cleaning_up = True
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, signal.SIG_IGN)
         runner.owner = 'none'
@@ -691,7 +702,7 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         stop_gate_camera()
         runner.phase = 'DONE' if success and failure is None else 'STOPPED'
         state = runner.bridge.snapshot()
-        final = {'mission_id': mission_id, 'success': success and failure is None,
+        final = {'mission_id': mission_id, 'ui_control_id': ui_control_id, 'success': success and failure is None,
                  'failure': failure, 'phase': runner.phase, 'final_state': state,
                  'marker_verified': marker_verified, 'arrival_warning': arrival_warning,
                  'n12_handoff_id': handoff_id,
@@ -702,6 +713,8 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         for _ in range(4):
             spin()
         print('RESULT', json.dumps(final), flush=True)
+        if ui_monitor is not None and hasattr(ui_monitor, 'thread'):
+            ui_monitor.close()
         node.destroy_node()
         rclpy.shutdown()
     return 0 if success and failure is None else 1

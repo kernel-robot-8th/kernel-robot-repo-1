@@ -128,6 +128,7 @@ class FieldChecks(unittest.TestCase):
             spec = importlib.util.spec_from_file_location('field_ui_test', SOURCE.with_name('ui_server.py'))
             ui = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(ui)
+            ui.heartbeat({'control_epoch': ui.stop_epoch, 'browser_id': 'd'*32, 'seq': 1})
             ui.latest = {'phase': 'WAIT_DELIVERY', 'mission_id': 'a'*32}
             ui.observed = ui.odom_seen = ui.guard_seen = time.monotonic()
             ui.guard = {'owner': 'none', 'blocked': False}
@@ -139,9 +140,9 @@ class FieldChecks(unittest.TestCase):
             self.assertFalse(ui.snapshot()['start_enabled'])
             ui.guard['blocked'] = False
             with self.assertRaises(ValueError):
-                ui.command('/delivery-complete', {'mission_id': 'b'*32})
+                ui.command('/delivery-complete', {'control_epoch': ui.stop_epoch, 'browser_id': 'd'*32, 'mission_id': 'b'*32})
             self.assertEqual(sent, [])
-            ui.command('/delivery-complete', {'mission_id': 'a'*32})
+            ui.command('/delivery-complete', {'control_epoch': ui.stop_epoch, 'browser_id': 'd'*32, 'mission_id': 'a'*32})
             self.assertEqual(len(sent), 1)
             self.assertIn('delivery_complete', sent[0])
             ui.odom.twist.twist.linear.x = .02
@@ -160,12 +161,12 @@ class FieldChecks(unittest.TestCase):
             ui.latest['phase'] = 'LINE'
             self.assertFalse(ui.snapshot()['restart_enabled'])
             with self.assertRaises(ValueError):
-                ui.command('/restart-stack', {})
+                ui.command('/restart-stack', {'control_epoch': ui.stop_epoch, 'browser_id': 'd'*32})
             self.assertEqual(len(sent), 1)
             ui.latest['phase'] = 'STOPPED'
             captured = []
-            ui.remote = lambda script, **kwargs: captured.append((script, kwargs))
-            ui.command('/restart-stack', {})
+            ui.remote = lambda script, **kwargs: (captured.append((script, kwargs)) or 'c'*32)
+            ui.command('/restart-stack', {'control_epoch': ui.stop_epoch, 'browser_id': 'd'*32})
             self.assertEqual(captured[0][1]['timeout'], 60)
             self.assertIn('restart_stack.py', captured[0][0])
             self.assertIn('--restart', captured[0][0])
@@ -180,7 +181,7 @@ class FieldChecks(unittest.TestCase):
                              n12_handoff_id='a'*32, n12_return_pose={'x': 0., 'y': 0., 'yaw': 0.})
             self.assertTrue(ui.snapshot()['return_resume_enabled'])
             self.assertFalse(ui.snapshot()['start_enabled'])
-            ui.command('/delivery-complete', {'mission_id': 'a'*32})
+            ui.command('/delivery-complete', {'control_epoch': ui.stop_epoch, 'browser_id': 'd'*32, 'mission_id': 'a'*32})
             self.assertIn('--resume-n12', captured[-1][0])
 
     def test_restart_only_manages_explicit_field_sessions(self):

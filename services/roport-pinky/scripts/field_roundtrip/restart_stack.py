@@ -5,7 +5,6 @@ import json
 import math
 import os
 import shlex
-import signal
 import subprocess
 import time
 import urllib.request
@@ -40,6 +39,10 @@ def main():
     if subprocess.run(['pgrep', '-f', '[r]oundtrip.py --drive'],
                       stdout=subprocess.DEVNULL).returncode == 0:
         raise RuntimeError('Stop the active trial before restarting nodes')
+
+    from field_stack import compatible_guard
+    if not compatible_guard(root):
+        raise RuntimeError('Start the explicitly owned field guard before restart')
 
     # Observe fresh physical stop locally as well as in the UI before any shutdown.
     import rclpy
@@ -84,9 +87,6 @@ def main():
         if subprocess.run(['tmux', 'has-session', '-t', name],
                           stderr=subprocess.DEVNULL).returncode == 0:
             subprocess.run(['tmux', 'send-keys', '-t', name, 'C-c'], check=True)
-    for value in subprocess.run(['pgrep', '-f', '[r]oport_pinky/trial_guard'],
-                                capture_output=True, text=True).stdout.split():
-        os.kill(int(value), signal.SIGINT)
     end = time.monotonic()+10
     while time.monotonic() < end:
         remaining = [name for name in sessions.values() if subprocess.run(
@@ -96,10 +96,6 @@ def main():
         time.sleep(.1)
     else:
         raise RuntimeError('Previous field nodes did not terminate; no duplicate startup attempted')
-    if subprocess.run(['pgrep', '-f', '[r]oport_pinky/trial_guard'],
-                      stdout=subprocess.DEVNULL).returncode == 0:
-        raise RuntimeError('Previous drive guard did not terminate')
-
     logs = root/'logs'/time.strftime('%Y%m%d-%H%M%S-ui-restart')
     logs.mkdir(parents=True)
     q = shlex.quote
@@ -114,7 +110,6 @@ def main():
         'console': ('ros2 run pinky_test_console web_server --ros-args -p mode:=amcl'
                     ' -p ip:='+q(parsed.hostname)+' -p port:=8080 -p teleop_enabled:=false'
                     ' -p layout_yaml:='+q(str(root/'layout.yaml'))),
-        'guard': 'ros2 run roport_pinky trial_guard',
     }
     for kind, command in commands.items():
         name = 'field_'+kind+(('_'+str(time.time_ns())) if kind == 'guard' else '')
