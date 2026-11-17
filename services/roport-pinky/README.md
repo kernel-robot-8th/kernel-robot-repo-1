@@ -21,6 +21,62 @@ CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 - [Jira](https://fp-team1.atlassian.net/jira/projects/FFT1)
 
 PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기록합니다.
+
+## 현장 G1 단독 왕복 시험 · FFT1-150
+
+`scripts/field_roundtrip/`는 관제와 분리한 운영자 감독용 시험 실행부입니다.
+기존 bringup·Nav2·ADC가 실행 중인 상태에서 UI의 출발 버튼으로
+H1→N12→G1을 진행하며, 전달 완료 버튼을 누르기 전에는 복귀하지 않습니다.
+도착 시 기존 Picamera2 발행자가 없으면 카메라를 시작합니다.
+마커 거리 보정은 0.01m/s, 1회 최대 1cm·총 6회로 제한하고,
+영상·위치·독점 구동권 또는 충돌 검사가 실패하면 정지합니다.
+마커 확인 실패는 정밀 주차 성공으로 취급하지 않으며, 정지 확인 후
+경고를 표시하고 운영자의 복귀 명령을 기다립니다. 각도 정밀 보정은 미구현입니다.
+
+복귀는 Nav2로 N12에 진입한 뒤 실제 IR 중심 감지를 0.5초 확인하고
+N12→N08→N09→H1 라인트레이싱으로 전환합니다. 6cm 선 탐색이 실패하면
+실측 N12 목표와 현재 위치의 차이가 8cm 이내일 때만 Nav2의 충돌 검사된
+Spin→DriveOnHeading→Spin으로 한 번 보정합니다. 다시 선을 찾지 못하면
+정지하며 IR 값·측정 좌표·보정 검증 플래그를 덮어쓰지 않습니다.
+이 시험 launch의 Nav2 상한은 0.12m/s, 라인 실행부는 0.06m/s입니다.
+bringup·모터 초기화·목표 전송은 launch나 웹 서버 기동만으로 실행하지 않습니다.
+
+운영자가 검증한 지도와 `layout.yaml`, `field-places.yaml`, `h1-confirmed.json`,
+`camera_calibration.yaml`, `mission-target.json`(`"G1"`)을 별도 현장 폴더에 둡니다.
+거리 보정에는 그 지도·보정 파일에 대응하는 `gate-distance-reference.json`의
+`marker_id`, `map_version`, `calibration_sha256`, `front_minus_lens_m`도 필요합니다.
+마지막 값은 같은 정지 자세에서 실측한 앞면-벽 거리에서 영상의 렌즈-평면 거리를
+뺀 값(m)이며 ±0.03m 이내만 허용합니다. 한 지점의 거리 기준은 카메라 광학 TF나
+모든 거리의 정확도 검증을 대신하지 않습니다. 이 현장 파일·사진은 커밋하지 않습니다.
+
+시험 파일은 현장 폴더로 복사하되 기존 실측 파일을 덮어쓰지 않습니다.
+ROS overlay를 source하는 별도 setup 파일을 준비합니다. PC의 기존 UI는 아래처럼
+실행하며 SSH는 사전에 인증된 키와 known_hosts를 사용합니다. 비밀번호를 코드에 넣지 않습니다.
+
+```bash
+export ROPORT_FIELD_CONFIG_DIR=/absolute/path/to/local-field-config
+export ROPORT_FIELD_REMOTE_DIR=/absolute/path/to/robot-field-config
+export ROPORT_FIELD_REMOTE_SETUP=/absolute/path/to/robot-ros-setup.sh
+export ROPORT_PINKY_SSH_HOST=robot@example.com
+export ROPORT_PINKY_CONSOLE_URL=http://example.com:8080
+source /opt/ros/jazzy/setup.bash
+# 이어서 PC의 검증된 ROS overlay를 source합니다.
+export ROS_DOMAIN_ID=13
+python3 scripts/field_roundtrip/ui_server.py
+```
+
+UI는 `http://127.0.0.1:8086`에만 열립니다. 로봇 쪽 `roundtrip.py`는 동일한
+`ROPORT_FIELD_CONFIG_DIR`, `ROPORT_PINKY_MAP`, `ROBOT_NAME`, domain13 환경에서
+`--drive`가 있어야 실행됩니다. `--resume-delivery`는 실측 게이트에 정지한 경우
+접근 동작 없이 카메라 확인·버튼 대기만 재개합니다. `--resume-n12`는 직전 정지
+기록과 현재 자세가 5cm·0.1rad 이내로 일치할 때만 N12 보정·IR 복귀를 재시도합니다.
+전원을 끄거나 손으로 옮긴 후에는 이전 체크포인트로 재개하지 않습니다.
+
+2026-11-17 실물 v14 시험에서 G1 좌표 도착, 마커 거리 접근(19.8cm 실측 시작점에서
+영상 추정 약 16.8cm까지), N12 자세 보정 후 H1 복귀·정지를 확인했습니다.
+N12 재시도는 별도 운영자 명령으로 확인했으며, 자동 1회 보정으로 연결한 새 코드의
+반복 실주행·main v15 실주행·다른 게이트·마커 기준 각도 보정은 미검증입니다.
+관제 runner의 프로토콜·도착 상태나 `main` 지도는 이 시험 실행부가 변경하지 않습니다.
 실로봇 적용 전 장비·설정·캘리브레이션, 안전 정지·복구 절차를 확인합니다.
 
 ## 개발 방법
