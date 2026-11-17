@@ -33,6 +33,8 @@ camera_jpeg = b''
 camera_raw = b''
 camera_at = 0.
 camera_info = {}
+restarting = False
+restart_failed = False
 
 
 
@@ -45,16 +47,18 @@ def snapshot():
                   and abs(odom.twist.twist.angular.z) <= .02)
         active = fresh and latest.get('phase') not in ('DONE', 'STOPPED')
         coordinate_mode = (ROOT/'coordinate-recording.lock').exists()
-        start_ok = parked and now-guard_seen < .5 and guard.get('owner') == 'none' and not active and not coordinate_mode
+        start_ok = parked and now-guard_seen < .5 and guard.get('owner') == 'none' and not active and not coordinate_mode and not restarting and not restart_failed
         return {**latest, 'fresh': fresh, 'physically_stopped': parked,
                 'start_enabled': start_ok, 'coordinate_mode': coordinate_mode,
-                'delivery_enabled': fresh and parked and latest.get('phase') == 'WAIT_DELIVERY',
+                'delivery_enabled': fresh and parked and not restarting and latest.get('phase') == 'WAIT_DELIVERY',
+                'restarting': restarting,
+                'restart_enabled': parked and now-guard_seen < .5 and guard.get('owner') == 'none' and not active and not restarting,
                 'message': message, 'camera': {**camera_info, 'live': now-camera_at < 1.5, 'age_s': round(now-camera_at, 1) if camera_at else None}}
 
 
-def remote(script):
+def remote(script, timeout=7):
     result = subprocess.run(SSH+['python3 -'], input=script,
-                            text=True, capture_output=True, timeout=7)
+                            text=True, capture_output=True, timeout=timeout)
     if result.returncode:
         raise ValueError((result.stderr or result.stdout or '로봇 연결 실패')[-1200:])
     return result.stdout
@@ -76,12 +80,32 @@ def refresh_start_localization():
 
 
 def command(name, body):
-    global message
+    global message, restarting, restart_failed
     if not command_lock.acquire(blocking=False):
         raise ValueError('이전 명령 처리 중입니다.')
     try:
         state = snapshot()
-        if name == '/start':
+        if name == '/restart-stack':
+            if not state['restart_enabled']:
+                raise ValueError('주행 중에는 재시작할 수 없습니다. 시험 중단 후 실제 정지를 확인하세요.')
+            restarting = True
+            message = '브링업·Nav2·센서를 다시 켜는 중입니다. 출발 명령은 보내지 않습니다.'
+            base = ('source '+shlex.quote(SETUP)+'; export ROS_DOMAIN_ID=13; '
+                    +'export ROPORT_FIELD_CONFIG_DIR='+shlex.quote(REMOTE)+'; '
+                    +'export ROPORT_PINKY_CONSOLE_URL='+shlex.quote(CONSOLE)+'; ')
+            command = base+'exec python3 '+shlex.quote(REMOTE+'/restart_stack.py')+' --restart --setup '+shlex.quote(SETUP)
+            script = 'import subprocess\nsubprocess.run('+repr(['bash','-lc',command])+',check=True)\n'
+            try:
+                remote(script, timeout=60)
+                restart_failed = False
+                message = '주행 노드를 다시 켰습니다. 지도 위치·방향을 확인한 뒤 출발 버튼을 누르세요.'
+            except (ValueError, OSError, subprocess.SubprocessError):
+                restart_failed = True
+                message = '노드 재시작 확인이 완료되지 않았습니다. 출발은 잠금 상태입니다.'
+                raise
+            finally:
+                restarting = False
+        elif name == '/start':
             if not state['start_enabled']:
                 raise ValueError('로봇 정지·구동권 대기 상태를 먼저 확인하세요.')
             script = r'''

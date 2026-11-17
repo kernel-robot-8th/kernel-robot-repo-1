@@ -73,6 +73,33 @@ class FieldChecks(unittest.TestCase):
             ui.observed = time.monotonic()
             ui.latest['phase'] = 'STOPPED'
             self.assertFalse(ui.snapshot()['delivery_enabled'])
+            self.assertTrue(ui.snapshot()['restart_enabled'])
+            ui.latest['phase'] = 'LINE'
+            self.assertFalse(ui.snapshot()['restart_enabled'])
+            with self.assertRaises(ValueError):
+                ui.command('/restart-stack', {})
+            self.assertEqual(len(sent), 1)
+            ui.latest['phase'] = 'STOPPED'
+            captured = []
+            ui.remote = lambda script, **kwargs: captured.append((script, kwargs))
+            ui.command('/restart-stack', {})
+            self.assertEqual(captured[0][1]['timeout'], 60)
+            self.assertIn('restart_stack.py', captured[0][0])
+            self.assertIn('--restart', captured[0][0])
+            self.assertNotIn('roundtrip.py --drive', captured[0][0])
+            self.assertFalse(ui.restarting)
+
+    def test_restart_only_manages_explicit_field_sessions(self):
+        spec = importlib.util.spec_from_file_location('field_restart_test', SOURCE.with_name('restart_stack.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        valid = {kind: 'field_'+kind for kind in module.KINDS}
+        module.validate_sessions(valid)
+        for sessions in ({}, None, {**valid, 'bringup': 'other_project'},
+                         {**valid, 'bringup': []}, {**valid, 'bringup': 'field_nav2'},
+                         {**valid, 'nav2': 'field_nav2;untrusted'}):
+            with self.subTest(sessions=sessions), self.assertRaises(ValueError):
+                module.validate_sessions(sessions)
 
     def test_completion_is_bound_to_current_mission(self):
         valid = helper('valid_delivery', {}, nested=False)
