@@ -771,6 +771,8 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertNotIn(
             "fast_release", start
         )  # no aligner after unloading: full safe stop
+        # the box number is for the Pinky check only: no target circle on the policy's camera
+        self.assertIs(start["draw_target"], False)
         for change in (
             {},  # ended on its return
             {"exit_ok": False, "err": {"code": "err_code_7"}},  # no time or error rule
