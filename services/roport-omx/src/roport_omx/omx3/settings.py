@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# ArUco 마커 ID 표 v1.4(docs/aruco/markers.yaml) group: package = PKG1~PKG8
-PACKAGE_MARKER_IDS = frozenset(range(15, 23))
+# 마커 ACT 모델이 학습한 포장물품 마커(HANDOFF_marker_act.md sim_mark5·real_mark5).
+# 학습하지 않은 번호는 받지 않는다.
+PACKAGE_MARKER_IDS = frozenset({15, 16, 17, 21, 22})
 
 # 관절 상태·동작의 순서(LeRobot omx_follower, 학습 데이터와 같음)
 JOINTS = (
