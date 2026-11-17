@@ -145,7 +145,7 @@ def test_hardware_static_check_has_no_journal_or_broker_side_effects(handoff, tm
     "change",
     [
         lambda v: v.update(units="m"),
-        lambda v: v.update(version="v15"),
+        lambda v: v.update(version="v16"),
         lambda v: v["map"].update(width=1),
         lambda v: v["frame"].update(x_m=float("nan")),
         lambda v: v["nodes"]["items"].append(v["nodes"]["items"][0]),

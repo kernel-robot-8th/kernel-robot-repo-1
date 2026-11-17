@@ -34,7 +34,7 @@ def test_graph_view_from_layout():
     g = graph_view(LAYOUT)
     ids = {n['id'] for n in g['nodes']}
     assert {'N01', 'N11', 'N12', 'H1'} <= ids
-    assert g['version'].startswith('line-v14')
+    assert g['version'].startswith('line-v15')
     assert len(g['presets']) == len(PRESETS)       # 예시 경로의 노드가 모두 배치에 있음
     n12 = next(n for n in g['nodes'] if n['id'] == 'N12')
     assert n12['nav2_switch'] and n12['bar'] == 'y'

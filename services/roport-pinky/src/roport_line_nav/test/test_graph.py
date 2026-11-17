@@ -22,7 +22,7 @@ def test_turn_of():
 
 
 def test_layout_graph_loads(graph):
-    assert graph.version.startswith('line-v14')
+    assert graph.version.startswith('line-v15')
     assert {'N01', 'N11', 'N12', 'N16', 'N17', 'H1', 'H2'} <= set(graph.nodes)
     assert graph.arrival_action('N01') == LOAD and graph.arrival_action('N11') == LOAD
     for p in ('N16', 'N17', 'H1', 'H2'):

@@ -38,7 +38,7 @@ test(`${scenario}/${scope}: trial UI completes real MQTT simulation, reconnects 
     await expect(page.locator('#trial-phase')).toHaveText('출발 대기');
     await expect.poll(() => page.evaluate(() => window.routeLineDraws)).toBeGreaterThan(0);
     await expect(page.locator('.robot')).toHaveCount(6);
-    await expect(page.locator('#map-name')).toContainText('실측 v14');
+    await expect(page.locator('#map-name')).toContainText('실측 v15');
     await expect(page.locator('[data-robot=omx1]')).toContainText('설치 배치');
     await page.getByRole('button', {name: 'Pinky', exact: true}).click();
     await expect(page.locator('#trial-slots article')).toHaveCount(3);
