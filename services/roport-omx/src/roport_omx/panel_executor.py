@@ -400,6 +400,9 @@ class PanelExecutor:
             # Unloading ends with the cameras checking the box on the Pinky tray, never with a
             # shelf alignment (the panel refuses both at once).
             body |= {"shelf_align": False, "pinky_check": True}
+            # The box number is for the Pinky check only: the unloading model was trained without the
+            # target circle the panel would otherwise draw on the top camera (panel option, 3.17+).
+            body["draw_target"] = False
         else:
             # The shelf loading mission ends with the box aligned on the shelf: ask the panel
             # (3.14+) to align after the evaluation even when the model is not in its own list.
