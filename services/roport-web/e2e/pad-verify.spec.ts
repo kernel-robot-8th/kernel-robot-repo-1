@@ -78,3 +78,19 @@ test('없는 예약번호는 다시 확인하라고 안내한다', async ({ page
   await enterReservationNo(page, 'ZZZZZZZZ');
   await expect(page.getByRole('alert')).toHaveText('예약을 찾을 수 없습니다. 예약번호를 다시 확인해 주세요.');
 });
+
+test('같은 카트의 확인 실패가 많으면 서버 시도 제한(429)을 남은 시간과 함께 안내한다', async ({ page }) => {
+  // 다른 시나리오의 카트(pinky3)를 잠그지 않게 이 시나리오만 카트 ID를 바꿔 보낸다.
+  const cart = `e2e-limit-${Date.now()}`;
+  await page.route('**/cart-api/verifications', (route) =>
+    route.continue({ headers: { ...route.request().headers(), 'x-cart-id': cart } }),
+  );
+  for (let i = 0; i < 5; i++) {
+    await enterReservationNo(page, 'ZZZZZZZZ');
+    await expect(page.getByRole('alert')).toHaveText('예약을 찾을 수 없습니다. 예약번호를 다시 확인해 주세요.');
+  }
+  // 기준(1분 5회)에 이르면 올바른 예약번호도 막히고, 통신 오류가 아니라 시도 제한으로 안내한다.
+  await enterReservationNo(page, reservationNo);
+  await expect(page.getByRole('alert')).toHaveText(/^확인에 여러 번 실패해 잠시 멈췄습니다\. 약 \d+초 후 다시 시도해 주세요\.$/);
+});
+

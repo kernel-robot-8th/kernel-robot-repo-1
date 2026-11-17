@@ -25,7 +25,7 @@ export type Step =
   | { name: 'idle' }
   | { name: 'keypad' }
   | { name: 'verifying' }
-  | { name: 'verifyFailed'; reason: VerifyFailure | 'ERROR' }
+  | { name: 'verifyFailed'; reason: VerifyFailure | 'ERROR'; retryAfterS?: number }
   | { name: 'items'; pickup: VerifiedPickup }
   | { name: 'chooseService'; pickup: VerifiedPickup }
   | MovingStep
@@ -85,7 +85,8 @@ export function reduce(state: PadState, action: Action): PadState {
       return answer(state, action.token, (s) => {
         const r = action.result;
         if (!r) return goTo(s, { name: 'verifyFailed', reason: 'ERROR' });
-        return goTo(s, r.ok ? { name: 'items', pickup: r.pickup } : { name: 'verifyFailed', reason: r.reason });
+        if (r.ok) return goTo(s, { name: 'items', pickup: r.pickup });
+        return goTo(s, r.retryAfterS === undefined ? { name: 'verifyFailed', reason: r.reason } : { name: 'verifyFailed', reason: r.reason, retryAfterS: r.retryAfterS });
       });
     case 'serviceAnswered':
       return answer(state, action.token, (s) => {

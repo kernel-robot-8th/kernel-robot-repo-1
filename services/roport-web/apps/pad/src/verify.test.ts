@@ -39,6 +39,17 @@ test('예약 없음(404)은 고객에게 다시 확인하라고 안내한다', (
   assert.deepEqual(toVerifyResult(404, { code: 'RESERVATION_NOT_FOUND' }), { ok: false, reason: 'NOT_FOUND' });
 });
 
+test('시도 제한(429)은 남은 초와 함께 고객에게 안내한다', () => {
+  const body = { code: 'TOO_MANY_ATTEMPTS' };
+  assert.deepEqual(toVerifyResult(429, body, '31'), { ok: false, reason: 'TOO_MANY_ATTEMPTS', retryAfterS: 31 });
+  // 헤더가 없거나 해석할 수 없으면 시간 없이 안내한다.
+  for (const h of [null, '', 'abc', '0', '-5', '99999', 'Wed, 21 Oct 2026 07:28:00 GMT']) {
+    assert.deepEqual(toVerifyResult(429, body, h), { ok: false, reason: 'TOO_MANY_ATTEMPTS' }, String(h));
+  }
+  // code가 다른 429(예: 프록시가 만든 응답)는 통신 오류로 둔다.
+  assert.equal(toVerifyResult(429, null, '31'), null);
+});
+
 test('설정·충돌·형식 오류와 해석할 수 없는 응답은 통신 오류로 둔다', () => {
   assert.equal(toVerifyResult(401, { code: 'CART_UNAUTHENTICATED' }), null);
   assert.equal(toVerifyResult(409, { code: 'IDEMPOTENCY_CONFLICT' }), null);
