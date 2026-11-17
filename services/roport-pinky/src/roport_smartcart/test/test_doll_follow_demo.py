@@ -113,6 +113,7 @@ def test_invalid_guard_json_is_ignored():
         assert guard_body(invalid) == {}
     body = dict(boot='boot', owner='none', blocked=False, sent_at=100.)
     assert guard_body(json.dumps(body)) == body
+    assert guard_body(json.dumps({**body, 'sent_at': 10**400})) == {}
 
 
 def test_guard_ack_timeout_and_ownership_loss_require_a_new_start():

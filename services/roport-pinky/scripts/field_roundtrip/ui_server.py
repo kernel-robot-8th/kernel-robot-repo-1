@@ -47,15 +47,17 @@ def snapshot():
                   and abs(odom.twist.twist.linear.x) <= .005
                   and abs(odom.twist.twist.angular.z) <= .02)
         active = fresh and latest.get('phase') not in ('DONE', 'STOPPED')
+        guard_ready = (now-guard_seen < .3 and guard.get('owner') == 'none'
+                       and guard.get('blocked') is False)
         coordinate_mode = (ROOT/'coordinate-recording.lock').exists()
         return_resume = (latest.get('phase') == 'STOPPED' and latest.get('direction') == 'RETURN'
                          and isinstance(latest.get('n12_handoff_id'), str)
                          and re.fullmatch('[0-9a-f]{32}', latest['n12_handoff_id']) is not None
                          and isinstance(latest.get('n12_return_pose'), dict)
                          and any(text in (latest.get('error') or '') for text in ('N12', 'Physical tape'))
-                         and parked and now-guard_seen < .5 and guard.get('owner') == 'none'
+                         and parked and guard_ready
                          and not restarting and not restart_failed)
-        start_ok = parked and now-guard_seen < .5 and guard.get('owner') == 'none' and not active and not coordinate_mode and not restarting and not restart_failed and not return_resume
+        start_ok = parked and guard_ready and not active and not coordinate_mode and not restarting and not restart_failed and not return_resume
         return {**latest, 'fresh': fresh, 'physically_stopped': parked,
                 'start_enabled': start_ok, 'coordinate_mode': coordinate_mode,
                 'delivery_enabled': return_resume or (fresh and parked and not restarting and latest.get('phase') == 'WAIT_DELIVERY'),
@@ -238,6 +240,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    from roport_smartcart.trial_contract import guard_body
     import rclpy
     from nav_msgs.msg import Odometry
     from sensor_msgs.msg import CompressedImage
@@ -259,11 +262,11 @@ def main():
             pass
     def guard_update(msg):
         global guard, guard_seen
-        try:
-            with lock:
-                guard, guard_seen = json.loads(msg.data), time.monotonic()
-        except ValueError:
-            pass
+        data = guard_body(msg.data)
+        age = time.time()-data.get('sent_at', 0)
+        with lock:
+            guard = data if data and -.1 <= age <= .3 else {}
+            guard_seen = time.monotonic()-max(0., age)
     def odom_update(msg):
         global odom, odom_seen
         with lock:

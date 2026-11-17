@@ -142,6 +142,9 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
     refresh = node.create_client(Empty, 'request_nomotion_update')
     parameters = AsyncParameterClient(node, 'controller_server')
     camera = {}
+    marker_dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    marker_detector = cv2.aruco.ArucoDetector(marker_dictionary) if hasattr(cv2.aruco, 'ArucoDetector') else None
+    marker_object = np.array([[-.03,.03,0],[.03,.03,0],[.03,-.03,0],[-.03,-.03,0]], np.float32)
     subscription = node.create_subscription(CompressedImage, '/camera/image_raw/compressed',
         lambda m: camera.update(message=m), qos_profile_sensor_data)
     original_spin = runner.spin
@@ -391,26 +394,32 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         stamp = msg.header.stamp.sec+msg.header.stamp.nanosec/1e9
         if not -.05 <= node.get_clock().now().nanoseconds/1e9-stamp <= .3:
             return None
+        calibration_data = (ROOT/'camera_calibration.yaml').read_bytes()
+        cached = camera.get('marker_observation')
+        if cached is not None and cached[0] is msg and cached[1] == calibration_data:
+            return cached[2]
+        observation = detect_marker(msg, stamp, calibration_data)
+        camera['marker_observation'] = (msg, calibration_data, observation)
+        return observation
+
+    def detect_marker(msg, stamp, calibration_data):
         image = cv2.imdecode(np.frombuffer(bytes(msg.data), np.uint8), cv2.IMREAD_GRAYSCALE)
         if image is None or image.shape != (480, 640):
             return None
-        cfg = yaml.safe_load((ROOT/'camera_calibration.yaml').read_text())
+        cfg = yaml.safe_load(calibration_data)
         k = np.array(cfg['camera_matrix']['data']).reshape(3,3)
         d = np.array(cfg['distortion_coefficients']['data'])
-        obj = np.array([[-.03,.03,0],[.03,.03,0],[.03,-.03,0],[-.03,-.03,0]],np.float32)
-        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        detector = cv2.aruco.ArucoDetector(dictionary) if hasattr(cv2.aruco,'ArucoDetector') else None
-        corners, ids, _ = detector.detectMarkers(image) if detector else cv2.aruco.detectMarkers(image,dictionary)
+        corners, ids, _ = marker_detector.detectMarkers(image) if marker_detector else cv2.aruco.detectMarkers(image,marker_dictionary)
         indexes = [] if ids is None else [i for i,v in enumerate(ids.flatten()) if v == MARKER_ID]
         if len(indexes) != 1:
             return None
         points = corners[indexes[0]].reshape(4,2)
-        ok, rv, tv = cv2.solvePnP(obj,points,k,d,flags=cv2.SOLVEPNP_IPPE_SQUARE)
+        ok, rv, tv = cv2.solvePnP(marker_object,points,k,d,flags=cv2.SOLVEPNP_IPPE_SQUARE)
         if not ok or not np.isfinite(tv).all() or tv[2,0] <= 0:
             return None
         normal = cv2.Rodrigues(rv)[0][:,2]
         gap = float(abs(normal @ tv[:,0]))
-        projected,_ = cv2.projectPoints(obj,rv,tv,k,d)
+        projected,_ = cv2.projectPoints(marker_object,rv,tv,k,d)
         error = float(np.sqrt(np.mean(np.sum((projected.reshape(4,2)-points)**2,axis=1))))
         bearing = float(math.atan2(tv[0,0],tv[2,0]))
         return {'id': MARKER_ID, 'stamp': stamp, 'lens_plane_cm': gap*100,
@@ -424,12 +433,11 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         reference = json.loads(reference_path.read_text()) if reference_path.exists() else None
         if reference is None:
             return False
-        if reference is not None:
-            if (reference['marker_id'] != MARKER_ID or reference['map_version'] != profile['map_version']
-                    or reference['calibration_sha256'] != hashlib.sha256((ROOT/'camera_calibration.yaml').read_bytes()).hexdigest()
-                    or not math.isfinite(reference['front_minus_lens_m'])
-                    or abs(reference['front_minus_lens_m']) > .03):
-                raise RuntimeError('Dock distance reference mismatch')
+        if (reference['marker_id'] != MARKER_ID or reference['map_version'] != profile['map_version']
+                or reference['calibration_sha256'] != hashlib.sha256((ROOT/'camera_calibration.yaml').read_bytes()).hexdigest()
+                or not math.isfinite(reference['front_minus_lens_m'])
+                or abs(reference['front_minus_lens_m']) > .03):
+            raise RuntimeError('Dock distance reference mismatch')
         end, previous, stable, steps = time.monotonic()+45, None, [], 0
         while time.monotonic() < end:
             state = spin()
@@ -449,12 +457,12 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
             if len(stable) < 5:
                 continue
             gap = float(np.median([v['lens_plane_cm'] for v in stable]))/100
-            front_gap = gap + (reference['front_minus_lens_m'] if reference else 0.)
+            front_gap = gap + reference['front_minus_lens_m']
             if .13 <= front_gap <= .17:
                 marker_samples[:] = stable
                 print(TARGET+' stopped marker distance confirmed (front reference; angular docking not claimed)',flush=True)
                 return True
-            if not allow_approach or reference is None or not .17 < front_gap <= .25 or steps >= 6:
+            if not allow_approach or not .17 < front_gap <= .25 or steps >= 6:
                 break
             distance = min(.01, front_gap-.155)
             print('MARKER_APPROACH',json.dumps({'step_m':distance,'front_gap_m':front_gap}),flush=True)

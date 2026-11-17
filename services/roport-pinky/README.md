@@ -58,6 +58,12 @@ IR 획득의 위치 기준이 모두 이 기록을 사용합니다. 원본 `fiel
 좌표 재사용은 AMCL의 왕복 중 오차 변화나 좁은 곳의 회전 충돌까지 해결한다는
 뜻이 아니며, 실제 복귀에서도 신선한 IR·정지·구동권·충돌 검사를 유지합니다.
 
+마커 검출은 동일 프레임·보정 파일에 대해 한 번만 수행하고, 검출기와 마커 형상은
+재사용합니다. 캐시 조회 전 영상 시각을 다시 검사하므로 오래된 결과가 새 관측이 되지
+않으며, 보정 파일이 바뀌면 같은 프레임도 재처리합니다. 구동 가드 JSON 검사는
+`roport_smartcart.trial_contract.guard_body`를 공유하며 잘못되거나 지연된 패킷은
+정상 상태를 갱신하지 않습니다. 실행 스크립트와 스마트카트 패키지를 함께 빌드·배포해야 합니다.
+
 운영자가 검증한 지도와 `layout.yaml`, `field-places.yaml`, `h1-confirmed.json`,
 `camera_calibration.yaml`, `mission-target.json`(`"G1"`)을 별도 현장 폴더에 둡니다.
 거리 보정에는 그 지도·보정 파일에 대응하는 `gate-distance-reference.json`의

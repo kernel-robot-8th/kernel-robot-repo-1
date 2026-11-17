@@ -44,6 +44,57 @@ class Goal:
 
 
 class FieldChecks(unittest.TestCase):
+    def test_cached_detector_keeps_marker_geometry_and_acceptance_limits(self):
+        import cv2
+        import yaml
+        ns = {'cv2': cv2, 'np': np, 'yaml': yaml, 'math': math, 'MARKER_ID': 8}
+        names = {'marker_dictionary', 'marker_detector', 'marker_object'}
+        setup = [n for n in MAIN.body if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id in names for t in n.targets)]
+        exec(compile(ast.Module(body=setup, type_ignores=[]), str(SOURCE), 'exec'), ns)
+        dictionary = ns['marker_dictionary']
+        image = np.full((480, 640), 255, np.uint8)
+        image[195:285, 275:365] = cv2.aruco.drawMarker(dictionary, 8, 90)
+        ok, data = cv2.imencode('.png', image)
+        self.assertTrue(ok)
+        calibration = yaml.safe_dump({'camera_matrix': {'data': [300.,0.,320.,0.,300.,240.,0.,0.,1.]},
+                                     'distortion_coefficients': {'data': [0.]*5}}).encode()
+        detect = helper('detect_marker', ns)
+        result = detect(NS(data=data.tobytes()), 1., calibration)
+        self.assertEqual(result['id'], 8)
+        self.assertTrue(result['safe'])
+        self.assertAlmostEqual(result['lens_plane_cm'], 20., delta=.5)
+        self.assertIsNone(detect(NS(data=b'not an image'), 2., calibration))
+
+    def test_marker_cache_expires_and_rechecks_changed_frame_or_calibration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calibration = root/'camera_calibration.yaml'
+            calibration.write_bytes(b'original')
+            message = NS(header=NS(stamp=NS(sec=1, nanosec=0)))
+            clock = NS(nanoseconds=1_100_000_000)
+            calls = []
+            def detect(msg, stamp, data):
+                calls.append((msg, data))
+                return {'stamp': stamp, 'safe': True} if data == b'original' else None
+            ns = {'camera': {'message': message}, 'node': NS(get_clock=lambda: NS(now=lambda: clock)),
+                  'ROOT': root, 'detect_marker': detect}
+            observe = helper('observe_marker', ns)
+            for _ in range(10):
+                self.assertTrue(observe()['safe'])
+            self.assertEqual(len(calls), 1)
+            clock.nanoseconds = 1_400_000_000
+            self.assertIsNone(observe())
+            self.assertEqual(len(calls), 1)
+            clock.nanoseconds = 1_100_000_000
+            calibration.write_bytes(b'changed')
+            self.assertIsNone(observe())
+            self.assertIsNone(observe())
+            self.assertEqual(len(calls), 2)
+            ns['camera']['message'] = NS(header=message.header)
+            self.assertIsNone(observe())
+            self.assertEqual(len(calls), 3)
+
     def test_handoff_identity_rejects_field_asset_edits_during_a_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -79,11 +130,14 @@ class FieldChecks(unittest.TestCase):
             spec.loader.exec_module(ui)
             ui.latest = {'phase': 'WAIT_DELIVERY', 'mission_id': 'a'*32}
             ui.observed = ui.odom_seen = ui.guard_seen = time.monotonic()
-            ui.guard = {'owner': 'none'}
+            ui.guard = {'owner': 'none', 'blocked': False}
             ui.odom = NS(twist=NS(twist=NS(linear=NS(x=0.), angular=NS(z=0.))))
             sent = []
             ui.remote = sent.append
             self.assertTrue(ui.snapshot()['delivery_enabled'])
+            ui.guard['blocked'] = True
+            self.assertFalse(ui.snapshot()['start_enabled'])
+            ui.guard['blocked'] = False
             with self.assertRaises(ValueError):
                 ui.command('/delivery-complete', {'mission_id': 'b'*32})
             self.assertEqual(sent, [])
@@ -99,6 +153,10 @@ class FieldChecks(unittest.TestCase):
             ui.latest['phase'] = 'STOPPED'
             self.assertFalse(ui.snapshot()['delivery_enabled'])
             self.assertTrue(ui.snapshot()['restart_enabled'])
+            ui.guard['blocked'] = True
+            self.assertFalse(ui.snapshot()['start_enabled'])
+            self.assertTrue(ui.snapshot()['restart_enabled'])
+            ui.guard['blocked'] = False
             ui.latest['phase'] = 'LINE'
             self.assertFalse(ui.snapshot()['restart_enabled'])
             with self.assertRaises(ValueError):
