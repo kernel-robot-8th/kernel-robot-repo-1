@@ -7,6 +7,7 @@ import re
 import shlex
 import subprocess
 import threading
+import textwrap
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -47,10 +48,15 @@ def snapshot():
                   and abs(odom.twist.twist.angular.z) <= .02)
         active = fresh and latest.get('phase') not in ('DONE', 'STOPPED')
         coordinate_mode = (ROOT/'coordinate-recording.lock').exists()
-        start_ok = parked and now-guard_seen < .5 and guard.get('owner') == 'none' and not active and not coordinate_mode and not restarting and not restart_failed
+        return_resume = (latest.get('phase') == 'STOPPED' and latest.get('direction') == 'RETURN'
+                         and any(text in (latest.get('error') or '') for text in ('N12', 'Physical tape'))
+                         and parked and now-guard_seen < .5 and guard.get('owner') == 'none'
+                         and not restarting and not restart_failed)
+        start_ok = parked and now-guard_seen < .5 and guard.get('owner') == 'none' and not active and not coordinate_mode and not restarting and not restart_failed and not return_resume
         return {**latest, 'fresh': fresh, 'physically_stopped': parked,
                 'start_enabled': start_ok, 'coordinate_mode': coordinate_mode,
-                'delivery_enabled': fresh and parked and not restarting and latest.get('phase') == 'WAIT_DELIVERY',
+                'delivery_enabled': return_resume or (fresh and parked and not restarting and latest.get('phase') == 'WAIT_DELIVERY'),
+                'return_resume_enabled': return_resume,
                 'restarting': restarting,
                 'restart_enabled': parked and now-guard_seen < .5 and guard.get('owner') == 'none' and not active and not restarting,
                 'message': message, 'camera': {**camera_info, 'live': now-camera_at < 1.5, 'age_s': round(now-camera_at, 1) if camera_at else None}}
@@ -77,6 +83,42 @@ def refresh_start_localization():
         except OSError:
             pass  # The existing mission readiness deadline still rejects stale data.
         time.sleep(.5)
+
+
+def trial_launch_script(n12=False, checkpoint=None):
+    script = r'''
+    import os, signal, subprocess, shlex, time, json
+    from pathlib import Path
+    root = FIELD_REMOTE_DIR
+    checkpoint = FIELD_CHECKPOINT
+    extra = FIELD_TRIAL_FLAGS
+    if checkpoint is not None:
+     result = json.loads((Path(root)/'result.json').read_text())
+     if result.get('mission_id') != checkpoint or result.get('phase') != 'STOPPED':
+      raise RuntimeError('Return checkpoint changed')
+    target_file = Path(root)/'mission-target.json'
+    target = json.loads(target_file.read_text()) if target_file.exists() else 'G1'
+    if target != 'G1':
+     raise RuntimeError('이 UI는 G1 전용입니다. 현장 목표 설정부터 확인하세요.')
+    for pattern in ('[r]oundtrip.py --drive',):
+     if subprocess.run(['pgrep','-f',pattern],stdout=subprocess.DEVNULL).returncode==0:
+      raise RuntimeError('기존 시험 실행 중')
+    for value in subprocess.run(['pgrep','-f','[r]oport_pinky/trial_guard'],capture_output=True,text=True).stdout.split():
+     os.kill(int(value),signal.SIGINT)
+    for _ in range(30):
+     if subprocess.run(['pgrep','-f','[r]oport_pinky/trial_guard'],stdout=subprocess.DEVNULL).returncode:break
+     time.sleep(.05)
+    else: raise RuntimeError('기존 구동 감시기 종료 지연')
+    base = FIELD_REMOTE_BASE
+    subprocess.run(['tmux','new-session','-d','-s','h1g3_ui_guard_'+str(time.time_ns()),'bash','-lc',base+'exec ros2 run roport_pinky trial_guard'],check=True)
+    if subprocess.run(['tmux','has-session','-t','h1g3_ui_mission'],stderr=subprocess.DEVNULL).returncode==0:
+     subprocess.run(['tmux','kill-session','-t','h1g3_ui_mission'],check=True)
+    cmd=base+'exec python3 '+shlex.quote(root+'/roundtrip.py')+' --drive'+extra+' > '+shlex.quote(root+'/mission.log')+' 2>&1'
+    subprocess.run(['tmux','new-session','-d','-s','h1g3_ui_mission','bash','-lc',cmd],check=True)
+    print('started')
+    '''
+    script = script.replace('FIELD_CHECKPOINT', repr(checkpoint)).replace('FIELD_TRIAL_FLAGS', repr(' --resume-n12' if n12 else '')).replace('FIELD_REMOTE_DIR', repr(REMOTE)).replace('FIELD_REMOTE_BASE', repr('source '+shlex.quote(SETUP)+'; export ROS_DOMAIN_ID=13; export ROPORT_FIELD_CONFIG_DIR='+shlex.quote(REMOTE)+'; '))
+    return textwrap.dedent(script)
 
 
 def command(name, body):
@@ -108,33 +150,7 @@ def command(name, body):
         elif name == '/start':
             if not state['start_enabled']:
                 raise ValueError('로봇 정지·구동권 대기 상태를 먼저 확인하세요.')
-            script = r'''
-import os, signal, subprocess, shlex, time, json
-from pathlib import Path
-root = FIELD_REMOTE_DIR
-target_file = Path(root)/'mission-target.json'
-target = json.loads(target_file.read_text()) if target_file.exists() else 'G1'
-if target != 'G1':
- raise RuntimeError('이 UI는 G1 전용입니다. 현장 목표 설정부터 확인하세요.')
-for pattern in ('[r]oundtrip.py --drive',):
- if subprocess.run(['pgrep','-f',pattern],stdout=subprocess.DEVNULL).returncode==0:
-  raise RuntimeError('기존 시험 실행 중')
-for value in subprocess.run(['pgrep','-f','[r]oport_pinky/trial_guard'],capture_output=True,text=True).stdout.split():
- os.kill(int(value),signal.SIGINT)
-for _ in range(30):
- if subprocess.run(['pgrep','-f','[r]oport_pinky/trial_guard'],stdout=subprocess.DEVNULL).returncode:break
- time.sleep(.05)
-else: raise RuntimeError('기존 구동 감시기 종료 지연')
-base = FIELD_REMOTE_BASE
-subprocess.run(['tmux','new-session','-d','-s','h1g3_ui_guard_'+str(time.time_ns()),'bash','-lc',base+'exec ros2 run roport_pinky trial_guard'],check=True)
-if subprocess.run(['tmux','has-session','-t','h1g3_ui_mission'],stderr=subprocess.DEVNULL).returncode==0:
- subprocess.run(['tmux','kill-session','-t','h1g3_ui_mission'],check=True)
-cmd=base+'exec python3 '+shlex.quote(root+'/roundtrip.py')+' --drive > '+shlex.quote(root+'/mission.log')+' 2>&1'
-subprocess.run(['tmux','new-session','-d','-s','h1g3_ui_mission','bash','-lc',cmd],check=True)
-print('started')
-'''
-            script = script.replace('FIELD_REMOTE_DIR', repr(REMOTE)).replace('FIELD_REMOTE_BASE', repr('source '+shlex.quote(SETUP)+'; export ROS_DOMAIN_ID=13; export ROPORT_FIELD_CONFIG_DIR='+shlex.quote(REMOTE)+'; '))
-            remote(script)
+            remote(trial_launch_script())
             threading.Thread(target=refresh_start_localization, daemon=True).start()
             message = '출발 요청을 보냈습니다. 현재 위치를 새로 관측하고 H1·방향·IR 확인 후 움직입니다.'
         elif name == '/delivery-complete':
@@ -142,6 +158,10 @@ print('started')
             if (not state['delivery_enabled'] or mission_id != state.get('mission_id')
                     or not isinstance(mission_id, str) or not re.fullmatch('[0-9a-f]{32}', mission_id)):
                 raise ValueError('현재 게이트에서 정지·전달 대기 상태일 때만 복귀할 수 있습니다.')
+            if state.get('return_resume_enabled'):
+                remote(trial_launch_script(n12=True, checkpoint=mission_id))
+                message = 'N12 복귀 재시도를 요청했습니다. 실제 정지 위치·기록을 확인한 뒤 선 정렬부터 재개합니다.'
+                return {'success': True, 'message': message}
             packet = json.dumps({'mission_id': mission_id, 'command': 'delivery_complete'})
             remote('from pathlib import Path\nimport os,json\nroot=Path('+repr(REMOTE)+')\np=root/"delivery-command.tmp"\np.write_text('+repr(packet)+')\nos.replace(p,root/"delivery-command.json")\n')
             message = '전달 완료를 확인했습니다. 로봇이 복귀 조건을 확인한 뒤 H1으로 돌아옵니다.'

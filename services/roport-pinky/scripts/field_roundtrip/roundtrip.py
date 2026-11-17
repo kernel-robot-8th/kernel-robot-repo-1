@@ -51,6 +51,35 @@ def confirmed_gate_return(state, gate):
         and abs(math.atan2(math.sin(pose['yaw']-gate.yaw), math.cos(pose['yaw']-gate.yaw))) <= .1)
 
 
+
+def stopped_checkpoint(previous, samples):
+    pose = previous.get('final_state', {}).get('pose')
+    if pose and previous.get('final_state', {}).get('stopped'):
+        return pose
+    for row in reversed(samples):
+        if (row.get('mission_id') == previous.get('mission_id')
+                and row.get('direction') == 'RETURN' and row.get('stopped')
+                and row.get('localization_ready') and row.get('pose')):
+            return row['pose']
+    raise RuntimeError('No actual stopped return observation')
+
+
+def reverse_to_search_start(pose, previous, samples):
+    candidates = [row for row in samples if row.get('mission_id') == previous.get('mission_id')
+        and row.get('phase') == 'NAV2_RETURN_N12' and row.get('stopped')
+        and row.get('localization_ready') and row.get('pose')]
+    if not candidates:
+        raise RuntimeError('No recorded N12 search-start pose')
+    target = candidates[-1]['pose']
+    dx, dy = target['x']-pose['x'], target['y']-pose['y']
+    backward = -(dx*math.cos(pose['yaw'])+dy*math.sin(pose['yaw']))
+    lateral = abs(-dx*math.sin(pose['yaw'])+dy*math.cos(pose['yaw']))
+    angle = abs(math.atan2(math.sin(target['yaw']-pose['yaw']), math.cos(target['yaw']-pose['yaw'])))
+    if not 0 < backward <= .07 or lateral > .015 or angle > .1:
+        raise RuntimeError('Recorded N12 search rollback outside bounds')
+    return backward
+
+
 def main(resume_nav=False, resume_entry=False, resume_return=False, resume_return_transit=False, resume_delivery=False, resume_n12=False):
     import os
     import rclpy
@@ -425,10 +454,14 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         if resume_return_transit or resume_n12:
             previous = json.loads((ROOT/'result.json').read_text())
             if (previous.get('phase') != 'STOPPED' or not (
-                    (resume_n12 and ('Physical tape not found within 6cm' in (previous.get('failure') or '') or previous.get('scope','').startswith('Operator-authorized return')))
+                    (resume_n12 and (any(text in (previous.get('failure') or '') for text in ('Physical tape', 'N12 realignment')) or previous.get('scope','').startswith('Operator-authorized return')))
                     or (not resume_n12 and previous.get('scope','').startswith('Operator-authorized return')))):
                 raise RuntimeError('No matching stopped return checkpoint')
-            saved = previous['final_state']['pose']
+            previous_samples = json.loads((ROOT/'samples.json').read_text())
+            boot_time = time.time()-float(Path('/proc/uptime').read_text().split()[0])
+            if (ROOT/'result.json').stat().st_mtime < boot_time-1:
+                raise RuntimeError('Return checkpoint predates this robot boot')
+            saved = stopped_checkpoint(previous, previous_samples)
             checkpoint = Destination(saved['x'], saved['y'], saved['yaw'])
             if not confirmed_gate_return(state, checkpoint):
                 raise RuntimeError('Current stopped pose differs from return checkpoint by over 5cm/0.1rad')
@@ -504,25 +537,27 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         if not resume_n12:
             navigate('return_entry')
             navigate('return_n12')
-        else:
-            realign_n12()
         state = runner.stop_confirmed()
         age = float('inf') if runner.ir_at is None else time.monotonic()-runner.ir_at
         if not centered(runner.reading, age):
-            for attempt in range(2 if not resume_n12 else 1):
-                if attempt:
-                    realign_n12()
-                    state = runner.stop_confirmed()
-                    age = float('inf') if runner.ir_at is None else time.monotonic()-runner.ir_at
-                    if centered(runner.reading, age):
-                        break
+            if resume_n12:
+                target_pose = load_destination(options.places, options.map, 'return_n12', environment='real')
+                pose = state['pose']
+                if math.hypot(pose['x']-target_pose.x, pose['y']-target_pose.y) > .08:
+                    distance = reverse_to_search_start(pose, previous, previous_samples)
+                    back = BackUp.Goal()
+                    back.target.x, back.speed, back.time_allowance.sec = -distance, .01, 12
+                    behavior(BackUp, 'backup', back, 15)
+            # Align before searching, so a lateral miss cannot drive past the 8cm envelope.
+            realign_n12()
+            state = runner.stop_confirmed()
+            age = float('inf') if runner.ir_at is None else time.monotonic()-runner.ir_at
+            if not centered(runner.reading, age):
                 goal = DriveOnHeading.Goal()
                 goal.target.x, goal.speed, goal.time_allowance.sec = .06, .01, 12
                 state, found = behavior(DriveOnHeading, 'drive_on_heading', goal, 14, stop_on_line=True)
-                if found:
-                    break
-            else:
-                raise RuntimeError('Physical tape not found within 6cm and bounded realignment; remaining stopped')
+                if not found:
+                    raise RuntimeError('Physical tape not found within 6cm after bounded realignment; remaining stopped')
         pose = state['pose']
         if not state['localization_ready'] or not pose:
             raise RuntimeError('Acquired N12 pose unavailable')

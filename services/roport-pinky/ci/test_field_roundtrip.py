@@ -88,6 +88,16 @@ class FieldChecks(unittest.TestCase):
             self.assertIn('--restart', captured[0][0])
             self.assertNotIn('roundtrip.py --drive', captured[0][0])
             self.assertFalse(ui.restarting)
+            ast.parse(ui.trial_launch_script())
+            recovery = ui.trial_launch_script(n12=True, checkpoint='a'*32)
+            ast.parse(recovery)
+            self.assertIn('--resume-n12', recovery)
+            self.assertIn('a'*32, recovery)
+            ui.latest.update(direction='RETURN', error='N12 realignment exceeds 8cm', phase='STOPPED')
+            self.assertTrue(ui.snapshot()['return_resume_enabled'])
+            self.assertFalse(ui.snapshot()['start_enabled'])
+            ui.command('/delivery-complete', {'mission_id': 'a'*32})
+            self.assertIn('--resume-n12', captured[-1][0])
 
     def test_restart_only_manages_explicit_field_sessions(self):
         spec = importlib.util.spec_from_file_location('field_restart_test', SOURCE.with_name('restart_stack.py'))
@@ -107,6 +117,27 @@ class FieldChecks(unittest.TestCase):
         for packet in (None, {}, {'mission_id': 'old', 'command': 'delivery_complete'},
                        {'mission_id': 'new', 'command': 'start'}):
             self.assertFalse(valid(packet, 'new'))
+
+    def test_n12_rollback_requires_a_recorded_short_straight_reverse(self):
+        namespace = {'math': math}
+        stopped = helper('stopped_checkpoint', namespace, nested=False)
+        reverse = helper('reverse_to_search_start', namespace, nested=False)
+        previous = {'mission_id': 'one', 'final_state': {'pose': None, 'stopped': False}}
+        pose = {'x': .14, 'y': -.3, 'yaw': math.pi}
+        rows = [dict(mission_id='one', phase='NAV2_RETURN_N12', direction='RETURN',
+                     stopped=True, localization_ready=True,
+                     pose={'x': .2, 'y': -.3, 'yaw': math.pi}),
+                dict(mission_id='one', phase='DRIVE_ON_HEADING', direction='RETURN',
+                     stopped=True, localization_ready=True, pose=pose)]
+        self.assertEqual(stopped(previous, rows), pose)
+        self.assertAlmostEqual(reverse(pose, previous, rows), .06)
+        for bad_pose in ({**pose, 'y': -.33}, {**pose, 'x': .1}, {**pose, 'yaw': 0.}):
+            with self.assertRaisesRegex(RuntimeError, 'outside bounds'):
+                reverse(bad_pose, previous, rows)
+        with self.assertRaises(RuntimeError):
+            reverse(pose, {'mission_id': 'other'}, rows)
+        with self.assertRaises(RuntimeError):
+            stopped(previous, [])
 
     def test_ir_requires_real_center_and_fresh_sample(self):
         centered = helper('centered', {'math': math}, nested=False)
@@ -175,7 +206,7 @@ class FieldChecks(unittest.TestCase):
               'DriveOnHeading': NS(Goal=Goal)}
         code = compile(ast.Module(body=[block], type_ignores=[]), str(SOURCE), 'exec')
         exec(code, ns)
-        self.assertEqual(len(drives), 1)
+        self.assertEqual(len(drives), 0)
         self.assertEqual(len(alignments), 1)
         runner.reading = 'lost'
         drives.clear()
@@ -183,7 +214,7 @@ class FieldChecks(unittest.TestCase):
         ns['realign_n12'] = lambda: alignments.append(True)
         with self.assertRaisesRegex(RuntimeError, 'Physical tape not found'):
             exec(code, ns)
-        self.assertEqual(len(drives), 2)
+        self.assertEqual(len(drives), 1)
         self.assertEqual(len(alignments), 1)
 
     def test_distance_steps_stop_at_original_range_and_camera_loss_does_not_move(self):
