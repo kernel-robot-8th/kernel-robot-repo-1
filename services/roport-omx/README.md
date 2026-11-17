@@ -54,6 +54,10 @@ python scripts/check_hardware.py --port /dev/serial/by-id/YOUR_OMX_DEVICE --outp
 
 기존 제어 프로그램이 시리얼 포트를 사용 중이면 함께 실행하지 마세요. PING·READ로 ID 11–16의 모델·현재 위치(encoder count)·토크·오류 상태만 읽습니다. 모터 설정·토크를 변경하지 않으며, 주행·관절 동작·캘리브레이션 정확도는 별도 현장 검증이 필요합니다. 검사 실패 시 exit code 1과 JSON 결과를 남깁니다.
 
+## OMX 제어판 연동 기준
+
+Host 프로그램이 함께 동작하는 제어판 버전, 사용하는 제어판 API, 현장 설정 파일은 [docs/control-panel.md](docs/control-panel.md)에 기록합니다.
+
 ## shelf-01 협업 Host 연결 (시험 단계, FFT1-153)
 
 OMX1·2 COOPERATIVE 작업 명령(`roport-omx-task-v1`, `roport/v1/{site}/workcell/shelf-01/{cmd,event,ack}`)을 받아 실행부로 넘기고 event를 회신합니다. MQTT 송수신은 관제 서버 `adapters/mqtt`를 `src/roport_omx/mqtt_link/`로 복사해 사용합니다(원본 커밋은 각 파일 첫 줄). 현재 실행부는 **모의 구현만** 있으며 패널·모터를 호출하지 않습니다.
