@@ -348,6 +348,10 @@ class PanelExecutor:
             # The shelf loading mission ends with the box aligned on the shelf: ask the panel
             # (3.14+) to align after the evaluation even when the model is not in its own list.
             "shelf_align": True,
+            # panel 3.14+: when the episode ended on its detected return with no stop or error, skip
+            # the slow end-of-run safe stop (home move, wrist, gripper close; ~14 s) and just release
+            # torque, because the aligner takes the arms right after. Any other end stays a full stop.
+            "fast_release": True,
         }
         body |= route.eval_options or {}
         if route.output_filter:

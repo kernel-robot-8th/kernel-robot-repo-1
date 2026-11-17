@@ -263,6 +263,7 @@ class PanelExecutorTest(unittest.TestCase):
                 "target_marker": 16,
                 "end_on_return": True,
                 "shelf_align": True,
+                "fast_release": True,
             },
         )
         (progress,) = self.host.poll()
@@ -494,7 +495,9 @@ class PanelExecutorTest(unittest.TestCase):
             self.assertEqual(progress["payload"]["step"], "home_return")
             self.assertEqual(self.panel.home_returns, self.homes + 1)
             self.homes += 1
-            self.assertEqual(self.host.poll(), [])  # still moving: same step, no new event
+            self.assertEqual(
+                self.host.poll(), []
+            )  # still moving: same step, no new event
 
         self.homes = 0
         for home in (False, None):
