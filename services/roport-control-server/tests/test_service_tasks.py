@@ -252,6 +252,52 @@ def test_mqtt_complete_not_aligned_advances_and_keeps_reason(omx_pair):
     assert transfer["align_error"] == "PANEL_ALIGN_FAILED"
 
 
+def test_mqtt_placed_completes_before_the_arms_return_then_alignment_follows(omx_pair):
+    # Host --report-placement: COMPLETE when the box is in its slot, arms still aligning.
+    c, host, executor = omx_pair
+    dispatch_omx(c, host)
+    executor.observe = lambda: {
+        "state": "placed",
+        "placement": {"slot": "2B", "box": 16, "source": "align"},
+        "arms": executor._arms(moving=True),
+    }
+    (placed,) = host.poll()
+    assert placed["payload"]["evidence"] == "shelf_placed"
+    deliver(c, placed)
+    assert c.state["phase"] == "return"  # the Pinky leaves; the arms keep aligning
+    transfer = c.state["transfers"][0]
+    assert transfer["evidence"] == "shelf_placed"
+    executor.observe = lambda: {
+        "state": "finished",
+        "step": "rest",
+        "arms": executor._arms(moving=False),
+        "evidence": "shelf_align",
+    }
+    (aligned,) = host.poll()
+    assert (aligned["type"], aligned["payload"]["align_result"]) == (
+        "shelf_inbound.progress",
+        "ALIGNED",
+    )
+    deliver(c, aligned)  # stored and acknowledged; the transfer is already done
+    assert c.state["phase"] == "return"
+    assert len(c.state["transfers"]) == 1
+
+
+def test_mqtt_placed_without_confirmed_placement_holds(omx_pair):
+    c, host, executor = omx_pair
+    dispatch_omx(c, host)
+    executor.observe = lambda: {
+        "state": "placed",
+        "placement": {},
+        "arms": executor._arms(moving=True),
+    }
+    (placed,) = host.poll()
+    placed["payload"]["placement_confirmed"] = None
+    deliver(c, placed)
+    assert c.state["phase"] == "HOLD"
+    assert c.state["transfers"] == []
+
+
 def test_mqtt_complete_with_unknown_evidence_holds(omx_pair):
     c, host, executor = omx_pair
     dispatch_omx(c, host)

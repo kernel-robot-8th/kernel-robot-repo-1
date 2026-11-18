@@ -47,6 +47,12 @@ ARMS_TIMEOUT_S = 15.0
 PANEL_MIN_VERSION = (3, 14, 0)
 # Unloading needs the camera-only Pinky check after the evaluation (panel 3.15: "pinky_check").
 PANEL_MIN_VERSION_UNLOAD = (3, 15, 0)
+# 3.17.0: the start takes the commanded "slot" ("2B") and "pinky_id", and reports
+# last_result.placement (the box seen in its slot) right after the evaluation, before the alignment.
+PANEL_COMMAND_SLOT = (3, 17, 0)
+# 3.18.0: "end_on_place" ends the loading evaluation once the box sits in its slot and both hands are
+# clear of it; the aligner then takes the arms where they are (hand-over). Older panels ignore it.
+PANEL_END_ON_PLACE = (3, 18, 0)
 # The panel PINGs the AI server about every 5 s (up to ~15 s on a slow GPU tunnel) and stamps
 # gpu_link.infer.udp.at with its clock (time.time(); same PC as the Host). Older than this → stale.
 AI_LINK_FRESH_S = 20.0
@@ -288,8 +294,16 @@ class PanelExecutor:
         base_url: str = "http://127.0.0.1:8865",
         timeout: float = 5.0,
         start_timeout: float = 300.0,
+        report_placement: bool = False,
+        end_on_place: bool = False,
     ):
         self.routes, self.box_marker = routes, box_marker
+        # Loading in two reports: COMPLETE once the box is in its slot (Pinky may leave), then the
+        # alignment result as a progress event. Needs a control tower that accepts "shelf_placed".
+        self.report_placement = report_placement
+        self.end_on_place = end_on_place
+        self._version: tuple[int, ...] | None = None  # from the last readiness check
+        self._placed = False
         self.base_url = base_url.rstrip("/")
         self.timeout, self.start_timeout = timeout, start_timeout
         self.repo_id: str | None = None
@@ -322,6 +336,7 @@ class PanelExecutor:
         armed = status.get("armed")  # absent before panel 3.8 → None → not armed
         busy = bool((status.get("job") or {}).get("running"))
         version = _version(status.get("version"))
+        self._version = version
         unload = any(op == "OUTBOUND" for op, _ in self.routes)
         minimum = PANEL_MIN_VERSION_UNLOAD if unload else PANEL_MIN_VERSION
         if version is None or version < minimum:
@@ -415,6 +430,16 @@ class PanelExecutor:
             # release torque, because the aligner takes the arms right after. Any other end stays
             # a full stop. Unloading has no aligner after it, so it keeps the full safe stop.
             body["fast_release"] = True
+        version = self._version or ()
+        if version >= PANEL_COMMAND_SLOT:
+            # the panel aligns and checks at the commanded slot and that Pinky's tray reference
+            body |= {"slot": task["slot_id"].upper(), "pinky_id": task["pinky_id"]}
+        if (
+            task["operation"] == "INBOUND"
+            and self.end_on_place
+            and version >= PANEL_END_ON_PLACE
+        ):
+            body["end_on_place"] = True
         body |= route.eval_options or {}
         if route.output_filter:
             body |= {
@@ -428,6 +453,29 @@ class PanelExecutor:
         self.repo_id, self._missing_since = reply["repo_id"], None
         self.slot, self._recovery = task["slot_id"], None
         self.operation = task["operation"]
+        self._placed = False
+
+    def _placement(self, result) -> dict | None:
+        """The box seen in the commanded slot while the alignment still runs (panel 3.17+)."""
+        if (
+            not self.report_placement
+            or self.operation != "INBOUND"
+            or self._placed
+            or not isinstance(result, dict)
+            or result.get("repo_id") != self.repo_id
+            or result.get("final")
+            is not False  # finished at once: one report as before
+            or result.get("stage") == "hold"
+        ):
+            return None
+        placement = result.get("placement")
+        if not isinstance(placement, dict) or placement.get("on_shelf") is not True:
+            return None
+        if str(placement.get("slot") or "").lower() != str(self.slot or "").lower():
+            return None  # seen at another slot: the final result decides
+        self._placed = True
+        keys = ("slot", "box", "source", "observed_at", "reported_at")
+        return {"state": "placed", "placement": {k: placement.get(k) for k in keys}}
 
     def observe(self) -> dict:
         if self.repo_id is None:
@@ -435,6 +483,9 @@ class PanelExecutor:
         status = self._call("GET", "/api/status")
         if self._recovery is not None:
             return self._recovering(status)
+        placed = self._placement(status.get("last_result"))
+        if placed is not None:
+            return placed
         job = status.get("job") or {}
         info = job.get("info") or {}
         if job.get("running") and info.get("repo_id") == self.repo_id:

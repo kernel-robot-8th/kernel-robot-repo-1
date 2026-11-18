@@ -50,8 +50,12 @@ def validate_settings(settings):
 # aligned in time, arms home (Mission Complete, Not Aligned; the Host adds "align_error").
 # Unloading: "pinky_load" = the cameras saw the box on the Pinky tray (Mission Complete).
 # "arm_return_only" comes from the simulated executor. Anything else holds.
+# Loading in two reports (2026-11-17, Host --report-placement): "shelf_placed" = the box sits in
+# its slot and the hands left it, the Pinky may leave while the arms still align. The arms are not
+# home yet then; the alignment result follows as a progress event (payload align_result).
 OMX_COMPLETIONS = {
     "arm_return_only",
+    "shelf_placed",
     "shelf_align",
     "shelf_load_not_aligned",
     "pinky_load",
@@ -401,10 +405,15 @@ class OmxTrial:
                 c.hold("omx_" + str(p.get("error_code", "failed")))
             elif phase == "completed":
                 self.deadline = None
+                placed = p.get("evidence") == "shelf_placed"
                 if (
                     not -2 <= age <= 5
                     or p.get("departure_ready") is not True
-                    or not returned(p)
+                    or (
+                        p.get("placement_confirmed") is not True
+                        if placed
+                        else not returned(p)
+                    )
                     or p.get("evidence") not in OMX_COMPLETIONS
                 ):
                     c.hold("omx_completion_not_safe")
