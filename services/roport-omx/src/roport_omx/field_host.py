@@ -17,6 +17,14 @@ NODES = {"omx1": "N21", "omx2": "N22", "shelf-01": "N11", "omx3": "N01"}
 TERMINAL = {"completed", "failed", "rejected", "interrupted"}
 
 
+class ReadinessPending(ValueError):
+    """Reconciliation is valid but still waiting for fresh device observations."""
+
+
+def _target_arms(target):
+    return ("omx1", "omx2") if target == "shelf-01" else (target,)
+
+
 def _now():
     return datetime.now(UTC).isoformat()
 
@@ -98,6 +106,10 @@ class FieldOmxHost:
             }
         recovering = self.data["active"] or self.data.get("recovery_command_id")
         if recovering:
+            executor = executors[self.data["commands"][recovering]["command"]["target"]]
+            recover = getattr(executor, "recover", None)
+            if recover:
+                recover(recovering)
             stop = self.data.pop("stop", None)
             self._fail(
                 self.data["commands"][recovering]["command"],
@@ -114,6 +126,35 @@ class FieldOmxHost:
             self.failed = True
             self.data = deepcopy(self.journal.data)
             raise
+
+    def release_hold(self, note):
+        """Local device-owner confirmation; command history/outbox remain immutable."""
+        if not isinstance(note, str) or not note.strip():
+            raise ValueError("operator note required")
+        if (
+            self.failed
+            or self.data["active"]
+            or self.data.get("stop")
+            or self.data.get("recovery_command_id")
+        ):
+            raise ValueError("confirm the pending device stop before reconciliation")
+        for target, executor in self.executors.items():
+            ready = executor.readiness()
+            arms = _target_arms(target)
+            if ready.get("busy") or ready.get("error"):
+                raise ValueError(target + ": executor busy or fault")
+            if ready.get("armed") is not True or any(
+                not _flags(ready.get("arms", {}).get(arm))["ready"] for arm in arms
+            ):
+                raise ReadinessPending(
+                    target + ": stopped, returned and empty observation required"
+                )
+        if self.data["hold"]:
+            self.data.setdefault("recoveries", []).append(
+                {"fault": self.data["hold"], "note": note, "at": _now()}
+            )
+            self.data["hold"] = None
+            self._save()
 
     def pending(self):
         return deepcopy(self.data["outbox"])
@@ -274,15 +315,13 @@ class FieldOmxHost:
         involved = set()
         if active:
             owner = active["command"]["target"]
-            involved = {owner}
-            if owner == "shelf-01":
-                involved.update(("omx1", "omx2"))
+            involved = {owner, *_target_arms(owner)}
         observer = owner if target in involved else target
         try:
             ready = self.executors[observer].readiness()
         except Exception:  # noqa: BLE001 - unreadable device cannot be ready
             ready = {"error": "executor_unavailable", "arms": {}}
-        arm_names = ["omx1", "omx2"] if target == "shelf-01" else [target]
+        arm_names = _target_arms(target)
         arms = [
             {
                 "robot_id": a,
@@ -292,6 +331,12 @@ class FieldOmxHost:
             }
             for a in arm_names
         ]
+        # The panel omits live motor reads while its program owns the bus.
+        # Unknown pose stays unknown; an explicit device fault is never suppressed.
+        if target in involved and ready.get("busy") and not ready.get("error"):
+            for arm in arms:
+                if arm["robot_id"] not in ready.get("arms", {}):
+                    arm["fault"] = None
         fault = (
             self.data["hold"]
             or ready.get("error")
@@ -488,9 +533,7 @@ class FieldOmxHost:
         ):
             return [self._event(stop, "rejected", reason="target_command_not_active")]
         original = active["command"]
-        involved = {original["target"]}
-        if original["target"] == "shelf-01":
-            involved.update(("omx1", "omx2"))
+        involved = {original["target"], *_target_arms(original["target"])}
         if stop["target"] not in involved:
             return [self._event(stop, "rejected", reason="wrong_stop_target")]
         executor = self.executors[original["target"]]

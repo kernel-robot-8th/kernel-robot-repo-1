@@ -26,10 +26,11 @@ from roport_omx.field_executors import (
     WarehouseExecutor,
 )
 from roport_omx.field_host import FieldOmxHost
+from roport_omx.managed_panel import ManagedPanelExecutor
 from roport_omx.mqtt_link import field_wire as wire
 from roport_omx.mqtt_link.journal import Journal
 from roport_omx.mqtt_link.mqtt import MqttConfig, MqttTransport
-from roport_omx.panel_executor import PanelExecutor, Route
+from roport_omx.panel_executor import Route
 from test_omx3_runner import FakeRobot, ScriptPolicy, make
 from test_panel_executor import MODEL, FakePanel
 
@@ -102,7 +103,8 @@ def panel_device_executor(
     arrival_observation(task) reads the fixture's currently observed Pinky visit.
     The fixture's fixed marker/package association is not a production inventory lookup.
     """
-    panel = FakePanel()
+    panel = FakePanel(managed=True)
+    stack.callback(panel.ledger.close)
     stack.callback(panel.server.server_close)
     stack.callback(panel.server.shutdown)
     routes = {
@@ -110,7 +112,7 @@ def panel_device_executor(
         for op in ("INBOUND", "OUTBOUND")
         for slot in ("1b", "2b")
     }
-    actual = PanelExecutor(routes, box_marker=marker_id, base_url=panel.url)
+    actual = ManagedPanelExecutor(routes, box_marker=marker_id, base_url=panel.url)
     sensor = {"run": 0, "started": None, "placed": False}
 
     def tick():
@@ -147,6 +149,12 @@ def panel_device_executor(
         },
         stop=lambda: panel.finish(exit_ok=False, stopped_by="중지"),
     )
+    stack.callback(executor.close)
+    deadline = time.monotonic() + 2
+    while not executor.readiness().get("armed"):
+        if time.monotonic() >= deadline:
+            raise AssertionError("panel preparation did not finish")
+        time.sleep(0.005)
     return SimpleNamespace(executor=executor, panel=panel, tick=tick, sensor=sensor)
 
 
@@ -412,7 +420,7 @@ def test_device_executor_command_to_saved_result_over_mqtt(
                             "schema",
                             "FieldOmxHost",
                             type(executor).__name__,
-                            "Runner" if robot else "PanelExecutor",
+                            "Runner" if robot else "ManagedPanelExecutor",
                         ],
                         "command": command,
                         "events": events,
@@ -423,3 +431,165 @@ def test_device_executor_command_to_saved_result_over_mqtt(
                     indent=2,
                 )
             )
+
+
+def test_panel_start_delay_keeps_mqtt_status_and_stop_responsive(broker, tmp_path):
+    """A real MQTT stop is accepted while the actual HTTP start is still blocked."""
+    port = broker[0]
+    errors, events = [], []
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+    with ExitStack() as stack:
+        device = panel_device_executor(
+            stack, package_id="package-17", arrival_observation=lambda _: "arrival"
+        )
+        stack.callback(release.set)
+
+        def delayed_start():
+            entered.set()
+            assert release.wait(5)
+
+        device.panel.before_start = delayed_start
+        # The local stop and command-aware cancellation are independent of start HTTP.
+        device.executor.stop = lambda: device.panel.status["job"].update(running=False)
+        journal = Journal(tmp_path / "delayed.json")
+        stack.callback(journal.close)
+        host = FieldOmxHost(
+            journal,
+            {"shelf-01": device.executor},
+            alignment=lambda _: {
+                "pinky_id": "pinky1",
+                "pinky_boot_version": "pinky-boot",
+                "arrival_command_id": "arrival",
+                "observed_at": now(),
+                "alignment": "confirmed",
+            },
+        )
+        host.observe_pinky(
+            wire.build_message(
+                "robot_state",
+                "pinky1",
+                "control-01",
+                {
+                    "boot_version": "pinky-boot",
+                    "observed_at": now(),
+                    "sequence": 1,
+                    "active_command_id": None,
+                    "state": {
+                        "node": "N11",
+                        "arrival_command_id": "arrival",
+                        "mode": "line",
+                        "stopped": True,
+                        "line_enabled": False,
+                        "nav2_ready": False,
+                        "localization_ready": False,
+                        "drive_owner": "none",
+                        "graph_version": "test-graph",
+                        "map_version": "test-map",
+                        "heading_rad": 0,
+                        "fault": None,
+                    },
+                },
+            )
+        )
+        endpoint = MqttTransport(
+            MqttConfig("127.0.0.1", "delay-host", port=port),
+            [wire.topic("shelf-01", c) for c in ("cmd", "ack")],
+        )
+        controller = MqttTransport(
+            MqttConfig("127.0.0.1", "delay-control", port=port),
+            [wire.topic("shelf-01", "event")],
+        )
+        for transport in (endpoint, controller):
+            transport.start()
+            stack.callback(transport.stop)
+
+        def run():
+            try:
+                serve(host, endpoint, stop=done)
+            except Exception as exc:  # noqa: BLE001 - forward worker errors
+                errors.append(exc)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        stack.callback(thread.join, 5)
+        stack.callback(done.set)
+        command = wire.build_message(
+            "shelf_transfer_command",
+            "control-01",
+            "shelf-01",
+            {
+                "expected_boot_version": host.boot_version,
+                "operation": "store",
+                "slot_id": "2b",
+                "package_id": "package-17",
+                "pinky_id": "pinky1",
+                "expected_pinky_boot_version": "pinky-boot",
+                "arrival_command_id": "arrival",
+                "arms": [
+                    {"robot_id": r, "expected_boot_version": host.boot_version}
+                    for r in ("omx1", "omx2")
+                ],
+                **VERSIONS,
+            },
+            command_id="delayed-start",
+            expires_at=(datetime.now(UTC) + timedelta(seconds=10)).isoformat(),
+        )
+
+        def pump(predicate, timeout=2):
+            deadline = time.monotonic() + timeout
+            while not predicate():
+                assert not errors, errors
+                assert time.monotonic() < deadline, events
+                try:
+                    delivery = controller.receive(0.02)
+                except Empty:
+                    continue
+                event = wire.decode(delivery.payload)
+                events.append(event)
+                controller.ack(delivery)
+
+        controller.publish(wire.topic("shelf-01", "cmd"), command)
+        pump(entered.is_set)
+        stop_command = wire.build_message(
+            "robot_stop_command",
+            "control-01",
+            "shelf-01",
+            {
+                "expected_boot_version": host.boot_version,
+                "target_command_id": "delayed-start",
+                "reason": "operator_stop",
+            },
+            command_id="stop-delayed",
+            expires_at=(datetime.now(UTC) + timedelta(seconds=10)).isoformat(),
+        )
+        timer = threading.Timer(2.5, release.set)
+        timer.start()
+        stack.callback(timer.join, 3)
+        stack.callback(timer.cancel)
+        stopped_at = time.monotonic()
+        controller.publish(wire.topic("shelf-01", "cmd"), stop_command)
+        pump(
+            lambda: any(
+                e.get("command_id") == "stop-delayed"
+                and e["payload"].get("status") == "accepted"
+                for e in events
+            )
+        )
+        count = sum(e["type"] == "robot_state" for e in events)
+        pump(lambda: sum(e["type"] == "robot_state" for e in events) > count)
+        pump(
+            lambda: any(
+                e.get("command_id") == "stop-delayed"
+                and e["payload"].get("status") == "completed"
+                for e in events
+            )
+        )
+        assert host.watchdog_s == 3
+        assert time.monotonic() - stopped_at < host.watchdog_s
+        assert not release.is_set()
+        assert not device.executor.start_future.done()
+        timer.join(3)
+        with pytest.raises(ValueError, match="panel_command_cancelled"):
+            device.executor.start_future.result(timeout=1)
+        assert host.data["hold"] and not host.data["active"]
+        assert not device.panel.starts and not device.panel.status["job"]["running"]

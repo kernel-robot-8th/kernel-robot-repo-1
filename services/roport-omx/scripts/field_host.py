@@ -12,7 +12,7 @@ from queue import Empty
 
 from field_mock import virtual_alignment, virtual_executors
 
-from roport_omx.field_host import FieldOmxHost
+from roport_omx.field_host import FieldOmxHost, ReadinessPending
 from roport_omx.mqtt_link.field_wire import decode, topic
 from roport_omx.mqtt_link.journal import Journal
 from roport_omx.mqtt_link.mqtt import MqttConfig, MqttTransport
@@ -75,6 +75,10 @@ def serve(host, transport, *, stop=None):
         command = host.data["commands"].get(host.data["active"])
         if command:
             host._fail(command["command"], "mqtt_owner_stopped")
+        for executor in host.executors.values():
+            close = getattr(executor, "close", None)
+            if close:
+                close()
 
 
 def main():
@@ -93,6 +97,10 @@ def main():
         "--factory", help="module:function returning (executors, alignment_sensor)"
     )
     parser.add_argument("--hardware-authorized", action="store_true")
+    parser.add_argument(
+        "--reconcile-note",
+        help="local confirmation after device stop/return; preserves journal",
+    )
     parser.add_argument(
         "--package-size", choices=["small", "large", "unknown"], default="small"
     )
@@ -135,10 +143,23 @@ def main():
             host = FieldOmxHost(
                 journal, executors, control=args.control, alignment=sensor
             )
+        if args.reconcile_note is not None:
+            # Async panel readiness may need a fresh read after owner restart.
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    host.release_hold(args.reconcile_note)
+                    break
+                except ReadinessPending as exc:
+                    if time.monotonic() >= deadline:
+                        parser.error(str(exc))
+                    time.sleep(0.05)
+                except ValueError as exc:
+                    parser.error(str(exc))
         config = MqttConfig(
             host=args.host,
             port=args.port,
-            client_id="roport-field-omx",
+            client_id="roport-field-" + "-".join(sorted(host.executors)),
             tls=os.environ.get("ROPORT_MQTT_TLS") == "1",
             ca_file=os.environ.get("ROPORT_MQTT_CA_FILE"),
             username=os.environ.get("ROPORT_MQTT_USERNAME"),
