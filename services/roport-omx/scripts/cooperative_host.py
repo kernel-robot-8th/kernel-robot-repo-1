@@ -160,7 +160,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--routes", type=Path, help="panel: (operation, slot) → model JSON file"
     )
     parser.add_argument(
-        "--box-marker", type=int, help="panel test: box ArUco ID used for every task"
+        "--box-marker",
+        type=int,
+        help="ignored (kept for old start commands): each command's package_id names the box",
     )
     parser.add_argument(
         "--report-placement",

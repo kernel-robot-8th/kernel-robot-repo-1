@@ -20,7 +20,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cooperative import ARMS, OPERATIONS, SLOTS, Rejected
+from .cooperative import ARMS, OPERATIONS, SLOT_ARMS, SLOTS, Rejected
 from .mqtt_link.messages import check_expiry
 
 ARM_SIDES = {"left": "omx1", "right": "omx2"}
@@ -53,6 +53,23 @@ PANEL_COMMAND_SLOT = (3, 17, 0)
 # 3.18.0: "end_on_place" ends the loading evaluation once the box sits in its slot and both hands are
 # clear of it; the aligner then takes the arms where they are (hand-over). Older panels ignore it.
 PANEL_END_ON_PLACE = (3, 18, 0)
+# package_id is the box's ArUco marker number as a string (agreed with control, same rule as OMX3's
+# omx3/target.py): ASCII digits, no leading zero. Package markers 15-22 except 18, the Pinky tray
+# marker since docs/aruco/markers.yaml v1.6. A route may narrow it to the boxes its model learned.
+PACKAGE_MARKERS = frozenset({15, 16, 17, 19, 20, 21, 22})
+_MARKER_NUMBER = re.compile(r"[1-9]?[0-9]")
+
+
+def package_marker(package_id) -> int:
+    """The box marker named by the command's package_id; anything else is refused unmoved."""
+    if not isinstance(package_id, str) or not _MARKER_NUMBER.fullmatch(package_id):
+        raise Rejected("INVALID_TARGET")
+    marker = int(package_id)
+    if marker not in PACKAGE_MARKERS:
+        raise Rejected("INVALID_TARGET")
+    return marker
+
+
 # The panel PINGs the AI server about every 5 s (up to ~15 s on a slow GPU tunnel) and stamps
 # gpu_link.infer.udp.at with its clock (time.time(); same PC as the Host). Older than this → stale.
 AI_LINK_FRESH_S = 20.0
@@ -253,15 +270,40 @@ class Route:
     filter_gripper: bool = False
     # extra panel eval fields, limited to EVAL_OPTIONS
     eval_options: dict | None = None
+    # box markers the model learned; None = any package marker
+    markers: frozenset[int] | None = None
 
 
-def load_routes(path: Path) -> dict[tuple[str, str], Route]:
-    """{"routes": [{"operation", "slot_id", "model_path", "task", "episode_s", "reset_s"}]}"""
+def _route_key(task: dict) -> tuple[str, str, str]:
+    return (task["operation"], task["slot_id"], task["manipulation_mode"])
+
+
+def load_routes(path: Path) -> dict[tuple[str, str, str], Route]:
+    """{"routes": [{"operation", "slot_id", "model_path", "task", "episode_s", "reset_s"}]}
+
+    Optional per route: "manipulation_mode" (the slot's own, COOPERATIVE for column B and DEDICATED
+    for A/C), "markers" (box markers the model learned), output_filter, filter_gripper, eval_options.
+    """
     routes = {}
     for item in json.loads(Path(path).read_text())["routes"]:
-        key = (item["operation"], item["slot_id"])
-        if key[0] not in OPERATIONS.values() or key[1] not in SLOTS:
-            raise ValueError(f"unknown operation/slot in routes: {key}")
+        operation, slot = item["operation"], item["slot_id"]
+        if operation not in OPERATIONS.values() or slot not in SLOTS:
+            raise ValueError(f"unknown operation/slot in routes: {(operation, slot)}")
+        mode = item.get("manipulation_mode") or SLOT_ARMS[slot[1]][0]
+        if mode != SLOT_ARMS[slot[1]][0]:
+            raise ValueError(
+                f"route {(operation, slot)}: slot {slot} is {SLOT_ARMS[slot[1]][0]}"
+            )
+        key = (operation, slot, mode)
+        markers = item.get("markers")
+        if markers is not None and (
+            not isinstance(markers, list)
+            or not markers
+            or any(type(m) is not int or m not in PACKAGE_MARKERS for m in markers)
+        ):
+            raise ValueError(
+                f"route {key} markers must be package markers {sorted(PACKAGE_MARKERS)}"
+            )
         if key in routes:
             raise ValueError(f"duplicate route: {key}")
         route = Route(
@@ -272,6 +314,7 @@ def load_routes(path: Path) -> dict[tuple[str, str], Route]:
             item.get("output_filter") or None,
             bool(item.get("filter_gripper", False)),
             dict(item.get("eval_options") or {}) or None,
+            frozenset(markers) if markers is not None else None,
         )
         if not route.model_path or not route.task:
             raise ValueError(f"route {key} needs model_path and task")
@@ -290,9 +333,9 @@ class PanelExecutor:
 
     def __init__(
         self,
-        routes: dict[tuple[str, str], Route],
+        routes: dict[tuple[str, str, str], Route],
         *,
-        box_marker: int | None,
+        box_marker: int | None = None,  # unused: the command's package_id names the box
         base_url: str = "http://127.0.0.1:8865",
         timeout: float = 5.0,
         start_timeout: float = 300.0,
@@ -301,6 +344,7 @@ class PanelExecutor:
         place_shadow: bool = False,
     ):
         self.routes, self.box_marker = routes, box_marker
+        self.box: int | None = None  # the running task's box marker
         # Loading in two reports: COMPLETE once the box is in its slot (Pinky may leave), then the
         # alignment result as a progress event. Needs a control tower that accepts "shelf_placed".
         self.report_placement = report_placement
@@ -342,7 +386,7 @@ class PanelExecutor:
         busy = bool((status.get("job") or {}).get("running"))
         version = _version(status.get("version"))
         self._version = version
-        unload = any(op == "OUTBOUND" for op, _ in self.routes)
+        unload = any(key[0] == "OUTBOUND" for key in self.routes)
         minimum = PANEL_MIN_VERSION_UNLOAD if unload else PANEL_MIN_VERSION
         if version is None or version < minimum:
             need = ".".join(map(str, minimum))
@@ -385,11 +429,14 @@ class PanelExecutor:
 
     def check(self, task: dict) -> None:
         """Refuse before acceptance: no route, no box marker or the model is not trained yet."""
-        route = self.routes.get((task["operation"], task["slot_id"]))
+        route = self.routes.get(_route_key(task))
         if route is None:
             raise Rejected("UNSUPPORTED_SLOT")
-        if self.box_marker is None:
-            raise Rejected("BOX_MARKER_UNKNOWN")
+        marker = package_marker(task["package_id"])  # INVALID_TARGET
+        if route.markers is not None and marker not in route.markers:
+            raise Rejected(
+                "MODEL_NOT_READY"
+            )  # this slot's model never learned that box
         try:
             models = self._model_paths()
         except Exception as exc:
@@ -406,15 +453,16 @@ class PanelExecutor:
         return paths
 
     def start(self, task: dict) -> None:
-        route = self.routes[(task["operation"], task["slot_id"])]
+        route = self.routes[_route_key(task)]
+        box = package_marker(task["package_id"])
         body = {
             "source": "mqtt",
             "model_path": route.model_path,
-            "task": route.task.replace("{box}", str(self.box_marker)),
+            "task": route.task.replace("{box}", str(box)),
             "episodes": 1,
             "episode_s": route.episode_s,
             "reset_s": route.reset_s,
-            "target_marker": self.box_marker,
+            "target_marker": box,
             # panel 3.12+: end the episode once the arms are back at the start pose with grippers
             # released, so the policy does not start the task again before episode_s runs out
             "end_on_return": True,
@@ -456,7 +504,7 @@ class PanelExecutor:
             raise RuntimeError("panel did not return the run's repo_id")
         self.repo_id, self._missing_since = reply["repo_id"], None
         self.slot, self._recovery = task["slot_id"], None
-        self.operation = task["operation"]
+        self.operation, self.box = task["operation"], box
         self._placed = False
 
     def _placement(self, result) -> dict | None:

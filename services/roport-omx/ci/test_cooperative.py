@@ -43,6 +43,16 @@ def request(kind: str, payload: dict, *, expires_s: float = 10, **ids) -> dict:
     }
 
 
+def slot_arms(slot: str) -> dict:
+    """The arm assignment the Host requires for a slot: B both, A OMX1, C OMX2 (TK 2026-11-18)."""
+    arm = {"a": "omx1", "b": None, "c": "omx2"}[slot[1]]
+    return {
+        "manipulation_mode": "DEDICATED" if arm else "COOPERATIVE",
+        "assigned_arm_id": arm,
+        "robot_ids": [arm] if arm else ["omx1", "omx2"],
+    }
+
+
 def task_payload(boot_id: str, **changes) -> dict:
     payload = {
         "binding_id": BINDING,
@@ -54,7 +64,7 @@ def task_payload(boot_id: str, **changes) -> dict:
         "robot_ids": ["omx1", "omx2"],
         "package_id": "pkg-1",
         "quantity": 1,
-        "slot_id": "1a",
+        "slot_id": "1b",
         "pinky_id": "pinky1",
         "dock_session_id": "dock-1",
         "resource_token": "grant-1",
@@ -136,7 +146,7 @@ class CooperativeHostTest(unittest.TestCase):
         self.assertIsNone(p["placement_confirmed"])
         self.assertIsNone(p["quantity_confirmed"])
         self.assertEqual(p["evidence"], "arm_return_only")
-        self.assertEqual(p["slot_id"], "1a")
+        self.assertEqual(p["slot_id"], "1b")
         self.assertEqual(self.host.poll(), [])
         self.assertIsNone(self.host.hold)
 
@@ -201,11 +211,29 @@ class CooperativeHostTest(unittest.TestCase):
         self.host.clear_hold()
         self.assertEqual(self.cmd(self.inbound())[0]["payload"]["phase"], "ACCEPTED")
 
+    def test_slot_decides_which_arms_work(self):
+        cases = [
+            ("1a", slot_arms("1a"), "ACCEPTED"),
+            ("2c", slot_arms("2c"), "ACCEPTED"),
+            ("2b", slot_arms("2b"), "ACCEPTED"),
+            ("1a", slot_arms("1b"), "SLOT_ARM_MISMATCH"),  # A is OMX1 alone, not both
+            ("2c", slot_arms("2a"), "SLOT_ARM_MISMATCH"),  # C is OMX2, not OMX1
+            ("2b", slot_arms("2a"), "SLOT_ARM_MISMATCH"),  # B needs both arms
+            ("1a", slot_arms("1a") | {"robot_ids": ["omx1", "omx2"]}, "SLOT_ARM_MISMATCH"),
+        ]
+        for slot, arms, want in cases:
+            with self.subTest(slot=slot, arms=arms):
+                (event,) = self.cmd(self.inbound(slot_id=slot, **arms))
+                p = event["payload"]
+                self.assertEqual(p.get("error_code") or p["phase"], want)
+                self.host.poll()
+
     def test_invalid_requests_are_rejected(self):
         cases = {
             "BOOT_MISMATCH": self.inbound(expected_boot_id="old-boot"),
             "BINDING_MISMATCH": self.inbound(binding_id="other"),
-            "COOPERATIVE_SHELF_REQUIRED": self.inbound(manipulation_mode="DEDICATED"),
+            "SLOT_ARM_MISMATCH": self.inbound(manipulation_mode="DEDICATED"),
+            "WORKCELL_MISMATCH": self.inbound(workcell_id="shelf-02"),
             "QUANTITY_UNSUPPORTED": self.inbound(quantity=True),
             "UNSUPPORTED_FIELDS": self.inbound(extra="x"),
             "UNKNOWN_SLOT": self.inbound(slot_id="1A"),
@@ -230,7 +258,7 @@ class CooperativeHostTest(unittest.TestCase):
     def test_each_shelf_slot_is_accepted(self):
         for slot in ("1a", "1b", "1c", "2a", "2b", "2c"):
             with self.subTest(slot):
-                (event,) = self.cmd(self.inbound(slot_id=slot))
+                (event,) = self.cmd(self.inbound(slot_id=slot, **slot_arms(slot)))
                 self.assertEqual(event["payload"]["phase"], "ACCEPTED")
                 self.assertEqual(event["payload"]["slot_id"], slot)
                 self.host.poll()

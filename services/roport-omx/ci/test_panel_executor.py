@@ -24,11 +24,13 @@ from roport_omx.panel_executor import PanelExecutor, Route, load_routes
 
 MODEL = "/models/real_act_2b/pretrained_model"
 ROUTES = {
-    ("INBOUND", "2b"): Route(MODEL, "INBOUND tray->shelf 2B | marker {box}", 40, 15)
+    ("INBOUND", "2b", "COOPERATIVE"): Route(
+        MODEL, "INBOUND tray->shelf 2B | marker {box}", 40, 15
+    )
 }
 OUT_MODEL = "/models/outbound_act_re1112x37_60k_1113/pretrained_model"
 OUT_ROUTE = {
-    ("OUTBOUND", "2b"): Route(
+    ("OUTBOUND", "2b", "COOPERATIVE"): Route(
         OUT_MODEL, "OUTBOUND shelf 2B->pinky | marker {box}", 40, 15
     )
 }
@@ -285,7 +287,7 @@ class PanelExecutorTest(unittest.TestCase):
                 "manipulation_mode": "COOPERATIVE",
                 "assigned_arm_id": None,
                 "robot_ids": ["omx1", "omx2"],
-                "package_id": "box-16",
+                "package_id": "16",
                 "quantity": 1,
                 "slot_id": slot,
                 "pinky_id": "pinky1",
@@ -411,7 +413,7 @@ class PanelExecutorTest(unittest.TestCase):
                 (event,) = self.send(self.inbound())
                 self.assertEqual(event["payload"]["error_code"], code)
         self.panel.status["armed"] = True
-        (event,) = self.send(self.inbound(slot="1a"))
+        (event,) = self.send(self.inbound(slot="1b"))  # both arms, but no model there
         self.assertEqual(event["payload"]["error_code"], "UNSUPPORTED_SLOT")
         self.panel.models = []
         self.executor._models = (0.0, set())
@@ -421,7 +423,7 @@ class PanelExecutorTest(unittest.TestCase):
 
     def test_route_filter_is_sent_with_the_start(self):
         self.executor.routes = {
-            ("INBOUND", "2b"): Route(
+            ("INBOUND", "2b", "COOPERATIVE"): Route(
                 MODEL, "t {box}", 40, 15, "중", False, {"async_mode": True}
             )
         }
@@ -432,11 +434,46 @@ class PanelExecutorTest(unittest.TestCase):
             ("중", False, True),
         )
 
-    def test_unknown_box_is_refused(self):
-        self.executor.box_marker = None
-        (event,) = self.send(self.inbound())
-        self.assertEqual(event["payload"]["error_code"], "BOX_MARKER_UNKNOWN")
+    def test_package_id_names_the_box(self):
+        # same rule as OMX3: the box's marker number as a string, no leading zero
+        # (" 16" or full-width digits never reach the executor: the Host refuses them as fields)
+        for bad in ("box-16", "016", "18", "23", "1.6", "100"):
+            with self.subTest(package_id=bad):
+                message = self.inbound()
+                message["payload"]["package_id"] = bad
+                (event,) = self.send(message)
+                self.assertEqual(event["payload"]["error_code"], "INVALID_TARGET")
         self.assertEqual(self.panel.starts, [])
+        message = self.inbound()
+        message["payload"]["package_id"] = "17"
+        self.send(message)
+        (start,) = self.panel.starts
+        self.assertEqual(
+            (start["task"], start["target_marker"]),
+            ("INBOUND tray->shelf 2B | marker 17", 17),
+        )
+
+    def test_route_takes_only_the_boxes_its_model_learned(self):
+        key = ("INBOUND", "2b", "COOPERATIVE")
+        self.executor.routes = {key: Route(MODEL, "t {box}", 40, 15, markers=frozenset({16, 20}))}
+        message = self.inbound()
+        message["payload"]["package_id"] = "17"
+        (event,) = self.send(message)
+        self.assertEqual(event["payload"]["error_code"], "MODEL_NOT_READY")
+        message = self.inbound()
+        message["payload"]["package_id"] = "20"
+        (event,) = self.send(message)
+        self.assertEqual(event["payload"]["phase"], "ACCEPTED")
+
+    def test_one_arm_slot_needs_its_own_route(self):
+        message = self.inbound(slot="2a")
+        message["payload"] |= {
+            "manipulation_mode": "DEDICATED",
+            "assigned_arm_id": "omx1",
+            "robot_ids": ["omx1"],
+        }
+        (event,) = self.send(message)  # no single-arm model yet
+        self.assertEqual(event["payload"]["error_code"], "UNSUPPORTED_SLOT")
 
     def test_arm_away_from_home_or_closed_gripper_fails(self):
         both = {"OMX 1": arm("left"), "OMX 2": arm("right")}
@@ -1037,8 +1074,23 @@ class PanelExecutorTest(unittest.TestCase):
             "reset_s": 15,
         }
         path.write_text(json.dumps({"routes": [route]}))
-        self.assertEqual(load_routes(path)[("INBOUND", "2b")].model_path, MODEL)
-        for bad in ({"slot_id": "3a"}, {"operation": "LOAD"}, {"model_path": ""}):
+        key = ("INBOUND", "2b", "COOPERATIVE")
+        self.assertEqual(load_routes(path)[key].model_path, MODEL)
+        self.assertIsNone(load_routes(path)[key].markers)
+        path.write_text(json.dumps({"routes": [route | {"markers": [16, 17, 20]}]}))
+        self.assertEqual(load_routes(path)[key].markers, frozenset({16, 17, 20}))
+        one_arm = route | {"slot_id": "2a"}
+        path.write_text(json.dumps({"routes": [one_arm]}))
+        self.assertIn(("INBOUND", "2a", "DEDICATED"), load_routes(path))
+        for bad in (
+            {"slot_id": "3a"},
+            {"operation": "LOAD"},
+            {"model_path": ""},
+            {"manipulation_mode": "DEDICATED"},  # 2B is worked by both arms
+            {"markers": [18]},  # the Pinky tray marker, not a box
+            {"markers": []},
+            {"markers": ["16"]},
+        ):
             with self.subTest(bad):
                 path.write_text(json.dumps({"routes": [route | bad]}))
                 with self.assertRaises(ValueError):
@@ -1053,9 +1105,9 @@ class PanelExecutorTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_routes(path)
         path.write_text(json.dumps({"routes": [route | {"output_filter": "중"}]}))
-        self.assertEqual(load_routes(path)[("INBOUND", "2b")].output_filter, "중")
+        self.assertEqual(load_routes(path)[key].output_filter, "중")
         example = ROOT / "config/cooperative_routes.example.json"
-        self.assertEqual(list(load_routes(example)), [("INBOUND", "2b")])
+        self.assertEqual(list(load_routes(example)), [key])
 
 
     # Loading in two reports (2026-11-17): COMPLETE when the box is in its slot, then the alignment.
@@ -1172,10 +1224,10 @@ class PanelExecutorTest(unittest.TestCase):
 
     def test_placement_is_not_reported_without_the_option_or_elsewhere(self):
         cases = {
-            "option off": dict(option=False),
-            "not on the shelf": dict(on_shelf=False),
-            "unknown": dict(on_shelf=None),
-            "another slot": dict(slot="2A"),
+            "option off": {"option": False},
+            "not on the shelf": {"on_shelf": False},
+            "unknown": {"on_shelf": None},
+            "another slot": {"slot": "2A"},
         }
         for name, case in cases.items():
             with self.subTest(case=name):
