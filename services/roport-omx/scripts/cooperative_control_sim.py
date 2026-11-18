@@ -59,8 +59,13 @@ def new_ids(step: str) -> dict:
 
 
 def wait_events(args, transport, command: dict, log_file):
-    """Yield events of this command until a final one; ack each after it is written."""
+    """Yield events of this command until a final one; ack each after it is written.
+
+    A loading COMPLETE with evidence "shelf_placed" (Host --report-placement) is followed by the
+    alignment result as a progress event carrying "align_result"; wait for that one too.
+    """
     deadline = monotonic() + args.timeout
+    placed = False
     while True:
         remaining = deadline - monotonic()
         if remaining <= 0:
@@ -93,15 +98,31 @@ def wait_events(args, transport, command: dict, log_file):
         )
         transport.publish(topic(args.site, "workcell", WORKCELL, "ack"), ack)
         yield event
-        if event["type"].rsplit(".", 1)[1] in FINAL:
+        payload = event["payload"]
+        if placed and "align_result" in payload:
             return
+        if event["type"].rsplit(".", 1)[1] in FINAL:
+            placed = payload.get("evidence") == "shelf_placed"
+            if not placed:
+                return
 
 
 def show(event: dict) -> None:
     p = event["payload"]
     extra = {
         k: p[k]
-        for k in ("error_code", "step", "departure_ready", "armed", "ready", "hold")
+        for k in (
+            "mission_result",
+            "evidence",
+            "align_result",
+            "align_error",
+            "error_code",
+            "step",
+            "departure_ready",
+            "armed",
+            "ready",
+            "hold",
+        )
         if k in p
     }
     print(
