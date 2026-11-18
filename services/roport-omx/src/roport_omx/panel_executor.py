@@ -160,6 +160,8 @@ HOLD_ERRORS = {
     "PANEL_PINKY_CHECK_NOT_RUN",
     "PANEL_PINKY_CHECK_CONFLICT",
     "PANEL_NOT_ARMED_FOR_HOME",
+    "PANEL_HANDOVER_FAILED",
+    "PANEL_HANDOVER_STOPPED",
     "RESULT_UNAVAILABLE",
 }
 HOME_RETURN_TIMEOUT_S = 90.0
@@ -627,6 +629,29 @@ class PanelExecutor:
                     "arms": arms,
                     "evidence": "shelf_align",
                 }
+            handover = result.get("handover")
+            handover = handover if isinstance(handover, dict) else {}
+            if (
+                error == "PANEL_ALIGN_SKIPPED"
+                and handover.get("state") in {"failed", "stopped"}
+                and handover.get("fallback") == "home"
+            ):
+                # panel 3.18 hand-over: the aligner never took the arms, the panel brought them
+                # home instead; the box was seen placed at the judge moment (no shelf read later)
+                error = "PANEL_HANDOVER_" + handover["state"].upper()
+                placement = result.get("placement")
+                placed = (
+                    isinstance(placement, dict) and placement.get("on_shelf") is True
+                )
+                if handover.get("fallback_ok") is True and placed:
+                    return {
+                        "state": "finished",
+                        "step": "rest",
+                        "arms": arms,
+                        "evidence": NOT_ALIGNED,
+                        "align_error": error,
+                    }
+                return {"state": "failed", "error": error, "arms": arms}
             if error in {"PANEL_ALIGN_SKIPPED", "PANEL_ALIGN_FAILED"}:
                 if align.get("on_shelf") is True:
                     # Completed only if the arms are home with grippers released (observe checks).

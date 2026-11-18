@@ -1180,6 +1180,76 @@ class PanelExecutorTest(unittest.TestCase):
                 (done,) = self.host.poll()
                 self.assertEqual(done["payload"]["evidence"], "shelf_align")
 
+    def test_handover_not_taken_but_arms_home_is_complete_not_aligned(self):
+        # panel 3.18: the aligner never took the arms; the panel brought them home itself
+        placement = {"on_shelf": True, "slot": "2B", "box": 16, "source": "eval_judge"}
+        skipped = {
+            "ran": False,
+            "ok": False,
+            "box": 16,
+            "slot": "2B",
+            "handover": True,
+            "skipped": "넘겨받지 못함 (failed: 8 s)",
+        }
+        cases = [
+            ("failed", True, True, "completed", None),
+            ("stopped", True, True, "completed", None),
+            ("failed", False, True, "failed", "MISSION_HOLD"),
+            ("failed", True, False, "failed", "MISSION_HOLD"),
+        ]
+        for state, fallback_ok, on_shelf, kind, result in cases:
+            with self.subTest(state=state, fallback_ok=fallback_ok, on_shelf=on_shelf):
+                self.host.clear_hold()
+                self.panel.status["job"] = {"running": False}
+                self.host._data["active"] = None
+                self.send(self.inbound())
+                self.panel.finish(
+                    align=skipped,
+                    placement=placement | {"on_shelf": on_shelf},
+                    handover={
+                        "mode": "handover",
+                        "state": state,
+                        "fallback": "home",
+                        "fallback_ok": fallback_ok,
+                    },
+                    stage="done",
+                    final=True,
+                )
+                (event,) = self.host.poll()
+                p = event["payload"]
+                code = "PANEL_HANDOVER_" + state.upper()
+                self.assertTrue(event["type"].endswith("." + kind))
+                if kind == "completed":
+                    self.assertEqual(
+                        (p["mission_result"], p["align_error"]),
+                        ("MISSION_COMPLETE_NOT_ALIGNED", code),
+                    )
+                else:
+                    self.assertEqual((p["mission_result"], p["error_code"]), (result, code))
+
+    def test_two_reports_handover_not_taken_reports_not_aligned(self):
+        self.use_two_reports("3.18.0")
+        self.executor.end_on_place = True
+        self.send(self.inbound())
+        self.assertIs(self.panel.starts[-1]["end_on_place"], True)
+        self.panel.place()
+        self.panel.status["last_result"]["placement"]["source"] = "eval_judge"
+        (done,) = self.host.poll()
+        self.assertEqual(done["payload"]["evidence"], "shelf_placed")
+        self.panel.finish(
+            align={"ran": False, "ok": False, "handover": True, "slot": "2B"},
+            placement={"on_shelf": True, "slot": "2B", "source": "eval_judge"},
+            handover={"state": "failed", "fallback": "home", "fallback_ok": True},
+            stage="done",
+            final=True,
+        )
+        (late,) = self.host.poll()
+        a = late["payload"]
+        self.assertEqual(
+            (a["phase"], a["align_error"]), ("NOT_ALIGNED", "PANEL_HANDOVER_FAILED")
+        )
+        self.assertIsNone(self.host.hold)
+
     def test_outbound_never_reports_a_placement(self):
         self.use_unload_route()
         self.use_two_reports()
