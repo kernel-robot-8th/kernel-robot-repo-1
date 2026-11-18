@@ -148,11 +148,35 @@ class InferenceClientTest(unittest.TestCase):
             self.client.load("/models/m", timeout=0.05, attempts=3)
         self.assertEqual([r[1] for r in self.server.seen], [1, 2, 3])
 
+    def test_server_given_by_host_name_or_json_list_still_gets_replies(self):
+        port = self.server.address[1]
+        for server in (("localhost", port), ["127.0.0.1", port]):
+            with self.subTest(server=server):
+                client = InferenceClient(server, KEY, bind_host="127.0.0.1")
+                try:
+                    self.assertEqual(client.server, ("127.0.0.1", port))
+                    self.assertTrue(client.ping()["ok"])
+                finally:
+                    client.close()
+
     def test_reply_signed_with_another_key_is_rejected(self):
         self.server.key = b"z" * 32
         with self.assertRaises(InferenceTimeout):
             self.client.ping(timeout=0.2)
         self.assertEqual(self.client.stats["bad_mac"], 1)
+
+
+ORIGINAL_WIRE = ROOT.parent / "roport-ai-server" / "src" / "omx_udp" / "wire.py"
+
+
+class WireCopyTest(unittest.TestCase):
+    @unittest.skipUnless(ORIGINAL_WIRE.is_file(), "AI server source not in this branch")
+    def test_wire_matches_the_ai_server_original(self):
+        # this file is a hand copy (plus a first-line note); the two must change together
+        original = ORIGINAL_WIRE.read_text()
+        copy = Path(wire.__file__).read_text()
+        self.assertTrue(copy.startswith("# Copied unchanged from"))
+        self.assertEqual(copy.split("\n", 1)[1], original)
 
 
 if __name__ == "__main__":

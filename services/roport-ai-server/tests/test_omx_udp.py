@@ -1,9 +1,11 @@
 """OMX inference UDP wire and server over loopback; no GPU, no model, no robot."""
 
+import json
 import runpy
 import socket
 import sys
 import time
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -91,6 +93,43 @@ def test_rejected_datagrams(case):
     assert r.feed(datagram, PEER) is None
 
 
+def test_unverified_datagram_never_blocks_a_stream():
+    # a corrupted or forged request_id (wrong MAC) must not raise the stream's newest id
+    (forged,) = wire.pack(request(PING, 2**63), b"z" * 32)
+    r = wire.Reassembler(KEY)
+    assert r.feed(forged, PEER) is None and r.stats["bad_mac"] == 1
+    (ok,) = wire.pack(request(PING, 1), KEY)
+    assert r.feed(ok, PEER).request_id == 1
+
+
+def test_unverified_incomplete_message_only_holds_a_stream_until_it_expires():
+    forged = wire.pack(request(INFER, 2**63, {}, b"x" * 5000), b"z" * 32)
+    r = wire.Reassembler(KEY, timeout=0.01)
+    r.feed(forged[0], PEER)
+    (ok,) = wire.pack(request(PING, 1), KEY)
+    assert r.feed(ok, PEER) is None and r.stats["late"] == 1
+    time.sleep(0.02)
+    assert r.feed(ok, PEER).request_id == 1
+
+
+def test_verified_streams_are_capped():
+    r = wire.Reassembler(KEY, max_streams=2)
+    sessions = [uuid4() for _ in range(3)]
+    for session in sessions:
+        (datagram,) = wire.pack(request(PING, 1, session=session), KEY)
+        assert r.feed(datagram, PEER) is not None
+    assert [s for _, s in r._latest] == sessions[1:]
+
+
+def test_non_finite_numbers_are_refused_both_ways():
+    with pytest.raises(ValueError):
+        wire.encode_body({"actions": [[float("nan")]]})
+    # what an older peer could still send
+    raw = json.dumps({"actions": [[float("inf")]]}).encode()
+    with pytest.raises(ValueError):
+        wire.decode_body(len(raw).to_bytes(4, "big") + raw)
+
+
 def test_short_key_is_refused():
     with pytest.raises(ValueError):
         wire.Reassembler(b"short")
@@ -110,6 +149,10 @@ class FakePolicy:
         time.sleep(self.delay)
         if header["step"] == "boom":
             raise RuntimeError("cuda")
+        if header["step"] == "nan":
+            return {"actions": [[0.1, float("nan")]], "original": [[0.0, 0.0]]}
+        if header["step"] == "huge":  # a reply over MAX_MESSAGE_BYTES
+            return {"actions": [[0]], "original": [[0]], "note": "x" * 5_000_000}
         return {"actions": [[len(data)]], "original": [[0]]}
 
     def status(self):
@@ -169,6 +212,29 @@ def test_server_reports_refusals_and_failures(link):
         assert bad.header["code"] == "BAD_REQUEST", change
     failed = call(infer(5, "boom"))
     assert failed.header["code"] == "INFER_FAILED"
+
+
+def test_reply_that_cannot_be_built_or_sent_never_stops_the_server(link):
+    call, server, _ = link
+    nan = call(infer(1, "nan"))
+    assert (nan.kind, nan.header["code"]) == (ERROR, "INFER_FAILED")
+    huge = call(infer(2, "huge"))
+    assert (huge.kind, huge.header["code"]) == (ERROR, "REPLY_FAILED")
+    assert server.stats["reply_failed"] == 1
+    real = server.sock
+
+    class Refusing:  # a socket whose sends fail (ENOBUFS, firewall EPERM, ...)
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def sendto(self, *_):
+            raise PermissionError("firewall")
+
+    server.sock = Refusing()
+    call(infer(3, "a"), serve=False)
+    assert server.serve_once(2) == 0 and server.stats["send_failed"] == 1
+    server.sock = real
+    assert call(infer(4, "b")).kind == ACTIONS
 
 
 def test_backlog_is_skipped_for_the_newest_observation(link):
@@ -250,3 +316,15 @@ def test_load_info_only_sends_files_and_home_without_loading(panel):
     with pytest.raises(errors.PolicyError) as refused:
         policy.load("/elsewhere/model", {"_info_only": True})
     assert refused.value.code == "MODEL_NOT_ALLOWED"
+
+
+def test_host_copy_of_wire_matches():
+    # roport-omx keeps a hand copy for the host PC; the two must change together
+    ours = Path(wire.__file__).read_text()
+    host = (
+        Path(__file__).resolve().parents[2]
+        / "roport-omx/src/roport_omx/infer_link/wire.py"
+    )
+    if not host.is_file():
+        pytest.skip("roport-omx is not next to this service")
+    assert host.read_text().split("\n", 1)[1] == ours

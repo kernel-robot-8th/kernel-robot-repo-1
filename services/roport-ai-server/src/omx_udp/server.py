@@ -9,6 +9,7 @@ Retries always use a new request_id (LOAD is cheap to repeat: the policy keeps l
 
 import argparse
 import ipaddress
+import math
 import os
 import socket
 import stat
@@ -97,14 +98,32 @@ class InferenceServer:
             return 0
         replies = 0
         for message, peer in self._drain(first):
-            reply_kind, header = self._answer(message)
-            if reply_kind is None:
-                continue
-            reply = Message(reply_kind, message.session, message.request_id, header)
-            for datagram in pack(reply, self.key):
-                self.sock.sendto(datagram, peer)
-            replies += 1
+            kind, header = self._answer(message)
+            if kind is not None and self._reply(message, peer, kind, header):
+                replies += 1
         return replies
+
+    def _reply(self, message: Message, peer: Peer, kind: int, header: dict) -> bool:
+        """Send one reply; a reply that cannot be built or sent is logged, never fatal."""
+        try:
+            datagrams = pack(
+                Message(kind, message.session, message.request_id, header), self.key
+            )
+        except (ValueError, TypeError) as exc:  # too large, not JSON, non-finite
+            self.stats["reply_failed"] += 1
+            print(f"[omx-udp] reply {kind=} not packed: {exc!r}", file=sys.stderr)
+            error = {"code": "REPLY_FAILED", "message": type(exc).__name__}
+            datagrams = pack(
+                Message(ERROR, message.session, message.request_id, error), self.key
+            )
+        try:
+            for datagram in datagrams:
+                self.sock.sendto(datagram, peer)
+        except OSError as exc:  # ENOBUFS, ENETUNREACH, EPERM from a firewall ...
+            self.stats["send_failed"] += 1
+            print(f"[omx-udp] reply to {peer} not sent: {exc!r}", file=sys.stderr)
+            return False
+        return True
 
     def _answer(self, message: Message) -> tuple[int | None, dict]:
         try:
@@ -132,6 +151,8 @@ class InferenceServer:
                 started = time.perf_counter()
                 reply = self.policy.infer(header, message.data)
                 infer_ms = round((time.perf_counter() - started) * 1000, 1)
+                if not all(_finite(reply.get(k)) for k in ("actions", "original")):
+                    raise ValueError("policy returned a non-finite action")
                 return ACTIONS, {"infer_ms": infer_ms} | reply | {
                     **{k: header.get(k) for k in ECHO_FIELDS},
                     "model_version": header.get("model_version") or header["model"],
@@ -150,6 +171,13 @@ class InferenceServer:
     def serve_forever(self):
         while True:
             self.serve_once(1.0)
+
+
+def _finite(value) -> bool:
+    """True when every number in a (nested) list is finite; None counts as absent."""
+    if isinstance(value, list | tuple):
+        return all(_finite(v) for v in value)
+    return not isinstance(value, float) or math.isfinite(value)
 
 
 def read_key(path: Path) -> bytes:
