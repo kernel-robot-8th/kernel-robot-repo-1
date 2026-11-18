@@ -6,6 +6,44 @@ QR·고객 추종 주행은 미구현이다. 마커 없는 대상 검출·선택
 
 ## 마커 없는 대상 추적 준비 · FFT1-86
 
+### 새 입체 인형 외형 Re-ID 영상 검사
+
+`reid_video`는 **저장 영상의 PC 검사 전용**이다. ROS·MQTT·모터를 연결하지 않는다.
+로컬 YOLO 검출 상자를 후보로 사용하고, DINOv2 ViT-S/14 특징 벡터의 코사인 유사도로
+등록한 외형과 비교한다. COCO의 `person`·`teddy bear` 같은 분류명이나 ArUco ID로 대상을 정하지 않는다.
+이는 일반 영상 특징을 사용한 재식별 기준 구현이며, 사람 전용 Re-ID 모델이나 검증된 추종기가 아니다.
+
+기존 PC `preview` 가상환경의 PyTorch·OpenCV·Ultralytics를 사용한다. 신뢰할 수 있는 로컬 모델과
+[DINOv2 공식 소스](https://github.com/facebookresearch/dinov2)를 명시해야 하며 자동 다운로드하지 않는다.
+확인한 소스 revision은 `7764ea0f912e53c92e82eb78a2a1631e92725fc8`, 모델은 `dinov2_vits14`다.
+해당 DINOv2 코드·가중치는 공식 Apache-2.0 조건을 확인했다. 다른 DINO 파생 모델의 조건으로 확대하지 않는다.
+Ultralytics 사용 조건은 아래 기존 PC preview 안내와 같다. 소스의 LICENSE·revision을 외부 모델 폴더에 보존한다.
+
+비공개 기준 JSON은 `[{"label":"target-a","image":"references/front.jpg"},
+{"label":"target-a","image":"references/back.jpg"}, ...]` 형식이다.
+배경을 제외한 대상 crop을 등록하며, 같은 대상의 앞·옆·뒤를 같은 label로 등록한다.
+새 대상을 등록할 때 모델을 새로 학습하지 않고 기준 외형 특징을 계산한다.
+
+```bash
+PYTHONPATH=services/roport-pinky/src/roport_smartcart .venv-target-preview/bin/python -m roport_smartcart.reid_video \
+  --references /absolute/private/references.json \
+  --encoder-source /absolute/private/dinov2-source \
+  --encoder-weights /absolute/private/dinov2_vits14_pretrain.pth \
+  --model /absolute/private/yolo11n.pt --video /absolute/private/held-out.mp4 \
+  --target target-a --output /absolute/private/new-result
+```
+
+기본 유사도 0.7·다른 등록 대상과의 점수 차이 0.05는 **PC 평가 후보값**이다. 확률이나 실물 주행 허용 기준이 아니다.
+선택한 대상이 하나면 MATCH, 여러 개면 AMBIGUOUS, 없으면 LOST이며 임의의 후보를 선택하지 않는다.
+누락 후 다시 일치한 프레임은 REACQUIRED로 기록한다. 동일 외형 복제품을 구별한다고 주장하지 않는다.
+이 초기 검사는 후보 상자가 최소 32×64 px여야 하며, 작은 인형·잘린 몸통·완전 가림에서 검출이 빠질 수 있다.
+검출기가 몸 전체 대신 일부만 잡으면 재식별도 누락되며, 같은 인형의 여러 부분 상자는 AMBIGUOUS가 될 수 있다.
+등록 외형을 늘려도 누락된 검출 상자를 복구하지 못한다. 실제 추종 전 검출 안정성을 별도로 검증한다.
+`preview.mp4`, `frames.jsonl`, 모델/기준 파일 해시가 포함된 `summary.json`을 새 결과 폴더에 저장한다.
+stride 기본값 5로 샘플링하며 결과 영상은 원래 시간 길이로 재생한다. 실시간 처리 성능을 뜻하지 않는다.
+등록 영상과 평가 영상은 **파일 단위로 분리**한다. 상태 횟수·재획득 횟수는 정답 주석이 없는 한 정확도가 아니다.
+원본 영상·기준 crop·가중치·결과 영상은 저장소 밖에 보관한다. 실물 추종·거리 제어는 별도 검증 사항이다.
+
 `target_preview`는 **관찰 전용**이다. ROS·MQTT·Nav2·`cmd_vel`을 연결하거나 로봇을 기동하지 않는다.
 PC의 카메라 번호, 영상 파일, OpenCV에서 지원하는 스트림 URL을 입력받아 YOLO + ByteTrack 결과를 표시한다.
 검출 상자를 클릭하면 한 ID를 선택한다. 대상 누락, 다른 상자와 겹침, 급격한 위치 변화,
