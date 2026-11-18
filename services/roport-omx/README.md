@@ -108,6 +108,7 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 | `ALIGN_HOLD` | 비상 정지·내려놓기 실패·판독 불가 등 사람 확인 필요(`error_code`) | 있음 |
 
 - 놓였음을 보기 전에 최종 결과(정렬 끝)가 먼저 나오면 위의 한 번 보고로 끝납니다. 다른 칸에서 읽혔거나 `on_shelf`가 `true`가 아니면 놓였음으로 보지 않고 최종 결과로 판정합니다.
+- `--place-shadow`(제어판 3.18.0+): 넘겨받기 없이 놓음 판정만 돌려 기록합니다(실물 그림자 시험). `--end-on-place`와 같이 주면 넘겨받기가 우선입니다.
 - `--end-on-place`(제어판 3.18.0+): 상자가 칸에 놓이고 두 손이 상자에서 떨어진 순간 평가를 끝내고, 정렬기가 그 자리에서 팔을 이어받습니다(넘겨받기). 제어판 3.18.0 전에는 보내지 않습니다.
   - 정렬기가 제때 이어받지 못해(`handover.state` `failed`·`stopped`) 제어판이 팔을 홈으로 보냈다면, 판정 순간 상자가 칸에 있었고(`placement.on_shelf: true`) 홈 복귀가 성공(`fallback_ok: true`)했을 때 `MISSION_COMPLETE_NOT_ALIGNED`(`align_error: PANEL_HANDOVER_FAILED`·`PANEL_HANDOVER_STOPPED`)입니다. 홈 복귀가 실패했거나 놓였음을 확인하지 못했으면 HOLD입니다.
   - 모터 설정이 달라 이어받지 않으면(`regs_mismatch`) 제어판이 토크를 켠 채 멈추고(stage `hold`) Host도 HOLD입니다.

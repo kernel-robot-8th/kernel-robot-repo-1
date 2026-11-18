@@ -1070,6 +1070,22 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertEqual((start["slot"], start["pinky_id"]), ("2B", "pinky1"))
         self.assertNotIn("end_on_place", start)
 
+    def test_place_shadow_needs_panel_3_18_and_yields_to_end_on_place(self):
+        self.executor.place_shadow = True
+        cases = [("3.17.3", False, {}), ("3.18.0", False, {"place_shadow": True})]
+        cases.append(("3.18.0", True, {"end_on_place": True}))
+        for version, hand_over, want in cases:
+            with self.subTest(version=version, hand_over=hand_over):
+                self.host.clear_hold()
+                self.panel.status["version"] = version
+                self.panel.status["job"] = {"running": False}
+                self.host._data["active"] = None
+                self.executor.end_on_place = hand_over
+                self.send(self.inbound())
+                start = self.panel.starts[-1]
+                got = {k: start[k] for k in ("place_shadow", "end_on_place") if k in start}
+                self.assertEqual(got, want)
+
     def test_end_on_place_needs_the_option_and_panel_3_18(self):
         self.executor.end_on_place = True
         for version, sent in (("3.17.2", False), ("3.18.0", True)):

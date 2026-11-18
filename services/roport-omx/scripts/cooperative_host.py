@@ -174,6 +174,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="panel 3.18+: end the loading evaluation once the box is placed and the hands are "
         "clear, and let the aligner take the arms there (hand-over)",
     )
+    parser.add_argument(
+        "--place-shadow",
+        action="store_true",
+        help="panel 3.18+: judge the placement during loading and only record it (no hand-over); "
+        "ignored with --end-on-place",
+    )
     parser.add_argument("--mock-run-s", type=float, default=3.0)
     parser.add_argument("--mock-disarmed", action="store_true")
     parser.add_argument(
@@ -206,6 +212,7 @@ def main() -> None:
             base_url=args.panel_url,
             report_placement=args.report_placement,
             end_on_place=args.end_on_place,
+            place_shadow=args.place_shadow,
         )
     else:
         executor = MockExecutor(

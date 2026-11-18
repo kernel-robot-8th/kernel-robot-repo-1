@@ -298,12 +298,15 @@ class PanelExecutor:
         start_timeout: float = 300.0,
         report_placement: bool = False,
         end_on_place: bool = False,
+        place_shadow: bool = False,
     ):
         self.routes, self.box_marker = routes, box_marker
         # Loading in two reports: COMPLETE once the box is in its slot (Pinky may leave), then the
         # alignment result as a progress event. Needs a control tower that accepts "shelf_placed".
         self.report_placement = report_placement
         self.end_on_place = end_on_place
+        # panel 3.18: run the placement judge during loading and only record it (no hand-over)
+        self.place_shadow = place_shadow
         self._version: tuple[int, ...] | None = None  # from the last readiness check
         self._placed = False
         self.base_url = base_url.rstrip("/")
@@ -436,12 +439,11 @@ class PanelExecutor:
         if version >= PANEL_COMMAND_SLOT:
             # the panel aligns and checks at the commanded slot and that Pinky's tray reference
             body |= {"slot": task["slot_id"].upper(), "pinky_id": task["pinky_id"]}
-        if (
-            task["operation"] == "INBOUND"
-            and self.end_on_place
-            and version >= PANEL_END_ON_PLACE
-        ):
-            body["end_on_place"] = True
+        if task["operation"] == "INBOUND" and version >= PANEL_END_ON_PLACE:
+            if self.end_on_place:
+                body["end_on_place"] = True
+            elif self.place_shadow:
+                body["place_shadow"] = True
         body |= route.eval_options or {}
         if route.output_filter:
             body |= {
