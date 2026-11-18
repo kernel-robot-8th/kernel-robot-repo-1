@@ -70,18 +70,24 @@ class DinoEncoder:
         self.mean = torch.tensor([.485, .456, .406]).reshape(3, 1, 1)
         self.std = torch.tensor([.229, .224, .225]).reshape(3, 1, 1)
 
+    def tensor(self, crop, size):
+        if crop.ndim != 3 or crop.shape[2] != 3 or not crop.size or crop.dtype != np.uint8:
+            raise ValueError('nonempty BGR uint8 crop required')
+        image = self.Image.fromarray(crop[:, :, ::-1])
+        image = self.ImageOps.pad(image, (size, size), method=self.Image.Resampling.BICUBIC,
+                                  color=(127, 127, 127))
+        tensor = self.torch.from_numpy(np.array(image)).permute(2, 0, 1).float()/255.
+        return (tensor-self.mean)/self.std
+
+    def patch_features(self, frame, size):
+        with self.torch.inference_mode():
+            features = self.model.forward_features(self.tensor(frame, size)[None])
+        return normalized(features['x_norm_patchtokens'][0].cpu().numpy())
+
     def encode(self, crops):
         if not crops:
             return np.empty((0, self.model.embed_dim), dtype=np.float32)
-        tensors = []
-        for crop in crops:
-            if crop.ndim != 3 or crop.shape[2] != 3 or not crop.size or crop.dtype != np.uint8:
-                raise ValueError('nonempty BGR uint8 crop required')
-            image = self.Image.fromarray(crop[:, :, ::-1])
-            image = self.ImageOps.pad(image, (224, 224), method=self.Image.Resampling.BICUBIC,
-                                      color=(127, 127, 127))
-            tensor = self.torch.from_numpy(np.array(image)).permute(2, 0, 1).float()/255.
-            tensors.append((tensor-self.mean)/self.std)
+        tensors = [self.tensor(crop, 224) for crop in crops]
         # Bound memory even when a reference file contains many views.
         with self.torch.inference_mode():
             batches = [self.model(self.torch.stack(tensors[i:i+16])).cpu().numpy()
@@ -89,7 +95,7 @@ class DinoEncoder:
         return normalized(np.concatenate(batches))
 
 
-def load_gallery(manifest, encoder, threshold=.7, margin=.05):
+def reference_images(manifest):
     import cv2
     manifest = Path(manifest)
     rows = json.loads(manifest.read_text())
@@ -105,4 +111,50 @@ def load_gallery(manifest, encoder, threshold=.7, margin=.05):
             raise ValueError('reference image is unavailable')
         labels.append(row['label'])
         crops.append(image)
-    return AppearanceGallery(labels, encoder.encode(crops), threshold, margin)
+    return labels, crops
+
+
+def patch_boxes(labels, height, width):
+    """Map DINO's padded 32x32 patch regions back to image coordinates."""
+    import cv2
+    if labels.shape != (32, 32) or height <= 0 or width <= 0:
+        raise ValueError('32x32 patch labels and positive image dimensions required')
+    scale = 448 / max(height, width)
+    content_w, content_h = round(width*scale), round(height*scale)
+    left, top = (448-content_w)//2, (448-content_h)//2
+    boxes = []
+    centers = np.arange(32)*14 + 7
+    valid = ((centers[:,None] >= top) & (centers[:,None] < top+content_h)
+             & (centers[None,:] >= left) & (centers[None,:] < left+content_w))
+    for label in sorted(set(labels.ravel()) - {None}):
+        mask = (labels == label).astype(np.uint8)
+        mask[~valid] = 0
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3,3),np.uint8))
+        count, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        for x, y, w, h, area in stats[1:]:
+            if area < 6:
+                continue
+            x1 = max(0, int(((x-1)*14-left)/scale))
+            y1 = max(0, int(((y-1)*14-top)/scale))
+            x2 = min(width, int(((x+w+1)*14-left)/scale))
+            y2 = min(height, int(((y+h+1)*14-top)/scale))
+            if x2-x1 >= 32 and y2-y1 >= 64:
+                boxes.append([x1,y1,x2,y2])
+    # shortcut: region boxes are coarse; validate their geometry before distance control.
+    return sorted(boxes, key=lambda b: (b[2]-b[0])*(b[3]-b[1]), reverse=True)[:12]
+
+
+class AppearanceLocalizer:
+    """Locate registered appearance with DINO patches, without an object detector."""
+    def __init__(self, manifest, encoder, threshold=.7, margin=.05):
+        labels, crops = reference_images(manifest)
+        self.encoder = encoder
+        self.gallery = AppearanceGallery(labels, encoder.encode(crops), threshold, margin)
+        pooled = [encoder.patch_features(crop, 224).mean(axis=0) for crop in crops]
+        # Provisional patch limits, independent of the whole-crop comparison limits.
+        self.patch_gallery = AppearanceGallery(labels, pooled, threshold=.55, margin=.05)
+
+    def propose(self, frame):
+        matches = self.patch_gallery.classify(self.encoder.patch_features(frame, 448))
+        labels = np.array([row['label'] for row in matches], dtype=object).reshape(32,32)
+        return patch_boxes(labels, *frame.shape[:2])

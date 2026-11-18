@@ -1,4 +1,4 @@
-"""Offline detection + appearance Re-ID. Never imports ROS or sends robot commands."""
+"""Offline DINO appearance search + Re-ID. No YOLO, ROS or robot commands."""
 import argparse
 from collections import Counter
 from hashlib import sha256
@@ -8,15 +8,13 @@ import time
 
 import numpy as np
 
-from .appearance_reid import DinoEncoder, load_gallery
+from .appearance_reid import AppearanceLocalizer, DinoEncoder
 
 
-def analyze(frame, detector, encoder, gallery, target):
-    result = detector.predict(frame, conf=.15, iou=.35, agnostic_nms=True, max_det=12,
-                              device='cpu', verbose=False)[0]
+def analyze(frame, localizer, encoder, gallery, target):
     height, width = frame.shape[:2]
     boxes, crops = [], []
-    for box in result.boxes.xyxy.cpu().tolist():
+    for box in localizer.propose(frame):
         x1, y1, x2, y2 = map(int, box)
         x1, x2 = max(0, x1), min(width, x2)
         y1, y2 = max(0, y1), min(height, y2)
@@ -34,7 +32,6 @@ def main(argv=None):
     parser.add_argument('--references', required=True, type=Path)
     parser.add_argument('--encoder-source', required=True, type=Path)
     parser.add_argument('--encoder-weights', required=True, type=Path)
-    parser.add_argument('--model', required=True, type=Path)
     parser.add_argument('--video', required=True, type=Path)
     parser.add_argument('--target', required=True)
     parser.add_argument('--output', required=True, type=Path, help='new private output folder')
@@ -42,18 +39,16 @@ def main(argv=None):
     parser.add_argument('--threshold', type=float, default=.7)
     parser.add_argument('--margin', type=float, default=.05)
     args = parser.parse_args(argv)
-    if (args.stride < 1 or not args.video.is_file() or not args.references.is_file()
-            or not args.model.is_file() or args.model.suffix != '.pt'):
-        parser.error('existing local video, references, .pt model and positive stride required')
+    if args.stride < 1 or not args.video.is_file() or not args.references.is_file():
+        parser.error('existing local video, references and positive stride required')
     if args.output.exists():
         parser.error('output must be a new directory')
     import cv2
-    from ultralytics import YOLO
     encoder = DinoEncoder(args.encoder_source, args.encoder_weights)
-    gallery = load_gallery(args.references, encoder, args.threshold, args.margin)
+    localizer = AppearanceLocalizer(args.references, encoder, args.threshold, args.margin)
+    gallery = localizer.gallery
     if args.target not in gallery.identities:
         parser.error('target is not registered')
-    detector = YOLO(str(args.model), task='detect')
     capture = cv2.VideoCapture(str(args.video))
     writer = None
     frames = processed = reacquired = 0
@@ -76,7 +71,7 @@ def main(argv=None):
                 if index % args.stride:
                     continue
                 start = time.perf_counter()
-                boxes, matches, selection = analyze(frame, detector, encoder, gallery, args.target)
+                boxes, matches, selection = analyze(frame, localizer, encoder, gallery, args.target)
                 elapsed = time.perf_counter()-start
                 total_time += elapsed
                 state = selection['state']
@@ -122,7 +117,7 @@ def main(argv=None):
                'threshold': gallery.threshold, 'margin': gallery.margin,
                'reference_manifest_sha256': sha256(args.references.read_bytes()).hexdigest(),
                'encoder_weights_sha256': sha256(args.encoder_weights.read_bytes()).hexdigest(),
-               'detector_weights_sha256': sha256(args.model.read_bytes()).hexdigest(),
+               'localizer': 'DINOv2 patch appearance search; no YOLO',
                'note': 'State counts are NOT accuracy. No frame ground truth. No robot output.'}
     (args.output/'summary.json').write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary))
