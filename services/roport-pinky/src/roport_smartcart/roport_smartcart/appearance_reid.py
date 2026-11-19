@@ -25,6 +25,11 @@ class AppearanceGallery:
             raise ValueError('invalid gallery or matching limits')
         self.labels = tuple(labels)
         self.identities = tuple(dict.fromkeys(labels))
+        if len(self.identities) < 2:
+            raise ValueError('at least two distinct reference labels are required for margin checking')
+        self.reference_columns = tuple(
+            np.flatnonzero(np.asarray(self.labels) == label) for label in self.identities
+        )
         self.threshold, self.margin = threshold, margin
 
     def classify(self, features):
@@ -32,18 +37,19 @@ class AppearanceGallery:
         if values.shape[1] != self.features.shape[1]:
             raise ValueError('encoder feature dimensions differ')
         similarities = values @ self.features.T
-        result = []
-        for row in similarities:
-            # Compete identities, not different views of the same identity.
-            scores = {label: float(max(row[i] for i, name in enumerate(self.labels) if name == label))
-                      for label in self.identities}
-            ranked = sorted(scores, key=scores.get, reverse=True)
-            best = ranked[0]
-            difference = scores[best] - scores[ranked[1]] if len(ranked) > 1 else 2.
-            accepted = scores[best] >= self.threshold and difference >= self.margin
-            result.append({'label': best if accepted else None,
-                           'score': scores[best], 'margin': difference, 'scores': scores})
-        return result
+        # Compare the best view per identity; multiple views of one identity never compete.
+        scores = np.column_stack([similarities[:, cols].max(axis=1) for cols in self.reference_columns])
+        scores = scores.astype(np.float64)
+        best = scores.argmax(axis=1)
+        best_scores = scores[np.arange(len(scores)), best]
+        margins = best_scores - np.partition(scores, -2, axis=1)[:, -2]
+        accepted = (best_scores >= self.threshold) & (margins >= self.margin)
+        return [
+            {'label': self.identities[best[i]] if accepted[i] else None,
+             'score': float(best_scores[i]), 'margin': float(margins[i]),
+             'scores': dict(zip(self.identities, row.tolist()))}
+            for i, row in enumerate(scores)
+        ]
 
     def select(self, target, matches):
         if target not in self.identities:

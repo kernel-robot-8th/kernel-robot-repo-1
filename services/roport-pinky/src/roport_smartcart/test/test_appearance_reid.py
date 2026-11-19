@@ -43,6 +43,21 @@ def test_invalid_gallery_rejected(labels, threshold, margin):
         AppearanceGallery(labels, [[1.,0.]], threshold, margin)
 
 
+def test_rejects_single_identity_even_with_multiple_reference_views():
+    with pytest.raises(ValueError, match='two distinct reference labels'):
+        AppearanceGallery(['santa', 'santa'], [[1.,0.], [.9,.1]])
+
+
+def test_batch_scores_keep_best_view_and_identity_margin():
+    gallery = AppearanceGallery(['santa', 'barbie', 'santa'],
+                                [[1.,0.], [0.,1.], [.8,.6]])
+    first, second, third = gallery.classify([[.8,.6], [0.,1.], [.31622777,.9486833]])
+    assert first['scores'] == pytest.approx({'santa':1., 'barbie':.6})
+    assert first['margin'] == pytest.approx(.4)
+    assert second['label'] == 'barbie'
+    assert third['label'] == 'barbie'
+
+
 def test_missing_reference_does_not_create_a_gallery(tmp_path):
     path = tmp_path/'references.json'
     path.write_text(json.dumps([{'label':'santa','image':'missing.png'}]))
@@ -98,7 +113,8 @@ def test_analysis_only_compares_valid_localized_regions():
     assert selected['state'] == 'MATCH'
 
 
-def test_offline_pipeline_reports_loss_and_reacquisition_without_ai_download(tmp_path, monkeypatch):
+@pytest.mark.parametrize('declared', [6, 9, 0])
+def test_offline_pipeline_reports_loss_and_reacquisition_without_ai_download(tmp_path, monkeypatch, declared):
     import cv2
     from roport_smartcart import reid_video
 
@@ -140,11 +156,26 @@ def test_offline_pipeline_reports_loss_and_reacquisition_without_ai_download(tmp
     args = ['--references',str(references),'--encoder-source',str(tmp_path),
             '--encoder-weights',str(weights),'--video',str(video),
             '--target','santa','--output',str(output),'--stride','1']
+    real_capture = cv2.VideoCapture
+    class Capture:
+        def __init__(self, path):
+            self.raw = real_capture(path)
+
+        def __getattr__(self, name):
+            return getattr(self.raw, name)
+
+        def get(self, prop):
+            return declared if prop == cv2.CAP_PROP_FRAME_COUNT else self.raw.get(prop)
+
+    monkeypatch.setattr(cv2, 'VideoCapture', Capture)
     assert reid_video.main(args) == 0
+    monkeypatch.setattr(cv2, 'VideoCapture', real_capture)
     rows = [json.loads(line) for line in (output/'frames.jsonl').read_text().splitlines()]
     assert [r['state'] for r in rows] == ['MATCH','LOST','REACQUIRED','LOST','REACQUIRED','MATCH']
     summary = json.loads((output/'summary.json').read_text())
     assert summary['processed'] == 6 and summary['reacquisitions'] == 2
+    assert summary['declared_frames'] == (declared or None)
+    assert bool(summary['warnings']) == (declared != 6)
     assert 'NOT accuracy' in summary['note']
     assert 'no YOLO' in summary['localizer']
     capture = cv2.VideoCapture(str(output/'preview.mp4'))

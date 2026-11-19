@@ -57,8 +57,9 @@ def main(argv=None):
     ever_seen = previously_seen = False
     try:
         fps = capture.get(cv2.CAP_PROP_FPS)
-        declared = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        if not capture.isOpened() or not np.isfinite(fps) or fps <= 0 or declared <= 0:
+        reported_count = capture.get(cv2.CAP_PROP_FRAME_COUNT)
+        declared = int(reported_count) if np.isfinite(reported_count) and reported_count >= 1 else None
+        if not capture.isOpened() or not np.isfinite(fps) or fps <= 0:
             raise ValueError('video has invalid metadata')
         args.output.mkdir(parents=True, exist_ok=False)
         with (args.output/'frames.jsonl').open('w') as log:
@@ -103,15 +104,19 @@ def main(argv=None):
                     if not writer.isOpened():
                         raise RuntimeError('MP4 writer unavailable')
                 writer.write(frame)
-        if frames != declared:
-            raise ValueError('video ended before its declared frame count')
         if not processed:
             raise ValueError('video has no processed frames')
     finally:
         capture.release()
         if writer is not None:
             writer.release()
+    warnings = []
+    if declared is None:
+        warnings.append('Declared frame count unavailable; inspect decoded coverage.')
+    elif frames != declared:
+        warnings.append('Decoded frame count differs from metadata; verify the input for truncation or inaccurate metadata.')
     summary = {'target': args.target, 'frames': frames, 'processed': processed,
+               'declared_frames': declared, 'warnings': warnings,
                'states': dict(counts), 'reacquisitions': reacquired,
                'mean_processing_ms': round(total_time/processed*1000, 1),
                'threshold': gallery.threshold, 'margin': gallery.margin,
