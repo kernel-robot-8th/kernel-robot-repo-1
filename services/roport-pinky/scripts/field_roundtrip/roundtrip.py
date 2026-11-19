@@ -5,6 +5,7 @@ This trial does not claim continuous visual pose correction. Return requires a
 delivery-complete command matching this exact mission, and physical IR at N12.
 """
 import argparse
+from dataclasses import replace
 import os
 import re
 import hashlib
@@ -81,6 +82,49 @@ def reverse_to_search_start(pose, previous, samples):
     return backward
 
 
+def upper_return_waypoints(layout, pose):
+    box = next((item for item in layout.raw.get('objects', []) if item.get('name') == 'box_03'), None)
+    walls = {item.get('name'): item for item in layout.raw.get('walls', [])}
+    required = {'zone03_left', 'zone03_bottom', 'outer_window', 'outer_right'}
+    if box is None or not required <= walls.keys():
+        raise RuntimeError('Upper return corridor is missing from the verified layout')
+    left = walls['zone03_left']['from'][0]
+    bottom = walls['zone03_bottom']['from'][1]
+    north = walls['outer_window']['from'][1]
+    right = walls['outer_right']['from'][0]
+    west_edge = box['min'][0]
+    east_edge, north_edge = box['max']
+    x, y = layout.frame.to_measured(pose['x'], pose['y'])
+    if (not left < west_edge < east_edge < right or not bottom < north_edge < north
+            or not left <= x < east_edge or not bottom <= y <= north):
+        raise RuntimeError('No upper return corridor from the current pose')
+    y = (north+north_edge)/2
+    west = west_edge-min(25., (west_edge-left)/2)
+    return ((west, y), ((right+east_edge)/2, y)), (east_edge, north_edge)
+
+
+def follows_upper_corridor(frame, path, waypoints, box_edges):
+    # Nav2 plans to map cells, so the path need not hit either waypoint exactly.
+    east_edge, north_edge = box_edges
+    segment = 0
+    if path.header.frame_id != 'map':
+        return False
+    for stamped in path.poses:
+        point = stamped.pose.position
+        x, y = frame.to_measured(point.x, point.y)
+        if not math.isfinite(x) or not math.isfinite(y):
+            return False
+        if segment == 0 and x >= east_edge:
+            return False
+        if segment == 1 and y < north_edge+5.:
+            return False
+        if segment == 2 and y < north_edge and x < east_edge+5.:
+            return False
+        if segment < 2 and math.hypot(x-waypoints[segment][0], y-waypoints[segment][1]) <= 8.:
+            segment += 1
+    return segment == 2
+
+
 def main(resume_nav=False, resume_entry=False, resume_return=False, resume_return_transit=False, resume_delivery=False, resume_n12=False):
     import os
     import rclpy
@@ -90,11 +134,12 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
     from rclpy.parameter_client import AsyncParameterClient
     from rclpy.parameter import Parameter
     from ament_index_python.packages import get_package_share_directory
+    from geometry_msgs.msg import PoseStamped
     from sensor_msgs.msg import CompressedImage
     from std_msgs.msg import String
     from std_srvs.srv import Empty
     from action_msgs.msg import GoalStatus
-    from nav2_msgs.action import BackUp, Spin, DriveOnHeading
+    from nav2_msgs.action import BackUp, ComputePathThroughPoses, DriveOnHeading, FollowPath, Spin
     import mission_handoff as handoff
     from roport_smartcart.real_return import HardwareReturn, Acquisition, n12_target, measured_handoff
     from roport_smartcart.goals import Destination, load_destination
@@ -130,6 +175,7 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
                     for key, file in asset_paths.items()}
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = rclpy.create_node('supervised_h1_g3_ui_trial')
+    detour_planner = ActionClient(node, ComputePathThroughPoses, 'compute_path_through_poses')
     runner = HardwareReturn(node, options, graph, line_cal, nominal, profile)
     mission_id = uuid4().hex
     ui_control_id = os.environ.get('ROPORT_UI_CONTROL_ID')
@@ -175,8 +221,22 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
             raise RuntimeError('Unexpected confirmed route start')
         original_start(route, **kwargs)
         if route[0] == 'N12':
+            # Nav2 travelled while the line executor was idle.
+            runner.line._pose = None
             runner.line._begin_leg(0., guess=False)
     runner.line.start = line_start
+    original_step = runner.line.step
+    line_config = runner.line.cfg
+    # Field replay showed sustained steering saturation before losing the H1 branch.
+    h1_approach = replace(line_config, base_speed=.03, max_angular=.25)
+
+    def line_step(reading, pose, now, **kwargs):
+        line = runner.line
+        leg = line.legs[line.index] if line.index < len(line.legs) else None
+        in_h1_branch = line.state == 'follow' and leg and (leg.frm, leg.to) == ('N09', 'H1')
+        line.cfg = h1_approach if in_h1_branch else line_config
+        return original_step(reading, pose, now, **kwargs)
+    runner.line.step = line_step
 
     def spin():
         nonlocal last_status
@@ -315,10 +375,64 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
                 runner.stop_confirmed()
                 print('LOCALIZATION PAUSE: stopped, terminal goal confirmed; one bounded retry', flush=True)
 
-    def behavior(kind, name, goal, seconds, stop_on_line=False, marker_watch=False):
+    def navigate_return_entry(entry):
+        try:
+            navigate('return_entry')
+            return
+        except RuntimeError as exc:
+            nav = runner.nav.lifecycle
+            if (str(exc) != 'Nav2 goal failed: aborted' or nav.outcome != 'aborted'
+                    or nav.busy or nav.fault):
+                raise
+
+        runner.owner = 'none'
+        runner.lease('none')
+        runner.stop_confirmed()
+        start = settle()['pose']
+        runner.phase = 'PLAN_RETURN_DETOUR'
+        waypoints, box_edges = upper_return_waypoints(layout, start)
+        goal = ComputePathThroughPoses.Goal()
+        yaw = math.radians(layout.frame.yaw_deg)
+        targets = [(*layout.frame.to_world(*point), yaw) for point in waypoints]
+        targets.append((entry['x'], entry['y'], entry['yaw']))
+        for x, y, heading in targets:
+            pose = PoseStamped()
+            pose.header.frame_id = 'map'
+            pose.header.stamp = node.get_clock().now().to_msg()
+            pose.pose.position.x, pose.pose.position.y = x, y
+            pose.pose.orientation.z = math.sin(heading/2)
+            pose.pose.orientation.w = math.cos(heading/2)
+            goal.goals.append(pose)
+        if not detour_planner.server_is_ready():
+            raise RuntimeError('Upper return planner unavailable')
+        handle = wait(detour_planner.send_goal_async(goal), 3)
+        if not handle.accepted:
+            raise RuntimeError('Upper return plan rejected')
+        result = wait(handle.get_result_async(), 10)
+        path = result.result.path
+        if (result.status != GoalStatus.STATUS_SUCCEEDED or result.result.error_code != 0
+                or not follows_upper_corridor(layout.frame, path, waypoints, box_edges)):
+            raise RuntimeError(f'No confirmed upper return path (Nav2 code {result.result.error_code})')
+        begin, end = (path.poses[i].pose.position for i in (0, -1))
+        if (math.hypot(begin.x-start['x'], begin.y-start['y']) > .08
+                or math.hypot(end.x-entry['x'], end.y-entry['y']) > .08
+                or not confirmed_gate_return(runner.stop_confirmed(), Destination(**start))):
+            raise RuntimeError('Upper return path does not match the stopped pose or verified entry')
+
+        print('RETURN_DETOUR: direct return aborted, following the checked upper path', flush=True)
+        follow = FollowPath.Goal()
+        follow.path = path
+        state, _ = behavior(FollowPath, 'follow_path', follow, 120, phase='NAV2_RETURN_DETOUR')
+        pose = state.get('pose')
+        if (not state['localization_ready'] or not pose
+                or math.hypot(pose['x']-entry['x'], pose['y']-entry['y']) > .08
+                or abs(handoff.wrap(pose['yaw']-entry['yaw'])) > .1):
+            raise RuntimeError('Upper return terminal pose outside tolerance')
+
+    def behavior(kind, name, goal, seconds, stop_on_line=False, marker_watch=False, phase=None):
         nonlocal action_client, handle, sending
         runner.stop_confirmed()
-        runner.phase = name.upper()
+        runner.phase = phase or name.upper()
         action_client = ActionClient(node, kind, name)
         if not action_client.wait_for_server(timeout_sec=2):
             raise RuntimeError(name+' server unavailable')
@@ -437,7 +551,8 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
     def confirm_gate(allow_approach=True):
         runner.phase = TARGET+'_MARKER_CHECK'
         runner.stop_confirmed()
-        reference_path = ROOT/'gate-distance-reference.json'
+        name = 'gate-distance-reference.json' if TARGET == 'G1' else f'{TARGET.lower()}-distance-reference.json'
+        reference_path = ROOT/name
         reference = json.loads(reference_path.read_text()) if reference_path.exists() else None
         if reference is None:
             return False
@@ -643,7 +758,7 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
             turn.target_yaw, turn.time_allowance.sec = math.pi, 25
             behavior(Spin, 'spin', turn, 28)
         if not resume_n12:
-            navigate('return_entry')
+            navigate_return_entry(n12_record['return_entry'])
             navigate('return_n12')
         state = runner.stop_confirmed()
         age = float('inf') if runner.ir_at is None else time.monotonic()-runner.ir_at
@@ -715,6 +830,7 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         print('RESULT', json.dumps(final), flush=True)
         if ui_monitor is not None and hasattr(ui_monitor, 'thread'):
             ui_monitor.close()
+        detour_planner.destroy()
         node.destroy_node()
         rclpy.shutdown()
     return 0 if success and failure is None else 1

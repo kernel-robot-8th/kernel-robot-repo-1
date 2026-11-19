@@ -44,6 +44,99 @@ class Goal:
 
 
 class FieldChecks(unittest.TestCase):
+    def test_return_detour_checks_the_upper_path_before_following(self):
+        def stamped():
+            return NS(header=NS(frame_id='map'), pose=NS(position=NS(), orientation=NS()))
+
+        class Frame:
+            yaw_deg = 0.
+
+            def to_measured(self, x, y):
+                return x*100, y*100
+
+            def to_world(self, x, y):
+                return x/100, y/100
+
+        frame = Frame()
+        raw = {'objects': [{'name': 'box_03', 'min': [320, 140], 'max': [390, 160]}],
+               'walls': [{'name': name, 'from': point} for name, point in
+                         [('zone03_left', [140, 94]), ('zone03_bottom', [140, 94]),
+                          ('outer_window', [440, 220]), ('outer_right', [440, 0])]]}
+        start = dict(x=2.9, y=1.2, yaw=0.)
+        entry = dict(x=4.1, y=.8, yaw=0.)
+        start_state = dict(pose=start, nav2_ready=True, localization_ready=True, stopped=True)
+        end_state = {**start_state, 'pose': entry}
+        result = NS(status=4, result=NS(error_code=0, path=NS(header=NS(frame_id='map'))))
+        handle = NS(accepted=True, get_result_async=lambda: result)
+        events = []
+
+        def make_path(*points):
+            path = []
+            for x, y in points:
+                pose = stamped()
+                pose.pose.position.x, pose.pose.position.y = x, y
+                path.append(pose)
+            result.result.path.poses = path
+
+        def navigate(_):
+            events.append('direct')
+            if nav.outcome != 'succeeded':
+                raise RuntimeError('Nav2 goal failed: '+nav.outcome)
+
+        def plan(goal):
+            events.append('plan')
+            self.assertEqual(len(goal.goals), 3)
+            self.assertEqual(runner.owner, 'none')
+            return handle
+
+        def follow(kind, name, goal, seconds, phase):
+            events.append('follow')
+            self.assertEqual((name, phase), ('follow_path', 'NAV2_RETURN_DETOUR'))
+            self.assertIs(goal.path, result.result.path)
+            return end_state, False
+
+        nav = NS(outcome='succeeded', busy=False, fault=None)
+        runner = NS(nav=NS(lifecycle=nav), lease=lambda _: events.append('release'),
+                    stop_confirmed=lambda: start_state)
+        ns = dict(math=math, runner=runner, navigate=navigate, settle=lambda: start_state,
+                  layout=NS(frame=frame, raw=raw), PoseStamped=stamped,
+                  ComputePathThroughPoses=NS(Goal=lambda: NS(goals=[])),
+                  FollowPath=NS(Goal=NS), GoalStatus=NS(STATUS_SUCCEEDED=4),
+                  detour_planner=NS(server_is_ready=lambda: True, send_goal_async=plan),
+                  node=NS(get_clock=lambda: NS(now=lambda: NS(to_msg=lambda: None))),
+                  wait=lambda value, _: value, Destination=NS, behavior=follow,
+                  handoff=NS(wrap=lambda angle: angle))
+        for name in ('upper_return_waypoints', 'follows_upper_corridor', 'confirmed_gate_return'):
+            helper(name, ns, nested=False)
+        return_entry = helper('navigate_return_entry', ns)
+
+        return_entry(entry)
+        self.assertEqual(events, ['direct'])
+        nav.outcome = 'aborted'
+        make_path((2.9, 1.2), (2.95, 1.9), (3.5, 1.9), (4.15, 1.9), (4.1, .8))
+        return_entry(entry)
+        self.assertEqual(events[-4:], ['direct', 'release', 'plan', 'follow'])
+        make_path((2.9, 1.2), (2.95, 1.9), (3.5, 1.2), (4.15, 1.9), (4.1, .8))
+        with self.assertRaisesRegex(RuntimeError, 'No confirmed upper return path'):
+            return_entry(entry)
+        self.assertEqual(events[-3:], ['direct', 'release', 'plan'])
+        nav.fault = 'transport_error'
+        with self.assertRaisesRegex(RuntimeError, 'aborted'):
+            return_entry(entry)
+        self.assertEqual(events[-1], 'direct')
+
+    def test_h1_branch_reduces_speed_without_changing_other_segments(self):
+        normal, approach = NS(base_speed=.06), NS(base_speed=.03)
+        line = NS(index=0, legs=[NS(frm='N08', to='N09'), NS(frm='N09', to='H1')],
+                  state='follow', cfg=normal)
+        step = helper('line_step', dict(runner=NS(line=line), line_config=normal,
+                                      h1_approach=approach, original_step=lambda *_: line.cfg))
+        self.assertIs(step(None, None, 1.), normal)
+        line.index = 1
+        self.assertIs(step(None, None, 2.), approach)
+        line.state = 'rotate'
+        self.assertIs(step(None, None, 3.), normal)
+
     def test_cached_detector_keeps_marker_geometry_and_acceptance_limits(self):
         import cv2
         import yaml

@@ -160,21 +160,24 @@ def refresh_start_localization():
         time.sleep(.5)
 
 
-def trial_launch_script(n12=False, checkpoint=None, token=None):
+def trial_launch_script(n12=False, checkpoint=None, token=None, requested_target=None):
     script = r'''
     import os, signal, subprocess, shlex, time, json
     from pathlib import Path
     root = FIELD_REMOTE_DIR
     checkpoint = FIELD_CHECKPOINT
     extra = FIELD_TRIAL_FLAGS
+    requested_target = FIELD_TARGET
     if checkpoint is not None:
      result = json.loads((Path(root)/'result.json').read_text())
      if result.get('mission_id') != checkpoint or result.get('phase') != 'STOPPED':
       raise RuntimeError('Return checkpoint changed')
     target_file = Path(root)/'mission-target.json'
-    target = json.loads(target_file.read_text()) if target_file.exists() else 'G1'
-    if target != 'G1':
-     raise RuntimeError('이 UI는 G1 전용입니다. 현장 목표 설정부터 확인하세요.')
+    target = requested_target
+    if target is None:
+     target = json.loads(target_file.read_text()) if target_file.exists() else 'G1'
+    if target not in ('G1', 'G3') or (checkpoint is not None and requested_target is not None):
+     raise RuntimeError('현장 목표 설정을 확인하세요.')
     for pattern in ('[r]oundtrip.py --drive',):
      if subprocess.run(['pgrep','-f',pattern],stdout=subprocess.DEVNULL).returncode==0:
       raise RuntimeError('기존 시험 실행 중')
@@ -188,13 +191,17 @@ def trial_launch_script(n12=False, checkpoint=None, token=None):
      guard_running = compatible_guard(root)
      if subprocess.run(['tmux','has-session','-t','h1g3_ui_mission'],stderr=subprocess.DEVNULL).returncode==0:
       raise RuntimeError('Existing UI mission session; refusing replacement')
+     if requested_target is not None:
+      pending = target_file.with_suffix('.tmp')
+      pending.write_text(json.dumps(target))
+      pending.replace(target_file)
      if not guard_running:
       subprocess.run(['tmux','new-session','-d','-s','h1g3_ui_guard_'+str(time.time_ns()),'bash','-lc',base+'exec ros2 run roport_pinky trial_guard'],check=True,timeout=2)
      cmd=base+'exec python3 '+shlex.quote(root+'/roundtrip.py')+' --drive'+extra+' > '+shlex.quote(root+'/mission.log')+' 2>&1'
      subprocess.run(['tmux','new-session','-d','-s','h1g3_ui_mission','bash','-lc',cmd],check=True,timeout=2)
     print(challenge)
     '''
-    script = script.replace('FIELD_CONTROL_TOKEN', repr(token)).replace('FIELD_CHECKPOINT', repr(checkpoint)).replace('FIELD_TRIAL_FLAGS', repr(' --resume-n12' if n12 else '')).replace('FIELD_REMOTE_DIR', repr(REMOTE)).replace('FIELD_REMOTE_BASE', repr('source '+shlex.quote(SETUP)+'; export ROS_DOMAIN_ID=13; export ROPORT_FIELD_CONFIG_DIR='+shlex.quote(REMOTE)+'; export ROPORT_UI_CONTROL_ID='+shlex.quote(token or '')+'; '))
+    script = script.replace('FIELD_CONTROL_TOKEN', repr(token)).replace('FIELD_CHECKPOINT', repr(checkpoint)).replace('FIELD_TRIAL_FLAGS', repr(' --resume-n12' if n12 else '')).replace('FIELD_TARGET', repr(requested_target)).replace('FIELD_REMOTE_DIR', repr(REMOTE)).replace('FIELD_REMOTE_BASE', repr('source '+shlex.quote(SETUP)+'; export ROS_DOMAIN_ID=13; export ROPORT_FIELD_CONFIG_DIR='+shlex.quote(REMOTE)+'; export ROPORT_UI_CONTROL_ID='+shlex.quote(token or '')+'; '))
     return textwrap.dedent(script)
 
 
@@ -219,7 +226,7 @@ def command(name, body):
             with lock:
                 if epoch == stop_epoch:
                     message = text
-        def launch(n12=False, checkpoint=None):
+        def launch(n12=False, checkpoint=None, target=None):
             global active_control, stop_latched
             token = uuid4().hex
             with lock:
@@ -227,7 +234,7 @@ def command(name, body):
                     raise ValueError('Start cancelled or browser expired')
                 active_control = dict(token=token, browser_id=body['browser_id'], challenge=None)
                 stop_latched = False
-            challenge = remote(trial_launch_script(n12, checkpoint, token)).strip()
+            challenge = remote(trial_launch_script(n12, checkpoint, token, target)).strip()
             with lock:
                 if epoch != stop_epoch:
                     raise ValueError('Start cancelled by Stop')
@@ -257,7 +264,10 @@ def command(name, body):
         elif name == '/start':
             if not state['start_enabled']:
                 raise ValueError('로봇 정지·구동권 대기 상태를 먼저 확인하세요.')
-            launch()
+            target = body.get('target', 'G1')
+            if target not in ('G1', 'G3'):
+                raise ValueError('G1 또는 G3을 선택하세요.')
+            launch(target=target)
             threading.Thread(target=refresh_start_localization, daemon=True).start()
             notify('출발 요청을 보냈습니다. 현재 위치를 새로 관측하고 H1·방향·IR 확인 후 움직입니다.')
         elif name == '/delivery-complete':

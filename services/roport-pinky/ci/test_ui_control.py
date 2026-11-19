@@ -222,11 +222,13 @@ class ServerTests(unittest.TestCase):
                 return NS(returncode=1 if args[0] == 'pgrep' or args[1] == 'has-session' else 0, stdout='')
             token = ('d' if resume else 'c')*32
             with patch('field_stack.compatible_guard', return_value=True), patch('subprocess.run', fake):
-                exec(self.ui.trial_launch_script(resume, 'e'*32 if resume else None, token), {})
+                exec(self.ui.trial_launch_script(resume, 'e'*32 if resume else None, token,
+                                                 requested_target=None if resume else 'G3'), {})
             launches = [args for args in calls if args[:2] == ['tmux', 'new-session']]
             self.assertEqual(len(launches), 1)
             self.assertIn('h1g3_ui_mission', launches[0])
             self.assertFalse(any('trial_guard' in str(args) for args in calls))
+            self.assertEqual(json.loads((Path(self.tmp.name)/'mission-target.json').read_text()), 'G3')
 
     def test_lost_ui_ssh_does_not_renew_and_stop_failure_is_prominent(self):
         self.ui.active_control = dict(token='a'*32, browser_id=self.browser, challenge='c'*32)
