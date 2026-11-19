@@ -78,6 +78,8 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 
 ### 선반 적재 미션 판정 (2026-11-16 합의)
 
+이 실행부는 선반 적재(`shelf_inbound`)만 판정합니다. 하차(`shelf_outbound`)는 정렬 없이 Pinky 쟁반 작업 전후 비교와 팔 복귀로 판정하는 별도 기능에서 받으며, 그 전에는 팔을 움직이지 않고 `UNSUPPORTED_OPERATION`으로 거절합니다(정렬 요청·적재 판정이 하차에 적용되지 않게).
+
 선반 적재 미션은 적재 뒤 상자 정렬까지 포함합니다. Host는 시작 요청에 `shelf_align: true`를 보내고, 평가·정렬 결과(`last_result.align`)와 양팔 실측으로 판정해 이벤트 payload의 `mission_result`로 보고합니다.
 
 | `mission_result` | 조건 | 이벤트 | HOLD |

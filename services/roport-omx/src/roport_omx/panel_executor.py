@@ -365,6 +365,11 @@ class PanelExecutor:
 
     def check(self, task: dict) -> None:
         """Refuse before acceptance: no route, no box marker or the model is not trained yet."""
+        if task["operation"] != "INBOUND":
+            # Only shelf loading is judged here (box placed, then aligned). Unloading is judged by
+            # its own camera check (Pinky tray before/after, arms home), added with that feature;
+            # until then an unloading command is refused unmoved instead of judged as a loading.
+            raise Rejected("UNSUPPORTED_OPERATION")
         route = self.routes.get((task["operation"], task["slot_id"]))
         if route is None:
             raise Rejected("UNSUPPORTED_SLOT")
