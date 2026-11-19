@@ -8,6 +8,8 @@ from test_fleet import fleet as fleet  # noqa: PLC0414
 from test_pinky_trial import profile as profile  # noqa: PLC0414
 
 from roport_control_server.adapters.mqtt import field_wire as wire
+from roport_control_server.adapters.mqtt.journal import Journal
+from roport_control_server.executor.fleet import FleetControl
 
 
 def start_return(control):
@@ -229,3 +231,83 @@ def test_without_new_work_return_segments_reach_reserved_parking(fleet):
         "package_id": "stored-box",
     }
     assert not fleet.data["commands"] and not fleet.data["resources"]
+
+
+def final_return_without_state(control):
+    request, command = start_return(control)
+    while (
+        command["payload"]["goal"]["node"] != control.data["tasks"][request]["parking"]
+    ):
+        complete(control, command)
+        command = dispatch(control)
+    robot = command["target"]
+    previous = deepcopy(control.observed[robot])
+    complete(control, command, observe=False)
+    assert control.data["tasks"][request]["status"] == "COMPLETE"
+    assert not control.data["commands"]
+    return command, previous
+
+
+def test_final_arrival_after_pinky_restart_requires_explicit_confirmation(fleet):
+    command, old = final_return_without_state(fleet)
+    robot, node = command["target"], command["payload"]["goal"]["node"]
+    fresh = deepcopy(old)
+    fresh.update(boot_version="restarted", sequence=1)
+    fresh["state"].update(arrival_command_id=None, node=old["state"]["node"])
+    fleet.observe({"source": robot, "payload": fresh})
+    assert fleet.observed[robot]["boot_version"] == "restarted"
+    assert fleet.heard[robot] == fleet.clock()
+    assert {node, old["state"]["node"]} <= fleet.occupied("pinky2")
+    with pytest.raises(ValueError, match="arrival requires recovery"):
+        fleet.ready(robot)
+    with pytest.raises(ValueError, match="fresh stopped state"):
+        fleet.confirm_arrival_after_restart(robot)
+
+    delayed = deepcopy(old)
+    delayed["sequence"] += 1
+    delayed["state"].update(node=node, arrival_command_id=command["command_id"])
+    fleet.observe({"source": robot, "payload": delayed})
+    assert fleet.observed[robot]["boot_version"] == "restarted"
+
+    fresh["sequence"] += 1
+    fresh["state"].update(node=node, heading_rad=1.2)
+    fleet.observe({"source": robot, "payload": fresh})
+    requested = submit(fleet, "after-restart")
+    assert dispatch(fleet) is None
+    fleet.confirm_arrival_after_restart(robot)
+    after = dispatch(fleet)
+    assert after["target"] == robot
+    assert after["payload"]["start_node"] == node
+    assert after["payload"]["start_heading_rad"] == 1.2
+    assert fleet.data["commands"][after["command_id"]]["task"] == requested
+
+
+def test_final_pending_arrival_survives_owner_restart(fleet):
+    command, delayed = final_return_without_state(fleet)
+    robot, node = command["target"], command["payload"]["goal"]["node"]
+    requested = submit(fleet, "after-owner-restart")
+    other_states = deepcopy({r: p for r, p in fleet.observed.items() if r != robot})
+    path = fleet.store.path
+    fleet.store.close()
+    journal = Journal(path)
+    try:
+        restored = FleetControl(fleet.config, journal, clock=fleet.clock)
+        assert not restored.data["enabled"]
+        for other, state in other_states.items():
+            restored.observe({"source": other, "payload": state})
+        restored.enable()
+        delayed["sequence"] += 1
+        restored.observe({"source": robot, "payload": delayed})
+        assert dispatch(restored) is None
+        assert restored.data["last_nodes"][robot] == node
+        assert restored.data["tasks"][requested]["stage"] == "queued"
+
+        delayed["sequence"] += 1
+        delayed["state"].update(node=node, arrival_command_id=command["command_id"])
+        restored.observe({"source": robot, "payload": delayed})
+        after = dispatch(restored)
+        assert after["target"] == robot
+        assert after["payload"]["start_node"] == node
+        assert robot not in restored.data["pending_arrivals"]
+    finally:
+        journal.close()

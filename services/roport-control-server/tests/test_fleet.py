@@ -113,7 +113,7 @@ def dispatch(c):
     return message
 
 
-def complete(c, cmd, *, size="small", broken=None):
+def complete(c, cmd, *, size="small", broken=None, observe=True):
     task = c.data["tasks"][c.data["commands"][cmd["command_id"]]["task"]]
     kind, p = cmd["type"], cmd["payload"]
     result = {"stopped": True}
@@ -172,7 +172,7 @@ def complete(c, cmd, *, size="small", broken=None):
         command_id=cmd["command_id"],
     )
     c.result(event)
-    if cmd["target"] == task["robot"]:
+    if observe and cmd["target"] == task["robot"]:
         observation.update(sequence=observation["sequence"] + 1, active_command_id=None)
         c.observe({"source": cmd["target"], "payload": observation})
     return event

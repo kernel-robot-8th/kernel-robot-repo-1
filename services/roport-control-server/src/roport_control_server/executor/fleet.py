@@ -33,7 +33,7 @@ class FleetControl:
             config.get("node_clearance_m"),
         )
         self.observed, self.poses, self.heard = {}, {}, {}
-        self.awaiting_state = {}
+        self.awaiting_state = set()
         if not store.data:
             store.save(
                 {
@@ -47,6 +47,7 @@ class FleetControl:
                     "commands": {},
                     "resources": {},
                     "events": {},
+                    "pending_arrivals": {},
                     "enabled": False,
                     "fault": None,
                 }
@@ -157,7 +158,10 @@ class FleetControl:
         p = self.observed.get(robot)
         if not p or self.clock() - self.heard.get(robot, -math.inf) > 3:
             raise ValueError(f"{robot}: state unavailable/stale")
-        if robot in self.awaiting_state:
+        arrival = self.data.get("pending_arrivals", {}).get(robot)
+        if arrival and arrival.get("recovery_boot"):
+            raise ValueError(f"{robot}: arrival requires recovery confirmation")
+        if arrival or robot in self.awaiting_state:
             raise ValueError(f"{robot}: awaiting state after completion")
         s = p["state"]
         if not s.get("stopped") or s.get("fault") or p.get("active_command_id"):
@@ -208,25 +212,26 @@ class FleetControl:
                 self.hold(f"{robot}: executor restarted")
         state = p["state"]
         node = state.get("node")
-        arrival = self.awaiting_state.get(robot)
-        if arrival is not None:
-            if (
-                p["boot_version"],
-                node,
-                state.get("arrival_command_id"),
-            ) != arrival or (
-                state.get("mode") != "line"
-                or state.get("stopped") is not True
-                or p.get("active_command_id") is not None
-                or state.get("fault")
-                or state.get("line_enabled")
-                or state.get("drive_owner") != "none"
+        arrival = self.data.get("pending_arrivals", {}).get(robot)
+        if arrival:
+            if p["boot_version"] != arrival["boot_version"]:
+                if arrival.get("recovery_boot") != p["boot_version"]:
+                    data = deepcopy(self.data)
+                    data["pending_arrivals"][robot]["recovery_boot"] = p["boot_version"]
+                    self.save(data)
+            elif (
+                arrival.get("recovery_boot")
+                or state.get("arrival_command_id") != arrival["command_id"]
+                or not self.stopped_at(p, arrival["node"])
             ):
                 # A delayed heartbeat must not undo the confirmed arrival.
                 return
-            del self.awaiting_state[robot]
+            else:
+                data = deepcopy(self.data)
+                del data["pending_arrivals"][robot]
+                self.save(data)
         elif old and old["boot_version"] == p["boot_version"]:
-            self.awaiting_state.pop(robot, None)
+            self.awaiting_state.discard(robot)
         self.observed[robot], self.heard[robot] = deepcopy(p), self.clock()
         # Only a known node or a confirmed Nav2 state replaces line occupancy.
         if (
@@ -252,6 +257,38 @@ class FleetControl:
                 ):
                     self.route_progress(cid, node)
 
+    @staticmethod
+    def stopped_at(payload, node):
+        state = payload["state"]
+        return (
+            state.get("node") == node
+            and state.get("mode") == "line"
+            and state.get("stopped") is True
+            and payload.get("active_command_id") is None
+            and not state.get("fault")
+            and not state.get("line_enabled")
+            and state.get("drive_owner") == "none"
+        )
+
+    def confirm_arrival_after_restart(self, robot):
+        """Acknowledge a restarted robot only after checking it at the arrival node."""
+        arrival = self.data.get("pending_arrivals", {}).get(robot)
+        p = self.observed.get(robot)
+        if (
+            not arrival
+            or not arrival.get("recovery_boot")
+            or not p
+            or p["boot_version"] != arrival["recovery_boot"]
+            or self.clock() - self.heard[robot] > 3
+            or not self.stopped_at(p, arrival["node"])
+        ):
+            raise ValueError(
+                f"{robot}: fresh stopped state at the arrival node required"
+            )
+        data = deepcopy(self.data)
+        del data["pending_arrivals"][robot]
+        self.save(data)
+
     def receipt(self, request_id):
         task = self.data["tasks"].get(request_id)
         if not task or task["stage"] not in {
@@ -275,6 +312,9 @@ class FleetControl:
         for other, role in self.data["roles"].items():
             if other == robot:
                 continue
+            arrival = self.data.get("pending_arrivals", {}).get(other)
+            if arrival:
+                occupied.add(arrival["node"])
             p = self.observed.get(other)
             fresh = p and self.clock() - self.heard.get(other, -math.inf) <= 3
             state = p["state"] if fresh else {}
@@ -762,14 +802,18 @@ class FleetControl:
                 # Store/ACK it, but never move the observed route position back.
                 self.observed[cmd["target"]]["state"]["node"] = node
                 data["last_nodes"][cmd["target"]] = node
+        pinky_completed = (
+            p["status"] == "completed" and not data["fault"] and cmd["target"] in ROLES
+        )
+        if pinky_completed and cmd["type"] == "line_route_command":
+            data.setdefault("pending_arrivals", {})[cmd["target"]] = {
+                "boot_version": p["boot_version"],
+                "node": p["result"]["node"],
+                "command_id": cmd["command_id"],
+            }
         self.save(data)
-        if p["status"] == "completed" and not data["fault"] and cmd["target"] in ROLES:
-            # Only a state tied to this line arrival can supply the next heading.
-            self.awaiting_state[cmd["target"]] = (
-                (p["boot_version"], p["result"]["node"], cmd["command_id"])
-                if cmd["type"] == "line_route_command"
-                else None
-            )
+        if pinky_completed and cmd["type"] != "line_route_command":
+            self.awaiting_state.add(cmd["target"])
         if p["status"] == "in_progress" and not data["fault"]:
             self.route_progress(message["command_id"], p.get("result", {}).get("node"))
         return True
