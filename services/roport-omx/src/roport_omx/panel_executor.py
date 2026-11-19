@@ -53,6 +53,11 @@ PANEL_COMMAND_SLOT = (3, 17, 0)
 # 3.18.0: "end_on_place" ends the loading evaluation once the box sits in its slot and both hands are
 # clear of it; the aligner then takes the arms where they are (hand-over). Older panels ignore it.
 PANEL_END_ON_PLACE = (3, 18, 0)
+# 3.20.0: the placement carries the evidence for an early COMPLETE (control agreement 2026-11-18):
+# the hands' state at that moment and the camera's own capture time (not the panel's read time).
+PANEL_PLACEMENT_EVIDENCE = (3, 20, 0)
+# An early COMPLETE uses a capture at most this old (seconds, same PC clock).
+PLACEMENT_FRESH_S = 3.0
 # The panel PINGs the AI server about every 5 s (up to ~15 s on a slow GPU tunnel) and stamps
 # gpu_link.infer.udp.at with its clock (time.time(); same PC as the Host). Older than this → stale.
 AI_LINK_FRESH_S = 20.0
@@ -178,6 +183,25 @@ HOME_RETURN_TIMEOUT_S = 90.0
 # Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot, or slot empty but the
 # tray unchanged (dropped) → MISSION_FAILED, arms sent home. Anything unread → MISSION_HOLD.
 PINKY_LOAD = "pinky_load"
+
+
+def _released_at_placement(placement: dict) -> bool:
+    """Both hands let the box go when it was seen in its slot (control agreement 2026-11-18).
+
+    Hand-over judge (source "eval_judge"): both fingertips behind the box front and the shelf
+    edge by 3 cm (panel tips_clear, from the joints). Otherwise the evaluation ended on its
+    return: both arms at the model's home with grippers at or below GRIP_RELEASED_MAX.
+    """
+    if placement.get("source") == "eval_judge":
+        return placement.get("tips_clear") is True
+    end = placement.get("eval_end")
+    if not isinstance(end, dict) or end.get("all_at_home") is not True:
+        return False
+    arms = end.get("arms") if isinstance(end.get("arms"), dict) else {}
+    grips = [(arm or {}).get("gripper") for arm in arms.values()]
+    return len(grips) == len(ARMS) and all(
+        isinstance(g, (int, float)) and g <= GRIP_RELEASED_MAX for g in grips
+    )
 
 
 class PanelRefused(RuntimeError):
@@ -510,9 +534,35 @@ class PanelExecutor:
             return None
         if str(placement.get("slot") or "").lower() != str(self.slot or "").lower():
             return None  # seen at another slot: the final result decides
+        if (self._version or ()) < PANEL_PLACEMENT_EVIDENCE:
+            return None  # no gripper evidence or capture time yet: one report as before
+        if not _released_at_placement(placement):
+            return None  # the hands may still hold the box; a later reading may show it
+        captured = placement.get("observed_ts")
+        if (
+            not isinstance(captured, (int, float))
+            or not 0 <= time.time() - captured <= PLACEMENT_FRESH_S
+        ):
+            return None  # too old (or unknown) to let the Pinky leave on it
         self._placed = True
-        keys = ("slot", "box", "source", "observed_at", "reported_at")
-        return {"state": "placed", "placement": {k: placement.get(k) for k in keys}}
+        keys = (
+            "slot",
+            "box",
+            "source",
+            "observed_at",
+            "observed_ts",
+            "reported_at",
+            "tips_clear",
+            "tip_y",
+            "y_out",
+            "gripper",
+            "eval_end",
+        )
+        return {
+            "state": "placed",
+            "grasp_released": True,
+            "placement": {k: placement.get(k) for k in keys if k in placement},
+        }
 
     def observe(self) -> dict:
         if self.repo_id is None:

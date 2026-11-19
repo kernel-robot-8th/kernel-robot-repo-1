@@ -258,6 +258,7 @@ def test_mqtt_placed_completes_before_the_arms_return_then_alignment_follows(omx
     dispatch_omx(c, host)
     executor.observe = lambda: {
         "state": "placed",
+        "grasp_released": True,
         "placement": {"slot": "2B", "box": 16, "source": "align"},
         "arms": executor._arms(moving=True),
     }
@@ -281,6 +282,21 @@ def test_mqtt_placed_completes_before_the_arms_return_then_alignment_follows(omx
     deliver(c, aligned)  # stored and acknowledged; the transfer is already done
     assert c.state["phase"] == "return"
     assert len(c.state["transfers"]) == 1
+
+
+def test_mqtt_placed_without_released_grasp_holds(omx_pair):
+    c, host, executor = omx_pair
+    dispatch_omx(c, host)
+    executor.observe = lambda: {
+        "state": "placed",
+        "placement": {"slot": "2B"},
+        "arms": executor._arms(moving=True),
+    }
+    (placed,) = host.poll()
+    assert placed["payload"]["grasp_released"] is None
+    deliver(c, placed)
+    assert c.state["phase"] == "HOLD"
+    assert c.state["transfers"] == []
 
 
 def test_mqtt_placed_without_confirmed_placement_holds(omx_pair):

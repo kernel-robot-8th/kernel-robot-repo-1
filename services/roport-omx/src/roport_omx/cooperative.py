@@ -378,7 +378,8 @@ class CooperativeHost:
             "quantity_confirmed": None,
             "package_location": None,
             "placement_confirmed": True,
-            "grasp_released": None,
+            # the executor sends "placed" only with both hands seen off the box
+            "grasp_released": True if seen.get("grasp_released") is True else None,
             "arms": _arms(seen.get("arms")),
             "departure_ready": True,
             "evidence": "shelf_placed",
