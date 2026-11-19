@@ -12,9 +12,10 @@ Java 21 / Spring Boot 4.1.2 / Gradle(wrapper). 업무 데이터는 PostgreSQL(JD
 업무 code가 없는 오류는 상태별 일반 code를 씁니다: 404 `NOT_FOUND`, 405 `METHOD_NOT_ALLOWED`, 406 `NOT_ACCEPTABLE`, 409 `CONFLICT`, 415 `UNSUPPORTED_MEDIA_TYPE`, 그 밖의 4xx `BAD_REQUEST`, 5xx `INTERNAL_ERROR`(내부 정보는 응답에 넣지 않고 서버 로그에만 남깁니다).
 예약은 `REQUESTED`(예약 접수됨 – 현장 배정 전)까지만 만듭니다. 카트 확보·관제 수락·수령 완료가 아닙니다. 관제 WSS 연동은 아직 없습니다.
 
-예약 QR·카트 확인(FFT1-178): `POST /api/pickups/{pickupId}/qr-token`은 본인 활성 예약에 새 QR 토큰을 발급하고 이전 토큰을 폐기합니다(원문은 응답에만, DB에는 SHA-256 해시만, 만료 시간 미정).
+예약 QR·카트 확인(FFT1-178): `POST /api/pickups/{pickupId}/qr-token`은 본인 활성 예약에 새 QR 토큰을 발급하고 이전 토큰을 폐기합니다(원문은 응답에만, DB에는 SHA-256 해시만). 만료는 발급 후 `service.qr.ttl`(기본 10분)이며 응답의 `expiresAt`으로 알려 줍니다. 이 변경 전에 발급돼 `expires_at`이 비어 있는 토큰(개발 DB에만 있음)은 예전처럼 만료되지 않습니다.
 `POST /cart-api/verifications`는 QR 토큰 또는 예약번호로 예약을 찾아 `verifications`에 결과를 기록합니다(새 확인 201, 같은 `verificationRequestId` 재전송 200, 다른 내용 409 `IDEMPOTENCY_CONFLICT`, 예약 없음 404 `RESERVATION_NOT_FOUND`). 이미 쓴 요청 ID에 없는 값을 보내면 404보다 409가 우선합니다.
-**확인은 인도 승인이 아닙니다.** 카트 배정 대조(`cartAssignmentChecked=false`)·인도 승인·수령 기록은 관제 연동 후입니다. 예약번호 반복 시도 제한도 아직 없습니다.
+카트별로 확인 실패(예약 없음·거절)가 `service.verify.failure-window`(기본 1분) 안에 `service.verify.max-failures`(기본 5회)에 이르면 새 확인 요청은 429 `TOO_MANY_ATTEMPTS`입니다(FFT1-182). 429에는 `Retry-After`(초)를 붙입니다. 기록은 서버 메모리에만 두며, 카트 ID를 위조할 수 있는 동안에는 ID를 바꿔 제한을 피하거나 실제 패드의 ID로 실패를 쌓아 그 패드를 잠글 수 있습니다. 같은 요청 ID 재전송 때 QR이 만료·폐기됐으면 저장된 결과만 돌려주고 최신 예약 정보는 넣지 않습니다.
+**확인은 인도 승인이 아닙니다.** 카트 배정 대조(`cartAssignmentChecked=false`)·인도 승인·수령 기록은 관제 연동 후입니다.
 카트 인증도 개발 전용입니다. `X-Cart-Id` 헤더만 확인하며(비밀값 없음) 기본으로 꺼져 있어(모든 `/cart-api/**` 401) 로컬에서만 `SERVICE_DEV_CART=true`로 켭니다.
 
 **인증은 개발 전용입니다.** `login_id`만으로 로그인하는 세션 쿠키이며 비밀번호·Spring Security가 없으므로 공개 배포하지 않습니다.

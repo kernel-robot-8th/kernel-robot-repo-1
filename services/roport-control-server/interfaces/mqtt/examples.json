@@ -692,5 +692,59 @@
         "map_version": "map-demo-v1"
       }
     }
+  },
+  {
+    "label": "25 Pinky 호스트 지표",
+    "topic": "roport/robot/pinky1/host",
+    "qos": 0,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-025",
+      "type": "host_metrics",
+      "source": "pinky1",
+      "target": "control-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "payload": {
+        "boot_version": "boot-pinky1-host-001",
+        "sequence": 17,
+        "observed_at": "2026-11-11T10:00:00+09:00",
+        "cpu_count": 4,
+        "load_1m": 0.42,
+        "load_5m": 0.31,
+        "load_15m": 0.2,
+        "mem_total_kb": 3884000,
+        "mem_available_kb": 2710000,
+        "cpu_temp_c": 52.3
+      }
+    }
+  },
+  {
+    "label": "26 작업셀 호스트 지표(온도 미확인)",
+    "topic": "roport/workcell/shelf-01/host",
+    "qos": 0,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-026",
+      "type": "host_metrics",
+      "source": "shelf-01",
+      "target": "control-01",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "payload": {
+        "boot_version": "boot-shelf-01-host-001",
+        "sequence": 3,
+        "observed_at": "2026-11-11T10:00:00+09:00",
+        "cpu_count": 4,
+        "load_1m": 0.42,
+        "load_5m": 0.31,
+        "load_15m": 0.2,
+        "mem_total_kb": 3884000,
+        "mem_available_kb": 2710000,
+        "cpu_temp_c": null
+      }
+    }
   }
 ]

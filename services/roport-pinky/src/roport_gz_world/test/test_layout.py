@@ -93,8 +93,14 @@ def test_line_dimensions_from_measurement(layout):
         assert _node(layout, nid).x - half == pytest.approx(dist), nid
     for stop, length in (('N16', 25), ('N17', 25)):                                # R
         assert _node(layout, stop).y + half - (n05.y + half) == pytest.approx(length)
-    for stop, length in (('N01', 29.9), ('H1', 40), ('H2', 40)):                   # Q U
-        assert (n10.y - half) - (_node(layout, stop).y - half) == pytest.approx(length)
+    assert (n10.y - half) - (_node(layout, 'N01').y - half) == pytest.approx(29.9)  # Q
+    # 2026-11-16 본선 가운데 → 가로선 가운데(본선 N07~N09 직선, 선반 벽이 휨 → 벽 기준 안 씀).
+    # H1·H2 는 v14 U 40(바깥선 기준)을 대신함
+    for branch, stop, length in (('N23', 'N21', 41.2), ('N24', 'N22', 41.5),
+                                 ('N09', 'H1', 40.2), ('N08', 'H2', 40.2)):
+        assert _node(layout, branch).y - _node(layout, stop).y == pytest.approx(length), branch
+    # N11 은 사용자 결정(2026-11-16)으로 v14 위치 유지: 실측 N19→N11 38.75 와 2.7 cm 차이
+    assert _node(layout, 'N19').y - _node(layout, 'N11').y == pytest.approx(38.75 - 2.7)
     h1, h2 = _node(layout, 'H1'), _node(layout, 'H2')
     assert h1.x - half - (280 + wall_face) == pytest.approx(25)                    # [21]
     assert h2.x - h1.x == pytest.approx(33)                                        # [22]

@@ -21,6 +21,7 @@
 경유 정차: 경로 중간의 가로선 노드(예: P5 → P4 상차 → P7)에서는 그 노드의 도착 동작(상차 대기 등)을 한 뒤
   같은 규칙(이어서 출발)으로 다음 구간을 이어 간다. 경로는 가로선 노드마다 구간 묶음으로 나눠 검사한다.
 속도: set_speed 로 직선·회전 속도를 바꾼다(주행 중에도 다음 샘플부터). 상한은 설정의 max_linear·max_angular.
+회전 직후 감속: 제자리 회전(노드·출발 전·교차선 출발·상차 뒤) 뒤 이어지는 구간은 처음 post_turn_slow_cm(기본 10 cm)까지 approach_speed 이하.
 노드 앞 감속: 직선 추종 중 이동 거리가 예상 노드 위치 - approach_lead_cm(기본 5 cm)를 넘으면, 그리고 노드
   감지 뒤 회전 전 전진·후진은 approach_speed(base_speed 보다 크면 base_speed) 이하로 간다. 출발 위치를 몰라
   예상 위치가 없는 구간은 처음부터 approach_speed. 직진 통과 노드(pass_full_speed)는 감속하지 않는다. 실로봇 d660 0.06 m/s(2026-11-06)에서 노드를
@@ -34,6 +35,8 @@
   approach_speed 이하·끝으로 갈수록 감속(min_speed 까지)·방향 유지. 거리 초과·시간 초과·멈추지 않음은 오류 정지.
 교차선 출발(start_cross): IR 3개가 route[0](가로선 노드 아님)을 지나는 선 위, 로봇은 start_facing 을 봄
   → ir_ahead_cm 전진(축을 노드 중심으로) → 첫 구간 방향이 다르면 선 찾기 회전 → 첫 구간(s0 = ir_ahead, gate_early 적용).
+옆선 켜짐 확인(side_rise_only, 기본 켬): 옆선 노드는 그 옆 IR 이 감지 창 시작 뒤 꺼짐 → 켜짐으로 바뀐 run 일 때만
+  인정(창 전부터 켜진 run = 본선 가장자리 타기는 무시, 이벤트 side_ignored). 판정 강화라 놓치면 node_missed 정지.
 """
 
 import math
@@ -112,6 +115,13 @@ class NavConfig:
     # 실로그 16건의 진짜 T자 감지는 모두 양쪽이 켜짐(각 1.0~2.8 cm).
     tee_both: bool = True
     tee_window_cm: float = 1.5
+    # 옆선 켜짐 확인(2026-11-09 사용자 결정): 옆선 노드는 그 옆 IR 이 감지 창 시작(min_ok) 뒤에 꺼짐 → 켜짐으로
+    # 바뀐 run 일 때만 인정. 창 전부터 켜져 있던 run(본선 가장자리 타기)은 무시. 꺼짐은 side_rise_off_samples
+    # 연속이어야 run 이 끝난 것으로 봄(깜빡임). d660 0.08 m/s 11-09 21:54 N02→N14: 회전 직후 오른쪽으로 밀려
+    # 왼쪽 IR 이 8.0 cm 부터 본선 가장자리를 계속 밟다가 창(14.8 cm)이 열리자 15.1 cm 오감지(진짜 약 18 cm).
+    side_rise_only: bool = True
+    side_rise_off_samples: int = 2
+    side_rise_tee: bool = False    # T자(tee_both)에도 같은 규칙 — 실로그 재생으로 판단(README)
     reverse_speed: float = 0.02    # m/s
     reverse_max_cm: float = 12.0
     # 노드 앞 감속(2026-11-06 d660: 0.06 m/s 에서 노드를 지나쳐 멈춤, 0.03 m/s 는 완주).
@@ -120,6 +130,10 @@ class NavConfig:
     # 예상 노드 위치 몇 cm 전부터 감속(2026-11-07 사용자: 노드 3~5 cm 전). 실로그 61건의 진짜 감지는 예상 위치
     # -3.4 ~ +2.9 cm → 5 cm 면 모두 감속 뒤 감지, 3 cm 면 일찍 오는 노드(-3.1·-3.4)를 빠른 속도로 만남
     approach_lead_cm: float = 5.0
+    # 노드에서 회전한 직후 구간 처음 이 거리(cm)는 approach_speed 이하. 0 = 끔.
+    # 근거(2026-11-10 결정): 회전 뒤 선 옆으로 0.5~1 cm 밀린 채 0.06~0.08로 가면 옆 IR이 본선 가장자리를
+    # 11.5~15.9 cm까지 밟아 감지 창과 겹침(오감지). 0.03 기록은 가장자리 타기가 8.5 cm 전에 끝남.
+    post_turn_slow_cm: float = 10.0
     # 직진 통과 노드(N15·N23 등)는 다가갈 때·지날 때 감속하지 않음(2026-11-07 사용자)
     pass_full_speed: bool = True
 
@@ -139,6 +153,8 @@ class NavConfig:
             raise ValueError(f'need min_speed <= approach_speed <= {HARD_MAX_LINEAR}')
         if not (math.isfinite(self.approach_lead_cm) and 0.0 <= self.approach_lead_cm <= 50.0):
             raise ValueError('need 0 <= approach_lead_cm <= 50')
+        if not (math.isfinite(self.post_turn_slow_cm) and 0.0 <= self.post_turn_slow_cm <= 50.0):
+            raise ValueError('need 0 <= post_turn_slow_cm <= 50')
         if not 0.0 < self.rotate_min_speed <= self.rotate_speed <= self.max_angular:
             raise ValueError('need 0 < rotate_min_speed <= rotate_speed <= max_angular')
         if not (math.isfinite(self.gate_early_cm) and 0.0 <= self.gate_early_cm <= 50.0):
@@ -157,6 +173,8 @@ class NavConfig:
             raise ValueError('need kp > 0, kd >= 0')
         if not (math.isfinite(self.tee_window_cm) and 0.0 < self.tee_window_cm <= 5.0):
             raise ValueError('need 0 < tee_window_cm <= 5')
+        if not 1 <= self.side_rise_off_samples <= 10:
+            raise ValueError('need 1 <= side_rise_off_samples <= 10')
         if self.node_confirm < 1 or self.reverse_max_cm <= 0 or self.lost_timeout <= 0:
             raise ValueError('node_confirm >= 1, reverse_max_cm > 0, lost_timeout > 0')
 
@@ -203,6 +221,7 @@ class RouteExecutor:
         self._seg_ends = set()   # 경유 정차 구간 묶음의 끝 Leg 번호
         self._end = None         # 직전 경로가 끝난 곳 {'node', 'facing', 's0'} (이어서 출발용)
         self._expected = None    # 지금 구간의 예상 노드 위치(센서 이동 거리 cm). 모르면 None
+        self._slow_until = 0.0   # 이 구간에서 이 이동 거리(cm)까지 감속(회전 직후)
         self._pre = None         # 출발 전 제자리 회전의 시작 방향(도, 표시용)
         self._reset_primitive()
 
@@ -439,6 +458,7 @@ class RouteExecutor:
                       'max_angular': self.cfg.max_angular,
                       'approach_speed': self.approach_speed,
                       'approach_lead_cm': self.cfg.approach_lead_cm,
+                      'post_turn_slow_cm': self.cfg.post_turn_slow_cm,
                       'pass_full_speed': self.cfg.pass_full_speed,
                       'kp': self.cfg.kp, 'kd': self.cfg.kd,
                       'kp_at_base': round(self.kp_for(self.cfg.base_speed), 3),
@@ -537,6 +557,9 @@ class RouteExecutor:
         self._max_ok = 0.0
         self._prim = {}
         self._tee_seen = {0: None, 2: None}   # T자: 왼쪽·오른쪽 센서가 마지막으로 선을 본 이동 거리
+        # 옆 IR run: on = 지금 켜진 run 안, off = 연속 꺼진 샘플 수, valid = 창 시작 뒤 꺼짐→켜짐으로 시작한 run
+        self._side_run = {ch: {'on': False, 'off': 0, 'valid': False, 'start': None, 'noted': False}
+                          for ch in (0, 2)}
 
     def _update_odom(self, pose):
         if self._pose is not None:
@@ -575,6 +598,8 @@ class RouteExecutor:
         guess: s0 가 가정값(사람이 놓은 출발 위치)이면 True → 비율 창만 쓰고 gate_early 는 안 씀.
         """
         leg = self.legs[self.index]
+        # 노드 회전(ROTATE)이 끝나 바로 이 구간을 시작하면 처음 post_turn_slow_cm 은 감속
+        self._slow_until = self.cfg.post_turn_slow_cm if self.state == ROTATE else 0.0
         self.state = FOLLOW
         self._reset_primitive()
         self._leg_s0 = 0.0 if s0_cm is None else s0_cm
@@ -594,6 +619,36 @@ class RouteExecutor:
             self._max_ok = c.gate_max * expected + c.gate_slack_cm
         self._log('leg', f'{leg.frm}→{leg.to} {leg.action}')
 
+    def _track_sides(self, reading, d):
+        """추종 샘플마다 옆 IR run 을 갱신. 창 시작 전 run 은 valid 가 아님."""
+        k = self.cfg.side_rise_off_samples
+        for ch in (0, 2):
+            r = self._side_run[ch]
+            if reading.on_line[ch]:
+                if not r['on']:
+                    r.update(on=True, valid=r['off'] >= k and d >= self._min_ok, start=d,
+                             noted=False)
+                r['off'] = 0
+            else:
+                r['off'] += 1
+                if r['off'] >= k:
+                    r['on'] = False
+                    r['valid'] = False
+
+    def _side_ok(self, ch, leg, d, tee=False):
+        """옆 IR ch 를 노드 판정에 써도 되는지(켜짐 확인 규칙)."""
+        c = self.cfg
+        if not c.side_rise_only or (tee and not c.side_rise_tee):
+            return True
+        r = self._side_run[ch]
+        if r['valid']:
+            return True
+        if r['on'] and not r['noted']:      # 창 전부터 켜져 있던 run: 한 번만 기록
+            r['noted'] = True
+            self._log('side_ignored', f'{leg.to} {"left" if ch == 0 else "right"} on since '
+                      f'{r["start"]:.1f} cm (window {self._min_ok:.1f}), at {d:.1f} cm')
+        return False
+
     def _hit(self, reading, leg, d=0.0):
         if leg.detect == 'bar':
             return reading.node
@@ -601,18 +656,20 @@ class RouteExecutor:
         if not on[1]:
             return False
         if self.cfg.tee_both and LEFT in leg.sides and RIGHT in leg.sides:
-            for ch in (0, 2):
-                if on[ch]:
-                    self._tee_seen[ch] = d
+            seen = [ch for ch in (0, 2) if on[ch] and self._side_ok(ch, leg, d, tee=True)]
+            for ch in seen:
+                self._tee_seen[ch] = d
             a, b = self._tee_seen[0], self._tee_seen[2]
-            return (on[0] or on[2]) and a is not None and b is not None \
+            return bool(seen) and a is not None and b is not None \
                 and abs(a - b) <= self.cfg.tee_window_cm
-        return (LEFT in leg.sides and on[0]) or (RIGHT in leg.sides and on[2])
+        return ((LEFT in leg.sides and on[0] and self._side_ok(0, leg, d))
+                or (RIGHT in leg.sides and on[2] and self._side_ok(2, leg, d)))
 
     def _follow(self, reading):
         c = self.cfg
         leg = self.legs[self.index]
         d = self._odo - self._ref_odo
+        self._track_sides(reading, d)
         if d >= c.suppress_cm and d >= self._min_ok and self._hit(reading, leg, d):
             self._hits += 1
         else:
@@ -644,6 +701,8 @@ class RouteExecutor:
             speed = self.approach_speed
         else:
             speed = self.approach_speed if d >= self._expected - c.approach_lead_cm else c.base_speed
+        if d < self._slow_until:         # 회전 직후: 선 가운데로 돌아올 때까지 감속(가장자리 타기 방지)
+            speed = min(speed, self.approach_speed)
         angular = _clamp(-(self.kp_for(speed) * e + c.kd * de), c.max_angular)
         linear = speed * (1.0 - c.slow_gain * abs(e))
         linear = min(c.max_linear, max(c.min_speed, linear))

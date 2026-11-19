@@ -3,8 +3,8 @@
 environment: sim
 map:
   frame: map
-  yaml_sha256: 25f94c8512d99adc41e6f3b59b4136cace3909d82e7b41875045e77d0531ffda
-  image_sha256: 0f57d726d0ec781cfbfb78a6bcc7272ccdb643a6cbb60afd54802958c3ef8e0c
+  yaml_sha256: 6e11b12ffb260a4c6a2333661b2ab495156923f072584ad9711c465aa5381522
+  image_sha256: 078160541849f3632cc2cc07df395bd7210077ba494c4a019e9d468c872d2642
 places:
   return_entry:
     measured: true

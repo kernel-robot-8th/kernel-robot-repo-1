@@ -49,7 +49,7 @@ def trial_inputs(map_path, layout_path):
         return value
 
     try:
-        if layout["units"] != "cm" or layout["version"] != "v14":
+        if layout["units"] != "cm" or layout["version"] != "v15":
             raise ValueError(
                 "review trial routes and goal for this layout version/units"
             )
@@ -160,7 +160,7 @@ def prepare(map_path, layout_path, *, simulation=False, single_robot=False):
                 start_maneuver="none",
                 speed_limit_mps=0.06,
             )
-    # Both trials use this v14 candidate; field verification remains mandatory.
+    # Both trials use this v15 candidate; field verification remains mandatory.
     x, y = 4.10, 1.90
     goal_pose = {
         "x": round(frame["x_m"] + math.cos(yaw) * x - math.sin(yaw) * y, 6),
