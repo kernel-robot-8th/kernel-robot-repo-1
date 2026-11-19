@@ -119,6 +119,7 @@ class FakePanel:
         self.models = [MODEL]
         self.starts = []
         self.start_error = None
+        self.start_refusal = None  # JSON body of a 400 refusal (panel 3.20 tray check)
         self.arms = {
             "OMX 1": live("left"),
             "OMX 2": live("right"),
@@ -178,6 +179,8 @@ class FakePanel:
                     self._json({"ok": True, "mode": "return_home"})
                 elif self.path != "/api/eval/start":
                     self._json({"error": "unknown"}, 404)
+                elif panel.start_refusal:
+                    self._json(panel.start_refusal, 400)
                 elif panel.start_error:
                     self._json({"error": panel.start_error}, 400)
                 else:
@@ -892,6 +895,56 @@ class PanelExecutorTest(unittest.TestCase):
                         "MISSION_HOLD" if held else "MISSION_FAILED",
                     )
                     self.assertIs(self.host.hold is not None, held)
+
+    def test_unload_refused_by_the_tray_check_fails_without_hold(self):
+        # panel 3.20 checks the Pinky tray right before unloading and refuses a non-empty one
+        self.use_unload_route()
+        cases = [
+            ("not_empty", "PANEL_TRAY_NOT_EMPTY", {"not_empty_why": "box_marker"}),
+            ("no_frame", "PANEL_TRAY_CHECK_FAILED", {}),
+        ]
+        for state, code, extra in cases:
+            with self.subTest(state=state):
+                self.panel.start_refusal = {
+                    "error": "하차 시작 전 쟁반 확인: 평가를 시작하지 않았습니다.",
+                    "refused": "tray_check",
+                    "tray_check": {"tray_check": state, **extra},
+                }
+                accepted, failed = self.send(self.outbound())
+                p = failed["payload"]
+                self.assertEqual(failed["type"], "shelf_outbound.failed")
+                self.assertEqual(
+                    (p["error_code"], p["mission_result"]), (code, "MISSION_FAILED")
+                )
+                self.assertIsNone(self.host.hold)
+        self.assertEqual(self.panel.starts, [])
+        self.assertEqual(self.panel.home_returns, 0)  # nothing moved, nothing sent home
+
+    def test_unload_tray_judged_only_against_this_missions_photo(self):
+        self.use_unload_route()
+        cases = [
+            {"tray_reference_state": "reference_stale"},
+            {"tray_reference_state": "reference_mismatch"},
+            {"tray_reference_state": "ok", "pre_mission_match": False},
+        ]
+        for change in cases:
+            with self.subTest(change=change):
+                self.host.clear_hold()
+                self.send(self.outbound())
+                check = pinky(slot_empty=True, **change)
+                self.panel.finish(pinky=check, stage="done", final=True)
+                (event,) = self.host.poll()
+                p = event["payload"]
+                self.assertEqual(
+                    (p["error_code"], p["mission_result"]),
+                    ("PANEL_PINKY_NO_REFERENCE", "MISSION_HOLD"),
+                )
+        self.host.clear_hold()
+        self.send(self.outbound())
+        good = {"tray_reference_state": "ok", "pre_mission_match": True}
+        self.panel.finish(pinky=pinky(slot_empty=True, **good), stage="done", final=True)
+        (event,) = self.host.poll()
+        self.assertEqual(event["payload"]["mission_result"], "MISSION_COMPLETE")
 
     def test_unload_unknown_pinky_holds_for_a_person(self):
         self.use_unload_route()

@@ -20,7 +20,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cooperative import ARMS, OPERATIONS, SLOTS, Rejected
+from .cooperative import ARMS, OPERATIONS, SLOTS, Rejected, StartRefused
 from .mqtt_link.messages import check_expiry
 
 ARM_SIDES = {"left": "omx1", "right": "omx2"}
@@ -156,6 +156,7 @@ HOLD_ERRORS = {
     "PANEL_ALIGN_SKIPPED",
     "PANEL_ALIGN_NOT_RUN",
     "PANEL_PINKY_UNREADABLE",
+    "PANEL_PINKY_NO_REFERENCE",
     "PANEL_SLOT_UNREADABLE",
     "PANEL_PINKY_CHECK_NOT_RUN",
     "PANEL_PINKY_CHECK_CONFLICT",
@@ -177,6 +178,14 @@ HOME_RETURN_TIMEOUT_S = 90.0
 # Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot, or slot empty but the
 # tray unchanged (dropped) → MISSION_FAILED, arms sent home. Anything unread → MISSION_HOLD.
 PINKY_LOAD = "pinky_load"
+
+
+class PanelRefused(RuntimeError):
+    """The panel answered with an HTTP error; reply keeps its JSON body."""
+
+    def __init__(self, message: str, reply: dict):
+        super().__init__(message)
+        self.reply = reply
 
 
 def _slot_empty(pinky: dict) -> bool | None:
@@ -202,6 +211,11 @@ def _pinky_error(pinky) -> str | None:
         )
     if slot_empty is None:
         return "PANEL_SLOT_UNREADABLE"
+    # panel 3.20: the tray is compared only with this mission's own photo taken right before the
+    # unloading (never another Pinky's or a shared one); without it the tray result is not trusted
+    state = pinky.get("tray_reference_state")
+    if (state is not None and state != "ok") or pinky.get("pre_mission_match") is False:
+        return "PANEL_PINKY_NO_REFERENCE"
     if on_pinky is True:
         return None
     if on_pinky is False:
@@ -331,10 +345,12 @@ class PanelExecutor:
                 return json.loads(r.read() or b"{}")
         except urllib.error.HTTPError as exc:
             try:
-                message = json.loads(exc.read()).get("error") or str(exc)
+                reply = json.loads(exc.read())
             except ValueError:
-                message = str(exc)
-            raise RuntimeError(f"panel {path}: {message}") from exc
+                reply = {}
+            reply = reply if isinstance(reply, dict) else {}
+            message = reply.get("error") or str(exc)
+            raise PanelRefused(f"panel {path}: {message}", reply) from exc
 
     def readiness(self) -> dict:
         status = self._call("GET", "/api/status")
@@ -451,7 +467,24 @@ class PanelExecutor:
                 "filter_gripper": route.filter_gripper,
             }
         check_expiry(task)
-        reply = self._call("POST", "/api/eval/start", body, timeout=self.start_timeout)
+        try:
+            reply = self._call(
+                "POST", "/api/eval/start", body, timeout=self.start_timeout
+            )
+        except PanelRefused as exc:
+            check = exc.reply.get("tray_check")
+            if exc.reply.get("refused") == "tray_check" and isinstance(check, dict):
+                # panel 3.20: the Pinky tray right before unloading was not empty or could not be
+                # read; nothing moved, so the scene is checked without holding the Host
+                state = check.get("tray_check")
+                code = (
+                    "PANEL_TRAY_NOT_EMPTY"
+                    if state == "not_empty"
+                    else "PANEL_TRAY_CHECK_FAILED"
+                )
+                why = check.get("not_empty_why") or state
+                raise StartRefused(code, f"tray check: {why}", hold=False) from exc
+            raise
         if not isinstance(reply.get("repo_id"), str) or not reply["repo_id"]:
             raise RuntimeError("panel did not return the run's repo_id")
         self.repo_id, self._missing_since = reply["repo_id"], None

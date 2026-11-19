@@ -126,6 +126,7 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 - **쟁반에는 마커를 붙이지 않습니다.** 하차 정책은 마커 없는 쟁반으로 학습되어, 쟁반에 마커가 있으면 동작을 시작하지 않습니다.
 - 빈 쟁반 기준 사진은 Pinky마다 한 번 찍습니다(정렬 실행기 `--step tray_check --pinky N --tray-ref-reset`). 기준 사진이 없으면 `on_pinky: null`(HOLD)입니다.
 - 확인은 정렬 실행기 `--step pinky_read`가 하며 로봇을 움직이지 않습니다. 제어판은 비상 정지·강제 종료가 아니면 평가가 어떻게 끝났든 확인합니다.
+- 제어판 3.20.0부터 하차 직전에 그 자리 쟁반을 찍어(작업 직전 사진) 비어 있는지 먼저 확인하고, 작업 뒤에는 **그 미션의 직전 사진하고만** 비교합니다(다른 기체·공통 사진은 쓰지 않음, 관제 합의). 직전 확인에서 쟁반이 비어 있지 않거나 읽지 못하면 제어판이 평가를 시작하지 않고, Host는 팔이 움직이지 않았으므로 HOLD 없이 `MISSION_FAILED`(`PANEL_TRAY_NOT_EMPTY`·`PANEL_TRAY_CHECK_FAILED`)로 보고합니다. 작업 뒤 판정이 직전 사진 기준이 아니면(`tray_reference_state`가 `ok`가 아니거나 `pre_mission_match: false`) `PANEL_PINKY_NO_REFERENCE`로 HOLD합니다.
 - 하차 평가에서는 위 카메라 관측에 목표 원을 그리지 않습니다(`draw_target: false`, 제어판 3.16.1+). 목표 원 없이 학습된 모델이라, 그리면 동작이 크게 느려집니다.
 
 | `mission_result` | 조건 | 비고 |
