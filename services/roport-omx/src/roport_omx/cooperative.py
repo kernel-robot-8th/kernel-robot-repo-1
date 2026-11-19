@@ -64,6 +64,17 @@ class Rejected(ValueError):
     """Request refused before anything started; args[0] is the error code."""
 
 
+class StartRefused(RuntimeError):
+    """The executor refused to start before moving anything; args[0] is the error code.
+
+    hold=False reports MISSION_FAILED without HOLD (the scene needs a look, the arms never moved).
+    """
+
+    def __init__(self, code: str, detail: str = "", *, hold: bool = True):
+        super().__init__(code, detail)
+        self.code, self.detail, self.hold = code, detail, hold
+
+
 class StorageError(RuntimeError):
     """Journal write failed and memory was rolled back. Do not ACK; restart and reconcile."""
 
@@ -273,6 +284,10 @@ class CooperativeHost:
         try:
             check_expiry(message)  # durable acceptance can also outlive the command
             self.executor.start(task)
+        except StartRefused as exc:  # refused before any motion, with its own reason
+            return events + self._finish(
+                record, exc.code, {}, exc.detail or None, hold=exc.hold
+            )
         except Exception as exc:  # noqa: BLE001 - any refusal ends this execution
             return events + self._finish(record, "EXECUTOR_START_FAILED", {}, str(exc))
         return events
