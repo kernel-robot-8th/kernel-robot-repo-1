@@ -380,6 +380,26 @@ class PanelExecutorTest(unittest.TestCase):
             ("중", False, True),
         )
 
+    def test_unloading_is_refused_unmoved_without_alignment(self):
+        # The loading judgement (shelf alignment, box on the shelf) must never apply to an
+        # unloading: a normal unloading leaves the slot empty and would hold as "not on shelf".
+        out_model = "/models/outbound/pretrained_model"
+        self.executor.routes = ROUTES | {
+            ("OUTBOUND", "2b"): Route(out_model, "OUTBOUND shelf 2B | marker {box}", 70, 15)
+        }
+        self.panel.models.append(out_model)
+        message = self.inbound()
+        message["type"] = "shelf_outbound.requested"
+        message["payload"]["operation"] = "OUTBOUND"
+        (event,) = self.send(message)
+        self.assertEqual(event["type"], "shelf_outbound.rejected")
+        self.assertEqual(event["payload"]["error_code"], "UNSUPPORTED_OPERATION")
+        self.assertEqual(self.panel.starts, [])  # no evaluation, no alignment request
+        self.assertIsNone(self.host.hold)
+        (accepted,) = self.send(self.inbound())  # loading still runs with its alignment
+        self.assertEqual(accepted["payload"]["phase"], "ACCEPTED")
+        self.assertIs(self.panel.starts[-1]["shelf_align"], True)
+
     def test_unknown_box_is_refused(self):
         self.executor.box_marker = None
         (event,) = self.send(self.inbound())
