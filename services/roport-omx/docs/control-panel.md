@@ -24,8 +24,11 @@
 | 날짜 | 제어판 | Host 프로그램 | 결과 |
 | --- | --- | --- | --- |
 | 2026-11-17 | v3.16.0 (`02a6246`) | `task/omx-cooperative` + #99 #100 #107 #103 (현장 `field/omx-cooperative`) | 모의 시험·제어판 샌드박스 통과. 실물 팔·카메라 미검증 |
+| 2026-11-17 | v3.16.1 → v3.17.0 (`375840a`) | 위 + #107 목표 원 끄기 | 현장 실물: 입고 1회 COMPLETE(정렬), 하차 0.2 설정 6회 중 정책 성공 5회 |
+| 2026-11-18 | **v3.17.3 (`bebd54f`, 태그 `v3.17.3`)** | 위 + #112 #114 (현장 `field/omx-cooperative`) | 모의 시험·제어판 샌드박스·MuJoCo 재확인 통과. 실물 미검증 |
+| 2026-11-18 | v3.18.0 (두 PC 배포, 제어판 저장소 커밋 대기) | 위 (넘겨받기 `--end-on-place`·`--place-shadow`) | 제어판 샌드박스 18/18. 실물 단계 확인 예정 |
 
-Host가 요구하는 제어판 최소 버전: **3.14.0**(입고만), **3.15.0**(경로표에 OUTBOUND가 있을 때). 낮으면 `executor_error: PANEL_VERSION`.
+Host가 요구하는 제어판 최소 버전: **3.14.0**(입고만), **3.15.0**(경로표에 OUTBOUND가 있을 때). 낮으면 `executor_error: PANEL_VERSION`. 그보다 새 기능은 제어판 버전을 보고 있을 때만 씁니다: 칸·`pinky_id` 전달과 놓였음(`placement`)은 3.17.0+, 넘겨받기(`end_on_place`)·그림자 판정(`place_shadow`)은 3.18.0+.
 
 ## 3. Host가 쓰는 제어판 기능
 
@@ -42,8 +45,13 @@ Host가 요구하는 제어판 최소 버전: **3.14.0**(입고만), **3.15.0**(
 | 홈 복귀 | `POST /api/home/return` `{"source": "mqtt"}` → `job.kind "home"` | `MISSION_FAILED` 뒤 양팔 시작 자세로 | 3.14.0 (armed 조건 3.15.0) |
 | 평가 뒤 Pinky 상차 확인 | `POST /api/eval/start` `pinky_check: true`, `shelf_align: false` → `last_result.pinky{ran, on_pinky, on_shelf, pinky, shelf, skipped}` | 하차 판정 | 3.15.0 |
 | HOLD 해제 버튼 | journal 옆 `<stem>.host-state.json` / `.hold-request.json` / `.hold-result.json` | Host가 조건 확인 후 해제 | 3.16.0 |
+| 하차 평가에서 목표 원 끄기 | `POST /api/eval/start` `draw_target: false` → `last_result.target_drawn` | 하차 모델은 목표 원 없이 학습됨 | 3.16.1 |
+| 명령 칸·Pinky 전달, 놓였음 먼저 보고 | `POST /api/eval/start` `slot: "2B"`, `pinky_id` → `last_result.placement{on_shelf, slot, box, source, observed_at, reported_at}` | 칸별 정렬·상차 확인, 두 단계 보고(`--report-placement`) | 3.17.0 |
+| 정렬 뒤 모델 홈 복귀 | `last_result.align.rest{check, rest_ref: "home"}` | 정렬 뒤 쉬는 자세 판정 | 3.17.1 |
+| 안전 정지 홈 이동: 모든 관절 동시 도착, 먼저 손끝 4 cm 들기 | 평가 종료·중지·`/api/home/return` 공통 | 실패 뒤 홈 복귀 경로(충돌 감소) | 3.17.2 · 3.17.3 |
+| 넘겨받기, 그림자 판정 | `POST /api/eval/start` `end_on_place: true` 또는 `place_shadow: true` → `last_result.handover{state, fallback, fallback_ok, …}`, `last_episode.end_reason` | 놓은 직후 정렬기가 팔을 이어받음, 실패 시 판정(`PANEL_HANDOVER_*`) | 3.18.0 |
 
-평가 시작 요청 본문(Host가 보냄): `source`, `model_path`, `task`, `episodes: 1`, `episode_s`, `reset_s`, `target_marker`, `end_on_return`, (`shelf_align` | `pinky_check` + `shelf_align: false`), 경로표의 `output_filter`·`filter_gripper`·`eval_options`.
+평가 시작 요청 본문(Host가 보냄): `source`, `model_path`, `task`, `episodes: 1`, `episode_s`, `reset_s`, `target_marker`, `end_on_return`, 입고는 `shelf_align: true`·`fast_release: true`, 하차는 `pinky_check: true`·`shelf_align: false`·`draw_target: false`, 3.17.0+는 `slot`·`pinky_id`, 3.18.0+ 입고는 옵션에 따라 `end_on_place` 또는 `place_shadow`, 경로표의 `output_filter`·`filter_gripper`·`eval_options`.
 
 ## 4. 현장 설정 파일 (Host PC)
 
@@ -57,7 +65,8 @@ Host가 요구하는 제어판 최소 버전: **3.14.0**(입고만), **3.15.0**(
 
 | 할 일 | 이유 |
 | --- | --- |
-| 정렬·상차 확인 칸을 명령에서 받기 | 지금은 설정 2B 고정이라 다른 칸은 `PANEL_ALIGN_WRONG_SLOT` |
+| 하차 직전 쟁반 사진을 먼저 찍고 그 사진과 비교(쟁반이 비어 있지 않으면 시작 안 함) | 관제 합의: 기체 교체가 있어 Pinky별 저장 사진을 공통으로 쓰지 않음 |
+| 놓였음 판정 순간의 손끝 위치·그리퍼 값·촬영 원시각을 `placement`에 담기 | 관제 합의: 조기 출발에는 칸 안착 + 실제 그리퍼 해제 + 촬영 3초 이내가 필요 |
 | v2 관제 규약 대응(Host 자동 시작 대상, 명령별 시작·조회·취소 API, 모터 정지 관측) | 관제 fleet이 v2 명령을 보냄 |
 | 관제 원격 HOLD 해제 표시 | 관제 해제 규약이 정해지면 |
 
