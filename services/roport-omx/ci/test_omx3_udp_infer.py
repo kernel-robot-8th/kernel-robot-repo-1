@@ -180,6 +180,24 @@ class Adapter(unittest.TestCase):
         with self.assertRaises(RuntimeError):  # 실패한 load 뒤에도 보내지 않는다
             self.client.infer([0] * 6, FakeFrame(), "t", "omx_follower")
 
+    def test_failed_reload_blocks_infer(self):
+        # 성공 → 재로드 실패(n_obs 2, 무응답) → 이전 영상 크기로 보내지 않는다
+        self.gpu.loaded["image_size"] = [240, 320]
+        self.client.load()
+        self.gpu.loaded["n_obs"] = 2
+        with self.assertRaises(ValueError):
+            self.client.load()
+        with self.assertRaises(RuntimeError):
+            self.client.infer([0] * 6, FakeFrame(), "t", "omx_follower")
+        self.gpu.loaded["n_obs"] = 1
+        self.client.load()
+        self.gpu.silent = True
+        with self.assertRaises(InferenceTimeout):
+            self.client.load(timeout=0.1)
+        with self.assertRaises(RuntimeError):
+            self.client.infer([0] * 6, FakeFrame(), "t", "omx_follower")
+        self.assertEqual(self.gpu.requests, [])
+
     def test_no_reply_raises_timeout(self):
         self.client.load()
         self.gpu.silent = True

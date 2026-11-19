@@ -50,6 +50,8 @@ class UdpInferClient:
         self._loaded = False
 
     def load(self, timeout: float = 180.0) -> dict:
+        # 재로드가 실패하면 이전 모델 상태로 보내지 않게, 새 응답 검증 전까지 막는다
+        self._loaded, self._image_size = False, None
         with self._lock:
             info = self.client.load(self.model, timeout=timeout)
         if int(info.get("n_obs") or 1) != 1:  # 관측 1개만 보낸다(ACT)
