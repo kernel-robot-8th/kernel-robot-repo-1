@@ -112,7 +112,7 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 
 상자가 명령한 칸에 놓이면 바로 Mission Complete를 보내 Pinky가 떠날 수 있게 하고, 정렬은 후속 작업으로 따로 보고합니다. 기본은 꺼져 있으며(위의 한 번 보고), 관제가 `shelf_placed`를 받도록 바뀐 뒤 `--report-placement`로 켭니다.
 
-1. 제어판(3.17.0+)이 평가 뒤 선반을 읽어 `last_result.placement.on_shelf: true`(명령한 칸)를 남기면, 정렬이 끝나기 전에 `completed`, `mission_result: "MISSION_COMPLETE"`, `evidence: "shelf_placed"`, `placement_confirmed: true`, `departure_ready: true`, `align_state: "PENDING"`, `placement`(칸·상자·관측 시각)를 보냅니다. 이때 팔은 아직 정렬 중이라 `arms`는 홈이 아닐 수 있습니다.
+1. 제어판(3.20.0+)이 `last_result.placement.on_shelf: true`(명령한 칸)를 남기고, 그 순간 **두 손이 상자에서 떨어졌으며**(넘겨받기 판정이면 두 손끝이 상자 앞면·선반 앞 경계보다 3cm 뒤 `tips_clear`, 아니면 평가가 복귀로 끝난 때 양팔 홈·그리퍼 54.6 이하 `eval_end`) **카메라 촬영 원시각이 3초 이내**(`observed_ts`)일 때만, 정렬이 끝나기 전에 `completed`, `mission_result: "MISSION_COMPLETE"`, `evidence: "shelf_placed"`, `placement_confirmed: true`, `grasp_released: true`, `departure_ready: true`, `align_state: "PENDING"`, `placement`(칸·상자·촬영 시각·판정 근거)를 보냅니다. 근거가 하나라도 없으면 조기 보고 없이 정렬 뒤 한 번 보고합니다(관제 합의 2026-11-18). 이때 팔은 아직 정렬 중이라 `arms`는 홈이 아닐 수 있습니다.
 2. 정렬이 끝날 때까지 작업은 진행 중으로 남아, 새 명령은 `HOST_BUSY`로 거절합니다. 관제는 다음 선반 명령 전에 아래 정렬 결과(또는 `status.completed`의 `active: null`)를 기다려야 합니다.
 3. 정렬 결과는 `progress` 이벤트(지금 관제는 `completed` 뒤의 `progress`를 저장하고 ack만 함)로 보냅니다.
 
@@ -140,6 +140,7 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 - **쟁반에는 마커를 붙이지 않습니다.** 하차 정책은 마커 없는 쟁반으로 학습되어, 쟁반에 마커가 있으면 동작을 시작하지 않습니다.
 - 빈 쟁반 기준 사진은 Pinky마다 한 번 찍습니다(정렬 실행기 `--step tray_check --pinky N --tray-ref-reset`). 기준 사진이 없으면 `on_pinky: null`(HOLD)입니다.
 - 확인은 정렬 실행기 `--step pinky_read`가 하며 로봇을 움직이지 않습니다. 제어판은 비상 정지·강제 종료가 아니면 평가가 어떻게 끝났든 확인합니다.
+- 제어판 3.20.0부터 하차 직전에 그 자리 쟁반을 찍어(작업 직전 사진) 비어 있는지 먼저 확인하고, 작업 뒤에는 **그 미션의 직전 사진하고만** 비교합니다(다른 기체·공통 사진은 쓰지 않음, 관제 합의). 직전 확인에서 쟁반이 비어 있지 않거나 읽지 못하면 제어판이 평가를 시작하지 않고, Host는 팔이 움직이지 않았으므로 HOLD 없이 `MISSION_FAILED`(`PANEL_TRAY_NOT_EMPTY`·`PANEL_TRAY_CHECK_FAILED`)로 보고합니다. 작업 뒤 판정이 직전 사진 기준이 아니면(`tray_reference_state`가 `ok`가 아니거나 `pre_mission_match: false`) `PANEL_PINKY_NO_REFERENCE`로 HOLD합니다.
 - 하차 평가에서는 위 카메라 관측에 목표 원을 그리지 않습니다(`draw_target: false`, 제어판 3.16.1+). 목표 원 없이 학습된 모델이라, 그리면 동작이 크게 느려집니다.
 
 | `mission_result` | 조건 | 비고 |

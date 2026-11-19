@@ -418,7 +418,11 @@ class OmxTrial:
                     not -2 <= age <= 5
                     or p.get("departure_ready") is not True
                     or (
-                        p.get("placement_confirmed") is not True
+                        # placed early: the box in its slot and both hands off it (Host, panel 3.20)
+                        (
+                            p.get("placement_confirmed") is not True
+                            or p.get("grasp_released") is not True
+                        )
                         if placed
                         else not returned(p)
                     )

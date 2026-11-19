@@ -20,7 +20,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cooperative import ARMS, OPERATIONS, SLOT_ARMS, SLOTS, Rejected
+from .cooperative import ARMS, OPERATIONS, SLOT_ARMS, SLOTS, Rejected, StartRefused
 from .mqtt_link.messages import check_expiry
 
 ARM_SIDES = {"left": "omx1", "right": "omx2"}
@@ -53,6 +53,11 @@ PANEL_COMMAND_SLOT = (3, 17, 0)
 # 3.18.0: "end_on_place" ends the loading evaluation once the box sits in its slot and both hands are
 # clear of it; the aligner then takes the arms where they are (hand-over). Older panels ignore it.
 PANEL_END_ON_PLACE = (3, 18, 0)
+# 3.20.0: the placement carries the evidence for an early COMPLETE (control agreement 2026-11-18):
+# the hands' state at that moment and the camera's own capture time (not the panel's read time).
+PANEL_PLACEMENT_EVIDENCE = (3, 20, 0)
+# An early COMPLETE uses a capture at most this old (seconds, same PC clock).
+PLACEMENT_FRESH_S = 3.0
 # package_id is the box's ArUco marker number as a string (agreed with control, same rule as OMX3's
 # omx3/target.py): ASCII digits, no leading zero. Package markers 15-22 except 18, the Pinky tray
 # marker since docs/aruco/markers.yaml v1.6. A route may narrow it to the boxes its model learned.
@@ -173,6 +178,7 @@ HOLD_ERRORS = {
     "PANEL_ALIGN_SKIPPED",
     "PANEL_ALIGN_NOT_RUN",
     "PANEL_PINKY_UNREADABLE",
+    "PANEL_PINKY_NO_REFERENCE",
     "PANEL_SLOT_UNREADABLE",
     "PANEL_PINKY_CHECK_NOT_RUN",
     "PANEL_PINKY_CHECK_CONFLICT",
@@ -194,6 +200,33 @@ HOME_RETURN_TIMEOUT_S = 90.0
 # Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot, or slot empty but the
 # tray unchanged (dropped) → MISSION_FAILED, arms sent home. Anything unread → MISSION_HOLD.
 PINKY_LOAD = "pinky_load"
+
+
+def _released_at_placement(placement: dict) -> bool:
+    """Both hands let the box go when it was seen in its slot (control agreement 2026-11-18).
+
+    Hand-over judge (source "eval_judge"): both fingertips behind the box front and the shelf
+    edge by 3 cm (panel tips_clear, from the joints). Otherwise the evaluation ended on its
+    return: both arms at the model's home with grippers at or below GRIP_RELEASED_MAX.
+    """
+    if placement.get("source") == "eval_judge":
+        return placement.get("tips_clear") is True
+    end = placement.get("eval_end")
+    if not isinstance(end, dict) or end.get("all_at_home") is not True:
+        return False
+    arms = end.get("arms") if isinstance(end.get("arms"), dict) else {}
+    grips = [(arm or {}).get("gripper") for arm in arms.values()]
+    return len(grips) == len(ARMS) and all(
+        isinstance(g, (int, float)) and g <= GRIP_RELEASED_MAX for g in grips
+    )
+
+
+class PanelRefused(RuntimeError):
+    """The panel answered with an HTTP error; reply keeps its JSON body."""
+
+    def __init__(self, message: str, reply: dict):
+        super().__init__(message)
+        self.reply = reply
 
 
 def _slot_empty(pinky: dict) -> bool | None:
@@ -219,6 +252,11 @@ def _pinky_error(pinky) -> str | None:
         )
     if slot_empty is None:
         return "PANEL_SLOT_UNREADABLE"
+    # panel 3.20: the tray is compared only with this mission's own photo taken right before the
+    # unloading (never another Pinky's or a shared one); without it the tray result is not trusted
+    state = pinky.get("tray_reference_state")
+    if (state is not None and state != "ok") or pinky.get("pre_mission_match") is False:
+        return "PANEL_PINKY_NO_REFERENCE"
     if on_pinky is True:
         return None
     if on_pinky is False:
@@ -375,10 +413,12 @@ class PanelExecutor:
                 return json.loads(r.read() or b"{}")
         except urllib.error.HTTPError as exc:
             try:
-                message = json.loads(exc.read()).get("error") or str(exc)
+                reply = json.loads(exc.read())
             except ValueError:
-                message = str(exc)
-            raise RuntimeError(f"panel {path}: {message}") from exc
+                reply = {}
+            reply = reply if isinstance(reply, dict) else {}
+            message = reply.get("error") or str(exc)
+            raise PanelRefused(f"panel {path}: {message}", reply) from exc
 
     def readiness(self) -> dict:
         status = self._call("GET", "/api/status")
@@ -499,7 +539,24 @@ class PanelExecutor:
                 "filter_gripper": route.filter_gripper,
             }
         check_expiry(task)
-        reply = self._call("POST", "/api/eval/start", body, timeout=self.start_timeout)
+        try:
+            reply = self._call(
+                "POST", "/api/eval/start", body, timeout=self.start_timeout
+            )
+        except PanelRefused as exc:
+            check = exc.reply.get("tray_check")
+            if exc.reply.get("refused") == "tray_check" and isinstance(check, dict):
+                # panel 3.20: the Pinky tray right before unloading was not empty or could not be
+                # read; nothing moved, so the scene is checked without holding the Host
+                state = check.get("tray_check")
+                code = (
+                    "PANEL_TRAY_NOT_EMPTY"
+                    if state == "not_empty"
+                    else "PANEL_TRAY_CHECK_FAILED"
+                )
+                why = check.get("not_empty_why") or state
+                raise StartRefused(code, f"tray check: {why}", hold=False) from exc
+            raise
         if not isinstance(reply.get("repo_id"), str) or not reply["repo_id"]:
             raise RuntimeError("panel did not return the run's repo_id")
         self.repo_id, self._missing_since = reply["repo_id"], None
@@ -525,9 +582,35 @@ class PanelExecutor:
             return None
         if str(placement.get("slot") or "").lower() != str(self.slot or "").lower():
             return None  # seen at another slot: the final result decides
+        if (self._version or ()) < PANEL_PLACEMENT_EVIDENCE:
+            return None  # no gripper evidence or capture time yet: one report as before
+        if not _released_at_placement(placement):
+            return None  # the hands may still hold the box; a later reading may show it
+        captured = placement.get("observed_ts")
+        if (
+            not isinstance(captured, (int, float))
+            or not 0 <= time.time() - captured <= PLACEMENT_FRESH_S
+        ):
+            return None  # too old (or unknown) to let the Pinky leave on it
         self._placed = True
-        keys = ("slot", "box", "source", "observed_at", "reported_at")
-        return {"state": "placed", "placement": {k: placement.get(k) for k in keys}}
+        keys = (
+            "slot",
+            "box",
+            "source",
+            "observed_at",
+            "observed_ts",
+            "reported_at",
+            "tips_clear",
+            "tip_y",
+            "y_out",
+            "gripper",
+            "eval_end",
+        )
+        return {
+            "state": "placed",
+            "grasp_released": True,
+            "placement": {k: placement.get(k) for k in keys if k in placement},
+        }
 
     def observe(self) -> dict:
         if self.repo_id is None:
