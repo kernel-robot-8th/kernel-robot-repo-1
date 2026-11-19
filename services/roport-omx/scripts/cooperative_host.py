@@ -242,7 +242,7 @@ def main() -> None:
             "HOLD on command %s: new tasks are rejected until --clear-hold", host.hold
         )
     if args.executor == "panel":
-        routes = ", ".join(f"{o}:{s}" for o, s in executor.routes)
+        routes = ", ".join(":".join(key) for key in executor.routes)
         log.info("PANEL executor %s routes=[%s]; arms move", args.panel_url, routes)
     else:
         log.info("SIMULATED executor")
