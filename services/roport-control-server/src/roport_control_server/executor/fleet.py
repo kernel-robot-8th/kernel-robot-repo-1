@@ -33,7 +33,7 @@ class FleetControl:
             config.get("node_clearance_m"),
         )
         self.observed, self.poses, self.heard = {}, {}, {}
-        self.awaiting_state = set()
+        self.awaiting_state = {}
         if not store.data:
             store.save(
                 {
@@ -206,10 +206,28 @@ class FleetControl:
                 and p["boot_version"] != cmd["participant_boots"][robot]
             ):
                 self.hold(f"{robot}: executor restarted")
+        state = p["state"]
+        node = state.get("node")
+        arrival = self.awaiting_state.get(robot)
+        if arrival is not None:
+            if (
+                p["boot_version"],
+                node,
+                state.get("arrival_command_id"),
+            ) != arrival or (
+                state.get("mode") != "line"
+                or state.get("stopped") is not True
+                or p.get("active_command_id") is not None
+                or state.get("fault")
+                or state.get("line_enabled")
+                or state.get("drive_owner") != "none"
+            ):
+                # A delayed heartbeat must not undo the confirmed arrival.
+                return
+            del self.awaiting_state[robot]
+        elif old and old["boot_version"] == p["boot_version"]:
+            self.awaiting_state.pop(robot, None)
         self.observed[robot], self.heard[robot] = deepcopy(p), self.clock()
-        if old and old["boot_version"] == p["boot_version"]:
-            self.awaiting_state.discard(robot)
-        node = p["state"].get("node")
         # Only a known node or a confirmed Nav2 state replaces line occupancy.
         if (
             robot in ROLES
@@ -746,8 +764,12 @@ class FleetControl:
                 data["last_nodes"][cmd["target"]] = node
         self.save(data)
         if p["status"] == "completed" and not data["fault"] and cmd["target"] in ROLES:
-            # The following state provides heading, mode and readiness together.
-            self.awaiting_state.add(cmd["target"])
+            # Only a state tied to this line arrival can supply the next heading.
+            self.awaiting_state[cmd["target"]] = (
+                (p["boot_version"], p["result"]["node"], cmd["command_id"])
+                if cmd["type"] == "line_route_command"
+                else None
+            )
         if p["status"] == "in_progress" and not data["fault"]:
             self.route_progress(message["command_id"], p.get("result", {}).get("node"))
         return True

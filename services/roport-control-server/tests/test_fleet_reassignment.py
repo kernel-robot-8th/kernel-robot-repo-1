@@ -97,16 +97,37 @@ def test_reassignment_waits_for_fresh_state_after_completed_result(fleet):
     assert fleet.data["tasks"][previous]["status"] == "RUNNING"
     assert fleet.data["tasks"][requested]["stage"] == "queued"
 
-    state = deepcopy(old_state)
-    state.update(sequence=state["sequence"] + 1, active_command_id=None)
-    state["state"].update(
-        node=returning["payload"]["goal"]["node"],
-        heading_rad=1.2,
-        arrival_command_id=returning["command_id"],
-    )
+    arrival_node = returning["payload"]["goal"]["node"]
+    delayed = deepcopy(old_state)
+    delayed["sequence"] += 1
+    assert delayed["state"]["node"] != arrival_node
+    assert delayed["state"]["stopped"] is True
+    assert delayed["active_command_id"] is None
+    fleet.observe({"source": robot, "payload": delayed})
+    assert dispatch(fleet) is None
+    assert fleet.observed[robot]["state"]["node"] == arrival_node
+    assert fleet.data["last_nodes"][robot] == arrival_node
+
+    state = deepcopy(delayed)
+    for change in (
+        {"node": arrival_node},
+        {
+            "node": delayed["state"]["node"],
+            "arrival_command_id": returning["command_id"],
+        },
+        {"node": arrival_node, "stopped": False},
+    ):
+        state["sequence"] += 1
+        state["state"].update(change)
+        fleet.observe({"source": robot, "payload": state})
+        assert dispatch(fleet) is None
+
+    state["sequence"] += 1
+    state["state"].update(stopped=True, heading_rad=1.2)
     fleet.observe({"source": robot, "payload": state})
     command = dispatch(fleet)
     assert command["target"] == robot
+    assert command["payload"]["start_node"] == arrival_node
     assert command["payload"]["start_heading_rad"] == 1.2
     assert fleet.data["tasks"][previous]["return_reassigned_to"] == requested
 
