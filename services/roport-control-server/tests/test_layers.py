@@ -26,6 +26,7 @@ RULES = {
     ),
     "adapters.mqtt": ({"paho"}, set()),
     "adapters.udp": (set(), set()),
+    "adapters.wss": ({"websockets"}, {P + "contracts"}),
     "adapters.db": ({"psycopg"}, {P + "contracts"}),
     "adapters.api": ({"fastapi", "PIL", "yaml"}, {P + "contracts", P + "adapters.db"}),
 }
@@ -98,6 +99,10 @@ def test_layer_imports(module, path, is_package):
         (P + "executor.run", f"from {P}adapters.ui import window"),
         (P + "adapters.newthing.x", "import json"),
         (P + "app", "import json"),
+        (P + "adapters.wss.client", "import psycopg"),
+        (P + "adapters.wss.client", "import paho.mqtt.client"),
+        (P + "adapters.wss.client", f"from {P}adapters.db import registry"),
+        (P + "adapters.api.app", f"from {P}adapters.wss import client"),
     ],
 )
 def test_checker_flags_forbidden_imports(module, source):
@@ -115,3 +120,11 @@ def test_checker_allows_expected_imports():
     assert not violations(P + "executor.run", f"from {P}domain.state import Step")
     ui_init = P + "adapters.api"
     assert not violations(ui_init, "from .app import app", is_package=True)
+    # WSS codec/client: websockets + contracts + itself only (no DB driver; storage is
+    # injected by the executor).
+    assert not violations(P + "adapters.wss.client", "import websockets")
+    assert not violations(P + "adapters.wss.client", f"from {P}contracts import x")
+    assert not violations(P + "adapters.wss.client", "from .codec import decode")
+    assert not violations(
+        P + "executor.service_link", f"from {P}adapters.wss import client"
+    )

@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import itertools
 import json
+import logging
 import math
 import os
 import selectors
@@ -22,12 +23,16 @@ from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
 from queue import Empty
+from threading import Event, Thread
 from time import monotonic
 from uuid import uuid4
 
+from roport_control_server.adapters.mqtt import field_wire
+from roport_control_server.adapters.mqtt.host_metrics import HostMetricsReceiver
 from roport_control_server.adapters.mqtt.journal import Journal
 from roport_control_server.adapters.mqtt.messages import decode, timestamp, topic
 from roport_control_server.adapters.mqtt.motion import MotionReceiver, motion_topic
+from roport_control_server.adapters.mqtt.mqtt import MqttTransport
 from roport_control_server.adapters.mqtt.trial_wire import (
     PROFILE,
     check_result,
@@ -53,6 +58,9 @@ from roport_control_server.executor.plans import (
 )
 from roport_control_server.executor.trial_socket import TrialSocket
 
+LOG = logging.getLogger(__name__)
+HOST_METRICS_RETRY_S = 5
+
 NAV_RETRY_FAULTS = frozenset(
     (
         "nav2_goal_failed",
@@ -73,7 +81,55 @@ ROUTES = (
 )
 
 
+def validate_host_metrics(settings):
+    if not isinstance(settings, dict) or set(settings) != {"hosts", "stale_after_s"}:
+        raise ValueError("host_metrics requires hosts and stale_after_s")
+    HostMetricsReceiver(None, settings["hosts"], settings["stale_after_s"])
+
+
+def start_host_metrics(config, connection):
+    """Optional display-only subscriber; its failure never affects the task link."""
+    settings = config.get("host_metrics")
+    if settings is None:
+        return None, None
+    connection = replace(connection, client_id=connection.client_id + "-host")
+    subscriptions = [field_wire.topic(host, "host") for host in settings["hosts"]]
+    receiver = HostMetricsReceiver(None, settings["hosts"], settings["stale_after_s"])
+    stopped = Event()
+
+    def subscribe():
+        while not stopped.is_set():
+            transport = None
+            try:
+                transport = MqttTransport(connection, subscriptions)
+                transport.start()
+            except OSError as exc:
+                LOG.warning(
+                    "Host metrics subscription failed (%s); retrying.",
+                    type(exc).__name__,
+                )
+            else:
+                receiver.transport = transport
+                stopped.wait()
+                return
+            finally:
+                if transport is not None:
+                    transport.stop()
+            stopped.wait(HOST_METRICS_RETRY_S)
+
+    worker = Thread(target=subscribe, name="host-metrics-subscription")
+    worker.start()
+
+    def stop():
+        stopped.set()
+        worker.join()
+
+    return receiver, stop
+
+
 def validate_config(config, *, require_field_verification=True):
+    if "host_metrics" in config:
+        validate_host_metrics(config["host_metrics"])
     if "omx" in config:
         validate_settings(config["omx"])
         if config["mode"] == "simulation" and config["omx"]["execution_mode"] != "mock":
@@ -244,6 +300,7 @@ class TrialControl:
         self.discovery_robots = {}
         self.service_preview = None
         self.motion = None
+        self.host_metrics = None
         self.last_poll = 0.0
         self.deadline = None
         self.omx = OmxTrial(self) if "omx" in config else None
@@ -718,10 +775,13 @@ class TrialControl:
         return True
 
     def request_error(self):
+        return self.approval_error("request")
+
+    def approval_error(self, kind):
         if not self.transport.ready:
             return "MQTT subscriptions not ready"
         try:
-            self._gate_error("request")
+            self._gate_error(kind)
         except (ValueError, IndexError) as exc:
             return str(exc)
         return None
@@ -927,6 +987,12 @@ class TrialControl:
     def poll(self, timeout=0.1):
         if self.motion is not None:
             self.motion.poll(self.state["statuses"])
+        if self.host_metrics is not None:
+            # Display only: never feeds gate, departure, HOLD or timeouts.
+            try:
+                self.host_metrics.poll()
+            except Exception as exc:  # noqa: BLE001 - display-only; isolate from control loop
+                LOG.warning("host metrics poll failed: %s", type(exc).__name__)
         try:
             if not self.transport.ready:
                 self.hold("mqtt_disconnected")
@@ -1066,7 +1132,7 @@ def main():
     selector = selectors.DefaultSelector()
     if not args.socket:
         selector.register(sys.stdin, selectors.EVENT_READ)
-    web = motion_transport = None
+    web = motion_transport = stop_host_metrics = None
     owner = ExitStack()
     started = False
 
@@ -1117,6 +1183,7 @@ def main():
             print(
                 "Display motion unavailable; task connection is unchanged.", flush=True
             )
+        control.host_metrics, stop_host_metrics = start_host_metrics(config, connection)
         if web:
             print(
                 "Trial web owner ready; waiting for explicit operator commands.",
@@ -1182,6 +1249,8 @@ def main():
             transport.stop()
             if motion_transport:
                 motion_transport.stop()
+            if stop_host_metrics:
+                stop_host_metrics()
             if web:
                 web.close()
             owner.close()

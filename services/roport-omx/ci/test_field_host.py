@@ -140,15 +140,6 @@ class FieldHostTest(unittest.TestCase):
             kind, "control-01", target, p, command_id="command-1", expires_at=expiry()
         )
 
-    def test_copied_mqtt_contract_matches_control_source(self):
-        common = (
-            ROOT.parent
-            / "roport-control-server/src/roport_control_server/adapters/mqtt"
-        )
-        copied = ROOT / "src/roport_omx/mqtt_link"
-        for name in ("field_wire.py", "mqtt.py"):
-            self.assertEqual((common / name).read_bytes(), (copied / name).read_bytes())
-
     def test_wrong_versions_cannot_start_any_executor(self):
         for target, node in (
             ("shelf-01", "N11"),

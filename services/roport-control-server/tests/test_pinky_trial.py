@@ -282,6 +282,27 @@ def control_memory(profile, tmp_path):
     journal.close()
 
 
+def test_cart_load_waits_for_other_pinky_stop_evidence(control_memory):
+    c = control_memory
+    cart = c.state["statuses"][c.robots["smartcart"]["robot_id"]]
+    route = c.config["routes"]["cart_to_switch"]
+    cart.update(node_id=route["start_node"], heading_rad=route["start_heading_rad"])
+    index = next(
+        i for i, step in enumerate(c.plan["steps"]) if step["id"] == "WAIT_CART_LOAD"
+    )
+    c._enter_step(index)
+    token = c.state["gate"]["stop_session_id"]
+    logistics = c.state["statuses"][c.robots["logistics"]["robot_id"]]
+    logistics["stopped"] = False
+    assert c.approval_error("gate") == "robot is not safely waiting"
+    with pytest.raises(ValueError, match="robot is not safely waiting"):
+        c.dummy(token)
+    assert c.state["gate"]["stop_session_id"] == token and not c.state["transfers"]
+    logistics["stopped"] = True
+    assert c.approval_error("gate") is None
+    assert c.dummy(token) and len(c.state["transfers"]) == 1
+
+
 def test_wrong_dummy_request_and_restart_are_fenced(control_memory):
     control = control_memory
     with pytest.raises(ValueError):
