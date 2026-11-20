@@ -270,15 +270,22 @@ class FleetControl:
             and state.get("drive_owner") == "none"
         )
 
-    def confirm_arrival_after_restart(self, robot):
+    def confirm_arrival_after_restart(self, robot, *, command_id, boot_version, note):
         """Acknowledge a restarted robot only after checking it at the arrival node."""
+        if robot not in ROLES or not isinstance(note, str) or not note.strip():
+            raise ValueError("known Pinky and operator note required")
         arrival = self.data.get("pending_arrivals", {}).get(robot)
-        p = self.observed.get(robot)
         if (
             not arrival
             or not arrival.get("recovery_boot")
-            or not p
-            or p["boot_version"] != arrival["recovery_boot"]
+            or arrival["command_id"] != command_id
+            or arrival["recovery_boot"] != boot_version
+        ):
+            raise ValueError(f"{robot}: pending restart arrival changed")
+        p = self.observed.get(robot)
+        if (
+            not p
+            or p["boot_version"] != boot_version
             or self.clock() - self.heard[robot] > 3
             or not self.stopped_at(p, arrival["node"])
         ):
@@ -287,6 +294,18 @@ class FleetControl:
             )
         data = deepcopy(self.data)
         del data["pending_arrivals"][robot]
+        data.setdefault("arrival_recoveries", {})[command_id] = {
+            "robot": robot,
+            "node": arrival["node"],
+            "boot_version": boot_version,
+            "note": note.strip(),
+        }
+        for task in data["tasks"].values():
+            if task.get("robot") == robot and task["status"] not in {
+                "COMPLETE",
+                "CANCELED",
+            }:
+                task["robot_boot"] = boot_version
         self.save(data)
 
     def receipt(self, request_id):

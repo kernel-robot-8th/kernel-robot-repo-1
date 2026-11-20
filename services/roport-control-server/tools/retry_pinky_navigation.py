@@ -13,7 +13,7 @@ def rpc(path, payload):
         channel.sendall(json.dumps(payload, allow_nan=False).encode())
         reply = json.loads(channel.recv(65536))
     if reply.get("ok") is not True:
-        raise ValueError(reply.get("error", "local owner did not confirm retry"))
+        raise ValueError(reply.get("error", "local owner did not confirm request"))
     return reply["snapshot"]
 
 

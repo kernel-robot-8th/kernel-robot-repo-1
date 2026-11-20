@@ -455,3 +455,25 @@ def test_request_waits_for_operator_start(fleet):
     fleet.enable()
     command = dispatch(fleet)
     assert fleet.data["commands"][command["command_id"]]["task"] == key
+
+
+def test_disconnect_during_state_query_preserves_active_task(fleet):
+    from queue import Empty
+
+    from roport_control_server.executor.fleet_runtime import FleetRuntime
+
+    submit(fleet, "box")
+    dispatch(fleet)
+
+    class LostConnection:
+        ready = True
+
+        def receive(self, timeout):
+            raise Empty
+
+        def publish(self, *args):
+            raise ConnectionError("lost between readiness check and publish")
+
+    FleetRuntime(fleet, LostConnection()).poll()
+    assert fleet.data["fault"] == "mqtt_delivery_outcome_unknown"
+    assert fleet.data["commands"] and fleet.data["resources"]

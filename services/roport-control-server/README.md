@@ -50,6 +50,25 @@ UDP 영상 송수신 모듈(FFT1-105)도 포함합니다. 공유 등록·설정 
 CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 배포 환경 미정으로 CD와 자동 배포는 설정하지 않았습니다.
 
+## Fleet MQTT 실행과 도착 재확인
+
+`executor.fleet_runtime`은 루프백 MQTT, 시험용 journal, 모드 `simulation`의 Fleet 설정을 사용합니다. 로컬 소켓의 `enable`로 작업 처리를 시작합니다.
+
+```bash
+uv run python -m roport_control_server.executor.fleet_runtime \
+  --config /tmp/fleet.json --journal /tmp/fleet-control.json --socket /tmp/fleet.sock
+```
+
+기체가 도착 확인 전에 재부팅하면 로컬 소켓의 `snapshot`에 있는 `pending_arrivals`에서 해당 기체의 `node`, `command_id`, `recovery_boot`을 확인합니다. 해당 노드에서 기체와 정차 상태를 확인한 후 실행합니다.
+
+```bash
+python3 tools/confirm_fleet_arrival.py --socket /tmp/fleet.sock \
+  --robot pinky1 --command-id "$ARRIVAL_COMMAND" --boot-version "$RECOVERY_BOOT" \
+  --note "도착 노드에서 기체 정차 확인"
+```
+
+실행부가 새 기동의 최신 정차 상태와 도착 노드를 검증하고 확인 기록을 남깁니다. Fleet이 HOLD이면 별도로 `release_hold`와 `enable`을 실행해야 합니다.
+
 ## Pinky MQTT 주행 시험 · FFT1-56
 
 1대/2대/스마트카트 시나리오를 CLI 또는 원본 웹 UI에서 실행합니다. `route → 수동/MQTT 상하차 완료 → N12 mode_switch → navigate`를 완료 응답으로 진행하며, 파일 이력·중복 방지·저장 ACK·오류 시 HOLD를 포함합니다. 같은 실행부를 사용하며 운영 DB는 연결하지 않습니다. 웹 연결·조작 키·시험 범위는 [가이드 7.4절](docs/pinky-trial.md)을 참고하세요.
