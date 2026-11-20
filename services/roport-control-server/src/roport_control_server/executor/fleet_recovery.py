@@ -1,9 +1,85 @@
 """Explicit operator reconciliation; never fabricates a robot completion."""
 
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
+from roport_control_server.adapters.mqtt import field_wire as wire
 
 from .fleet import PARKING, ROLES
+
+
+def stop_current(stop, boot, now):
+    return (
+        stop["payload"]["expected_boot_version"] == boot
+        and (now - wire.timestamp(stop["sent_at"])).total_seconds() < 3
+        and now < wire.timestamp(stop["expires_at"])
+    )
+
+
+def new_stop(control_id, active, boot):
+    return wire.build_message(
+        "robot_stop_command",
+        control_id,
+        active["target"],
+        {
+            "expected_boot_version": boot,
+            "target_command_id": active["command_id"],
+            "reason": "control_hold",
+        },
+        command_id=str(uuid4()),
+        expires_at=(datetime.now(UTC) + timedelta(seconds=3)).isoformat(),
+    )
+
+
+def recover_stop(control, command_id, stop_id, boot_version, note):
+    if (
+        not all(
+            isinstance(value, str) and value.strip()
+            for value in (command_id, stop_id, boot_version, note)
+        )
+        or not control.data["fault"]
+        or control.data["enabled"]
+    ):
+        raise ValueError("held stop and operator note required")
+    data = deepcopy(control.data)
+    active = data["commands"].get(command_id, {})
+    stop = active.get("stop")
+    if not stop or stop["command_id"] != stop_id:
+        raise ValueError("pending stop changed")
+    if stop_current(stop, boot_version, datetime.now(UTC)):
+        raise ValueError("current stop can still complete")
+    robot = stop["target"]
+    p = control.observed.get(robot, {})
+    state = p.get("state", {})
+    if p.get("boot_version") != boot_version or control.state_age(robot) > 3:
+        raise ValueError("fresh state for the requested boot required")
+
+    ongoing = p.get("active_command_id")
+    if (
+        ongoing == command_id
+        and boot_version == stop["payload"]["expected_boot_version"]
+    ):
+        active["stop"] = new_stop(
+            control.config["control_id"], active["message"], boot_version
+        )
+        active.pop("stop_published", None)
+        active.pop("manual_stop", None)
+    elif (
+        ongoing is None
+        and state.get("stopped") is True
+        and not state.get("line_enabled")
+        and (robot not in ROLES or state.get("drive_owner") == "none")
+    ):
+        active["manual_stop"] = {"boot_version": boot_version, "note": note.strip()}
+    else:
+        raise ValueError("matching active command or stopped idle state required")
+    data.setdefault("stop_recoveries", {})[stop_id] = {
+        "boot_version": boot_version,
+        "note": note.strip(),
+        "stop_id": active["stop"]["command_id"],
+    }
+    control.save(data)
 
 
 def reconcile(control, command_id, outcome, note):
@@ -56,21 +132,28 @@ def reconcile(control, command_id, outcome, note):
         if stop
         else False
     )
-    if stop and stop_event is None and not ended_before_stop:
+    manual_stop = active.get("manual_stop")
+    operator_stopped = (
+        manual_stop
+        and outcome == "removed"
+        and (
+            control.observed.get(stop["target"], {}).get("boot_version")
+            == manual_stop["boot_version"]
+        )
+    )
+    if stop and stop_event is None and not ended_before_stop and not operator_stopped:
         raise ValueError("requested stop is not confirmed")
     if terminal:
         event = max(terminal, key=lambda e: e["payload"]["sequence"])
-    elif outcome == "removed" and stop_event:
-        event = (
-            stop_event  # Explicit removal can end unknown work after a confirmed stop.
-        )
+    elif outcome == "removed" and (stop_event or operator_stopped):
+        event = stop_event
     else:
         raise ValueError("command outcome still unknown; reconcile device first")
     for robot in active["participants"]:
         p = control.observed.get(robot, {})
         s = p.get("state", {})
         if (
-            control.clock() - control.heard.get(robot, -float("inf")) > 3
+            control.state_age(robot) > 3
             or s.get("stopped") is not True
             or p.get("active_command_id")
             or s.get("fault")
@@ -95,7 +178,7 @@ def reconcile(control, command_id, outcome, note):
             raise ValueError(robot + ": arm not returned/empty")
     data = deepcopy(control.data)
     task = data["tasks"][active["task"]]
-    p = event["payload"]
+    p = event["payload"] if event else {}
     if outcome == "completed":
         if p["status"] != "completed":
             raise ValueError("matching completion evidence required")
@@ -141,7 +224,7 @@ def reconcile(control, command_id, outcome, note):
     data.setdefault("recoveries", {})[command_id] = {
         "outcome": outcome,
         "note": note,
-        "event_id": event["message_id"],
+        "event_id": event["message_id"] if event else None,
         "fault": data["fault"],
     }
     control.save(data)

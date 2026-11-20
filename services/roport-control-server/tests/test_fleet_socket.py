@@ -66,6 +66,18 @@ def test_restarted_arrival_confirmation_is_bound_to_incident_and_preserves_hold(
                 {"note": ""},
             ):
                 assert not operate("confirm_arrival", **(fields | bad))["ok"]
+            # On receipt the state was fresh, but its original observation has expired.
+            fleet.observe(
+                {
+                    "source": robot,
+                    "payload": {**state, "sequence": state["sequence"] + 1},
+                },
+                age=2.9,
+            )
+            fleet.clock = lambda: 1.2
+            assert not operate("confirm_arrival", **fields)["ok"]
+            state["sequence"] += 2
+            fleet.observe({"source": robot, "payload": state})
             assert not operate("release_hold", note="checked")["ok"]
             assert robot in fleet.data["pending_arrivals"]
 

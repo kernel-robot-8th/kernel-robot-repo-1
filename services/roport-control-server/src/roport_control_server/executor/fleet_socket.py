@@ -3,7 +3,7 @@
 import time
 from copy import deepcopy
 
-from .fleet_recovery import reconcile, release
+from .fleet_recovery import reconcile, recover_stop, release
 from .trial_socket import TrialSocket
 
 
@@ -40,6 +40,7 @@ class FleetSocket(TrialSocket):
             "receipt": {"request_id"},
             "reconcile": {"command_id", "outcome", "note"},
             "release_hold": {"note"},
+            "recover_stop": {"command_id", "stop_id", "boot_version", "note"},
             "confirm_arrival": {"robot", "command_id", "boot_version", "note"},
         }
         if (
@@ -63,6 +64,14 @@ class FleetSocket(TrialSocket):
                 command_id=request["command_id"],
                 boot_version=request["boot_version"],
                 note=request["note"],
+            )
+        elif action == "recover_stop":
+            recover_stop(
+                self.control,
+                request["command_id"],
+                request["stop_id"],
+                request["boot_version"],
+                request["note"],
             )
         elif action == "release_hold":
             release(self.control, request["note"])

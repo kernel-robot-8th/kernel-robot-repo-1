@@ -69,6 +69,8 @@ python3 tools/confirm_fleet_arrival.py --socket /tmp/fleet.sock \
 
 실행부가 새 기동의 최신 정차 상태와 도착 노드를 검증하고 확인 기록을 남깁니다. Fleet이 HOLD이면 별도로 `release_hold`와 `enable`을 실행해야 합니다.
 
+Fleet은 발행이 확인되지 않은 STOP을 같은 명령 ID로 유효기간 안에 재시도합니다. STOP이 만료됐거나 기체가 재부팅했으면 운영자가 최신 상태를 확인하고 로컬 소켓에서 `recover_stop`을 요청합니다. 요청에는 현재 `session_id`, `expires_at`, 작업 명령의 `command_id`, 현재 기록에 남은 `stop_id`, 로봇의 현재 `boot_version`, 확인한 내용을 적은 `note`가 필요합니다. 같은 기동에서 원래 명령이 여전히 활성 상태면 새 STOP을 발행합니다. 기체가 정차·유휴 상태면 그 확인만 기록하며, 물품 제거와 작업 종료는 별도 `reconcile`로 처리합니다.
+
 ## Pinky MQTT 주행 시험 · FFT1-56
 
 1대/2대/스마트카트 시나리오를 CLI 또는 원본 웹 UI에서 실행합니다. `route → 수동/MQTT 상하차 완료 → N12 mode_switch → navigate`를 완료 응답으로 진행하며, 파일 이력·중복 방지·저장 ACK·오류 시 HOLD를 포함합니다. 같은 실행부를 사용하며 운영 DB는 연결하지 않습니다. 웹 연결·조작 키·시험 범위는 [가이드 7.4절](docs/pinky-trial.md)을 참고하세요.

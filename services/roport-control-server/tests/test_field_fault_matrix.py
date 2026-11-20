@@ -345,8 +345,8 @@ def test_broker_disconnect_and_restart_do_not_resume_active_motion(
     )
     observer.start()
     env.stack.callback(observer.stop)
-    # Replay the exact prior command after subscriptions return.
-    env.transport.publish(wire.topic(active.robot, "cmd"), original)
+    # The sender drops expired commands; explicitly deliver a duplicate at the endpoint.
+    deliver(active, original)
     env.transport.publish(
         wire.topic(active.robot, "cmd"),
         wire.build_message("robot_state_request", active.control, active.robot, {}),
@@ -402,7 +402,8 @@ def test_broker_restart_and_fresh_processes_preserve_recovery_hold(
     env.clients[:] = replacements
     wait_until(lambda: env.transport.ready, timeout=10)
     target = next(c for c in replacements if c.robot == active_robot)
-    env.transport.publish(wire.topic(active_robot, "cmd"), original)
+    wait_until(lambda: target.transport.ready, timeout=10)
+    deliver(target, original)
     runtime = FleetRuntime(env.control, env.transport)
     deadline = time.monotonic() + 0.4
     while time.monotonic() < deadline:
@@ -440,7 +441,8 @@ def test_active_robot_restart_rejects_old_command_without_second_dispatch(
     replacement.start()
     env.stack.callback(replacement.close)
     env.clients[index] = replacement
-    env.transport.publish(wire.topic(old.robot, "cmd"), command)
+    wait_until(lambda: replacement.transport.ready, timeout=10)
+    deliver(replacement, command)
     env.pump(lambda: bool(env.control.data["fault"]))
     assert replacement.boot != old.boot
     assert replacement.halted == "recovery_required"

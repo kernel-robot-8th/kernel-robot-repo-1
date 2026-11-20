@@ -16,6 +16,7 @@ from roport_control_server.adapters.mqtt.mqtt import MqttTransport
 from roport_control_server.adapters.mqtt.trial_wire import mqtt_config
 
 from .fleet import ROLES, TARGETS, FleetControl
+from .fleet_recovery import new_stop, stop_current
 from .fleet_socket import FleetSocket
 
 
@@ -59,7 +60,7 @@ class FleetRuntime:
                 for k in ("graph_version", "map_version")
             ):
                 raise ValueError("robot graph/map mismatch")
-            self.control.observe(event)
+            self.control.observe(event, age=age)
         elif event["type"] == "robot_pose":
             observed = self.control.observed.get(source)
             old = self.control.poses.get(source)
@@ -133,32 +134,40 @@ class FleetRuntime:
             # Apply new positions before renewing permission for the active route.
             c.check_active()
         for cid, command in list(c.data["commands"].items()):
-            if not c.data["fault"] or command.get("stop"):
+            if (
+                not c.data["fault"]
+                or command.get("stop_published")
+                or command.get("manual_stop")
+            ):
                 continue
             active = command["message"]
-            if active["target"] in ROLES and any(
-                e.get("command_id") == cid
-                and e["payload"]["status"]
-                in {"completed", "rejected", "failed", "interrupted"}
-                for e in c.data["events"].values()
-            ):
-                continue  # Pinky has already ended this command; recovery still checks idle state.
-            stop = wire.build_message(
-                "robot_stop_command",
-                c.config["control_id"],
-                active["target"],
-                {
-                    "expected_boot_version": active["payload"]["expected_boot_version"],
-                    "target_command_id": active["command_id"],
-                    "reason": "control_hold",
-                },
-                command_id=str(uuid4()),
-                expires_at=expiry(),
-            )
+            target = active["target"]
+            boot = active["payload"]["expected_boot_version"]
+            observed_boot = c.observed.get(target, {}).get("boot_version", boot)
+            stop = command.get("stop")
+            if stop is None:
+                if active["target"] in ROLES and any(
+                    e.get("command_id") == cid
+                    and e["payload"]["status"]
+                    in {"completed", "rejected", "failed", "interrupted"}
+                    for e in c.data["events"].values()
+                ):
+                    continue  # Pinky has already ended this command; recovery still checks idle state.
+                stop = new_stop(c.config["control_id"], active, boot)
+                data = deepcopy(c.data)
+                data["commands"][cid]["stop"] = stop
+                c.save(data)
+            if not stop_current(stop, observed_boot, datetime.now(UTC)):
+                continue
+            try:
+                self.transport.publish(wire.topic(target, "cmd"), stop)
+            except ValueError as exc:
+                if str(exc) != "expired_command":
+                    raise
+                continue
             data = deepcopy(c.data)
-            data["commands"][cid]["stop"] = stop
+            data["commands"][cid]["stop_published"] = True
             c.save(data)
-            self.transport.publish(wire.topic(active["target"], "cmd"), stop)
         now = monotonic()
         if now - self.last_poll >= 1:
             active = (
