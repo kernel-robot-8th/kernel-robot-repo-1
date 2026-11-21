@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 source /opt/ros/jazzy/setup.bash
 set -u
 python3 -m unittest discover -s ci -p 'test_*.py' -v
+node ci/test_field_roundtrip_browser.js
 # Build Python console/world resources too; smartcart launch depends on them.
 # Exclude Gazebo discovery so this no-simulator job does not require its C++ stack.
 colcon build --packages-ignore pinky_gz_sim \

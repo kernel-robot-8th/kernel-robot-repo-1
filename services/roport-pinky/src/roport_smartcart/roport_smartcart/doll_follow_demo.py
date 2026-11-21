@@ -6,6 +6,8 @@ import math
 import time
 from uuid import uuid4
 
+from .trial_contract import guard_body
+
 
 def sampled_at(stamp, ros_now, now, max_age=.4):
     """Use acquisition time, including DDS queue delay, rather than callback time."""
@@ -14,20 +16,6 @@ def sampled_at(stamp, ros_now, now, max_age=.4):
     if value <= 0 or not math.isfinite(age) or not -.1 <= age <= max_age:
         return None
     return now - max(0., age)
-
-
-def guard_body(data):
-    try:
-        body = json.loads(data)
-        if (isinstance(body, dict) and isinstance(body.get('boot'), str) and body['boot']
-                and body.get('owner') in ('none', 'line', 'nav2')
-                and type(body.get('blocked')) is bool
-                and type(body.get('sent_at')) in (int, float)
-                and math.isfinite(body['sent_at'])):
-            return body
-    except (ValueError, TypeError):
-        pass
-    return {}
 
 
 def front_distance(msg, rotation):
@@ -230,7 +218,7 @@ def main(argv=None):
         decoded = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
         if decoded is None:
             return
-        detections = detector.detect(decoded)
+        detections = detector.detect(decoded, label=args.target)
         logic.observe(detections, decoded.shape[1], captured_at)
         frame = decoded
         for detection in detections:
