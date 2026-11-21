@@ -261,7 +261,12 @@ def test_final_arrival_after_pinky_restart_requires_explicit_confirmation(fleet)
     with pytest.raises(ValueError, match="arrival requires recovery"):
         fleet.ready(robot)
     with pytest.raises(ValueError, match="fresh stopped state"):
-        fleet.confirm_arrival_after_restart(robot)
+        fleet.confirm_arrival_after_restart(
+            robot,
+            command_id=command["command_id"],
+            boot_version="restarted",
+            note="arrival node and stopped robot checked",
+        )
 
     delayed = deepcopy(old)
     delayed["sequence"] += 1
@@ -274,7 +279,12 @@ def test_final_arrival_after_pinky_restart_requires_explicit_confirmation(fleet)
     fleet.observe({"source": robot, "payload": fresh})
     requested = submit(fleet, "after-restart")
     assert dispatch(fleet) is None
-    fleet.confirm_arrival_after_restart(robot)
+    fleet.confirm_arrival_after_restart(
+        robot,
+        command_id=command["command_id"],
+        boot_version="restarted",
+        note="arrival node and stopped robot checked",
+    )
     after = dispatch(fleet)
     assert after["target"] == robot
     assert after["payload"]["start_node"] == node

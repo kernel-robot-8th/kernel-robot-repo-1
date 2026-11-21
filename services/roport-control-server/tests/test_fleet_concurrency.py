@@ -5,10 +5,13 @@ from copy import deepcopy
 import pytest
 from test_fleet import complete, dispatch, submit
 from test_fleet import fleet as fleet  # noqa: PLC0414
+from test_pinky_trial import MemoryTransport
 from test_pinky_trial import profile as profile  # noqa: PLC0414
 
 from roport_control_server.adapters.mqtt import field_wire as wire
+from roport_control_server.adapters.mqtt.mqtt import Delivery
 from roport_control_server.executor.fleet import FleetControl
+from roport_control_server.executor.fleet_runtime import FleetRuntime
 
 
 def two_routes(control):
@@ -329,3 +332,78 @@ def test_invalid_clearance_calibration_is_rejected_before_store_changes(fleet, u
     with pytest.raises(ValueError, match="node_"):
         FleetControl({**fleet.config, **update}, fleet.store)
     assert fleet.data == before
+
+
+def test_hold_stops_every_active_command_without_renewing_any_lease(fleet):
+    commands = two_routes(fleet)
+    reservations = deepcopy(fleet.data["resources"])
+    fleet.hold("operator_stop")
+    transport = MemoryTransport()
+    runtime = FleetRuntime(fleet, transport)
+    runtime.poll(0)
+    stops = [m for _, m in transport.sent if m["type"] == "robot_stop_command"]
+    assert {m["payload"]["target_command_id"] for m in stops} == {
+        c["command_id"] for c in commands
+    }
+    assert len(stops) == 2 and {m["target"] for m in stops} == {"pinky1", "pinky2"}
+    assert fleet.data["resources"] == reservations
+    assert all(t["status"] == "HOLD" for t in fleet.data["tasks"].values())
+    assert all("stop" in c for c in fleet.data["commands"].values())
+    runtime.last_poll = -float("inf")
+    runtime.poll(0)
+    assert len([m for _, m in transport.sent if m["type"] == "robot_stop_command"]) == 2
+    queries = [m for _, m in transport.sent if m["type"] == "robot_state_request"]
+    assert queries and all(
+        "keep_running_command_id" not in m["payload"] for m in queries
+    )
+    assert not any(
+        m["type"] in wire.COMMANDS and m["type"] != "robot_stop_command"
+        for _, m in transport.sent
+    )
+
+
+def test_delayed_progress_is_stored_and_acked_without_regressing_position(fleet):
+    submit(fleet, "box")
+    command = dispatch(fleet)
+    robot, cid = command["target"], command["command_id"]
+    route = command["payload"]["route"]
+    state = deepcopy(fleet.observed[robot])
+    state.update(sequence=2, active_command_id=cid)
+    state["state"].update(node=route[3], stopped=False)
+    fleet.observe({"source": robot, "payload": state})
+    before = deepcopy(fleet.data)
+
+    class StoredAckTransport(MemoryTransport):
+        def publish(self, destination, message):
+            if message["type"] == "event_stored":
+                assert message["payload"]["acked_message_id"] in fleet.data["events"]
+            super().publish(destination, message)
+
+    transport = StoredAckTransport()
+    runtime = FleetRuntime(fleet, transport)
+    delayed = progress(command, route[2], 1)
+    runtime.handle(
+        Delivery(wire.topic(robot, "event"), wire.encode(delayed), False, 1, 1, 0)
+    )
+    assert fleet.data["events"][delayed["message_id"]] == delayed
+    assert transport.sent[-1][1]["payload"]["acked_message_id"] == delayed["message_id"]
+    assert fleet.observed[robot]["state"]["node"] == route[3]
+    assert fleet.data["last_nodes"][robot] == route[3]
+    assert fleet.data["commands"][cid]["route_index"] == 3
+    assert fleet.data["commands"][cid]["sequence"] == 1
+    assert fleet.data["resources"] == before["resources"]
+    assert fleet.data["tasks"] == before["tasks"]
+
+    newer = progress(command, route[4], 2)
+    runtime.handle(
+        Delivery(wire.topic(robot, "event"), wire.encode(newer), False, 2, 1, 0)
+    )
+    assert fleet.observed[robot]["state"]["node"] == route[4]
+    assert fleet.data["last_nodes"][robot] == route[4]
+    assert fleet.data["commands"][cid]["route_index"] == 4
+    assert fleet.data["resources"] != before["resources"]
+    assert "node:" + route[2] not in fleet.data["resources"]
+    assert "node:" + route[3] not in fleet.data["resources"]
+    assert fleet.edge(route[3], route[4]) in fleet.data["resources"]
+    assert fleet.data["tasks"] == before["tasks"]
+    assert transport.sent[-1][1]["payload"]["acked_message_id"] == newer["message_id"]

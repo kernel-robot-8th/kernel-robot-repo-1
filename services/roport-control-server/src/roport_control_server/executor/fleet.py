@@ -33,6 +33,7 @@ class FleetControl:
             config.get("node_clearance_m"),
         )
         self.observed, self.poses, self.heard = {}, {}, {}
+        self.observed_since = {}
         self.awaiting_state = set()
         if not store.data:
             store.save(
@@ -154,9 +155,13 @@ class FleetControl:
         self.save(data)
         return deepcopy(task)
 
+    def state_age(self, robot):
+        received = self.heard.get(robot, -math.inf)
+        return self.clock() - min(received, self.observed_since.get(robot, received))
+
     def ready(self, robot):
         p = self.observed.get(robot)
-        if not p or self.clock() - self.heard.get(robot, -math.inf) > 3:
+        if not p or self.state_age(robot) > 3:
             raise ValueError(f"{robot}: state unavailable/stale")
         arrival = self.data.get("pending_arrivals", {}).get(robot)
         if arrival and arrival.get("recovery_boot"):
@@ -188,7 +193,7 @@ class FleetControl:
             raise ValueError(f"{robot}: arm not ready/clear")
         return s
 
-    def observe(self, message):
+    def observe(self, message, *, age=0):
         robot, p = message["source"], message["payload"]
         old = self.observed.get(robot)
         if (
@@ -232,7 +237,9 @@ class FleetControl:
                 self.save(data)
         elif old and old["boot_version"] == p["boot_version"]:
             self.awaiting_state.discard(robot)
-        self.observed[robot], self.heard[robot] = deepcopy(p), self.clock()
+        received = self.clock()
+        self.observed[robot], self.heard[robot] = deepcopy(p), received
+        self.observed_since[robot] = received - max(age, 0)
         # Only a known node or a confirmed Nav2 state replaces line occupancy.
         if (
             robot in ROLES
@@ -270,16 +277,23 @@ class FleetControl:
             and state.get("drive_owner") == "none"
         )
 
-    def confirm_arrival_after_restart(self, robot):
+    def confirm_arrival_after_restart(self, robot, *, command_id, boot_version, note):
         """Acknowledge a restarted robot only after checking it at the arrival node."""
+        if robot not in ROLES or not isinstance(note, str) or not note.strip():
+            raise ValueError("known Pinky and operator note required")
         arrival = self.data.get("pending_arrivals", {}).get(robot)
-        p = self.observed.get(robot)
         if (
             not arrival
             or not arrival.get("recovery_boot")
-            or not p
-            or p["boot_version"] != arrival["recovery_boot"]
-            or self.clock() - self.heard[robot] > 3
+            or arrival["command_id"] != command_id
+            or arrival["recovery_boot"] != boot_version
+        ):
+            raise ValueError(f"{robot}: pending restart arrival changed")
+        p = self.observed.get(robot)
+        if (
+            not p
+            or p["boot_version"] != boot_version
+            or self.state_age(robot) > 3
             or not self.stopped_at(p, arrival["node"])
         ):
             raise ValueError(
@@ -287,6 +301,18 @@ class FleetControl:
             )
         data = deepcopy(self.data)
         del data["pending_arrivals"][robot]
+        data.setdefault("arrival_recoveries", {})[command_id] = {
+            "robot": robot,
+            "node": arrival["node"],
+            "boot_version": boot_version,
+            "note": note.strip(),
+        }
+        for task in data["tasks"].values():
+            if task.get("robot") == robot and task["status"] not in {
+                "COMPLETE",
+                "CANCELED",
+            }:
+                task["robot_boot"] = boot_version
         self.save(data)
 
     def receipt(self, request_id):
@@ -316,7 +342,7 @@ class FleetControl:
             if arrival:
                 occupied.add(arrival["node"])
             p = self.observed.get(other)
-            fresh = p and self.clock() - self.heard.get(other, -math.inf) <= 3
+            fresh = p and self.state_age(other) <= 3
             state = p["state"] if fresh else {}
             if state.get("node") is not None:
                 occupied.add(state["node"])
@@ -773,9 +799,20 @@ class FleetControl:
         if not active:
             return False
         cmd, p = active["message"], message["payload"]
-        if (
-            message["source"] != cmd["target"]
-            or p["boot_version"] != cmd["payload"]["expected_boot_version"]
+        stop = active.get("stop", {}).get("payload", {})
+        # A restarted Pinky may interrupt inherited work only via the recorded STOP.
+        stop_interrupt = (
+            self.data["fault"]
+            and cmd["target"] in ROLES
+            and stop.get("expected_boot_version") == p["boot_version"]
+            and stop.get("target_command_id") == cmd["command_id"]
+            and p["status"] == "interrupted"
+            and p.get("reason") == "operator_stop"
+            and p.get("result", {}).get("stopped") is True
+        )
+        if message["source"] != cmd["target"] or (
+            p["boot_version"] != cmd["payload"]["expected_boot_version"]
+            and not stop_interrupt
         ):
             raise ValueError("command source/boot mismatch")
         if p["sequence"] <= active["sequence"]:
@@ -935,10 +972,7 @@ class FleetControl:
                 > self.config["command_timeout_s"]
             ):
                 self.hold("command outcome unknown: timeout")
-            elif any(
-                self.clock() - self.heard.get(r, -math.inf) > 3
-                for r in active["participants"]
-            ):
+            elif any(self.state_age(r) > 3 for r in active["participants"]):
                 self.hold("participant state stale")
             elif active["message"]["payload"].get("route"):
                 robot = active["message"]["target"]
@@ -960,7 +994,7 @@ class FleetControl:
             **{k: deepcopy(v) for k, v in self.data.items() if k != "events"},
             "robots": deepcopy(self.observed),
             "poses": deepcopy(self.poses),
-            "ages": {r: self.clock() - t for r, t in self.heard.items()},
+            "ages": {r: self.state_age(r) for r in self.heard},
             "slot_definitions": SLOTS,
             "goals": list(self.config["goals"]),
         }

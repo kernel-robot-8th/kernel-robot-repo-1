@@ -1,0 +1,86 @@
+"""Use the existing local socket server; only the owner mutates fleet state."""
+
+import time
+from copy import deepcopy
+
+from .fleet_recovery import reconcile, recover_stop, release
+from .trial_socket import TrialSocket
+
+
+class FleetSocket(TrialSocket):
+    def snapshot(self):
+        return {
+            **self.control.snapshot(),
+            "session_id": self.session_id,
+            "mode": self.control.config["mode"],
+            "map_version": self.control.config["map_version"],
+            "graph_version": self.control.config["graph_version"],
+        }
+
+    def dispatch(self, request):
+        if request == {"action": "snapshot"}:
+            return self.snapshot()
+        if (
+            not isinstance(request, dict)
+            or request.get("session_id") != self.session_id
+        ):
+            raise ValueError("executor changed; refresh before acting")
+        expiry = request.get("expires_at")
+        if (
+            type(expiry) not in (int, float)
+            or not time.time() < expiry <= time.time() + 2
+        ):
+            raise ValueError("expired operator request")
+        action = request.get("action")
+        fields = {
+            "enable": set(),
+            "stop": set(),
+            "assign": {"robot", "role"},
+            "submit": {"request"},
+            "receipt": {"request_id"},
+            "reconcile": {"command_id", "outcome", "note"},
+            "release_hold": {"note"},
+            "recover_stop": {"command_id", "stop_id", "boot_version", "note"},
+            "confirm_arrival": {"robot", "command_id", "boot_version", "note"},
+        }
+        if (
+            action not in fields
+            or set(request) != {"action", "session_id", "expires_at"} | fields[action]
+        ):
+            raise ValueError("invalid fleet request")
+        if action == "enable":
+            self.control.enable()
+        elif action == "stop":
+            self.control.hold("operator_stop")
+        elif action == "assign":
+            self.control.assign(request["robot"], request["role"])
+        elif action == "reconcile":
+            reconcile(
+                self.control, request["command_id"], request["outcome"], request["note"]
+            )
+        elif action == "confirm_arrival":
+            self.control.confirm_arrival_after_restart(
+                request["robot"],
+                command_id=request["command_id"],
+                boot_version=request["boot_version"],
+                note=request["note"],
+            )
+        elif action == "recover_stop":
+            recover_stop(
+                self.control,
+                request["command_id"],
+                request["stop_id"],
+                request["boot_version"],
+                request["note"],
+            )
+        elif action == "release_hold":
+            release(self.control, request["note"])
+        elif action == "submit":
+            self.control.submit(request["request"])
+        elif action == "receipt":
+            if self.control.config["mode"] != "simulation":
+                raise ValueError(
+                    "hardware receipt requires authenticated service evidence"
+                )
+            self.control.receipt(request["request_id"])
+        return deepcopy(self.snapshot())

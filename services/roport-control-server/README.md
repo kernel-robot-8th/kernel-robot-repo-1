@@ -50,6 +50,42 @@ UDP 영상 송수신 모듈(FFT1-105)도 포함합니다. 공유 등록·설정 
 CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 배포 환경 미정으로 CD와 자동 배포는 설정하지 않았습니다.
 
+## Fleet MQTT 실행과 도착 재확인
+
+`executor.fleet_runtime`은 루프백 MQTT, 시험용 journal, 모드 `simulation`의 Fleet 설정을 사용합니다. 로컬 소켓의 `enable`로 작업 처리를 시작합니다.
+
+```bash
+uv run python -m roport_control_server.executor.fleet_runtime \
+  --config /tmp/fleet.json --journal /tmp/fleet-control.json --socket /tmp/fleet.sock
+```
+
+기체가 도착 확인 전에 재부팅하면 로컬 소켓의 `snapshot`에 있는 `pending_arrivals`에서 해당 기체의 `node`, `command_id`, `recovery_boot`을 확인합니다. 해당 노드에서 기체와 정차 상태를 확인한 후 실행합니다.
+
+```bash
+python3 tools/confirm_fleet_arrival.py --socket /tmp/fleet.sock \
+  --robot pinky1 --command-id "$ARRIVAL_COMMAND" --boot-version "$RECOVERY_BOOT" \
+  --note "도착 노드에서 기체 정차 확인"
+```
+
+실행부가 새 기동의 최신 정차 상태와 도착 노드를 검증하고 확인 기록을 남깁니다. Fleet이 HOLD이면 별도로 `release_hold`와 `enable`을 실행해야 합니다.
+
+Fleet은 발행이 확인되지 않은 STOP을 같은 명령 ID로 유효기간 안에 재시도합니다. STOP이 만료됐거나 기체가 재부팅했으면 운영자가 최신 상태를 확인하고 로컬 소켓에서 `recover_stop`을 요청합니다. 요청에는 현재 `session_id`, `expires_at`, 작업 명령의 `command_id`, 현재 기록에 남은 `stop_id`, 로봇의 현재 `boot_version`, 확인한 내용을 적은 `note`가 필요합니다. 같은 기동에서 원래 명령이 여전히 활성 상태면 새 STOP을 발행합니다. 기체가 정차·유휴 상태면 그 확인만 기록하며, 물품 제거와 작업 종료는 별도 `reconcile`로 처리합니다.
+
+주행 중 재부팅한 Pinky는 기존 journal의 `active_command_id`와 `fault=recovery_required`를 유지합니다. 이 경우 `confirm_arrival`로 도착을 만들지 않고 다음 순서로 작업을 정리합니다.
+
+1. Fleet HOLD와 기체 정지를 확인합니다. `snapshot`의 현재 기동 ID·기존 활성 명령 ID·STOP ID를 사용해 `recover_stop`을 요청합니다. 새 기동에서는 최신 정차·라인 비활성·제어권 해제와 `recovery_required`가 모두 확인돼야 새 STOP을 발행합니다.
+2. 기존 주행의 `interrupted`와 새 STOP의 `completed / stopped=true`가 저장될 때까지 기다립니다. 기체 `active_command_id`는 없어지고 `fault=operator_stop`은 유지됩니다. 이때 작업·자원 예약은 해제되지 않습니다.
+3. 운영자가 물품을 제거하고 해당 역할의 대기점에 기체를 배치한 뒤, **같은 journal 경로**로 Pinky MQTT 실행부와 드라이버를 재시작합니다. 실제 배치에 맞는 시작 노드·방향 및 정차·유휴·장애 없음이 보고돼야 합니다. journal 삭제나 재고 직접 수정으로 복구하지 않습니다.
+4. 로컬 소켓에 `reconcile`(`command_id`, `outcome="removed"`, `note`)을 요청해 해당 작업을 CANCELED로 정리합니다. 기존 주행을 완료나 고객 수령으로 처리하지 않습니다. 다른 보류 작업도 정리한 뒤 `release_hold`(`note`), 별도 `enable` 순서로 재개합니다. 모든 조작에는 현재 `session_id`와 유효한 `expires_at`이 필요합니다.
+
+이 절차는 실제 MQTT endpoint·가상 드라이버·루프백 브로커·운영자 소켓으로 검증하며, 실물 재배치·정차 확인은 현장 검증 범위입니다. Pinky 메시지 규격과 endpoint 코드는 변경하지 않습니다.
+
+STOP 수락 직후 **다시 재부팅**하면 새 기동에서 생성된 STOP 완료와 원래 주행의 중단 응답은 이전 기동을 대상으로 한 명령과 맞지 않아 거절됩니다. 위 2단계에서 완료 응답을 계속 기다리지 말고, HOLD를 유지한 채 3단계의 물품 제거·대기점 배치·같은 journal 재시작을 수행합니다. 이후 최신 정차·유휴 상태의 `boot_version`으로 기존 작업 `command_id`와 현재 `stop_id`를 지정해 **`recover_stop`을 다시 요청**하고 `reconcile(outcome="removed")`를 진행합니다. 이때 재확인은 정지 상태에 대한 운영자 기록이며, 거절된 응답을 완료 근거로 바꾸지 않습니다. HOLD 해제와 별도 `enable`은 여전히 필요합니다.
+
+기동이 맞지 않는 두 응답은 관제 `events`에 저장하거나 애플리케이션 `event_stored` ACK를 보내지 않습니다. MQTT 전달 ACK와 구분하며, Pinky `records`·`outbox`에 증거로 보존되어 실행 중에는 재전송될 수 있습니다. 취소가 확정된 뒤 다시 수신해도 작업·재고를 진행시키지 않습니다. 이 PR은 별도 이벤트 정리 기능을 추가하지 않습니다. 시험 종료 후 양쪽 journal을 함께 보관하고, 미정리 작업이 있는 journal이나 outbox를 직접 지우지 않습니다.
+
+상태·위치 관측이 허용 시각 범위(-1~3초)를 벗어나면 `clock_skew_or_delay`와 기체·메시지 종류·관측 경과 시간을 로그에 남깁니다. 시계 동기화와 전달 지연을 점검하되 상태 유효기간을 늘리지 않습니다. 예상 밖 실행 오류에서도 종료 전에 HOLD를 저장하고 자원을 닫으며, 오류 자체는 숨기지 않습니다. `fleet_profiles(simulation=False)`에는 모의 N12 복귀점·허용 오차·IR 오프셋을 담은 `n12_goal`을 제공하지 않습니다. 실물용 측정·합의 후 따로 설정해야 하며 현재 Fleet CLI의 simulation·loopback 제한은 유지합니다.
+
 ## Pinky MQTT 주행 시험 · FFT1-56
 
 1대/2대/스마트카트 시나리오를 CLI 또는 원본 웹 UI에서 실행합니다. `route → 수동/MQTT 상하차 완료 → N12 mode_switch → navigate`를 완료 응답으로 진행하며, 파일 이력·중복 방지·저장 ACK·오류 시 HOLD를 포함합니다. 같은 실행부를 사용하며 운영 DB는 연결하지 않습니다. 웹 연결·조작 키·시험 범위는 [가이드 7.4절](docs/pinky-trial.md)을 참고하세요.
