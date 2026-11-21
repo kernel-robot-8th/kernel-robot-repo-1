@@ -178,7 +178,7 @@ class Nav2Bridge:
             if (ready and amcl and amcl.header.frame_id == 'map' and stamp(amcl) <= now + .1
                     and fresh(self.scan, 1.0) and odom_ok
                     and fresh(tf, .5) and fresh(odom_tf, .5) and fresh(correction, .5, 1.1)
-                    and all(math.isfinite(v) and 0 <= v <= limit
+                    and all(math.isfinite(v) and -1e-9 <= v <= limit
                             for v, limit in zip((covariance[0], covariance[7], covariance[35]),
                                                 (0.04, 0.04, 0.1)))):
                 t = tf.transform

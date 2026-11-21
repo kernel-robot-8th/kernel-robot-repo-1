@@ -2,6 +2,7 @@
 // 예약은 고객 API(개발 로그인)로 만들고, 이미 진행 중인 예약이 있으면 그것을 쓴다(로컬 DB 재실행 대비).
 import { expect, request, test, type Page } from '@playwright/test';
 import { SERVICE_URL } from '../playwright.config';
+import { failureText } from '../apps/pad/src/messages';
 
 type Item = { productName: string; quantity: number };
 type Order = { orderId: string; businessStatus: string; items: Item[]; activePickup: { reservationNo: string } | null };
@@ -77,4 +78,31 @@ test('수령 기록이 저장되지 않으므로 같은 예약을 다시 확인�
 test('없는 예약번호는 다시 확인하라고 안내한다', async ({ page }) => {
   await enterReservationNo(page, 'ZZZZZZZZ');
   await expect(page.getByRole('alert')).toHaveText('예약을 찾을 수 없습니다. 예약번호를 다시 확인해 주세요.');
+});
+
+test('같은 카트의 확인 실패가 많으면 서버 시도 제한(429)을 남은 시간과 함께 안내한다', async ({ page }) => {
+  // 다른 시나리오의 카트(pinky3)를 잠그지 않게 이 시나리오만 카트 ID를 바꿔 보낸다.
+  const cart = `e2e-limit-${Date.now()}`;
+  await page.route('**/cart-api/verifications', (route) =>
+    route.continue({ headers: { ...route.request().headers(), 'x-cart-id': cart } }),
+  );
+  // 서버 기준 횟수(기본 1분 5회)를 가정하지 않고, 시도 제한이 나올 때까지 없는 예약번호를 보낸다(상한 10회).
+  const notFound = '예약을 찾을 수 없습니다. 예약번호를 다시 확인해 주세요.';
+  let limited = false;
+  for (let i = 0; i < 10 && !limited; i++) {
+    const res = page.waitForResponse('**/cart-api/verifications');
+    await enterReservationNo(page, 'ZZZZZZZZ');
+    if ((await res).status() === 429) limited = true;
+    else await expect(page.getByRole('alert')).toHaveText(notFound);
+  }
+  expect(limited, '10회 안에 서버 시도 제한(429)이 나와야 합니다').toBeTruthy();
+
+  // 제한 중에는 올바른 예약번호도 막히고, 통신 오류가 아니라 서버가 알려 준 남은 시간으로 안내한다.
+  const res = page.waitForResponse('**/cart-api/verifications');
+  await enterReservationNo(page, reservationNo);
+  const response = await res;
+  expect(response.status()).toBe(429);
+  const seconds = Number(response.headers()['retry-after']);
+  expect(seconds).toBeGreaterThan(0);
+  await expect(page.getByRole('alert')).toHaveText(failureText('TOO_MANY_ATTEMPTS', seconds));
 });

@@ -17,6 +17,7 @@ from uuid import uuid4
 import yaml
 
 from .goals import Destination, load_destination
+from .trial_contract import guard_body
 
 
 def line_route(bay):
@@ -110,7 +111,7 @@ class HardwareReturn:
         self.reading = None
         self.ir_at = None
         self.ir_seq = 0
-        self.guard, self.guard_at, self.boot = {}, 0., None
+        self.guard, self.guard_at, self.boot = {}, None, None
         self.seq, self.session = 0, uuid4().hex
         self.phase, self.owner = 'READY', 'none'
         self.Twist, self.String = Twist, String
@@ -123,8 +124,10 @@ class HardwareReturn:
         self.last_status = 0.
 
     def on_guard(self, msg):
-        self.guard = json.loads(msg.data)
-        self.guard_at = time.monotonic()
+        self.guard = guard_body(msg.data)
+        age = time.time()-self.guard.get('sent_at', 0)
+        self.guard_at = (time.monotonic()-max(0., age)
+                         if self.guard and -.1 <= age <= .3 else None)
 
     def on_ir(self, msg):
         try:
@@ -138,7 +141,7 @@ class HardwareReturn:
 
     def guard_ok(self):
         return (self.guard.get('boot') == self.boot and self.boot is not None
-                and not self.guard.get('blocked')
+                and self.guard.get('blocked') is False and self.guard_at is not None
                 and time.monotonic()-self.guard_at < .3)
 
     def lease(self, owner):

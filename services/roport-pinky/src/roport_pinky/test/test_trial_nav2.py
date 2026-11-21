@@ -112,7 +112,10 @@ def test_local_map_hash_must_match_control_version():
         map_reference(PINKY / 'maps/airport_map.yaml', {**PROFILE, 'map_version': 'old'})
 
 
-def test_display_pose_time_preserves_tf_age_in_wall_clock():
+@pytest.mark.parametrize('variance, ready', [(0., True), (-2.1e-14, True),
+    (-1e-9, True), (-1.1e-9, False), (.04, True), (.0401, False),
+    (float('nan'), False), (float('inf'), False)])
+def test_display_pose_time_preserves_tf_age_in_wall_clock(variance, ready):
     def stamped(seconds, **fields):
         whole = int(seconds)
         return SimpleNamespace(header=SimpleNamespace(frame_id='map', stamp=SimpleNamespace(
@@ -125,7 +128,9 @@ def test_display_pose_time_preserves_tf_age_in_wall_clock():
     bridge.map_ok = True
     bridge.state_clients = {'amcl': None, 'bt_navigator': None}
     bridge.states = {name: (3, time.monotonic()) for name in bridge.state_clients}
-    bridge.amcl = stamped(990, pose=SimpleNamespace(covariance=[0.] * 36))
+    covariance = [0.] * 36
+    covariance[7] = variance
+    bridge.amcl = stamped(990, pose=SimpleNamespace(covariance=covariance))
     bridge.scan = stamped(1000)
     vector = SimpleNamespace(x=0., y=0., z=0.)
     bridge.odom = stamped(1000, twist=SimpleNamespace(twist=SimpleNamespace(
@@ -136,7 +141,10 @@ def test_display_pose_time_preserves_tf_age_in_wall_clock():
                   ('odom', 'base_footprint'): stamped(999.6, transform=transform)}
     bridge.tf = SimpleNamespace(lookup_transform=lambda parent, child, _: transforms[parent, child])
     state = bridge._localization_state()
-    assert state['localization_ready']
+    assert state['localization_ready'] is ready
+    if not ready:
+        assert state['pose'] is None
+        return
     report = datetime.fromisoformat(state['observed_at'])
     pose = datetime.fromisoformat(state['pose_observed_at'])
     assert (report-pose).total_seconds() == pytest.approx(.4)
