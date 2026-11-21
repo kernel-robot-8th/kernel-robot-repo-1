@@ -37,14 +37,23 @@ OUT_ROUTE = {
 
 
 def pinky(on_pinky=True, on_shelf=False, **change):
-    """last_result.pinky of the panel's camera-only check after an unloading evaluation."""
+    """last_result.pinky of the panel's camera-only check after an unloading evaluation.
+
+    Shaped like panel 3.20 in the field (11/21 logs/pinky_result.json): the commanded slot's own
+    slot_empty, and the tray compared with the photo taken right before this mission.
+    """
     return {
         "ran": True,
         "on_pinky": on_pinky,
         "on_shelf": on_shelf,
+        "slot": "2B",
+        "slot_empty": None if not isinstance(on_shelf, bool) else not on_shelf,
         "pinky": "ok" if on_pinky else "tray_empty",
         "shelf": "ok" if on_shelf else "marker_not_found",
         "box": 16,
+        "tray_reference": "pre_mission",
+        "tray_reference_state": "ok",
+        "pre_mission_match": True,
         "returncode": 0,
         "skipped": None,
     } | change
@@ -101,7 +110,7 @@ def align(*, far=(), check="ok", **change):
 class FakePanel:
     def __init__(self):
         self.status = {
-            "version": "3.15.0",
+            "version": "3.20.0",
             "armed": True,
             "job": {"running": False},
             "last_result": None,
@@ -223,6 +232,7 @@ class FakePanel:
                 "source": "align",
                 "observed_at": "2026-11-18T01:00:00.000+09:00",
                 "observed_ts": time.time() - 0.5,
+                "observed_clock": "capture",
                 "reported_at": "2026-11-18T01:00:00.200+09:00",
                 # panel 3.20: the arms measured when the evaluation ended on its return
                 "eval_end": {
@@ -316,6 +326,8 @@ class PanelExecutorTest(unittest.TestCase):
         return self.host.handle(message, channel="cmd")
 
     def test_routed_slot_starts_eval_and_completes_after_shelf_alignment(self):
+        # the base start body: a panel before 3.17 takes no slot / pinky_id
+        self.panel.status["version"] = "3.16.0"
         (accepted,) = self.send(self.inbound())
         self.assertEqual(accepted["payload"]["phase"], "ACCEPTED")
         (start,) = self.panel.starts
@@ -831,14 +843,18 @@ class PanelExecutorTest(unittest.TestCase):
         self.executor.routes = ROUTES | OUT_ROUTE
         self.panel.models.append(OUT_MODEL)
 
-    def test_unload_route_needs_panel_3_15(self):
+    def test_unload_route_needs_panel_3_20(self):
+        # 3.20 takes the empty-tray photo right before the unloading (2026-11-21 review)
         self.panel.status["version"] = "3.14.5"
         self.assertTrue(self.status()["ready"])  # loading only: 3.14 is enough
         self.use_unload_route()
-        payload = self.status()
-        self.assertFalse(payload["ready"])
-        self.assertIn("needs 3.15.0+", payload["executor_error"])
-        self.panel.status["version"] = "3.15.0"
+        for version in ("3.15.0", "3.19.9"):
+            with self.subTest(version=version):
+                self.panel.status["version"] = version
+                payload = self.status()
+                self.assertFalse(payload["ready"])
+                self.assertIn("needs 3.20.0+", payload["executor_error"])
+        self.panel.status["version"] = "3.20.0"
         self.assertTrue(self.status()["ready"])
 
     def test_unload_checks_pinky_and_completes_when_the_box_is_on_it(self):
@@ -854,6 +870,8 @@ class PanelExecutorTest(unittest.TestCase):
         )  # no aligner after unloading: full safe stop
         # the box number is for the Pinky check only: no target circle on the policy's camera
         self.assertIs(start["draw_target"], False)
+        # read at the commanded slot, with this Pinky's tray photo
+        self.assertEqual((start["slot"], start["pinky_id"]), ("2B", "pinky1"))
         for change in (
             {},  # ended on its return
             {"exit_ok": False, "err": {"code": "err_code_7"}},  # no time or error rule
@@ -993,6 +1011,56 @@ class PanelExecutorTest(unittest.TestCase):
         self.panel.finish(pinky=pinky(slot_empty=True, **good), stage="done", final=True)
         (event,) = self.host.poll()
         self.assertEqual(event["payload"]["mission_result"], "MISSION_COMPLETE")
+
+    def test_unload_without_this_missions_tray_photo_holds(self):
+        # 2026-11-21 review repro: no box marker, tray_changed 0.3 → on_pinky true, and the
+        # pre-mission photo fields left out → the Host sent COMPLETE and departure_ready
+        self.use_unload_route()
+        missing = [
+            ("tray_reference_state", "pre_mission_match", "tray_reference"),
+            ("pre_mission_match",),
+            ("tray_reference_state",),
+        ]
+        for keys in missing:
+            with self.subTest(missing=keys):
+                self.host.clear_hold()
+                self.send(self.outbound())
+                check = pinky(tray_changed=0.3, box_on_tray=False)
+                for key in keys:
+                    del check[key]
+                self.panel.finish(pinky=check, stage="done", final=True)
+                (event,) = self.host.poll()
+                p = event["payload"]
+                self.assertEqual(event["type"], "shelf_outbound.failed")
+                self.assertEqual(
+                    (p["error_code"], p["mission_result"]),
+                    ("PANEL_PINKY_NO_REFERENCE", "MISSION_HOLD"),
+                )
+                self.assertIsNot(p.get("departure_ready"), True)
+                self.assertIsNotNone(self.host.hold)
+
+    def test_unload_needs_the_commanded_slots_own_reading(self):
+        # 2026-11-21 review: without slot_empty the shelf-wide on_shelf=false completed it
+        self.use_unload_route()
+        no_slot_reading = pinky()
+        del no_slot_reading["slot_empty"]
+        cases = [
+            no_slot_reading,  # on_shelf false only
+            pinky(slot="2C"),  # read at another slot
+            pinky(slot=None),
+        ]
+        for check in cases:
+            with self.subTest(check={k: check.get(k) for k in ("slot", "slot_empty")}):
+                self.host.clear_hold()
+                self.send(self.outbound())
+                self.panel.finish(pinky=check, stage="done", final=True)
+                (event,) = self.host.poll()
+                p = event["payload"]
+                self.assertEqual(
+                    (p["error_code"], p["mission_result"]),
+                    ("PANEL_SLOT_UNREADABLE", "MISSION_HOLD"),
+                )
+                self.assertIsNot(p.get("departure_ready"), True)
 
     def test_unload_unknown_pinky_holds_for_a_person(self):
         self.use_unload_route()
@@ -1481,6 +1549,9 @@ class PanelExecutorTest(unittest.TestCase):
             ),
             "capture 4 s old": ({"observed_ts": time.time() - 4.0}, "3.20.0"),
             "no capture time": ({"observed_ts": None}, "3.20.0"),
+            # 2026-11-21 review: the control step's time is not a capture time
+            "control step time": ({"observed_clock": "control_step"}, "3.20.0"),
+            "clock not said": ({"observed_clock": None}, "3.20.0"),
         }
         for name, (evidence, version) in cases.items():
             with self.subTest(case=name):
@@ -1508,6 +1579,7 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertIs(p["grasp_released"], True)
         self.assertIs(p["placement"]["eval_end"]["all_at_home"], True)
         self.assertIsInstance(p["placement"]["observed_ts"], float)
+        self.assertEqual(p["placement"]["observed_clock"], "capture")
 
     def test_outbound_never_reports_a_placement(self):
         self.use_unload_route()

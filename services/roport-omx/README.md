@@ -112,7 +112,7 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 
 상자가 명령한 칸에 놓이면 바로 Mission Complete를 보내 Pinky가 떠날 수 있게 하고, 정렬은 후속 작업으로 따로 보고합니다. 기본은 꺼져 있으며(위의 한 번 보고), 관제가 `shelf_placed`를 받도록 바뀐 뒤 `--report-placement`로 켭니다.
 
-1. 제어판(3.20.0+)이 `last_result.placement.on_shelf: true`(명령한 칸)를 남기고, 그 순간 **두 손이 상자에서 떨어졌으며**(넘겨받기 판정이면 두 손끝이 상자 앞면·선반 앞 경계보다 3cm 뒤 `tips_clear`, 아니면 평가가 복귀로 끝난 때 양팔 홈·그리퍼 54.6 이하 `eval_end`) **카메라 촬영 원시각이 3초 이내**(`observed_ts`)일 때만, 정렬이 끝나기 전에 `completed`, `mission_result: "MISSION_COMPLETE"`, `evidence: "shelf_placed"`, `placement_confirmed: true`, `grasp_released: true`, `departure_ready: true`, `align_state: "PENDING"`, `placement`(칸·상자·촬영 시각·판정 근거)를 보냅니다. 근거가 하나라도 없으면 조기 보고 없이 정렬 뒤 한 번 보고합니다(관제 합의 2026-11-18). 이때 팔은 아직 정렬 중이라 `arms`는 홈이 아닐 수 있습니다.
+1. 제어판(3.20.0+)이 `last_result.placement.on_shelf: true`(명령한 칸)를 남기고, 그 순간 **두 손이 상자에서 떨어졌으며**(넘겨받기 판정이면 두 손끝이 상자 앞면·선반 앞 경계보다 3cm 뒤 `tips_clear`, 아니면 평가가 복귀로 끝난 때 양팔 홈·그리퍼 54.6 이하 `eval_end`) **카메라 촬영 원시각이 3초 이내**(`observed_ts`, `observed_clock: "capture"`)일 때만, 정렬이 끝나기 전에 `completed`, `mission_result: "MISSION_COMPLETE"`, `evidence: "shelf_placed"`, `placement_confirmed: true`, `grasp_released: true`, `departure_ready: true`, `align_state: "PENDING"`, `placement`(칸·상자·촬영 시각·판정 근거)를 보냅니다. 근거가 하나라도 없으면 조기 보고 없이 정렬 뒤 한 번 보고합니다(관제 합의 2026-11-18). 제어판이 촬영 시각을 몰라 제어 주기 시각을 넣은 경우(`observed_clock: "control_step"`)나 시각 출처를 밝히지 않은 경우도 근거로 쓰지 않습니다(2026-11-21 리뷰). 지금은 넘겨받기 판정(`source: "eval_judge"`)만 `observed_clock`을 남기므로, 정렬 실행기가 읽은 놓였음은 조기 보고하지 않습니다. 관제의 촬영 시각·`ALIGN_HOLD` 검증 전에는 현장에서 `--report-placement`를 켜지 않습니다. 이때 팔은 아직 정렬 중이라 `arms`는 홈이 아닐 수 있습니다.
 2. 정렬이 끝날 때까지 작업은 진행 중으로 남아, 새 명령은 `HOST_BUSY`로 거절합니다. 관제는 다음 선반 명령 전에 아래 정렬 결과(또는 `status.completed`의 `active: null`)를 기다려야 합니다.
 3. 정렬 결과는 `progress` 이벤트(지금 관제는 `completed` 뒤의 `progress`를 저장하고 ack만 함)로 보냅니다.
 
@@ -131,23 +131,23 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 
 ### 하차 미션 판정 (2026-11-17 합의)
 
-하차는 선반의 상품을 관제 명령으로 대기 중인 Pinky 쟁반에 상차하는 작업입니다(`shelf_outbound.requested`, 예: 2b 칸 모델 `outbound_act_re1112x37_60k_1113`). Host는 시작 요청에 `pinky_check: true`, `shelf_align: false`, `draw_target: false`를 보내고, 평가 뒤 제어판이 카메라만으로 확인한 결과(`last_result.pinky`)로 판정합니다. 시간 기준은 쓰지 않습니다.
+하차는 선반의 상품을 관제 명령으로 대기 중인 Pinky 쟁반에 상차하는 작업입니다(`shelf_outbound.requested`, 예: 2b 칸 모델 `outbound_act_re1112x37_60k_1113`). 하차 경로가 있으면 제어판 3.20.0 이상이 필요합니다(작업 직전 쟁반 사진). Host는 시작 요청에 `pinky_check: true`, `shelf_align: false`, `draw_target: false`, 명령의 `slot`(예: `"2B"`)·`pinky_id`를 보내고, 평가 뒤 제어판이 카메라만으로 확인한 결과(`last_result.pinky`)로 판정합니다. 시간 기준은 쓰지 않습니다.
 
-- 칸 비었음(`slot_empty`): 선반 정면 카메라(`front_2`)로 명령한 칸에 상자가 남았는지 읽습니다(빈 선반 기준 사진과 비교).
+- 칸 비었음(`slot_empty`): 선반 정면 카메라(`front_2`)로 명령한 칸에 상자가 남았는지 읽습니다(빈 선반 기준 사진과 비교). 결과의 `slot`이 명령한 칸이고 `slot_empty`가 `true`/`false`로 있을 때만 씁니다. 선반 전체 값(`on_shelf`)으로 대신하지 않습니다(없으면 `PANEL_SLOT_UNREADABLE`, 2026-11-21 리뷰).
 - 상차됨(`on_pinky`): 위 카메라(`front`)로 다음 중 하나면 `true`입니다.
   1. 상자 윗면 마커(15~22)가 쟁반 영역 안에서 읽힘(`box_on_tray`, 기본)
   2. 쟁반이 그 Pinky의 빈 쟁반 기준 사진과 달라짐(`tray_changed` ≥ 0.25, 보조). 상자가 기울거나 과노출로 마커가 안 읽힐 때를 대비합니다.
 - **쟁반에는 마커를 붙이지 않습니다.** 하차 정책은 마커 없는 쟁반으로 학습되어, 쟁반에 마커가 있으면 동작을 시작하지 않습니다.
 - 빈 쟁반 기준 사진은 Pinky마다 한 번 찍습니다(정렬 실행기 `--step tray_check --pinky N --tray-ref-reset`). 기준 사진이 없으면 `on_pinky: null`(HOLD)입니다.
 - 확인은 정렬 실행기 `--step pinky_read`가 하며 로봇을 움직이지 않습니다. 제어판은 비상 정지·강제 종료가 아니면 평가가 어떻게 끝났든 확인합니다.
-- 제어판 3.20.0부터 하차 직전에 그 자리 쟁반을 찍어(작업 직전 사진) 비어 있는지 먼저 확인하고, 작업 뒤에는 **그 미션의 직전 사진하고만** 비교합니다(다른 기체·공통 사진은 쓰지 않음, 관제 합의). 직전 확인에서 쟁반이 비어 있지 않거나 읽지 못하면 제어판이 평가를 시작하지 않고, Host는 팔이 움직이지 않았으므로 HOLD 없이 `MISSION_FAILED`(`PANEL_TRAY_NOT_EMPTY`·`PANEL_TRAY_CHECK_FAILED`)로 보고합니다. 작업 뒤 판정이 직전 사진 기준이 아니면(`tray_reference_state`가 `ok`가 아니거나 `pre_mission_match: false`) `PANEL_PINKY_NO_REFERENCE`로 HOLD합니다.
+- 제어판 3.20.0부터 하차 직전에 그 자리 쟁반을 찍어(작업 직전 사진) 비어 있는지 먼저 확인하고, 작업 뒤에는 **그 미션의 직전 사진하고만** 비교합니다(다른 기체·공통 사진은 쓰지 않음, 관제 합의). 직전 확인에서 쟁반이 비어 있지 않거나 읽지 못하면 제어판이 평가를 시작하지 않고, Host는 팔이 움직이지 않았으므로 HOLD 없이 `MISSION_FAILED`(`PANEL_TRAY_NOT_EMPTY`·`PANEL_TRAY_CHECK_FAILED`)로 보고합니다. 작업 뒤 판정은 `tray_reference_state: "ok"`이고 `pre_mission_match: true`일 때만 믿습니다. 값이 다르거나 **없으면** `PANEL_PINKY_NO_REFERENCE`로 HOLD합니다(2026-11-21 리뷰: 직전 사진 확인 없이 `tray_changed`만으로 Pinky가 출발할 수 있었음).
 - 하차 평가에서는 위 카메라 관측에 목표 원을 그리지 않습니다(`draw_target: false`, 제어판 3.16.1+). 목표 원 없이 학습된 모델이라, 그리면 동작이 크게 느려집니다.
 
 | `mission_result` | 조건 | 비고 |
 | --- | --- | --- |
-| `MISSION_COMPLETE` | `slot_empty: true`, `on_pinky: true`, 양팔 홈·그리퍼 놓음(확인 뒤 `/api/arms` 실측) | `evidence: "pinky_load"` |
+| `MISSION_COMPLETE` | 명령한 칸의 `slot_empty: true`, `on_pinky: true`(작업 직전 사진 기준 확인), 양팔 홈·그리퍼 놓음(확인 뒤 `/api/arms` 실측) | `evidence: "pinky_load"` |
 | `MISSION_FAILED` | 칸에 상자가 남음(`PANEL_BOX_STILL_ON_SHELF`) 또는 칸은 비었는데 쟁반이 빔(`PANEL_BOX_DROPPED`) | 양팔 홈 복귀 후 HOLD 없음 |
-| `MISSION_HOLD` | 칸 판독 불가(`PANEL_SLOT_UNREADABLE`), 쟁반 판독 불가(`PANEL_PINKY_UNREADABLE`), 확인 없음(`PANEL_PINKY_CHECK_NOT_RUN`), 칸과 쟁반 둘 다 상자(`PANEL_PINKY_CHECK_CONFLICT`), 비상 정지 | 현장 확인 후 HOLD 해제 |
+| `MISSION_HOLD` | 칸 판독 불가·다른 칸 결과(`PANEL_SLOT_UNREADABLE`), 직전 사진 확인 없음(`PANEL_PINKY_NO_REFERENCE`), 쟁반 판독 불가(`PANEL_PINKY_UNREADABLE`), 확인 없음(`PANEL_PINKY_CHECK_NOT_RUN`), 칸과 쟁반 둘 다 상자(`PANEL_PINKY_CHECK_CONFLICT`), 비상 정지 | 현장 확인 후 HOLD 해제 |
 
 현장 시험(2026-11-17, 제어판 3.17.0, 비동기 100 / 0.2 / latest_only, 필터 중): 정책 성공 6회 중 5회, 판정은 매 회차 그 순간 장면과 일치했습니다. 상자 마커를 못 읽은 1회는 보조 판정이 상차를 잡았습니다. 카메라 확인은 팔 복귀 뒤 약 2~7초에 끝나므로, 결과(`completed`/`failed`)가 나오기 전에 상자를 옮기면 안 됩니다.
 
