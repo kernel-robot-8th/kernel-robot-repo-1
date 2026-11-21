@@ -22,6 +22,7 @@ SLOTS = {
 PARKING = {"logistics": ("N16", "N17"), "smartcart": ("H1", "H2")}
 ROLES = {"pinky1": "logistics", "pinky2": "logistics", "pinky3": "smartcart"}
 TARGETS = (*ROLES, "omx1", "omx2", "omx3", "shelf-01")
+OMX3_PACKAGE_MARKERS = frozenset({"15", "16", "17", "21", "22"})
 
 
 class FleetControl:
@@ -136,6 +137,8 @@ class FleetControl:
             "22",
         ):
             raise ValueError("invalid physical package marker")
+        if request["operation"] == "inbound":
+            self.validate_warehouse_marker(request)
         if request["operation"] == "outbound":
             for slot in self.data["slots"].values():
                 if slot["package_id"] == request["package_id"] and slot.get(
@@ -159,6 +162,15 @@ class FleetControl:
         ):
             raise ValueError("출고할 물품이 선반에 등록되어 있지 않습니다.")
         return None
+
+    @staticmethod
+    def validate_warehouse_marker(request):
+        marker = request.get("marker", request["package_id"])
+        # Legacy trials use numeric package IDs; named virtual packages stay valid.
+        if (
+            "marker" in request or marker.isdecimal()
+        ) and marker not in OMX3_PACKAGE_MARKERS:
+            raise ValueError("OMX3 loading supports only markers 15,16,17,21,22")
 
     def submit(self, request):
         if previous := self.validate_request(request):
@@ -504,6 +516,12 @@ class FleetControl:
             if any(c["task"] == request_id for c in data["commands"].values()):
                 continue
             try:
+                if task["request"]["operation"] == "inbound" and task["stage"] in {
+                    "queued",
+                    "warehouse_route",
+                    "warehouse_load",
+                }:
+                    self.validate_warehouse_marker(task["request"])
                 if task["stage"] == "queued":
                     self.allocate(data, task)
                 if task["stage"] == "choose_slot":

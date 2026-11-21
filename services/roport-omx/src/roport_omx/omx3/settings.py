@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# ArUco v1.6: 18은 TRAY로 예약되어 포장물품 대상에서 제외한다.
-PACKAGE_MARKER_IDS = frozenset({15, 16, 17, 19, 20, 21, 22})
+# 마커 ACT 모델이 학습한 포장물품 마커(HANDOFF_marker_act.md sim_mark5·real_mark5).
+# 학습하지 않은 번호는 받지 않는다.
+PACKAGE_MARKER_IDS = frozenset({15, 16, 17, 21, 22})
 
 # 관절 상태·동작의 순서(LeRobot omx_follower, 학습 데이터와 같음)
 JOINTS = (
