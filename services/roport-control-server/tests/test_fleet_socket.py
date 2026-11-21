@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
 from test_fleet import dispatch, submit
 from test_fleet import fleet as fleet  # noqa: PLC0414
 from test_fleet_reassignment import final_return_without_state
@@ -20,6 +21,30 @@ def request(owner, **payload):
         owner.poll()
         owner.poll()
         return json.loads(peer.recv(65536))
+
+
+@pytest.mark.parametrize("expiry", [None, 0])
+def test_stop_does_not_expire_but_still_requires_current_owner_session(fleet, expiry):
+    with TemporaryDirectory(prefix="rp-fleet-") as directory:
+        owner = FleetSocket(Path(directory) / "s", fleet)
+        try:
+            payload = {
+                "action": "stop",
+                "session_id": owner.session_id,
+                "expires_at": expiry,
+            }
+            for invalid in (
+                {**payload, "session_id": "previous-owner"},
+                {**payload, "action": "enable"},
+                {**payload, "unexpected": True},
+                {key: value for key, value in payload.items() if key != "expires_at"},
+            ):
+                assert not request(owner, **invalid)["ok"]
+                assert fleet.data["fault"] is None
+            assert request(owner, **payload)["ok"]
+            assert fleet.data["fault"] == "operator_stop" and not fleet.data["enabled"]
+        finally:
+            owner.close()
 
 
 def test_restarted_arrival_confirmation_is_bound_to_incident_and_preserves_hold(fleet):

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "./vendor/three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "./vendor/three/examples/jsm/loaders/GLTFLoader.js";
 import { renderTrial, trialDisconnected } from "./trial.js";
+import { renderFleet, fleetDisconnected } from "./fleet.js";
 
 const $ = (id) => document.getElementById(id);
 let ids = [], inventory = [];
@@ -12,7 +13,7 @@ let selected,
   views,
   models = {},
   definitions = {};
-let demo = false, trial = false,
+let demo = false, trial = false, fleet = false,
   playing = true,
   dropped = new Set(),
   mapCenter,
@@ -32,7 +33,7 @@ function displayedPose(row) {
 function displayMotion(model, pose, row) {
   if (!pose) { delete model.userData.motion; return; }
   const now = performance.now(), previous = model.userData.motion;
-  const continuous = trial && row.pose_live && !row.pose_stale
+  const continuous = (trial || fleet) && row.pose_live && !row.pose_stale
     && !matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (continuous && previous?.key === row.pose_key) return;
   const from = [...model.position.toArray(), model.rotation.z];
@@ -354,7 +355,7 @@ function receive(raw) {
       poseModel(model, row);
       poseModel(previews[id], row);
       labels[id].classList.toggle("stale", row.stale || row.pose_stale === true);
-      labels[id].textContent = title(id) + (installedPoses[id] && (demo || !row.pose) ? " · 설치 배치" : trial && row.pose_stale && pose ? " · 마지막 위치" : "");
+      labels[id].textContent = title(id) + (installedPoses[id] && (demo || !row.pose) ? " · 설치 배치" : (trial || fleet) && row.pose_stale && pose ? " · 마지막 위치" : "");
       labels[id].title = row.pose_source ?? "";
     }
     $("source").textContent = data.source;
@@ -393,6 +394,7 @@ function receive(raw) {
         $("time").value = data.demo_time;
     }
     updateDetails();
+    if (fleet) renderFleet(data);
     $("message").textContent = data.message;
   } catch (error) {
     $("message").textContent = `표시 오류: ${error.message}`;
@@ -401,6 +403,8 @@ function receive(raw) {
 async function start(config) {
   demo = config.demo;
   trial = config.trial === true;
+  fleet = config.fleet === true;
+  $("fleet-panel").hidden = !fleet;
   inventory = config.robots;
   ids = inventory.map((r) => r.id);
   selected = ids[0];
@@ -415,7 +419,8 @@ async function start(config) {
   $("trial-panel").hidden = !trial;
   $("pinky-trial-details").hidden = !trial;
   $("pinky-detail").hidden = trial;
-  $("offline-actions").hidden = trial;
+  $("offline-actions").hidden = trial || fleet;
+  if (fleet) { $("mode").textContent = "FLEET · 요청 기반 관제"; $("scope-note").textContent = "공유 상태 · MQTT 실행 결과 기준"; }
   if (trial) {
     $("mode").textContent = "TRIAL · MQTT 시나리오";
     $("inventory-label").textContent = "고정 자리";
@@ -563,17 +568,18 @@ async function start(config) {
 }
 let socket, retry, lastReceived = 0, revision = -1, session;
 const requestedMode = new URLSearchParams(location.search).get("mode");
-let mode = ["offline", "demo", "trial"].includes(requestedMode) ? requestedMode : "auto";
+let mode = ["offline", "demo", "trial", "fleet"].includes(requestedMode) ? requestedMode : "auto";
 function sendControl(data) {
   if (demo && socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
 }
 function disconnected() {
   if (trial) trialDisconnected();
+  if (fleet) fleetDisconnected();
   $("source").textContent = "서버 연결 끊김 · 재연결 중";
   $("task-source").textContent = "연결 끊김 · 마지막 작업 상태";
   for (const row of rows) {
     row.stale = true;
-    if (trial) { row.pose_stale = true; row.pose_live = false; }
+    if (trial || fleet) { row.pose_stale = true; row.pose_live = false; }
     if (instances[row.robot_id]?.userData.motion) instances[row.robot_id].userData.motion.active = false;
     buttons[row.robot_id].dataset.stale = "true";
     buttons[row.robot_id].querySelector("small").textContent = "미수신 / 지연";
