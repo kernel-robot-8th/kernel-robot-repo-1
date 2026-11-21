@@ -20,7 +20,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cooperative import ARMS, OPERATIONS, SLOTS, Rejected
+from .cooperative import ARMS, OPERATIONS, SLOTS, Rejected, StartRefused
 from .mqtt_link.messages import check_expiry
 
 ARM_SIDES = {"left": "omx1", "right": "omx2"}
@@ -45,6 +45,11 @@ ARMS_TIMEOUT_S = 15.0
 # start field with alignment after a control-tower evaluation (3.14): an older panel may run every
 # episode to episode_s, reach the AI server over HTTP (SSH tunnel), or skip the alignment.
 PANEL_MIN_VERSION = (3, 14, 0)
+# Unloading needs the camera-only Pinky check after the evaluation (panel 3.15: "pinky_check"),
+# read at the commanded slot (3.17: "slot") and against this mission's own empty-tray photo taken
+# right before it (3.20: tray_reference_state, pre_mission_match). Without that photo a changed
+# tray proves nothing (2026-11-21 review: tray_changed alone let the Pinky leave).
+PANEL_MIN_VERSION_UNLOAD = (3, 20, 0)
 # The panel PINGs the AI server about every 5 s (up to ~15 s on a slow GPU tunnel) and stamps
 # gpu_link.infer.udp.at with its clock (time.time(); same PC as the Host). Older than this → stale.
 AI_LINK_FRESH_S = 20.0
@@ -147,15 +152,87 @@ HOLD_ERRORS = {
     "PANEL_SHELF_UNREADABLE",
     "PANEL_ALIGN_SKIPPED",
     "PANEL_ALIGN_NOT_RUN",
+    "PANEL_PINKY_UNREADABLE",
+    "PANEL_PINKY_NO_REFERENCE",
+    "PANEL_SLOT_UNREADABLE",
+    "PANEL_PINKY_CHECK_NOT_RUN",
+    "PANEL_PINKY_CHECK_CONFLICT",
+    "PANEL_NOT_ARMED_FOR_HOME",
     "RESULT_UNAVAILABLE",
 }
 HOME_RETURN_TIMEOUT_S = 90.0
 
 
+# Unloading mission (shelf → waiting Pinky; completion rule agreed 2026-11-17): judged only by the
+# cameras after the evaluation, no time limit. The panel (pinky_check) reports
+#   slot_empty — the commanded shelf slot holds no box any more (shelf-facing camera, front_2);
+#                only this slot's own reading counts, never the shelf-wide on_shelf
+#   on_pinky   — the box is on the Pinky tray (top camera, front): the box top marker is read inside
+#                the tray area, or else the tray differs from the empty-tray photo the panel took
+#                right before this mission (tray_changed >= 0.25; tray_reference_state "ok" and
+#                pre_mission_match true). No marker is stuck on the tray: the unload policy was
+#                trained on a bare tray and does not start when one is there.
+# Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot, or slot empty but the
+# tray unchanged (dropped) → MISSION_FAILED, arms sent home. Anything unread or not confirmed
+# (another slot, no pre-mission photo) → MISSION_HOLD.
+PINKY_LOAD = "pinky_load"
+
+
+class PanelRefused(RuntimeError):
+    """The panel answered with an HTTP error; reply keeps its JSON body."""
+
+    def __init__(self, message: str, reply: dict):
+        super().__init__(message)
+        self.reply = reply
+
+
+def _slot_empty(pinky: dict, slot: str | None) -> bool | None:
+    """The commanded slot's own reading; None when it is missing or about another slot.
+
+    The shelf-wide on_shelf is never used in its place (2026-11-21 review): it says nothing about
+    the commanded slot.
+    """
+    value = pinky.get("slot_empty")
+    if not isinstance(value, bool):
+        return None
+    if slot is None or str(pinky.get("slot") or "").lower() != slot.lower():
+        return None
+    return value
+
+
+def _pinky_error(pinky, slot: str | None) -> str | None:
+    if not isinstance(pinky, dict):  # panel older than the check, or it never reported
+        return "PANEL_PINKY_CHECK_NOT_RUN"
+    on_pinky, slot_empty = pinky.get("on_pinky"), _slot_empty(pinky, slot)
+    if slot_empty is False:
+        # a box seen on the tray while it still sits in its slot: a camera is wrong
+        return (
+            "PANEL_PINKY_CHECK_CONFLICT"
+            if on_pinky is True
+            else "PANEL_BOX_STILL_ON_SHELF"
+        )
+    if slot_empty is None:
+        return "PANEL_SLOT_UNREADABLE"
+    # panel 3.20: the tray is compared only with this mission's own photo taken right before the
+    # unloading (never another Pinky's or a shared one); unless the panel confirms it, the tray
+    # result is not trusted (a missing field holds too)
+    if (
+        pinky.get("tray_reference_state") != "ok"
+        or pinky.get("pre_mission_match") is not True
+    ):
+        return "PANEL_PINKY_NO_REFERENCE"
+    if on_pinky is True:
+        return None
+    if on_pinky is False:
+        return "PANEL_BOX_DROPPED"
+    return "PANEL_PINKY_UNREADABLE"
+
+
 def _home_and_released(arms: dict) -> bool:
+    """The Host's completion test: every arm connected, home, safe and not grasping."""
+    want = {"connected": True, "returned": True, "safe": True, "grasping": False}
     return all(
-        (arms.get(name) or {}).get("returned") is True
-        and (arms.get(name) or {}).get("grasping") is False
+        all((arms.get(name) or {}).get(k) is v for k, v in want.items())
         for name in ARMS
     )
 
@@ -244,6 +321,7 @@ class PanelExecutor:
         self.timeout, self.start_timeout = timeout, start_timeout
         self.repo_id: str | None = None
         self.slot: str | None = None
+        self.operation: str | None = None
         self._missing_since: float | None = None
         self._recovery: dict | None = None  # a failed mission's arms on their way home
         self._models: tuple[float, set[str]] = (float("-inf"), set())
@@ -261,18 +339,22 @@ class PanelExecutor:
                 return json.loads(r.read() or b"{}")
         except urllib.error.HTTPError as exc:
             try:
-                message = json.loads(exc.read()).get("error") or str(exc)
+                reply = json.loads(exc.read())
             except ValueError:
-                message = str(exc)
-            raise RuntimeError(f"panel {path}: {message}") from exc
+                reply = {}
+            reply = reply if isinstance(reply, dict) else {}
+            message = reply.get("error") or str(exc)
+            raise PanelRefused(f"panel {path}: {message}", reply) from exc
 
     def readiness(self) -> dict:
         status = self._call("GET", "/api/status")
         armed = status.get("armed")  # absent before panel 3.8 → None → not armed
         busy = bool((status.get("job") or {}).get("running"))
         version = _version(status.get("version"))
-        if version is None or version < PANEL_MIN_VERSION:
-            need = ".".join(map(str, PANEL_MIN_VERSION))
+        unload = any(op == "OUTBOUND" for op, _ in self.routes)
+        minimum = PANEL_MIN_VERSION_UNLOAD if unload else PANEL_MIN_VERSION
+        if version is None or version < minimum:
+            need = ".".join(map(str, minimum))
             error = f"PANEL_VERSION: {status.get('version')} (needs {need}+)"
         else:
             error = _ai_link_error(status, time.time())
@@ -312,11 +394,6 @@ class PanelExecutor:
 
     def check(self, task: dict) -> None:
         """Refuse before acceptance: no route, no box marker or the model is not trained yet."""
-        if task["operation"] != "INBOUND":
-            # Only shelf loading is judged here (box placed, then aligned). Unloading is judged by
-            # its own camera check (Pinky tray before/after, arms home), added with that feature;
-            # until then an unloading command is refused unmoved instead of judged as a loading.
-            raise Rejected("UNSUPPORTED_OPERATION")
         route = self.routes.get((task["operation"], task["slot_id"]))
         if route is None:
             raise Rejected("UNSUPPORTED_SLOT")
@@ -350,14 +427,25 @@ class PanelExecutor:
             # panel 3.12+: end the episode once the arms are back at the start pose with grippers
             # released, so the policy does not start the task again before episode_s runs out
             "end_on_return": True,
+        }
+        if task["operation"] == "OUTBOUND":
+            # Unloading ends with the cameras checking the box on the Pinky tray, never with a
+            # shelf alignment (the panel refuses both at once).
+            body |= {"shelf_align": False, "pinky_check": True}
+            # panel 3.17+: read the commanded slot, and take this Pinky's tray photo (3.20)
+            body |= {"slot": task["slot_id"].upper(), "pinky_id": task.get("pinky_id")}
+            # The box number is for the Pinky check only: the unloading model was trained without the
+            # target circle the panel would otherwise draw on the top camera (panel option, 3.17+).
+            body["draw_target"] = False
+        else:
             # The shelf loading mission ends with the box aligned on the shelf: ask the panel
             # (3.14+) to align after the evaluation even when the model is not in its own list.
-            "shelf_align": True,
-            # panel 3.14+: when the episode ended on its detected return with no stop or error, skip
-            # the slow end-of-run safe stop (home move, wrist, gripper close; ~14 s) and just release
-            # torque, because the aligner takes the arms right after. Any other end stays a full stop.
-            "fast_release": True,
-        }
+            body["shelf_align"] = True
+            # panel 3.14+: when the episode ended on its detected return with no stop or error,
+            # skip the slow end-of-run safe stop (home move, wrist, gripper close; ~14 s) and just
+            # release torque, because the aligner takes the arms right after. Any other end stays
+            # a full stop. Unloading has no aligner after it, so it keeps the full safe stop.
+            body["fast_release"] = True
         body |= route.eval_options or {}
         if route.output_filter:
             body |= {
@@ -365,11 +453,29 @@ class PanelExecutor:
                 "filter_gripper": route.filter_gripper,
             }
         check_expiry(task)
-        reply = self._call("POST", "/api/eval/start", body, timeout=self.start_timeout)
+        try:
+            reply = self._call(
+                "POST", "/api/eval/start", body, timeout=self.start_timeout
+            )
+        except PanelRefused as exc:
+            check = exc.reply.get("tray_check")
+            if exc.reply.get("refused") == "tray_check" and isinstance(check, dict):
+                # panel 3.20: the Pinky tray right before unloading was not empty or could not be
+                # read; nothing moved, so the scene is checked without holding the Host
+                state = check.get("tray_check")
+                code = (
+                    "PANEL_TRAY_NOT_EMPTY"
+                    if state == "not_empty"
+                    else "PANEL_TRAY_CHECK_FAILED"
+                )
+                why = check.get("not_empty_why") or state
+                raise StartRefused(code, f"tray check: {why}", hold=False) from exc
+            raise
         if not isinstance(reply.get("repo_id"), str) or not reply["repo_id"]:
             raise RuntimeError("panel did not return the run's repo_id")
         self.repo_id, self._missing_since = reply["repo_id"], None
         self.slot, self._recovery = task["slot_id"], None
+        self.operation = task["operation"]
 
     def observe(self) -> dict:
         if self.repo_id is None:
@@ -400,23 +506,29 @@ class PanelExecutor:
                     "state": "running",
                     "step": step if isinstance(step, str) else None,
                 }
-            observation = self._result(result, self.slot)
+            observation = self._result(result, self.slot, self.operation)
             if observation["state"] == "finished":
                 # Evaluation snapshots predate alignment; every completion (aligned or not)
                 # also needs the final motor pose: arms home with grippers released.
                 live = self._arms_now()
+                if self.operation == "OUTBOUND":
+                    # judged after the camera check, with the arms at rest: the motors now
+                    # (an evaluation that ended on an error left "safe" False in its snapshot)
+                    observation["arms"] = {
+                        name: dict(live.get(name) or {}) for name in ARMS
+                    }
                 for name, flags in observation["arms"].items():
                     for flag in ("connected", "returned", "safe"):
-                        if flags[flag] is True:
+                        if flags.get(flag) is True:
                             flags[flag] = live.get(name, {}).get(flag)
-                    if flags["grasping"] is False:
+                    if flags.get("grasping") is False:
                         flags["grasping"] = live.get(name, {}).get("grasping")
                 if not _home_and_released(observation["arms"]):
-                    return self._recover("ARM_NOT_RETURNED")
+                    return self._recover("ARM_NOT_RETURNED", status)
                 return observation
             if observation.get("operator_stop") or observation["error"] in HOLD_ERRORS:
                 return observation
-            return self._recover(observation["error"])
+            return self._recover(observation["error"], status)
         # Between the job ending and last_result appearing; give up only after a grace period.
         now = time.monotonic()
         self._missing_since = self._missing_since or now
@@ -424,14 +536,25 @@ class PanelExecutor:
             return {"state": "running", "step": "finishing"}
         return {"state": "failed", "error": "RESULT_UNAVAILABLE", "arms": {}}
 
-    def _recover(self, error: str) -> dict:
+    def _recover(self, error: str, status: dict) -> dict:
         """Mission failed: send both arms back to the start pose, then report it without HOLD."""
         live = self._arms_now()
         if _home_and_released(live):
             return {"state": "failed", "error": error, "arms": live, "recovered": True}
+        if status.get("armed") is not True:
+            # The panel turned armed off (a stop or an anomaly) or a person did: the Host never
+            # moves the arms then, even though the panel's home move does not check armed.
+            detail = f"{error}: armed off, arms not moved"
+            return {
+                "state": "failed",
+                "error": "PANEL_NOT_ARMED_FOR_HOME",
+                "arms": live,
+                "detail": detail,
+            }
         try:
             # the run's start pose, grippers opened (panel 3.14: [홈 위치로 이동])
-            self._call("POST", "/api/home/return", {})
+            # "source": "mqtt" lets the panel refuse it while armed is off (its button stays free)
+            self._call("POST", "/api/home/return", {"source": "mqtt"})
         except Exception as exc:  # noqa: BLE001 - no way home: a person takes over (HOLD)
             detail = f"home return refused: {exc}"[:200]
             return {"state": "failed", "error": error, "arms": live, "detail": detail}
@@ -452,7 +575,9 @@ class PanelExecutor:
         return {"state": "failed", "error": error, "arms": live, "recovered": recovered}
 
     @staticmethod
-    def _result(result: dict, slot: str | None = None) -> dict:
+    def _result(
+        result: dict, slot: str | None = None, operation: str | None = None
+    ) -> dict:
         exit_ok = result.get("exit_ok") is True
         safe = True if exit_ok else (False if result.get("exit_ok") is False else None)
         align = result.get("align")
@@ -476,6 +601,18 @@ class PanelExecutor:
                 "returned": home if isinstance(home, bool) else None,
                 "safe": safe,
             }
+        stopped_by = result.get("stopped_by")
+        if operation == "OUTBOUND" and stopped_by not in STOPS:
+            # finished, timed out or ended on an error: the cameras decide
+            error = _pinky_error(result.get("pinky"), slot)
+            if error is None:
+                return {
+                    "state": "finished",
+                    "step": "pinky",
+                    "arms": arms,
+                    "evidence": PINKY_LOAD,
+                }
+            return {"state": "failed", "error": error, "arms": arms}
         if exit_ok:
             if align is None:  # no aligner on this PC: nobody looked at the shelf
                 return {"state": "failed", "error": "PANEL_ALIGN_NOT_RUN", "arms": arms}
@@ -508,7 +645,6 @@ class PanelExecutor:
                 "arms": arms,
                 "operator_stop": stopped and align.get("released") is True,
             }
-        stopped_by = result.get("stopped_by")
         if stopped_by in OPERATOR_STOPS:
             # The stop is the cause; errors raised while shutting down are side effects.
             return {
