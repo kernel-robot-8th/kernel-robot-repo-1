@@ -1,7 +1,7 @@
 // 실행(CI와 동일): services/roport-web 에서 `node --test 'apps/*/src/**/*.test.ts'`
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bigButton, initialState, movingPhase, reduce, type Action, type MovingStep, type PadState } from './flow.ts';
+import { automaticShopper, bigButton, initialState, movingPhase, reduce, type Action, type MovingStep, type PadState } from './flow.ts';
 import type { VerifiedPickup } from './types';
 
 const pickup: VerifiedPickup = {
@@ -157,4 +157,14 @@ test('시도 제한 결과는 남은 초를 실패 화면까지 전달하고, �
     name: 'verifyFailed',
     reason: 'NOT_FOUND',
   });
+});
+
+test('쇼핑 선택은 한 후보나 가장자리가 잘린 사진의 가운데 후보를 제안한다', () => {
+  const barbie = [.40, 0, .75, .98], sleeve = [0, 0, .36, .62], other = [.08, .1, .32, .8];
+  assert.equal(automaticShopper([]), null);
+  assert.equal(automaticShopper([barbie]), 0);
+  assert.equal(automaticShopper([sleeve, barbie]), 1);
+  assert.equal(automaticShopper([barbie, [.70, 0, 1, .8]]), 0);
+  assert.equal(automaticShopper([other, barbie]), null);
+  assert.equal(automaticShopper([sleeve, other]), null);
 });
