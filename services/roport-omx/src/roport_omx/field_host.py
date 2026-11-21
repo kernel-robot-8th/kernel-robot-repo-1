@@ -61,7 +61,7 @@ def _flags(raw):
 class FieldOmxHost:
     """One process owns every supplied executor; physical state is never inferred from MQTT ACKs.
 
-    Executors provide readiness/start/observe and abort. alignment(command, pinky_observation)
+    Executors provide readiness/start/observe and abort. Shelf alignment(command, pinky_observation)
     receives a detached copy of the validated robot_state payload plus pinky_id. It supplies
     a fresh local sensor record: pinky_id, pinky_boot_version, arrival_command_id, observed_at,
     alignment. Identity comes from the observation; alignment and its time come from the sensor.
@@ -248,7 +248,11 @@ class FieldOmxHost:
         p = command["payload"]
         if p.get("operation") == "return_home":
             return
-        observed = self.alignment(command, self._pinky_observation(command))
+        pinky = self._pinky_observation(command)
+        # N01 uses the calibrated Pinky stop and Runner's final box-in-tray verification.
+        if command["type"] == "warehouse_load_command":
+            return
+        observed = self.alignment(command, pinky)
         if (
             not isinstance(observed, dict)
             or observed.get("alignment") != "confirmed"
@@ -363,6 +367,9 @@ class FieldOmxHost:
                             command, self._pinky_observation(command)
                         )
                     except (ValueError, KeyError):
+                        docking = None
+                    except Exception:
+                        log.exception("Docking sensor unavailable")
                         docking = None
                     break
             state = {

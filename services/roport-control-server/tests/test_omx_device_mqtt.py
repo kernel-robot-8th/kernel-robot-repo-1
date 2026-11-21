@@ -208,6 +208,8 @@ def test_device_executor_command_to_saved_result_over_mqtt(
                 "alignment": "confirmed",
             },
         )
+        if target == "omx3":
+            host.alignment = None  # N01 has no tray marker or alignment sensor.
         command_payload = {
             "expected_boot_version": host.boot_version,
             "package_id": package,

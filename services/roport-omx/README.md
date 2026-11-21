@@ -63,7 +63,7 @@ python scripts/check_hardware.py --port /dev/serial/by-id/YOUR_OMX_DEVICE --outp
 - `shelf_transfer_command`: OMX1+2 공동, N11, 가운데 열 `1b/2b`.
 - `arm_action_command`: OMX1 단독 N21 `1a/2a`, OMX2 단독 N22 `1c/2c`. 각 슬롯·입출고 방향의 Runner/정책/캘리브레이션을 따로 주입합니다.
 - `warehouse_load_command`: stock-omx(창고 OMX, MQTT 식별자 `omx3`) N01. 기존 `Omx3Host → Runner`를 실행하며 실제 결과의 안착·해제·복귀를 보고합니다. 상차 대상은 모델이 학습한 마커 `15,16,17,21,22`만 받습니다. `19`·`20`은 물품 마커이지만 이 모델의 상차 대상은 아닙니다. `package_size`는 임시 물품 카탈로그 값이며 추론으로 확인했다고 표시하지 않습니다.
-- Host는 Pinky의 최신 정차·boot·도착 명령과 별도 정렬 센서, 해당 executor의 `model_version/calibration_version` 일치, 팔 준비를 검사합니다. 한 프로세스가 작업을 하나씩 소유합니다. 준비 검사·접수 저장이 지연되면 실행 직전에 만료를 재확인하며, Runner 내부 준비 중 만료도 첫 모터 목표 전 취소합니다. MQTT ACK와 팔 복귀만으로 물품 안착을 확정하지 않습니다.
+- Host는 Pinky의 최신 정차·boot·도착 명령, 해당 executor의 `model_version/calibration_version` 일치, 팔 준비를 검사합니다. 한 프로세스가 작업을 하나씩 소유합니다. 준비 검사·접수 저장이 지연되면 실행 직전에 만료를 재확인하며, Runner 내부 준비 중 만료도 첫 모터 목표 전 취소합니다. MQTT ACK와 팔 복귀만으로 물품 안착을 확정하지 않습니다. OMX1·2의 개별/공동 이송은 별도 정렬 센서도 검사합니다.
 - `(pinky_id, arrival_command_id)`는 이송 접수와 함께 journal에 소모 기록을 저장합니다. 같은 명령 재전송은 저장 결과만 반환하며, 같은 도착을 새 명령으로 재사용하면 `arrival_already_used`입니다. 실패·ACK·Host 재시작 뒤에도 소모 기록을 유지합니다. 사전 거절은 소모하지 않지만 접수 이후 실패/만료는 소모합니다. 재시도는 현장 상태 조정 후 **새 이동으로 확인된 도착**이 필요하며 ID만 바꾸거나 journal을 지워서 재시도하지 않습니다.
 - 공동 명령은 `shelf-01`과 참여 팔 `omx1/omx2`에 같은 `active_command_id`를 표시하며 팔 관측도 공동 executor에서 읽습니다. 무관한 대상은 `active_command_id: null`, `ready: false`, `fault: host_busy`입니다.
 - 완료는 `command_status`로 보고하고 `event_stored`까지 journal/outbox에 유지합니다. 재시작·한쪽 팔 미복귀·관측 불명·watchdog 만료는 HOLD입니다. 정지 대상은 실패·재시작 후에도 보존하고 재시작 시 abort를 요청합니다. 새 boot를 조회한 뒤 기존 `target_command_id`로 정지를 재요청할 수 있습니다. 정지 중 다른 정지 명령은 `stop_already_pending`으로 거절하며 원래 요청을 덮어쓰지 않습니다. 정지 성공은 `stop_status`의 최신 관측으로만 확정하고 HOLD는 유지합니다.
@@ -82,6 +82,16 @@ uv run python scripts/field_host.py --mock --host 127.0.0.1 --port 1883 \
 중복 소유하지 않도록 현장 장치 소유자를 재사용합니다.
 
 ### Factory 정렬 센서
+
+**OMX3 N01 상차는 별도 정렬 센서를 사용하지 않습니다.** 쟁반에는 ID 18을 포함해 마커를
+붙이지 않습니다([마커 기준](../../docs/aruco/README.md)). `warehouse_load_command` 접수·실행 중에는
+Pinky의 최신 N01 정차·도착·boot·라인 비활성·주행 소유권 해제를 계속 확인합니다. Runner가
+완료 직전 **상자 마커의 쟁반 영역 안착·그리퍼 해제·팔 복귀**를 확인하며, `VERIFY_FAILED`는
+`command_status(status="failed", reason="VERIFY_FAILED")`로 관제에 전달됩니다. 관제는 작업을
+HOLD하고 Pinky의 다음 주행을 발행하지 않습니다. OMX3만 실행하는 factory는 `(executors, None)`을
+반환할 수 있습니다. 이 기준은 학습된 N01 도킹 위치·보정값이 현장에 적용된 것을 전제로 합니다.
+
+아래 정렬 센서 계약은 **OMX1·2 개별 이송과 `shelf-01` 공동 이송**에 적용합니다.
 
 센서 호출은 `alignment_sensor(command, pinky_observation)`입니다. 기존 한 인자 센서는
 두 인자로 수정해야 합니다. factory 자체는 계속 인자 없이 호출되고 `(executors, sensor)`를
@@ -106,7 +116,9 @@ Host가 정차·도착·boot·최신성을 검증한 뒤, 해당 Pinky의 `robot
 
 콜백은 명령 접수 전과 실행 중에도 호출되므로, 장시간 기다리지 말고 해당 도착에 속한 최신
 센서 기록을 반환합니다. 확인할 수 없으면 `None` 또는 `alignment: "unknown"/"unconfirmed"`로
-반환합니다. Host는 기본 3초 최신성·식별자 일치를 계속 검사하며, 접수 전에는 거절하고
+반환합니다. 장치 읽기 실패도 가능한 한 `None`으로 반환합니다. 상태 발행 중 센서 예외가
+발생하면 오류를 기록하고 `docking: null`로 발행하며 루프를 유지합니다. Host는 기본 3초
+최신성·식별자 일치를 계속 검사하며, 접수 전에는 거절하고
 작업 중 확인이 끊기면 정지 요청·HOLD로 처리합니다. MQTT 메시지나 Pinky 코드는 변경하지 않습니다.
 
 `WarehouseExecutor`와 `IndependentArmExecutor`에는 실제 Robot/Policy/Vision 포트와
@@ -281,4 +293,4 @@ GPU 추론 서버 하나를 여러 Host PC(예: OMX1·2 Host, OMX3 Host)가 함�
 
 `omx3/adapters/udp_infer.py`의 `UdpInferClient`는 OMX3 `ChunkPolicy`에 주입할 추론 구현입니다. `load()` 후 정면 RGB 영상 1장과 관절 상태 6개를 보내며, 이미지 크기·JPEG 품질·동작 순서는 위 규약을 따릅니다. 시간 초과는 기존 `ChunkPolicy`의 새 관측 재요청으로 처리합니다. 공통 `infer_link`는 표준 라이브러리만 사용하고, 이 어댑터는 장비용 OpenCV 환경에서 사용합니다.
 
-이 동기화는 #109·#113·#115의 모듈과 검사를 포함합니다. 실물 Host 시작점에 어댑터를 주입하는 작업, N01 정렬 센서, 실제 모델·캘리브레이션 버전 값은 별도 확인이 필요합니다. 모듈 추가만으로 GPU 연결이나 팔 구동이 자동 시작되지는 않습니다.
+이 동기화는 #109·#113·#115의 모듈과 검사를 포함합니다. 실물 Host 시작점에 어댑터를 주입하는 작업, N01 도킹 보정과 상자 안착 확인, 실제 모델·캘리브레이션 버전 값은 별도 확인이 필요합니다. N01 별도 정렬 센서는 요구하지 않습니다. 모듈 추가만으로 GPU 연결이나 팔 구동이 자동 시작되지는 않습니다.

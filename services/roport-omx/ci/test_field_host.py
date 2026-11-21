@@ -400,7 +400,6 @@ class FieldHostTest(unittest.TestCase):
 
     def test_alignment_receives_the_matching_pinky_observation_copy(self):
         for target, node in (
-            ("omx3", "N01"),
             ("omx1", "N21"),
             ("omx2", "N22"),
             ("shelf-01", "N11"),
@@ -427,6 +426,64 @@ class FieldHostTest(unittest.TestCase):
                     self.host.alignment = sensor
                     self.host._visit(command)
                     self.assertEqual(self.host.pinkies, before)
+
+    def test_warehouse_never_calls_alignment_on_accept_poll_or_state(self):
+        sensor = Mock(side_effect=RuntimeError("no N01 alignment sensor"))
+        self.host.alignment = sensor
+        for robot in ("pinky1", "pinky2", "pinky3"):
+            with self.subTest(robot=robot):
+                self.observe("N01", robot=robot)
+                command = self.command("omx3", pinky_id=robot)
+                command["command_id"] = robot
+                self.assertEqual(
+                    self.host.handle(command)[0]["payload"]["status"], "accepted"
+                )
+                self.assertEqual(self.host.poll()[0]["payload"]["status"], "completed")
+                self.host.state("omx3")
+        sensor.assert_not_called()
+
+    def test_warehouse_still_requires_a_current_stopped_pinky_visit(self):
+        self.observe("N01")
+        self.host.alignment = None
+        for index, (level, key, value) in enumerate(
+            (
+                ("state", "node", "N11"),
+                ("state", "stopped", False),
+                ("state", "line_enabled", True),
+                ("state", "drive_owner", "line"),
+                ("state", "arrival_command_id", "other-arrival"),
+                ("state", "fault", "drive_fault"),
+                (None, "boot_version", "other-boot"),
+                (None, "active_command_id", "moving"),
+                (None, "observed_at", "2000-01-01T00:00:00+00:00"),
+            )
+        ):
+            with self.subTest(key=key):
+                sample = deepcopy(self.host.pinkies["pinky1"])
+                (sample[level] if level else sample)[key] = value
+                command = self.command("omx3")
+                command["command_id"] = str(index)
+                with patch.dict(self.host.pinkies, {"pinky1": sample}):
+                    event = self.host.handle(command)[0]
+                self.assertEqual(event["payload"]["status"], "rejected")
+                self.assertIn(
+                    event["payload"]["reason"],
+                    {"pinky_visit_not_confirmed", "pinky_observation_stale"},
+                )
+        self.assertFalse(self.executors["omx3"].tasks)
+
+    def test_warehouse_pinky_departure_during_loading_still_holds(self):
+        self.observe("N01")
+        self.host.alignment = None
+        self.assertEqual(
+            self.host.handle(self.command("omx3"))[0]["payload"]["status"], "accepted"
+        )
+        self.observe("N01", stopped=False)
+        event = self.host.poll()[0]
+        self.assertEqual(event["payload"]["status"], "failed")
+        self.assertEqual(event["payload"]["reason"], "pinky_visit_not_confirmed")
+        self.assertTrue(self.host.data["hold"])
+        self.assertTrue(self.executors["omx3"].aborted)
 
     def test_invalid_pinky_observation_never_reaches_alignment_sensor(self):
         for changes in (
@@ -491,7 +548,7 @@ class FieldHostTest(unittest.TestCase):
     def test_factory_sensor_receives_host_observation_without_host_access(self):
         import field_host as cli
 
-        self.observe("N01")
+        self.observe("N21")
         observation = deepcopy(self.host.pinkies["pinky1"])
         sensor = Mock(side_effect=virtual_alignment)
         factory = Mock(return_value=(self.executors, sensor))
@@ -500,7 +557,7 @@ class FieldHostTest(unittest.TestCase):
             host.observe_pinky(
                 build_message("robot_state", "pinky1", "control-01", observation)
             )
-            command = self.command("omx3", expected_boot_version=host.boot_version)
+            command = self.command("omx1", expected_boot_version=host.boot_version)
             self.assertEqual(host.handle(command)[0]["payload"]["status"], "accepted")
             self.assertEqual(host.poll()[0]["payload"]["status"], "completed")
             self.assertEqual(
@@ -527,6 +584,17 @@ class FieldHostTest(unittest.TestCase):
         ):
             cli.main()
         factory.assert_called_once_with()
+
+    def test_sensor_exception_does_not_stop_state_publication_or_hide_hold(self):
+        self.executors["shelf-01"].run_s = 1
+        self.host.handle(self.command())
+        self.host.alignment = Mock(side_effect=OSError("sensor disconnected"))
+        with self.assertLogs("roport_omx.field_host", level="ERROR"):
+            state = self.host.state("shelf-01")
+        self.assertIsNone(state["payload"]["state"]["docking"])
+        self.assertEqual(self.host.poll()[0]["payload"]["status"], "failed")
+        self.assertTrue(self.host.data["hold"])
+        self.assertTrue(self.executors["shelf-01"].aborted)
 
     def test_pinky_departure_during_action_holds(self):
         self.host.handle(self.command())
