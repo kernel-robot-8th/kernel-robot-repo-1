@@ -89,7 +89,9 @@ class HoldChannel:
     <journal stem>.hold-request.json written by the panel's [HOLD 해제] button:
         {"request_id", "hold": <command_id shown>, "checks": {arms_safe, package_checked,
          pinky_checked}, "requested_at": <unix s>, "by": "panel"}
-    <journal stem>.hold-result.json  written by the Host: {"request_id", "cleared", "reason", ...}
+    <journal stem>.hold-result.json  written by the Host: the latest {"request_id", "cleared",
+        "reason", ...} at the top, and "results": {request_id: result} for the last
+        RESULT_KEEP_S, so a panel waiting for its own request_id finds it even after a newer one
     A request is read once and removed; one older than REQUEST_MAX_AGE_S is refused.
 
     These files are for the panel's screen only: an I/O error on them is logged and retried on
@@ -97,10 +99,16 @@ class HoldChannel:
     not be replaced stopped the Host after the HOLD was already cleared). A request already run
     is never run again; its result is kept and written once the file can be written, and until
     then a new request stays in its file unread (it must not replace the pending result: second
+    2026-11-21 review). After a result is written the next request also waits RESULT_SHOWN_S, so
+    a panel that reads only the top of the file (100 ms polls) still sees each answer (third
     2026-11-21 review). Journal errors (StorageError) still propagate and stop the Host as before.
     """
 
     REQUEST_MAX_AGE_S = 60.0
+    RESULT_KEEP_S = (
+        60.0  # results by request_id kept in the file (the panel waits up to 13 s)
+    )
+    RESULT_SHOWN_S = 1.0  # a written result stays on top at least this long
 
     def __init__(self, journal_path: Path):
         stem = journal_path.with_suffix("")
@@ -108,7 +116,12 @@ class HoldChannel:
         self.request_path = stem.with_name(stem.name + ".hold-request.json")
         self.result_path = stem.with_name(stem.name + ".hold-result.json")
         self._last_state = None
-        self._result: dict | None = None  # run (journal updated) but not written yet
+        self._latest: dict | None = None  # the last request's result (top of the file)
+        self._results: dict[str, dict] = {}  # request_id → result, last RESULT_KEEP_S
+        self._unwritten = (
+            False  # a result was run (journal updated) but not written yet
+        )
+        self._written_at: float | None = None  # when the file last got a new result
         self._handled = None  # (file mtime, request_id) of the request last run
 
     @staticmethod
@@ -143,12 +156,22 @@ class HoldChannel:
         self._handled = key
         return request
 
+    def _write_results(self, now: float) -> None:
+        data = dict(self._latest or {}) | {"results": self._results}
+        if self._write(self.result_path, data):
+            self._unwritten, self._written_at = False, now
+
+    def _ready_for_request(self, now: float) -> bool:
+        if self._unwritten:
+            return False
+        return self._written_at is None or now - self._written_at >= self.RESULT_SHOWN_S
+
     def tick(self, host: CooperativeHost, now: float | None = None) -> None:
         now = time.time() if now is None else now
         # a result still waiting for its file goes first; a new request waits in its file
-        if self._result is not None and self._write(self.result_path, self._result):
-            self._result = None
-        request = self._take_request() if self._result is None else None
+        if self._unwritten:
+            self._write_results(now)
+        request = self._take_request() if self._ready_for_request(now) else None
         if request is not None:
             asked = request.get("requested_at")
             if isinstance(asked, bool) or not isinstance(asked, (int, float)):
@@ -162,10 +185,18 @@ class HoldChannel:
                 }
             else:
                 result = host.release_hold(request)  # StorageError propagates
-            self._result = result | {"at": now}
+            entry = result | {"at": now}
             log.warning("HOLD release request %s: %s", result.get("request_id"), result)
-            if self._write(self.result_path, self._result):
-                self._result = None
+            self._latest, self._unwritten = entry, True
+            request_id = result.get("request_id")
+            if isinstance(request_id, str):
+                self._results[request_id] = entry
+            self._results = {
+                k: v
+                for k, v in self._results.items()
+                if now - v["at"] < self.RESULT_KEEP_S
+            }
+            self._write_results(now)
         state = {
             "boot_id": host.boot_id,
             "active": host.active,

@@ -112,15 +112,18 @@ class HoldReleaseTest(unittest.TestCase):
         command_id = self.fail_with_arm_away()
         self.executor.unreturned = set()
         ask = {"request_id": "r8", "hold": command_id, "checks": CHECKED}
-        for body in (
-            json.dumps(ask | {"requested_at": 900.0}),  # 100 s old
-            json.dumps(ask),  # no time
-            "{not json",
+        for i, body in enumerate(
+            (
+                json.dumps(ask | {"requested_at": 900.0}),  # 100 s or more old
+                json.dumps(ask),  # no time
+                "{not json",
+            )
         ):
             with self.subTest(body=body):
                 self.holds.request_path.write_text(body)
                 with self.assertLogs("cooperative_host", "WARNING"):
-                    self.holds.tick(self.host, now=1000.0)
+                    # each answer stays on top RESULT_SHOWN_S before the next request
+                    self.holds.tick(self.host, now=1000.0 + 2 * i)
                 result = json.loads(self.holds.result_path.read_text())
                 self.assertEqual(result["reason"], "STALE_REQUEST")
                 self.assertEqual(self.host.hold, command_id)
@@ -159,9 +162,22 @@ class HoldReleaseTest(unittest.TestCase):
         self.assertEqual((result["request_id"], result["cleared"]), ("r9", True))
         self.assertEqual(len(calls), 1)  # written again, not run again
 
-    def test_second_request_waits_until_the_first_result_is_written(self):
-        # second 2026-11-21 review: a new request read while the first result could not be
-        # written replaced it (NO_HOLD) and the first request's success was never reported
+    def panel_answer(self, request_id, *, old_panel=False):
+        """What the panel's request_hold_release() reads for its own request_id (every 100 ms).
+
+        old_panel: a panel that looks only at the top of the file (before the results map).
+        """
+        try:
+            res = json.loads(self.holds.result_path.read_text())
+        except (OSError, ValueError):
+            return None
+        if res.get("request_id") == request_id:
+            return res
+        return None if old_panel else (res.get("results") or {}).get(request_id)
+
+    def test_each_panel_request_reads_its_own_answer_after_a_write_failure(self):
+        # 2026-11-21 reviews: while the result file could not be written a second request came;
+        # after the repair the first answer (the HOLD was cleared) must still reach its panel
         command_id = self.fail_with_arm_away()
         self.executor.unreturned = set()
         calls = self.count_releases()
@@ -177,37 +193,34 @@ class HoldReleaseTest(unittest.TestCase):
         self.assertTrue(self.holds.request_path.exists())  # r10 left unread
         self.assertEqual(len(calls), 1)
         self.holds.result_path.rmdir()
+        self.holds.tick(self.host, now=1005.0)  # repaired: r9's answer is written
+        for old_panel in (False, True):
+            self.assertIs(self.panel_answer("r9", old_panel=old_panel)["cleared"], True)
+        self.holds.tick(self.host, now=1005.5)  # r9 stays on top for RESULT_SHOWN_S
+        self.assertTrue(self.holds.request_path.exists())
+        self.assertIs(self.panel_answer("r9", old_panel=True)["cleared"], True)
         with self.assertLogs("cooperative_host", "WARNING"):
-            self.holds.tick(self.host, now=1005.0)  # r9's result first, then r10
+            self.holds.tick(self.host, now=1006.1)  # then r10 is answered
         self.assertEqual(len(calls), 2)
-        result = json.loads(self.holds.result_path.read_text())
-        self.assertEqual((result["request_id"], result["reason"]), ("r10", "NO_HOLD"))
+        self.assertEqual(self.panel_answer("r10")["reason"], "NO_HOLD")
+        self.assertIs(self.panel_answer("r9")["cleared"], True)  # still found by its id
 
-    def test_second_request_never_hides_the_first_result(self):
+    def test_answers_are_kept_by_request_id_for_a_minute(self):
         command_id = self.fail_with_arm_away()
-        self.executor.unreturned = set()
-        self.holds.result_path.mkdir()
-        self.ask_release(command_id, "r9", at=1001.0)
+        self.ask_release(command_id, "r1", at=1001.0)
         with self.assertLogs("cooperative_host", "WARNING"):
-            self.holds.tick(self.host, now=1002.0)
-        self.ask_release(command_id, "r10", at=1003.0)
-        self.holds.result_path.rmdir()
-        self.holds.result_path.write_text("{}")  # writable again before the next tick
-        written = []
-        write = self.holds._write
-
-        def seen(path, data):
-            ok = write(path, data)
-            if ok and path == self.holds.result_path:
-                written.append(data["request_id"])
-            return ok
-
-        self.holds._write = seen
+            self.holds.tick(self.host, now=1001.5)  # arms away: refused
+        self.assertEqual(self.panel_answer("r1")["reason"], "ARMS_NOT_HOME")
+        self.ask_release(command_id, "r2", at=1030.0)
         with self.assertLogs("cooperative_host", "WARNING"):
-            self.holds.tick(self.host, now=1004.0)
-        self.assertEqual(
-            written, ["r9", "r10"]
-        )  # the success is reported, then the reply
+            self.holds.tick(self.host, now=1030.0)
+        self.assertEqual(self.panel_answer("r1")["reason"], "ARMS_NOT_HOME")
+        self.ask_release(command_id, "r3", at=1070.0)
+        with self.assertLogs("cooperative_host", "WARNING"):
+            self.holds.tick(self.host, now=1070.0)
+        self.assertIsNone(self.panel_answer("r1"))  # older than RESULT_KEEP_S
+        self.assertIsNotNone(self.panel_answer("r2"))
+        self.assertEqual(self.panel_answer("r3")["request_id"], "r3")
 
     def test_state_file_error_is_retried(self):
         command_id = self.fail_with_arm_away()
