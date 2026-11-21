@@ -45,6 +45,13 @@ def validate_settings(settings):
         raise ValueError("unsupported OMX slot/execution mode")
 
 
+# Completion evidence a shelf-01 Host may report. Shelf loading (2026-11-16):
+# "shelf_align" = loaded and aligned (Mission Complete); "shelf_load_not_aligned" = loaded but not
+# aligned in time, arms home (Mission Complete, Not Aligned; the Host adds "align_error").
+# "arm_return_only" comes from the simulated executor. Anything else holds.
+OMX_COMPLETIONS = {"arm_return_only", "shelf_align", "shelf_load_not_aligned"}
+
+
 def returned(payload):
     arms = payload.get("arms")
     return (
@@ -392,7 +399,7 @@ class OmxTrial:
                     not -2 <= age <= 5
                     or p.get("departure_ready") is not True
                     or not returned(p)
-                    or p.get("evidence") != "arm_return_only"
+                    or p.get("evidence") not in OMX_COMPLETIONS
                 ):
                     c.hold("omx_completion_not_safe")
                 elif c.state["phase"] != "HOLD":

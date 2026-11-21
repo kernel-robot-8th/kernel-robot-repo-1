@@ -766,6 +766,8 @@ class TrialControl:
                 if source == "ui"
                 else event["payload"]["evidence"],
                 "placement_confirmed": None,
+                # why a loaded box was not aligned (evidence "shelf_load_not_aligned"), else None
+                "align_error": (event or {}).get("payload", {}).get("align_error"),
                 "event_id": event["message_id"] if event else None,
                 "observed_at": datetime.now(UTC).isoformat(),
             }
