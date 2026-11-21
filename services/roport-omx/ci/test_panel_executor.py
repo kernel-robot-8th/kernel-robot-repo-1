@@ -1425,6 +1425,45 @@ class PanelExecutorTest(unittest.TestCase):
                     self.assertIsNotNone(self.host.hold)
                     self.assertEqual(self.panel.home_returns, homes)
 
+    def test_handover_aligned_judges_grippers_after_the_alignment(self):
+        # 2026-11-21 14:59 field: hand-over taken, aligned, rest ok; the eval snapshot is the
+        # moment of release with both grippers opened wide (59.98, 60.61 > 54.6). The Host
+        # judged "still grasping" from it and reported ARM_NOT_RETURNED.
+        self.executor.end_on_place = True
+        self.panel.status["version"] = "3.21.1"
+        self.send(self.inbound())
+        wide = {"OMX 1": ("left", 59.98), "OMX 2": ("right", 60.61)}
+        after = {"OMX 1": ("left", 50.55), "OMX 2": ("right", 48.84)}
+        rest_arms = {
+            name: {
+                "side": side,
+                "joints": {"shoulder_pan": 0.0, "gripper": grip},
+                "gripper": grip,
+                "gripper_state": "closed",
+                "far_joints": [],
+            }
+            for name, (side, grip) in after.items()
+        }
+        self.panel.finish(
+            arms={
+                name: arm(side) | {"gripper": grip, "at_home": False}
+                for name, (side, grip) in wide.items()
+            },
+            align=align(handover_align="home_first", rest_ref="home")
+            | {"rest": {"check": "ok", "tolerance": 5.0, "arms": rest_arms}},
+            handover={"mode": "handover", "end_reason": "placed", "state": "taken"},
+            stage="done",
+            final=True,
+        )
+        (done,) = self.host.poll()
+        p = done["payload"]
+        self.assertEqual(
+            (done["type"], p["mission_result"], p["evidence"]),
+            ("shelf_inbound.completed", "MISSION_COMPLETE", "shelf_align"),
+        )
+        self.assertEqual(self.panel.home_returns, 0)
+        self.assertIsNone(self.host.hold)
+
     def test_early_complete_needs_released_hands_and_a_fresh_capture(self):
         # control agreement 2026-11-18: slot placement + hands really off the box + capture <= 3 s
         held = {

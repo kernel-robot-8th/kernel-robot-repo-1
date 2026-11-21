@@ -742,13 +742,19 @@ class PanelExecutor:
         arms = {}
         for name, arm in _by_side(result.get("arms")).items():
             home = arm.get("at_home")
+            grasping = _grasping(arm)
             if use_rest:
                 far = (rest_arms.get(name) or {}).get("far_joints")
                 known = rest.get("check") in {"ok", "far"} and isinstance(far, list)
                 home = rest.get("check") == "ok" and not far if known else None
+                # the grippers after the alignment too: with a hand-over (panel 3.18) the eval
+                # snapshot is the moment of release, grippers opened wide (11/21: 60 > 54.6)
+                after = _grasping(rest_arms.get(name) or {})
+                if after is not None:  # an older rest check has no gripper value
+                    grasping = after
             arms[name] = {
                 "connected": True if arm.get("joints") else None,
-                "grasping": _grasping(arm),
+                "grasping": grasping,
                 "returned": home if isinstance(home, bool) else None,
                 "safe": safe,
             }
