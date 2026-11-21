@@ -45,8 +45,11 @@ ARMS_TIMEOUT_S = 15.0
 # start field with alignment after a control-tower evaluation (3.14): an older panel may run every
 # episode to episode_s, reach the AI server over HTTP (SSH tunnel), or skip the alignment.
 PANEL_MIN_VERSION = (3, 14, 0)
-# Unloading needs the camera-only Pinky check after the evaluation (panel 3.15: "pinky_check").
-PANEL_MIN_VERSION_UNLOAD = (3, 15, 0)
+# Unloading needs the camera-only Pinky check after the evaluation (panel 3.15: "pinky_check"),
+# read at the commanded slot (3.17: "slot") and against this mission's own empty-tray photo taken
+# right before it (3.20: tray_reference_state, pre_mission_match). Without that photo a changed
+# tray proves nothing (2026-11-21 review: tray_changed alone let the Pinky leave).
+PANEL_MIN_VERSION_UNLOAD = (3, 20, 0)
 # 3.17.0: the start takes the commanded "slot" ("2B") and "pinky_id", and reports
 # last_result.placement (the box seen in its slot) right after the evaluation, before the alignment.
 PANEL_COMMAND_SLOT = (3, 17, 0)
@@ -175,13 +178,16 @@ HOME_RETURN_TIMEOUT_S = 90.0
 
 # Unloading mission (shelf → waiting Pinky; completion rule agreed 2026-11-17): judged only by the
 # cameras after the evaluation, no time limit. The panel (pinky_check) reports
-#   slot_empty — the commanded shelf slot holds no box any more (shelf-facing camera, front_2)
+#   slot_empty — the commanded shelf slot holds no box any more (shelf-facing camera, front_2);
+#                only this slot's own reading counts, never the shelf-wide on_shelf
 #   on_pinky   — the box is on the Pinky tray (top camera, front): the box top marker is read inside
-#                the tray area, or else the tray differs from that Pinky's empty-tray reference photo
-#                (tray_changed >= 0.25). No marker is stuck on the tray: the unload policy was trained
-#                on a bare tray and does not start when one is there.
+#                the tray area, or else the tray differs from the empty-tray photo the panel took
+#                right before this mission (tray_changed >= 0.25; tray_reference_state "ok" and
+#                pre_mission_match true). No marker is stuck on the tray: the unload policy was
+#                trained on a bare tray and does not start when one is there.
 # Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot, or slot empty but the
-# tray unchanged (dropped) → MISSION_FAILED, arms sent home. Anything unread → MISSION_HOLD.
+# tray unchanged (dropped) → MISSION_FAILED, arms sent home. Anything unread or not confirmed
+# (another slot, no pre-mission photo) → MISSION_HOLD.
 PINKY_LOAD = "pinky_load"
 
 
@@ -212,20 +218,24 @@ class PanelRefused(RuntimeError):
         self.reply = reply
 
 
-def _slot_empty(pinky: dict) -> bool | None:
-    """The commanded slot is empty; older pickers only give the shelf-wide on_shelf."""
-    if "slot_empty" in pinky:
-        value = pinky.get("slot_empty")
-    else:
-        on_shelf = pinky.get("on_shelf")
-        value = None if not isinstance(on_shelf, bool) else not on_shelf
-    return value if isinstance(value, bool) else None
+def _slot_empty(pinky: dict, slot: str | None) -> bool | None:
+    """The commanded slot's own reading; None when it is missing or about another slot.
+
+    The shelf-wide on_shelf is never used in its place (2026-11-21 review): it says nothing about
+    the commanded slot.
+    """
+    value = pinky.get("slot_empty")
+    if not isinstance(value, bool):
+        return None
+    if slot is None or str(pinky.get("slot") or "").lower() != slot.lower():
+        return None
+    return value
 
 
-def _pinky_error(pinky) -> str | None:
+def _pinky_error(pinky, slot: str | None) -> str | None:
     if not isinstance(pinky, dict):  # panel older than the check, or it never reported
         return "PANEL_PINKY_CHECK_NOT_RUN"
-    on_pinky, slot_empty = pinky.get("on_pinky"), _slot_empty(pinky)
+    on_pinky, slot_empty = pinky.get("on_pinky"), _slot_empty(pinky, slot)
     if slot_empty is False:
         # a box seen on the tray while it still sits in its slot: a camera is wrong
         return (
@@ -236,9 +246,12 @@ def _pinky_error(pinky) -> str | None:
     if slot_empty is None:
         return "PANEL_SLOT_UNREADABLE"
     # panel 3.20: the tray is compared only with this mission's own photo taken right before the
-    # unloading (never another Pinky's or a shared one); without it the tray result is not trusted
-    state = pinky.get("tray_reference_state")
-    if (state is not None and state != "ok") or pinky.get("pre_mission_match") is False:
+    # unloading (never another Pinky's or a shared one); unless the panel confirms it, the tray
+    # result is not trusted (a missing field holds too)
+    if (
+        pinky.get("tray_reference_state") != "ok"
+        or pinky.get("pre_mission_match") is not True
+    ):
         return "PANEL_PINKY_NO_REFERENCE"
     if on_pinky is True:
         return None
@@ -476,9 +489,10 @@ class PanelExecutor:
             # a full stop. Unloading has no aligner after it, so it keeps the full safe stop.
             body["fast_release"] = True
         version = self._version or ()
-        if version >= PANEL_COMMAND_SLOT:
+        if version >= PANEL_COMMAND_SLOT or task["operation"] == "OUTBOUND":
             # the panel aligns and checks at the commanded slot and that Pinky's tray reference
-            body |= {"slot": task["slot_id"].upper(), "pinky_id": task["pinky_id"]}
+            # (unloading always: it needs panel 3.20 for the pre-mission tray photo)
+            body |= {"slot": task["slot_id"].upper(), "pinky_id": task.get("pinky_id")}
         if task["operation"] == "INBOUND" and version >= PANEL_END_ON_PLACE:
             if self.end_on_place:
                 body["end_on_place"] = True
@@ -694,7 +708,7 @@ class PanelExecutor:
         stopped_by = result.get("stopped_by")
         if operation == "OUTBOUND" and stopped_by not in STOPS:
             # finished, timed out or ended on an error: the cameras decide
-            error = _pinky_error(result.get("pinky"))
+            error = _pinky_error(result.get("pinky"), slot)
             if error is None:
                 return {
                     "state": "finished",

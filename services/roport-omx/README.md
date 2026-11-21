@@ -117,23 +117,23 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 
 ### 하차 미션 판정 (2026-11-17 합의)
 
-하차는 선반의 상품을 관제 명령으로 대기 중인 Pinky 쟁반에 상차하는 작업입니다(`shelf_outbound.requested`, 예: 2b 칸 모델 `outbound_act_re1112x37_60k_1113`). Host는 시작 요청에 `pinky_check: true`, `shelf_align: false`, `draw_target: false`를 보내고, 평가 뒤 제어판이 카메라만으로 확인한 결과(`last_result.pinky`)로 판정합니다. 시간 기준은 쓰지 않습니다.
+하차는 선반의 상품을 관제 명령으로 대기 중인 Pinky 쟁반에 상차하는 작업입니다(`shelf_outbound.requested`, 예: 2b 칸 모델 `outbound_act_re1112x37_60k_1113`). 하차 경로가 있으면 제어판 3.20.0 이상이 필요합니다(작업 직전 쟁반 사진). Host는 시작 요청에 `pinky_check: true`, `shelf_align: false`, `draw_target: false`, 명령의 `slot`(예: `"2B"`)·`pinky_id`를 보내고, 평가 뒤 제어판이 카메라만으로 확인한 결과(`last_result.pinky`)로 판정합니다. 시간 기준은 쓰지 않습니다.
 
-- 칸 비었음(`slot_empty`): 선반 정면 카메라(`front_2`)로 명령한 칸에 상자가 남았는지 읽습니다(빈 선반 기준 사진과 비교).
+- 칸 비었음(`slot_empty`): 선반 정면 카메라(`front_2`)로 명령한 칸에 상자가 남았는지 읽습니다(빈 선반 기준 사진과 비교). 결과의 `slot`이 명령한 칸이고 `slot_empty`가 `true`/`false`로 있을 때만 씁니다. 선반 전체 값(`on_shelf`)으로 대신하지 않습니다(없으면 `PANEL_SLOT_UNREADABLE`, 2026-11-21 리뷰).
 - 상차됨(`on_pinky`): 위 카메라(`front`)로 다음 중 하나면 `true`입니다.
   1. 상자 윗면 마커(15~22)가 쟁반 영역 안에서 읽힘(`box_on_tray`, 기본)
   2. 쟁반이 그 Pinky의 빈 쟁반 기준 사진과 달라짐(`tray_changed` ≥ 0.25, 보조). 상자가 기울거나 과노출로 마커가 안 읽힐 때를 대비합니다.
 - **쟁반에는 마커를 붙이지 않습니다.** 하차 정책은 마커 없는 쟁반으로 학습되어, 쟁반에 마커가 있으면 동작을 시작하지 않습니다.
 - 빈 쟁반 기준 사진은 Pinky마다 한 번 찍습니다(정렬 실행기 `--step tray_check --pinky N --tray-ref-reset`). 기준 사진이 없으면 `on_pinky: null`(HOLD)입니다.
 - 확인은 정렬 실행기 `--step pinky_read`가 하며 로봇을 움직이지 않습니다. 제어판은 비상 정지·강제 종료가 아니면 평가가 어떻게 끝났든 확인합니다.
-- 제어판 3.20.0부터 하차 직전에 그 자리 쟁반을 찍어(작업 직전 사진) 비어 있는지 먼저 확인하고, 작업 뒤에는 **그 미션의 직전 사진하고만** 비교합니다(다른 기체·공통 사진은 쓰지 않음, 관제 합의). 직전 확인에서 쟁반이 비어 있지 않거나 읽지 못하면 제어판이 평가를 시작하지 않고, Host는 팔이 움직이지 않았으므로 HOLD 없이 `MISSION_FAILED`(`PANEL_TRAY_NOT_EMPTY`·`PANEL_TRAY_CHECK_FAILED`)로 보고합니다. 작업 뒤 판정이 직전 사진 기준이 아니면(`tray_reference_state`가 `ok`가 아니거나 `pre_mission_match: false`) `PANEL_PINKY_NO_REFERENCE`로 HOLD합니다.
+- 제어판 3.20.0부터 하차 직전에 그 자리 쟁반을 찍어(작업 직전 사진) 비어 있는지 먼저 확인하고, 작업 뒤에는 **그 미션의 직전 사진하고만** 비교합니다(다른 기체·공통 사진은 쓰지 않음, 관제 합의). 직전 확인에서 쟁반이 비어 있지 않거나 읽지 못하면 제어판이 평가를 시작하지 않고, Host는 팔이 움직이지 않았으므로 HOLD 없이 `MISSION_FAILED`(`PANEL_TRAY_NOT_EMPTY`·`PANEL_TRAY_CHECK_FAILED`)로 보고합니다. 작업 뒤 판정은 `tray_reference_state: "ok"`이고 `pre_mission_match: true`일 때만 믿습니다. 값이 다르거나 **없으면** `PANEL_PINKY_NO_REFERENCE`로 HOLD합니다(2026-11-21 리뷰: 직전 사진 확인 없이 `tray_changed`만으로 Pinky가 출발할 수 있었음).
 - 하차 평가에서는 위 카메라 관측에 목표 원을 그리지 않습니다(`draw_target: false`, 제어판 3.16.1+). 목표 원 없이 학습된 모델이라, 그리면 동작이 크게 느려집니다.
 
 | `mission_result` | 조건 | 비고 |
 | --- | --- | --- |
-| `MISSION_COMPLETE` | `slot_empty: true`, `on_pinky: true`, 양팔 홈·그리퍼 놓음(확인 뒤 `/api/arms` 실측) | `evidence: "pinky_load"` |
+| `MISSION_COMPLETE` | 명령한 칸의 `slot_empty: true`, `on_pinky: true`(작업 직전 사진 기준 확인), 양팔 홈·그리퍼 놓음(확인 뒤 `/api/arms` 실측) | `evidence: "pinky_load"` |
 | `MISSION_FAILED` | 칸에 상자가 남음(`PANEL_BOX_STILL_ON_SHELF`) 또는 칸은 비었는데 쟁반이 빔(`PANEL_BOX_DROPPED`) | 양팔 홈 복귀 후 HOLD 없음 |
-| `MISSION_HOLD` | 칸 판독 불가(`PANEL_SLOT_UNREADABLE`), 쟁반 판독 불가(`PANEL_PINKY_UNREADABLE`), 확인 없음(`PANEL_PINKY_CHECK_NOT_RUN`), 칸과 쟁반 둘 다 상자(`PANEL_PINKY_CHECK_CONFLICT`), 비상 정지 | 현장 확인 후 HOLD 해제 |
+| `MISSION_HOLD` | 칸 판독 불가·다른 칸 결과(`PANEL_SLOT_UNREADABLE`), 직전 사진 확인 없음(`PANEL_PINKY_NO_REFERENCE`), 쟁반 판독 불가(`PANEL_PINKY_UNREADABLE`), 확인 없음(`PANEL_PINKY_CHECK_NOT_RUN`), 칸과 쟁반 둘 다 상자(`PANEL_PINKY_CHECK_CONFLICT`), 비상 정지 | 현장 확인 후 HOLD 해제 |
 
 현장 시험(2026-11-17, 제어판 3.17.0, 비동기 100 / 0.2 / latest_only, 필터 중): 정책 성공 6회 중 5회, 판정은 매 회차 그 순간 장면과 일치했습니다. 상자 마커를 못 읽은 1회는 보조 판정이 상차를 잡았습니다. 카메라 확인은 팔 복귀 뒤 약 2~7초에 끝나므로, 결과(`completed`/`failed`)가 나오기 전에 상자를 옮기면 안 됩니다.
 
