@@ -81,6 +81,34 @@ uv run python scripts/field_host.py --mock --host 127.0.0.1 --port 1883 \
 `(executors, alignment_sensor)`를 반환해야 합니다. 공용 모터 버스를 여러 드라이버가
 중복 소유하지 않도록 현장 장치 소유자를 재사용합니다.
 
+### Factory 정렬 센서
+
+센서 호출은 `alignment_sensor(command, pinky_observation)`입니다. 기존 한 인자 센서는
+두 인자로 수정해야 합니다. factory 자체는 계속 인자 없이 호출되고 `(executors, sensor)`를
+반환합니다. mock과 factory 모두 같은 Host 호출 경로를 사용하며 별도 MQTT 구독은 필요 없습니다.
+
+Host가 정차·도착·boot·최신성을 검증한 뒤, 해당 Pinky의 `robot_state.payload`에 `pinky_id`를
+붙여 깊은 복사본으로 전달합니다. 센서가 받은 dict를 바꿔도 Host의 원본 관측은 바뀌지 않습니다.
+
+| 센서가 읽는 값 | 반환 기록에 사용할 값 |
+| --- | --- |
+| `pinky_observation["pinky_id"]` | `pinky_id` |
+| `pinky_observation["boot_version"]` | `pinky_boot_version` |
+| `pinky_observation["state"]["arrival_command_id"]` | `arrival_command_id` |
+| `pinky_observation["state"]` | 검증된 `node`, `stopped`, `line_enabled`, `drive_owner` 등 |
+| `pinky_observation["observed_at"]` | **Pinky 상태 시각**. 정렬 센서 측정 시각으로 복사하지 않음 |
+
+센서는 `{pinky_id, pinky_boot_version, arrival_command_id, observed_at, alignment}` 기록을
+반환합니다. 앞의 세 값은 **측정 당시의 관측**으로 묶고, `alignment`와 `observed_at`은
+실제 정렬 센서의 판정과 측정 시각(timezone 포함 ISO 8601)으로 채웁니다. 오래된 측정에
+새 boot/도착 ID 또는 현재 시각만 덧붙여 재사용하지 않습니다. 정차만으로 정렬을 확정하는
+`virtual_alignment`는 mock 전용입니다.
+
+콜백은 명령 접수 전과 실행 중에도 호출되므로, 장시간 기다리지 말고 해당 도착에 속한 최신
+센서 기록을 반환합니다. 확인할 수 없으면 `None` 또는 `alignment: "unknown"/"unconfirmed"`로
+반환합니다. Host는 기본 3초 최신성·식별자 일치를 계속 검사하며, 접수 전에는 거절하고
+작업 중 확인이 끊기면 정지 요청·HOLD로 처리합니다. MQTT 메시지나 Pinky 코드는 변경하지 않습니다.
+
 `WarehouseExecutor`와 `IndependentArmExecutor`에는 실제 Robot/Policy/Vision 포트와
 확정된 모델·캘리브레이션 버전이 필요합니다. 공동 `PanelFieldExecutor`는 실제 중지
 콜백·ManagedPanelExecutor와, command/package/slot/arrival에 일치하는 최신 안착·해제 센서 콜백이 추가로

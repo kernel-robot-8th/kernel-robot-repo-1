@@ -61,9 +61,10 @@ def _flags(raw):
 class FieldOmxHost:
     """One process owns every supplied executor; physical state is never inferred from MQTT ACKs.
 
-    Executors provide readiness/start/observe and abort. alignment(command) supplies a fresh
-    local sensor record: pinky_id, pinky_boot_version, arrival_command_id, observed_at,
-    alignment. The callback must not manufacture evidence from the command's identity.
+    Executors provide readiness/start/observe and abort. alignment(command, pinky_observation)
+    receives a detached copy of the validated robot_state payload plus pinky_id. It supplies
+    a fresh local sensor record: pinky_id, pinky_boot_version, arrival_command_id, observed_at,
+    alignment. Identity comes from the observation; alignment and its time come from the sensor.
     """
 
     def __init__(
@@ -77,7 +78,7 @@ class FieldOmxHost:
         watchdog_s=3.0,
     ):
         self.journal, self.executors, self.control = journal, executors, control
-        self.alignment = alignment or (lambda command: None)
+        self.alignment = alignment or (lambda command, pinky_observation: None)
         self.freshness_s, self.watchdog_s = freshness_s, watchdog_s
         self.boot_version = str(uuid4())
         self.pinkies = {}
@@ -222,10 +223,8 @@ class FieldOmxHost:
             return place.get("robot_id")
         return p.get("pinky_id")
 
-    def _visit(self, command):
+    def _pinky_observation(self, command):
         p = command["payload"]
-        if p.get("operation") == "return_home":
-            return
         pinky = self._pinky(command)
         seen = self.pinkies.get(pinky)
         if not seen or not _fresh(seen.get("observed_at"), self.freshness_s):
@@ -243,13 +242,19 @@ class FieldOmxHost:
             or s.get("fault") is not None
         ):
             raise ValueError("pinky_visit_not_confirmed")
-        observed = self.alignment(command)
+        return {**deepcopy(seen), "pinky_id": pinky}
+
+    def _visit(self, command):
+        p = command["payload"]
+        if p.get("operation") == "return_home":
+            return
+        observed = self.alignment(command, self._pinky_observation(command))
         if (
             not isinstance(observed, dict)
             or observed.get("alignment") != "confirmed"
             or not _fresh(observed.get("observed_at"), self.freshness_s)
-            or observed.get("pinky_id") != pinky
-            or observed.get("pinky_boot_version") != seen["boot_version"]
+            or observed.get("pinky_id") != self._pinky(command)
+            or observed.get("pinky_boot_version") != p["expected_pinky_boot_version"]
             or observed.get("arrival_command_id") != p["arrival_command_id"]
         ):
             raise ValueError("docking_alignment_unconfirmed")
@@ -352,7 +357,13 @@ class FieldOmxHost:
             docking = None
             for record in reversed(list(self.data["commands"].values())):
                 if record["command"]["target"] == target:
-                    docking = self.alignment(record["command"])
+                    command = record["command"]
+                    try:
+                        docking = self.alignment(
+                            command, self._pinky_observation(command)
+                        )
+                    except (ValueError, KeyError):
+                        docking = None
                     break
             state = {
                 "stopped": all(a["stopped"] for a in arms),
