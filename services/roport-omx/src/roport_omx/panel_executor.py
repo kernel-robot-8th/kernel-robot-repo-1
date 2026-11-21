@@ -138,11 +138,21 @@ def _ai_link_error(status: dict, now: float) -> str | None:
     return None
 
 
+def _handover_hold(result: dict) -> bool:
+    """The aligner took the arms over (hand-over) and then found no safe way home: it left them
+    where they are with the torque on (real_runner result handover_align "hold", exit 2). Panel
+    3.21.0 still closes that as an ordinary alignment, so nobody may send the arms home now."""
+    align = result.get("align")
+    return isinstance(align, dict) and align.get("handover_align") == "hold"
+
+
 def _hold_code(result: dict) -> str:
     """stage "hold" stays until a person acts: emergency stop, or release found no path back."""
     align = result.get("align") if isinstance(result.get("align"), dict) else {}
     if "비상 정지" in (align.get("stopped_by"), result.get("stopped_by")):
         return "PANEL_EMERGENCY_STOP"
+    if _handover_hold(result):
+        return "PANEL_HANDOVER_HOLD"
     if align.get("released") is False:
         return "PANEL_ALIGN_RELEASE_FAILED"
     return "PANEL_HOLD"
@@ -172,6 +182,7 @@ HOLD_ERRORS = {
     "PANEL_NOT_ARMED_FOR_HOME",
     "PANEL_HANDOVER_FAILED",
     "PANEL_HANDOVER_STOPPED",
+    "PANEL_HANDOVER_HOLD",
     "RESULT_UNAVAILABLE",
 }
 HOME_RETURN_TIMEOUT_S = 90.0
@@ -542,6 +553,7 @@ class PanelExecutor:
             or result.get("final")
             is not False  # finished at once: one report as before
             or result.get("stage") == "hold"
+            or _handover_hold(result)
         ):
             return None
         placement = result.get("placement")
@@ -606,7 +618,8 @@ class PanelExecutor:
         result = status.get("last_result")
         if isinstance(result, dict) and result.get("repo_id") == self.repo_id:
             self._missing_since = None
-            if result.get("stage") == "hold":  # waits for a person; report it now
+            # waits for a person; report it now and never send the arms home from here
+            if result.get("stage") == "hold" or _handover_hold(result):
                 return {"state": "failed", "error": _hold_code(result), "arms": {}}
             if result.get("final", True) is not True:  # absent before panel 3.9
                 running = (
