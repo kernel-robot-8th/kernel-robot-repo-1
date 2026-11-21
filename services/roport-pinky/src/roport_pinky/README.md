@@ -88,6 +88,34 @@ trial launch는 `PoseProgressChecker`를 사용해 **15초 안에 0.05m 이동 �
 
 Pi에서 경로 재계산 중 `follow_path` 목표 수락 응답이 기본 20ms를 넘으면 전체 목표가 실패할 수 있어, trial의 `bt_navigator.default_server_timeout`은 500ms로 지정합니다. 지도 경계 가까운 공용공간 시험점의 주변 검색이 지도 밖을 조회하지 않도록 `planner_server.GridBased.tolerance`는 0.1m로 제한합니다. 이 값은 플래너의 대체 도착점 검색 범위이며, 실제 정지·목표 오차·독립 구동 감시의 완료 조건은 유지합니다.
 
+## 고객 카드 추종 `follow.requested` (FFT1-188, 관제 MQTT 연결 전)
+
+Nav2 모드에서 노트북 `roport_follow`가 보낸 고객 카드 위치를 Nav2가 따라간다. 별도 cmd_vel 추종기를 쓰지 않으므로 Nav2 비용 지도(LiDAR, `params_file`에 넣은 인형 층)와 `trial_guard`가 그대로 적용된다. 실로봇·실제 bt_navigator 검증 전이다.
+
+| 구분 | 내용 |
+|---|---|
+| 드라이버 명령 | `follow.requested` payload `{binding_id, expected_boot_id, map_id, map_version, card_id(35~49), standoff_m(기본 0.5, 0.3~1.2 m), max_duration_s(선택, 1~3600 s)}` |
+| 출발 조건 | mode=nav2, 정지, 지도 일치, Nav2·위치 준비, 이전 Nav2 goal 종료 확인, 해당 card_id status 2 s 이내·`tracking`, 같은 stamp의 target이 1 s 이내이고 TF로 map 변환 가능. 거절 코드: `not_in_nav2_mode`, `drive_busy`, `map_mismatch`, `nav2_not_ready`, `invalid_card_id`, `invalid_standoff`, `invalid_max_duration`, `follow_bt_missing`, `follow_status_stale`, `follow_card_mismatch`, `follow_not_tracking`, `follow_target_stale`, `follow_tf_unavailable` |
+| 입력 | `follow/target` `geometry_msgs/PointStamped`(frame `base_footprint`, stamp = 로봇 카메라 시각), `follow/status` `std_msgs/String` JSON. 둘 다 reliable depth 5. target은 stamp가 같은 status가 `tracking`·`seen`·요청 card_id일 때만 쓴다 |
+| 출력 | `NavigateToPose` goal의 `behavior_tree` = 설치된 `behavior_trees/follow_target.xml`, 이후 `goal_update` `geometry_msgs/PoseStamped`(frame `map`, stamp = target stamp, 최대 4 Hz, BT가 4 Hz로 읽음) |
+| 목표 | target을 그 stamp의 `map`←`base_footprint` TF로 옮기고 로봇→고객 직선에서 `standoff_m` 앞. 이미 안쪽이면 제자리에서 고객 쪽을 본다 |
+| 구동권 | 기존 navigate와 같이 dispatch 때 lease `nav2`, runner `heartbeat()`가 추종 중 `nav2`를 갱신한다. 종료 즉시 Nav2 취소 + lease `none` → guard가 0 속도. `trial_guard`는 바꾸지 않았다 |
+
+종료(찾기·회전 동작 없음). 모두 `follow.failed`의 `error_code`이며 판정 주기는 0.1 s다.
+
+| 조건 | error_code | 드라이버 잠금 |
+|---|---|---|
+| status `lost`(노트북 기준 4 s 못 봄, 11-20 시험값)·`searching`, 또는 target이 4.5 s 넘게 끊긴 순간 마지막 status가 `seen=false`(그동안 마지막 목표로 계속 감) | `follow_lost` | 없음, 새 follow로 다시 시작 |
+| 해당 card_id status 2 s(11-21 시험값) 넘게 미수신, 또는 target이 끊긴 순간 status도 0.5 s 넘게 없음(노트북 꺼짐·다른 카드) | `follow_status_stale` | 없음 |
+| 카드가 보인다는 status는 오는데 받아들인 target이 로봇 시각 1 s 넘게 없음 | `follow_target_stale` | 없음 |
+| `max_duration_s` 지남 | `follow_max_duration` | 없음 |
+| 새 target을 TF로 못 옮긴 채 1 s | `follow_tf_unavailable` | 있음(재시작 복구) |
+| Nav2 action 거부·중단·오류 | `follow_nav2_failed` | 있음 |
+| 위치 추정 상실, guard·lease 이상 | 기존 코드(`nav2_not_ready`, `drive_*` 등) | 있음 |
+| 운영자 정지(MQTT 모듈 safe_stop `operator_stop`) | 모듈이 `interrupted` 보고 | 드라이버 없음(관제 모듈은 현재 자체 잠금) |
+
+`follow_target.xml`은 Jazzy `follow_point.xml`의 `GoalUpdater` 구조를 따른다. 고객 점은 고객 자신의 비용 지도 장애물·inflation 안이라 계획이 실패할 수 있어 `TruncatePath` 대신 드라이버가 목표를 standoff만큼 당긴다. 막히면 1 s 기다렸다가 다시 한다(5 cm 이동 없이 30 s 면 드라이버가 멈춤, BT 재시도는 누적 100번까지, 회전·후진 복구와 비용 지도 비우기 없음 — 비우면 카메라로만 보이는 가까운 인형이 지도에서 사라져 부딪힌다). 그 뒤 action이 끝나고 드라이버가 `follow_nav2_failed`로 멈춘다. 추종 goal에는 공용 누적 복구 상한(`MAX_RECOVERIES`)을 쓰지 않는다. 기본 navigate BT·launch 인자는 바뀌지 않는다. 인형 층을 쓰려면 그 층이 들어간 전체 Nav2 설정을 `params_file:=`로 준다. 실로봇(d660) 시험에 쓴 설정은 `config/nav2_follow_real.yaml`(설치 위치 `share/roport_pinky/config/`, 2026-11-21 시험값)이다. 고객이 멈추면 로봇은 standoff에서 `general_goal_checker.xy_goal_tolerance`(trial 기본 0.08 m)만큼 떨어진 곳에 서 있을 수 있다. 관제 MQTT(`roport-control-v2`)에는 아직 추종 명령이 없다. 관제 쪽 명령 추가 전에는 이 경로로 주행할 수 없다.
+
 ## 검증 범위
 
 `bash ci/test.sh`: ROS 빌드, 라인 시뮬레이터, 별도 ROS domain의 가상 map/TF/AMCL/ActionServer, owner 프로세스 강제 종료 시험. 실제 controller/progress plugin의 회전·10초 이상 저속 주행·막힘 판정도 합성 odom/TF로 검사합니다. 실제 모터·LiDAR·Nav2 경로 계획의 현장 검증은 별도다. 테스트는 loopback으로 격리하며 bringup을 실행하지 않는다.
