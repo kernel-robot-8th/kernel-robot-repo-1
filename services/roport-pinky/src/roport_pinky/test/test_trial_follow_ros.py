@@ -7,6 +7,8 @@ import json
 import time
 
 import pytest
+
+from roport_pinky import trial_follow
 from ros_trial_fixture import RosTrial
 from test_trial_driver import PROFILE
 
@@ -131,7 +133,7 @@ def test_laptop_gone_is_status_stale(trial):
     trial.laptop.on = False
     t0 = time.monotonic()
     assert finish(trial) == [(command, 'failed', {'error_code': 'follow_status_stale'})]
-    assert time.monotonic() - t0 < 2.0
+    assert time.monotonic() - t0 < trial_follow.STATUS_MAX_AGE + 1.0      # status 유효 2 s(11-21) + 판정·종료 여유
     trial.wait(lambda: trial.driver.guard['owner'] == 'none')
 
 
