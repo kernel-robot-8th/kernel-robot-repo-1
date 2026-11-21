@@ -95,8 +95,29 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 
 - 양팔 홈 판정: 정렬이 돌았으면 정렬 뒤 쉬는 자세 확인(`align.rest`), 돌지 않았으면 평가 결과의 홈 판정을 쓰고, 완료·실패 보고 전에 `/api/arms`로 최종 모터 위치·그리퍼를 다시 읽습니다. 이미 홈이면 이동 요청을 보내지 않습니다.
 - 홈 복귀는 그리퍼를 열기 때문에, 쥐고 있던 상자는 놓습니다. 비상 정지로 멈춘 팔은 자동으로 움직이지 않습니다.
-- 제어판은 PC 설정(`shelf_align.slot`, 현재 2B 하나)의 칸에서 정렬합니다. 다른 칸 미션은 `PANEL_ALIGN_WRONG_SLOT`으로 실패하므로, 칸별 정렬은 제어판이 명령의 칸을 받도록 바뀐 뒤 사용합니다.
-- 관제(`omx_trial`)는 `arm_return_only`(모의 실행부)·`shelf_align`·`shelf_load_not_aligned`만 완료로 받고, Not Aligned 사유를 이송 기록의 `align_error`에 남깁니다. 관제는 현재 모든 `failed`를 HOLD로 처리합니다(`MISSION_FAILED` 후 관제 흐름은 관제 담당과 합의 필요).
+- 제어판 3.17.0부터 Host는 시작 요청에 명령의 칸(`"slot": "2B"`)과 `pinky_id`를 실어, 제어판이 그 칸에서 판독·정렬하고 그 Pinky의 쟁반 기준을 쓰게 합니다. 그보다 오래된 제어판은 PC 설정 칸(2B)에서만 정렬하므로 다른 칸 미션은 `PANEL_ALIGN_WRONG_SLOT`으로 실패합니다.
+- 관제(`omx_trial`)는 `arm_return_only`(모의 실행부)·`shelf_placed`·`shelf_align`·`shelf_load_not_aligned`만 완료로 받고, Not Aligned 사유를 이송 기록의 `align_error`에 남깁니다. 관제는 현재 모든 `failed`를 HOLD로 처리합니다(`MISSION_FAILED` 후 관제 흐름은 관제 담당과 합의 필요).
+
+#### 두 단계 보고: 놓였음 → 정렬 (2026-11-17 합의, `--report-placement`)
+
+상자가 명령한 칸에 놓이면 바로 Mission Complete를 보내 Pinky가 떠날 수 있게 하고, 정렬은 후속 작업으로 따로 보고합니다. 기본은 꺼져 있으며(위의 한 번 보고), 관제가 `shelf_placed`를 받도록 바뀐 뒤 `--report-placement`로 켭니다.
+
+1. 제어판(3.20.0+)이 `last_result.placement.on_shelf: true`(명령한 칸)를 남기고, 그 순간 **두 손이 상자에서 떨어졌으며**(넘겨받기 판정이면 두 손끝이 상자 앞면·선반 앞 경계보다 3cm 뒤 `tips_clear`, 아니면 평가가 복귀로 끝난 때 양팔 홈·그리퍼 54.6 이하 `eval_end`) **카메라 촬영 원시각이 3초 이내**(`observed_ts`, `observed_clock: "capture"`)일 때만, 정렬이 끝나기 전에 `completed`, `mission_result: "MISSION_COMPLETE"`, `evidence: "shelf_placed"`, `placement_confirmed: true`, `grasp_released: true`, `departure_ready: true`, `align_state: "PENDING"`, `placement`(칸·상자·촬영 시각·판정 근거)를 보냅니다. 근거가 하나라도 없으면 조기 보고 없이 정렬 뒤 한 번 보고합니다(관제 합의 2026-11-18). 제어판이 촬영 시각을 몰라 제어 주기 시각을 넣은 경우(`observed_clock: "control_step"`)나 시각 출처를 밝히지 않은 경우도 근거로 쓰지 않습니다(2026-11-21 리뷰). 지금은 넘겨받기 판정(`source: "eval_judge"`)만 `observed_clock`을 남기므로, 정렬 실행기가 읽은 놓였음은 조기 보고하지 않습니다. 관제의 촬영 시각·`ALIGN_HOLD` 검증 전에는 현장에서 `--report-placement`를 켜지 않습니다. 이때 팔은 아직 정렬 중이라 `arms`는 홈이 아닐 수 있습니다.
+2. 정렬이 끝날 때까지 작업은 진행 중으로 남아, 새 명령은 `HOST_BUSY`로 거절합니다. 관제는 다음 선반 명령 전에 아래 정렬 결과(또는 `status.completed`의 `active: null`)를 기다려야 합니다.
+3. 정렬 결과는 `progress` 이벤트(지금 관제는 `completed` 뒤의 `progress`를 저장하고 ack만 함)로 보냅니다.
+
+| `phase`·`align_result` | 조건 | HOLD |
+| --- | --- | --- |
+| `ALIGNED` | 정렬 성공, 양팔 홈·그리퍼 놓음(`mission_result: "MISSION_COMPLETE"`) | 없음 |
+| `NOT_ALIGNED` | 정렬 시간 초과·실패, 양팔 홈(`MISSION_COMPLETE_NOT_ALIGNED`, `align_error`) | 없음 |
+| `ALIGN_FAILED` | 정렬 중 작업자 중지, 또는 팔 미복귀를 홈 복귀로 해결(`error_code`) | 없음 |
+| `ALIGN_HOLD` | 비상 정지·내려놓기 실패·판독 불가 등 사람 확인 필요(`error_code`) | 있음 |
+
+- 놓였음을 보기 전에 최종 결과(정렬 끝)가 먼저 나오면 위의 한 번 보고로 끝납니다. 다른 칸에서 읽혔거나 `on_shelf`가 `true`가 아니면 놓였음으로 보지 않고 최종 결과로 판정합니다.
+- `--place-shadow`(제어판 3.18.0+): 넘겨받기 없이 놓음 판정만 돌려 기록합니다(실물 그림자 시험). `--end-on-place`와 같이 주면 넘겨받기가 우선입니다.
+- `--end-on-place`(제어판 3.18.0+): 상자가 칸에 놓이고 두 손이 상자에서 떨어진 순간 평가를 끝내고, 정렬기가 그 자리에서 팔을 이어받습니다(넘겨받기). 제어판 3.18.0 전에는 보내지 않습니다.
+  - 정렬기가 제때 이어받지 못해(`handover.state` `failed`·`stopped`) 제어판이 팔을 홈으로 보냈다면, 판정 순간 상자가 칸에 있었고(`placement.on_shelf: true`) 홈 복귀가 성공(`fallback_ok: true`)했을 때 `MISSION_COMPLETE_NOT_ALIGNED`(`align_error: PANEL_HANDOVER_FAILED`·`PANEL_HANDOVER_STOPPED`)입니다. 홈 복귀가 실패했거나 놓였음을 확인하지 못했으면 HOLD입니다.
+  - 모터 설정이 달라 이어받지 않으면(`regs_mismatch`) 제어판이 토크를 켠 채 멈추고(stage `hold`) Host도 HOLD입니다.
 
 ### 하차 미션 판정 (2026-11-17 합의)
 

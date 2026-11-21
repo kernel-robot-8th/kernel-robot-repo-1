@@ -50,11 +50,19 @@ def validate_settings(settings):
 # aligned in time, arms home (Mission Complete, Not Aligned; the Host adds "align_error").
 # Unloading: "pinky_load" = the cameras saw the box on the Pinky tray (Mission Complete).
 # "arm_return_only" comes from the simulated executor. Anything else holds.
+# Loading in two reports (Host --report-placement, "shelf_placed": the box in its slot, arms still
+# aligning) is not accepted yet and holds (2026-11-21 review): an early departure needs the capture
+# time and slot checked here, and the alignment result / ALIGN_HOLD reflected on the workcell, in
+# either arrival order. Until then the Host sends one report after the alignment.
+# Each evidence counts only for its own operation (2026-11-21 review): a loading completion that
+# carried "pinky_load" must not let the Pinky return.
 OMX_COMPLETIONS = {
-    "arm_return_only",
-    "shelf_align",
-    "shelf_load_not_aligned",
-    "pinky_load",
+    "INBOUND": {
+        "arm_return_only",
+        "shelf_align",
+        "shelf_load_not_aligned",
+    },
+    "OUTBOUND": {"arm_return_only", "pinky_load"},
 }
 
 
@@ -405,7 +413,8 @@ class OmxTrial:
                     not -2 <= age <= 5
                     or p.get("departure_ready") is not True
                     or not returned(p)
-                    or p.get("evidence") not in OMX_COMPLETIONS
+                    or p.get("evidence")
+                    not in OMX_COMPLETIONS.get(cmd["payload"].get("operation"), set())
                 ):
                     c.hold("omx_completion_not_safe")
                 elif c.state["phase"] != "HOLD":
