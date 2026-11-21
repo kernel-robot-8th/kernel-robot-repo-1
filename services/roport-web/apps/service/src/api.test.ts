@@ -3,7 +3,7 @@ import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   api, ApiError, fmt, statusLabel, reserveErrorText, loginErrorText, loadErrorText,
-  shouldReloadTimes, isActivePickupExists, timesErrorText, upcomingFlights,
+  shouldReloadTimes, isActivePickupExists, timesErrorText, upcomingFlights, qrErrorText,
 } from './api.ts';
 
 const realFetch = globalThis.fetch;
@@ -144,4 +144,30 @@ test('upcomingFlights: 탑승 시작이 지난 항공편은 제외, 정확히 �
   const now = new Date('2026-01-01T10:00:00Z');
   const r = upcomingFlights([f('past', '2026-01-01T09:59:59Z'), f('same', '2026-01-01T10:00:00Z'), f('later', '2026-01-01T11:00:00Z')], now);
   assert.deepEqual(r.map((x) => x.flightId), ['same', 'later']);
+});
+
+// 예약 QR 발급(FFT1-198)
+test('qrToken: 예약 ID를 경로에 인코딩해 POST하고 응답을 그대로 돌려준다', async () => {
+  let url = '';
+  let method = '';
+  globalThis.fetch = (async (u: unknown, init?: RequestInit) => {
+    url = String(u);
+    method = init?.method ?? '';
+    return new Response(JSON.stringify({ pickupId: 'p/1', token: 'RPQ1.x', issuedAt: 'a', expiresAt: 'b' }), { status: 201 });
+  }) as typeof fetch;
+  const t = await api.qrToken('p/1');
+  assert.equal(method, 'POST');
+  assert.equal(url, '/api/pickups/p%2F1/qr-token');
+  assert.equal(t.token, 'RPQ1.x');
+});
+test('qrErrorText: 활성 아님·없음·통신 실패를 구분하고 모르는 오류는 일반 문구', async () => {
+  const errOf = async (r: Response | Error) => {
+    stub(() => { if (r instanceof Error) throw r; return r; });
+    return api.qrToken('p1').then(() => assert.fail('should throw'), (e: unknown) => e);
+  };
+  assert.match(qrErrorText(await errOf(problem(409, 'PICKUP_NOT_ACTIVE'))), /QR을 받을 수 없는 예약/);
+  assert.match(qrErrorText(await errOf(problem(404, 'PICKUP_NOT_FOUND'))), /예약을 찾을 수 없습니다/);
+  assert.match(qrErrorText(await errOf(new TypeError('fetch failed'))), /서버에 연결하지 못했습니다/);
+  assert.match(qrErrorText(await errOf(problem(500, 'INTERNAL_ERROR'))), /^QR을 받지 못했습니다/);
+  assert.match(qrErrorText(new Error('x')), /^QR을 받지 못했습니다/);
 });
