@@ -385,3 +385,31 @@ OMX1·2 단계는 `roport-omx-task-v1`을 사용하며, UI 수동 완료와 MQTT
 ```
 
 `execution_mode`는 실제 연결한 OMX 실행부를 나타냅니다. 현재 제공되는 `cooperative_host.py`는 mock 전용입니다. 실물 Pinky 설정과 OMX 실행 모드는 별개이며 실물 동작은 현장 설정·구동권·도킹 검증이 추가로 필요합니다. 생성한 resource_token은 격리 순차 시험의 상관 ID이며 운영 자원 예약/permit을 대신하지 않습니다. 관제 재시작·MQTT 단절·결과 timeout은 HOLD로 남기고 자동 재집기/재출발하지 않습니다. 시험 journal은 요청 32개 및 4 MiB 제한이 있으므로 보존·정리 후 새 이력으로 시험합니다.
+
+## 서비스 WSS 관제 기반 (합의 전 후보)
+
+API/Fleet 시작 경로에는 아직 연결하지 않은 단독 모듈이다. 기존 실행만으로 DB 설치·서비스 접속·로봇 동작이 시작되지 않는다. 계약과 공용 JSON은 [WSS 후보](../../interfaces/wss/candidate/README.md)에 있다. S1 제안과는 호환되지 않으며 운영 계약은 양측 합의 대상이다.
+
+- `adapters/wss/service.py`: Bearer WebSocket, 저장 후 ACK, 1초 재접속 대기, 최대 64 KiB 수신. 4001 종료는 자동 재접속하지 않는다.
+- `adapters/db/service_tasks.py`: inbox·작업·outbox 원자 저장, 메시지별 거절 격리, 실행 스냅샷의 단일 DB owner.
+- `contracts/service_wire.py`, `service_policy.py`: 수신 필드와 명세 갱신 규칙. DB 예외는 `ServiceStorageError`로 전달해 WSS가 DB 드라이버를 import하지 않는다.
+
+형식 오류는 ACK하지 않고 다음 프레임을 처리한다. 유효한 envelope의 업무 거절은 `control_service_quarantine`에 site·message_id·내용 해시·오류 코드만 저장한 뒤 ACK한다. ACK는 **저장 확인**이며 업무 승인/수령 승인/출발 허가가 아니다. 같은 거절 재전송을 나중에 새 작업으로 실행하지 않는다. 서비스는 업무 성공을 `task.accepted`/진행으로 판단하고, 접수 없는 저장 ACK는 운영자가 격리 기록을 확인한다. 새 nack 규격은 추가하지 않았다.
+
+서비스 저장소의 DB 접속·쿼리·commit 실패는 ACK하지 않고 1초 후 다시 연결한다. `OperationalStore`의 단일 owner 연결은 자동으로 재획득하지 않는다. 실행부가 그 연결 오류를 관찰하고 정지·복구 판단을 해야 한다. 운영 migration은 실행부를 멈춘 뒤 적용한다.
+
+`dispatch_locked`는 배차 claim 또는 RUNNING 전환 시 고정한다. 배차 전 HOLD는 명세 수정 가능하며 설치 SQL 재실행도 이를 잠그지 않는다. outbox는 task 행 잠금 뒤 할당한 `seq`로 정렬해 한 번에 최대 100개를 읽고, ACK되지 않은 앞 묶음을 재전송한다. 서로 다른 작업의 전체 완료 순서는 보장하지 않으며 서비스는 높은 `task_revision`만 적용해야 한다.
+
+수령의 최초 `arrival_verified=false`는 나중 도착/재전송으로 true가 되지 않는다. 조기 수령도 기록 ACK는 보내므로 서비스가 무조건 재전송하거나 성공으로 간주하면 안 된다. 관제 도착 증거와 서비스 수령이 불일치하면 서비스 담당/운영자가 대조하고, 도착 후 **새 수령 의사 확인**으로 새 receipt를 생성해야 한다. 이 후보에는 자동 대조/복구 UI가 없다.
+
+테이블 설치는 명시적 CLI만 수행한다. 기존 기록을 보존하며 SQL 재실행을 지원하지만 운영 버전 migration runner를 대체하지 않는다.
+
+```bash
+# 폐기 가능한 시험 DB만 지정. 실제 접속 비밀값은 로컬 환경에서 주입.
+ROPORT_DATABASE_URL='postgresql://localhost/roport_wss_test' \
+  uv run python -m roport_control_server.adapters.db.service_tasks
+ROPORT_TEST_DATABASE_URL='postgresql://localhost/roport_wss_test' \
+  REQUIRE_REGISTRY_TESTS=1 PYTHONPATH=src uv run pytest -q tests/test_service_*.py
+```
+
+실제 Java 상호운용·운영 TLS/프록시/인증·실물 로봇 검증은 후속 범위다.
