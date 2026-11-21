@@ -2,23 +2,8 @@ import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import * as api from './api';
 import { bigButton, initialState, movingPhase, reduce, type MovingPhase, type Notice, type Step } from './flow';
 import { Icon, PhoneQr, type IconName } from './icons';
-import type { ServiceMode, VerifiedPickup, VerifyFailure, VerifyResult } from './types';
-
-const FAILURE_TEXT: Record<VerifyFailure | 'ERROR', string> = {
-  NOT_FOUND: '예약을 찾을 수 없습니다. 예약번호를 다시 확인해 주세요.',
-  WRONG_CART: '이 카트에 배정된 예약이 아닙니다. 안내 직원에게 문의해 주세요.',
-  ALREADY_RECEIVED: '이미 수령이 완료된 예약입니다.',
-  NOT_ACTIVE: '지금 수령할 수 없는 예약입니다. 안내 직원에게 문의해 주세요.',
-  TOO_MANY_ATTEMPTS: '확인에 여러 번 실패해 잠시 멈췄습니다. 잠시 후 다시 시도해 주세요.',
-  ERROR: '서버와 통신하지 못했습니다. 잠시 후 다시 시도해 주세요.',
-};
-
-// 시도 제한은 서버가 알려 준 남은 시간을 함께 안내한다. 화면에서 초를 세지는 않는다.
-function failureText(reason: VerifyFailure | 'ERROR', retryAfterS?: number): string {
-  if (reason !== 'TOO_MANY_ATTEMPTS' || retryAfterS === undefined) return FAILURE_TEXT[reason];
-  const wait = retryAfterS < 60 ? `${retryAfterS}초` : `${Math.ceil(retryAfterS / 60)}분`;
-  return `확인에 여러 번 실패해 잠시 멈췄습니다. 약 ${wait} 후 다시 시도해 주세요.`;
-}
+import { FAILURE_TEXT, failureText } from './messages';
+import type { ServiceMode, VerifiedPickup, VerifyResult } from './types';
 
 const NOTICE_TEXT: Record<Exclude<Notice, null>, string> = {
   ERROR: FAILURE_TEXT.ERROR,

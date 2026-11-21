@@ -41,13 +41,19 @@ test('예약 없음(404)은 고객에게 다시 확인하라고 안내한다', (
 
 test('시도 제한(429)은 남은 초와 함께 고객에게 안내한다', () => {
   const body = { code: 'TOO_MANY_ATTEMPTS' };
-  assert.deepEqual(toVerifyResult(429, body, '31'), { ok: false, reason: 'TOO_MANY_ATTEMPTS', retryAfterS: 31 });
-  // 헤더가 없거나 해석할 수 없으면 시간 없이 안내한다.
-  for (const h of [null, '', 'abc', '0', '-5', '99999', 'Wed, 21 Oct 2026 07:28:00 GMT']) {
-    assert.deepEqual(toVerifyResult(429, body, h), { ok: false, reason: 'TOO_MANY_ATTEMPTS' }, String(h));
+  const now = Date.parse('2026-11-21T00:00:00Z');
+  const limited = (h: string | null) => toVerifyResult(429, body, h, now);
+  assert.deepEqual(limited('31'), { ok: false, reason: 'TOO_MANY_ATTEMPTS', retryAfterS: 31 });
+  // 프록시가 HTTP 날짜 형식으로 바꿔도 남은 초로 해석한다.
+  assert.deepEqual(limited('Sat, 21 Nov 2026 00:00:45 GMT'), { ok: false, reason: 'TOO_MANY_ATTEMPTS', retryAfterS: 45 });
+  // 지나치게 큰 값은 버리지 않고 1시간으로 제한한다.
+  assert.deepEqual(limited('99999'), { ok: false, reason: 'TOO_MANY_ATTEMPTS', retryAfterS: 3600 });
+  // 없거나 해석할 수 없거나 이미 지난 값이면 시간 없이 안내한다(retryAfterS 키 자체가 없다).
+  for (const h of [null, '', 'abc', '0', '-5', 'Fri, 20 Nov 2026 23:59:00 GMT']) {
+    assert.deepEqual(limited(h), { ok: false, reason: 'TOO_MANY_ATTEMPTS' }, String(h));
   }
   // code가 다른 429(예: 프록시가 만든 응답)는 통신 오류로 둔다.
-  assert.equal(toVerifyResult(429, null, '31'), null);
+  assert.equal(toVerifyResult(429, null, '31', now), null);
 });
 
 test('설정·충돌·형식 오류와 해석할 수 없는 응답은 통신 오류로 둔다', () => {

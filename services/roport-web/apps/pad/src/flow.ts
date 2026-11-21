@@ -86,7 +86,7 @@ export function reduce(state: PadState, action: Action): PadState {
         const r = action.result;
         if (!r) return goTo(s, { name: 'verifyFailed', reason: 'ERROR' });
         if (r.ok) return goTo(s, { name: 'items', pickup: r.pickup });
-        return goTo(s, r.retryAfterS === undefined ? { name: 'verifyFailed', reason: r.reason } : { name: 'verifyFailed', reason: r.reason, retryAfterS: r.retryAfterS });
+        return goTo(s, { name: 'verifyFailed', reason: r.reason, ...(r.retryAfterS !== undefined && { retryAfterS: r.retryAfterS }) });
       });
     case 'serviceAnswered':
       return answer(state, action.token, (s) => {

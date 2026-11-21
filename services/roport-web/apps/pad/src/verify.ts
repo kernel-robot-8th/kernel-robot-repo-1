@@ -18,11 +18,11 @@ type Verification = {
 // 반환 null은 "통신·설정 오류"(화면: 서버와 통신하지 못했습니다)다.
 // 예약 없음(404)·확인 거절·시도 제한(429)만 고객에게 사유를 보여 준다. 401(카트 인증 꺼짐)·409(요청 ID 충돌)·400은 고객이 고칠 수 없어 오류로 둔다.
 // 서버는 아직 카트 배정을 대조하지 않아(cartAssignmentChecked=false) WRONG_CART는 나오지 않는다.
-export function toVerifyResult(status: number, body: unknown, retryAfter: string | null = null): VerifyResult | null {
+export function toVerifyResult(status: number, body: unknown, retryAfter: string | null = null, now: number = Date.now()): VerifyResult | null {
   if (status === 404 && code(body) === 'RESERVATION_NOT_FOUND') return { ok: false, reason: 'NOT_FOUND' };
   if (status === 429 && code(body) === 'TOO_MANY_ATTEMPTS') {
-    const seconds = retryAfterSeconds(retryAfter);
-    return seconds === undefined ? { ok: false, reason: 'TOO_MANY_ATTEMPTS' } : { ok: false, reason: 'TOO_MANY_ATTEMPTS', retryAfterS: seconds };
+    const seconds = retryAfterSeconds(retryAfter, now);
+    return { ok: false, reason: 'TOO_MANY_ATTEMPTS', ...(seconds !== undefined && { retryAfterS: seconds }) };
   }
   if (status !== 200 && status !== 201) return null;
   const v = (body ?? {}) as Verification;
@@ -46,11 +46,21 @@ function isPickup(p: unknown): p is VerifiedPickup {
   );
 }
 
-// 서버는 초 단위 정수를 보낸다. 날짜 형식·0 이하·비정상적으로 큰 값은 무시하고 시간 없이 안내한다.
-function retryAfterSeconds(value: string | null): number | undefined {
-  if (!value || !/^\d{1,4}$/.test(value.trim())) return undefined;
-  const n = Number(value.trim());
-  return n >= 1 && n <= 3600 ? n : undefined;
+// 서비스 서버는 초 단위 정수를 보내지만, 프록시가 HTTP 날짜 형식으로 바꿔도 해석한다.
+// 지나치게 큰 값은 버리지 않고 1시간으로 제한하고, 해석할 수 없거나 이미 지난 시각이면 시간 없이 안내한다.
+const MAX_RETRY_AFTER_S = 3600;
+function retryAfterSeconds(value: string | null, now: number): number | undefined {
+  const v = value?.trim();
+  if (!v) return undefined;
+  let seconds: number;
+  if (/^\d+$/.test(v)) {
+    seconds = Number(v);
+  } else {
+    const at = Date.parse(v);
+    if (Number.isNaN(at)) return undefined;
+    seconds = Math.ceil((at - now) / 1000);
+  }
+  return seconds >= 1 ? Math.min(seconds, MAX_RETRY_AFTER_S) : undefined;
 }
 
 function code(body: unknown): string | null {
