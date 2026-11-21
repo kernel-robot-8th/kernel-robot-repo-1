@@ -166,12 +166,12 @@ class Reset(unittest.TestCase):
         client.release.clear()
         p.act([0] * 6, "old")  # 미리 요청(chunk 500 대기)
         until(lambda: len(client.calls) == 2)
-        p.reset(18)  # 새 명령
+        p.reset(19)  # 새 명령
         client.release.set()
         until(lambda: not client.replies)  # 이전 명령의 응답(chunk 500)이 도착해 버려짐
         client.replies = [chunk(900)]
         self.assertEqual(pan(tick(p)), 900.0)
-        self.assertIn("marker 18", client.calls[-1][2])
+        self.assertIn("marker 19", client.calls[-1][2])
 
 
 class WithRunner(unittest.TestCase):

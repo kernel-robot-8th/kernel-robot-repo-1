@@ -207,7 +207,7 @@ class Duplicate(unittest.TestCase):
         host, runner, events = make()
         host.handle_load(request())
         host.wait(5)
-        host.handle_load(request(package_id="18"))
+        host.handle_load(request(package_id="19"))
         self.assertEqual(len(runner.runs), 1)
         self.assertEqual(
             (events[-1][0], events[-1][1]["error_code"]),
