@@ -57,7 +57,8 @@ PANEL_COMMAND_SLOT = (3, 17, 0)
 # clear of it; the aligner then takes the arms where they are (hand-over). Older panels ignore it.
 PANEL_END_ON_PLACE = (3, 18, 0)
 # 3.20.0: the placement carries the evidence for an early COMPLETE (control agreement 2026-11-18):
-# the hands' state at that moment and the camera's own capture time (not the panel's read time).
+# the hands' state at that moment and the camera's own capture time (not the panel's read time),
+# marked observed_clock "capture" (a "control_step" time or no mark never counts).
 PANEL_PLACEMENT_EVIDENCE = (3, 20, 0)
 # An early COMPLETE uses a capture at most this old (seconds, same PC clock).
 PLACEMENT_FRESH_S = 3.0
@@ -558,6 +559,11 @@ class PanelExecutor:
             or not 0 <= time.time() - captured <= PLACEMENT_FRESH_S
         ):
             return None  # too old (or unknown) to let the Pinky leave on it
+        if placement.get("observed_clock") != "capture":
+            # panel 3.20 falls back to the control step's time ("control_step") when the camera
+            # stamp is unknown, and older readers do not say: only a real capture time counts
+            # (2026-11-21 review)
+            return None
         self._placed = True
         keys = (
             "slot",
@@ -565,6 +571,7 @@ class PanelExecutor:
             "source",
             "observed_at",
             "observed_ts",
+            "observed_clock",
             "reported_at",
             "tips_clear",
             "tip_y",

@@ -230,6 +230,7 @@ class FakePanel:
                 "source": "align",
                 "observed_at": "2026-11-18T01:00:00.000+09:00",
                 "observed_ts": time.time() - 0.5,
+                "observed_clock": "capture",
                 "reported_at": "2026-11-18T01:00:00.200+09:00",
                 # panel 3.20: the arms measured when the evaluation ended on its return
                 "eval_end": {
@@ -1419,6 +1420,9 @@ class PanelExecutorTest(unittest.TestCase):
             ),
             "capture 4 s old": ({"observed_ts": time.time() - 4.0}, "3.20.0"),
             "no capture time": ({"observed_ts": None}, "3.20.0"),
+            # 2026-11-21 review: the control step's time is not a capture time
+            "control step time": ({"observed_clock": "control_step"}, "3.20.0"),
+            "clock not said": ({"observed_clock": None}, "3.20.0"),
         }
         for name, (evidence, version) in cases.items():
             with self.subTest(case=name):
@@ -1446,6 +1450,7 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertIs(p["grasp_released"], True)
         self.assertIs(p["placement"]["eval_end"]["all_at_home"], True)
         self.assertIsInstance(p["placement"]["observed_ts"], float)
+        self.assertEqual(p["placement"]["observed_clock"], "capture")
 
     def test_outbound_never_reports_a_placement(self):
         self.use_unload_route()
