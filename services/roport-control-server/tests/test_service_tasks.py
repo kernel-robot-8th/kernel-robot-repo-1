@@ -252,36 +252,30 @@ def test_mqtt_complete_not_aligned_advances_and_keeps_reason(omx_pair):
     assert transfer["align_error"] == "PANEL_ALIGN_FAILED"
 
 
-def test_mqtt_placed_completes_before_the_arms_return_then_alignment_follows(omx_pair):
-    # Host --report-placement: COMPLETE when the box is in its slot, arms still aligning.
+def test_mqtt_placed_early_holds_until_the_control_takes_two_reports(omx_pair):
+    # Host --report-placement sends COMPLETE ("shelf_placed") while the arms still align. The
+    # control does not take it yet (2026-11-21 review: capture time, slot and the alignment
+    # result / ALIGN_HOLD in either order must be handled first): it holds, the Pinky stays.
     c, host, executor = omx_pair
     dispatch_omx(c, host)
     executor.observe = lambda: {
         "state": "placed",
         "grasp_released": True,
-        "placement": {"slot": "2B", "box": 16, "source": "align"},
+        "placement": {
+            "slot": "2B",
+            "box": 16,
+            "source": "eval_judge",
+            "observed_clock": "capture",
+        },
         "arms": executor._arms(moving=True),
     }
     (placed,) = host.poll()
     assert placed["payload"]["evidence"] == "shelf_placed"
+    assert placed["payload"]["grasp_released"] is True
     deliver(c, placed)
-    assert c.state["phase"] == "return"  # the Pinky leaves; the arms keep aligning
-    transfer = c.state["transfers"][0]
-    assert transfer["evidence"] == "shelf_placed"
-    executor.observe = lambda: {
-        "state": "finished",
-        "step": "rest",
-        "arms": executor._arms(moving=False),
-        "evidence": "shelf_align",
-    }
-    (aligned,) = host.poll()
-    assert (aligned["type"], aligned["payload"]["align_result"]) == (
-        "shelf_inbound.progress",
-        "ALIGNED",
-    )
-    deliver(c, aligned)  # stored and acknowledged; the transfer is already done
-    assert c.state["phase"] == "return"
-    assert len(c.state["transfers"]) == 1
+    assert c.state["phase"] == "HOLD"
+    assert c.state["transfers"] == []
+    assert not any(cmd["type"] == "route.requested" for _, cmd in c.transport.sent)
 
 
 def test_mqtt_placed_without_released_grasp_holds(omx_pair):
