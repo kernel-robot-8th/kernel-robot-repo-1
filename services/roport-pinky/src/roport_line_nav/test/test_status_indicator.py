@@ -130,3 +130,61 @@ def test_battery_bar():
     assert any(p != STYLES['MOVING'][1] for p in bottom)      # 맨 아래에 배터리 그림
     assert all(plain.getpixel((x, 210)) == STYLES['MOVING'][1] for x in range(320))
     assert render(Status('READY'), battery=None).size == (320, 240)
+
+
+def test_passenger_screen_priorities_and_recovery():
+    from roport_line_nav.status_indicator import cart_status
+    line = st('idle')
+    def display(shop=None, trip=None, navigation=None):
+        return cart_status(shop, trip, navigation, line)
+    assert display().name == 'CART_READY'
+    assert display('SHOPPING').name == 'SHOPPING'
+    assert display('COME_CLOSER').led == (255, 140, 0)
+    assert display('INACTIVE', {'goal':'G1','phase':'NAV2_G1'}).detail == 'G1으로 이동 중'
+    assert display('INACTIVE', {'goal':'G1','direction':'RETURN','phase':'LINE'}).detail == 'H1으로 이동 중'
+    retry = {'phase':'recovering','goal_id':'G2','recoveries':1}
+    assert display(navigation=retry).name == 'GATE'
+    halted = dict(retry, phase='failed', error_code='nav2_recovery_limit')
+    assert display('COME_CLOSER', navigation=halted).led == (255, 0, 0)
+    assert display(navigation=dict(halted, error_code='nav2_cancel_result_unknown')).name == 'UNAVAILABLE'
+    assert display('BLOCKED').name == 'BLOCKED'
+
+
+def test_cart_lcd_and_led_share_the_report_and_recover_after_failed_led_ack():
+    rclpy = pytest.importorskip('rclpy')
+    from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.parameter import Parameter
+    from std_msgs.msg import String
+    pinky = pytest.importorskip('pinky_interfaces.srv')
+    from roport_line_nav.status_indicator import make_node
+
+    ctx = Context()
+    rclpy.init(context=ctx, domain_id=194)
+    peer = rclpy.create_node('fake_cart_led', context=ctx, namespace='/cart_display_test')
+    node = make_node(context=ctx, namespace='/cart_display_test', parameter_overrides=[
+        Parameter('lcd',value=False), Parameter('smartcart',value=True)])
+    ex = SingleThreadedExecutor(context=ctx)
+    ex.add_node(node)
+    ex.add_node(peer)
+    calls = []
+    red, amber, blue = (255,0,0), (255,140,0), (0,90,255)
+    def led(req, res):
+        color = req.r, req.g, req.b
+        calls.append(color)
+        res.success = color != red or calls.count(red) >= 2
+        return res
+    peer.create_service(pinky.SetLed,'set_led',led)
+    pub = peer.create_publisher(String,'smartcart/shopping_indicator',1)
+    try:
+        for name,color,count in [('COME_CLOSER',amber,1),('BLOCKED',red,2),('SHOPPING',blue,1)]:
+            end = time.monotonic() + 4.
+            while time.monotonic() < end and calls.count(color) < count:
+                pub.publish(String(data=name))
+                ex.spin_once(timeout_sec=.025)
+            assert calls.count(color) >= count and node.status.name == name, (calls,node.status)
+    finally:
+        ex.shutdown()
+        node.destroy_node()
+        peer.destroy_node()
+        rclpy.shutdown(context=ctx)
