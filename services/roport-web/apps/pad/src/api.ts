@@ -106,13 +106,14 @@ export async function verifyReservationNo(reservationNo: string): Promise<Verify
     return verify(value);
   }
   const body = JSON.stringify({ verificationRequestId: newVerificationRequestId(), method: 'RESERVATION_NO', value });
-  const result = toVerifyResult(...(await postVerification(body)));
+  const [status, json, retryAfter] = await postVerification(body);
+  const result = toVerifyResult(status, json, retryAfter);
   if (!result) throw new Error('예약 확인 실패');
   return result;
 }
 
 // 응답을 못 받았을 때(연결 실패·8초 초과)만 같은 요청 ID로 한 번 더 보낸다. 서버는 같은 ID를 한 번만 기록한다.
-async function postVerification(body: string): Promise<[number, unknown]> {
+async function postVerification(body: string): Promise<[number, unknown, string | null]> {
   const send = () =>
     fetch('/cart-api/verifications', {
       method: 'POST',
@@ -132,7 +133,7 @@ async function postVerification(body: string): Promise<[number, unknown]> {
   } catch {
     // JSON이 아닌 응답(예: 프록시 미설정으로 index.html) — toVerifyResult가 오류로 처리한다.
   }
-  return [res.status, json];
+  return [res.status, json, res.headers.get('Retry-After')];
 }
 
 // 고객의 수령 확인. 서비스 서버가 수령 완료를 기록한다(SR-18-2).

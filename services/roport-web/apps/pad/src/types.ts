@@ -29,6 +29,7 @@ export interface VerifiedPickup {
 export type ServiceMode = 'GATE_GUIDE' | 'FOLLOW';
 
 // NOT_ACTIVE: 취소됐거나 주문이 확정되지 않아 수령할 수 없는 예약(서버 PICKUP_NOT_ACTIVE).
-export type VerifyFailure = 'NOT_FOUND' | 'WRONG_CART' | 'ALREADY_RECEIVED' | 'NOT_ACTIVE';
+// TOO_MANY_ATTEMPTS: 이 카트의 확인 실패가 많아 서버가 잠시 막음(429, FFT1-182). retryAfterS는 서버가 알려 준 남은 초.
+export type VerifyFailure = 'NOT_FOUND' | 'WRONG_CART' | 'ALREADY_RECEIVED' | 'NOT_ACTIVE' | 'TOO_MANY_ATTEMPTS';
 
-export type VerifyResult = { ok: true; pickup: VerifiedPickup } | { ok: false; reason: VerifyFailure };
+export type VerifyResult = { ok: true; pickup: VerifiedPickup } | { ok: false; reason: VerifyFailure; retryAfterS?: number };

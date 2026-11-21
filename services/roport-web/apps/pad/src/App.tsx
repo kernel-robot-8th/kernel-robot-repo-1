@@ -2,15 +2,8 @@ import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import * as api from './api';
 import { bigButton, initialState, movingPhase, reduce, type MovingPhase, type Notice, type Step } from './flow';
 import { Icon, PhoneQr, type IconName } from './icons';
-import type { ServiceMode, VerifiedPickup, VerifyFailure, VerifyResult } from './types';
-
-const FAILURE_TEXT: Record<VerifyFailure | 'ERROR', string> = {
-  NOT_FOUND: '예약을 찾을 수 없습니다. 예약번호를 다시 확인해 주세요.',
-  WRONG_CART: '이 카트에 배정된 예약이 아닙니다. 안내 직원에게 문의해 주세요.',
-  ALREADY_RECEIVED: '이미 수령이 완료된 예약입니다.',
-  NOT_ACTIVE: '지금 수령할 수 없는 예약입니다. 안내 직원에게 문의해 주세요.',
-  ERROR: '서버와 통신하지 못했습니다. 잠시 후 다시 시도해 주세요.',
-};
+import { FAILURE_TEXT, failureText } from './messages';
+import type { ServiceMode, VerifiedPickup, VerifyResult } from './types';
 
 const NOTICE_TEXT: Record<Exclude<Notice, null>, string> = {
   ERROR: FAILURE_TEXT.ERROR,
@@ -187,7 +180,7 @@ export function App() {
         {step.name === 'verifyFailed' && (
           <Split visual={<StatusIcon name="alert" tone="warn" />}>
             <h1>예약을 확인하지 못했습니다</h1>
-            <p className="lead" role="alert">{FAILURE_TEXT[step.reason]}</p>
+            <p className="lead" role="alert">{failureText(step.reason, step.retryAfterS)}</p>
             <div className="actions">
               <button className="btn btn-primary" onClick={() => go({ name: 'keypad' })}>예약번호 입력</button>
               <button className="btn btn-secondary" onClick={() => go({ name: 'idle' })}>처음으로</button>
