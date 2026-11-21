@@ -204,15 +204,18 @@ def create_app(
         return JSONResponse({"detail": NOT_CONNECTED, "value": value}, 503)
 
     @app.post("/api/fleet/commands")
+    async def fleet_command(request: Request):
+        return await operator_command(request, app.state.fleet)
+
     @app.post("/api/trial/commands")
     async def trial_command(request: Request):
-        trial = (
-            app.state.fleet
-            if request.url.path == "/api/fleet/commands"
-            else app.state.trial
-        )
+        return await operator_command(request, app.state.trial)
+
+    async def operator_command(request, trial):
         if trial is None:
-            return JSONResponse({"detail": "trial UI is not configured"}, 503)
+            return JSONResponse(
+                {"detail": "requested control UI is not configured"}, 503
+            )
         if (
             request.headers.get("origin")
             != f"{request.url.scheme}://{request.headers.get('host')}"
@@ -245,7 +248,11 @@ def create_app(
             return JSONResponse({"detail": str(exc)}, 409)
         except OSError:
             return JSONResponse(
-                {"detail": "실행부 응답 없음 · 결과 미확인. 상태 확인 후 조작하세요."},
+                {
+                    "detail": "정지 요청 응답 없음 · 정지 여부 미확인. 현장 정지 수단으로 기체 정지를 확인하세요."
+                    if data.get("action") == "stop"
+                    else "실행부 응답 없음 · 결과 미확인. 상태 확인 후 조작하세요."
+                },
                 503,
             )
 

@@ -31,12 +31,13 @@ async function send(action, extra = {}) {
   busy = true; refresh();
   try {
     const response = await fetch('/api/fleet/commands', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-Roport-Trial-Token': $('fleet-key').value}, body: JSON.stringify({action, session_id: state.session_id, ...extra}), signal: AbortSignal.timeout(3000)});
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail);
-    $('fleet-feedback').textContent = '접수 완료 · 실행부 상태에서 진행을 확인하세요.';
+    const result = await response.json().catch(() => null);
+    if (!response.ok || result?.accepted !== true) throw new Error(typeof result?.detail === 'string' ? result.detail : `HTTP ${response.status} · 실행 결과 미확인. 상태를 확인한 뒤 다시 요청하세요.`);
+    $('fleet-feedback').textContent = action === 'stop' ? '관제 보류 접수 · 기체 정지는 상태에서 확인하세요.' : '접수 완료 · 실행부 상태에서 진행을 확인하세요.';
     return result;
   } catch (error) {
-    $('fleet-feedback').textContent = error.name === 'TimeoutError' ? '응답 미확인 · 같은 요청을 다시 보내도 중복 실행하지 않습니다.' : error.message;
+    const detail = error.name === 'TimeoutError' ? '응답 미확인 · 같은 요청을 다시 보내도 중복 실행하지 않습니다.' : error.message;
+    $('fleet-feedback').textContent = action === 'stop' ? `정지 여부 미확인 · ${detail} · 현장 정지 수단으로 기체 정지를 확인하세요.` : detail;
     return null;
   } finally { busy = false; refresh(); }
 }
@@ -57,6 +58,7 @@ $('fleet-release').onclick = () => send('release_hold', {note: $('fleet-recovery
 $('fleet-assign').onclick = () => send('assign', {robot: $('fleet-robot').value, role: $('fleet-role').value || null});
 for (const id of ['fleet-operation', 'fleet-package', 'fleet-goal']) $(id).addEventListener('change', () => {request = null;});
 $('fleet-submit').onclick = async () => {
+  // Keep the ID on rejection/unknown outcomes; only accepted or edited input starts a new request.
   request ??= {request_id: newRequestId(), operation: $('fleet-operation').value, package_id: $('fleet-package').value.trim(), goal: $('fleet-operation').value === 'inbound' ? null : $('fleet-goal').value};
   if (await send('submit', {request})) request = null;
 };

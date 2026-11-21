@@ -205,3 +205,68 @@ test('expired STOP recovery preserves the unresolved command and HOLD', async ({
     await expect(page.locator('#fleet-enable')).toBeDisabled();
   } finally { await owner.close(); }
 });
+
+test('non-JSON errors preserve request identity and STOP reports unconfirmed state', async ({page}) => {
+  const owner = await fixture();
+  const requests = [];
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    await page.goto(`${owner.url}/ui/?mode=fleet`);
+    await page.locator('#fleet-key').fill(owner.token);
+    await page.locator('#fleet-package').fill('retry-box');
+    await page.route('**/api/fleet/commands', async route => {
+      requests.push(route.request().postDataJSON());
+      const first = requests.length === 1;
+      await route.fulfill({status: first ? 502 : 409, contentType: first ? 'text/html' : 'application/json', body: first ? '<h1>Bad Gateway</h1>' : JSON.stringify({detail: 'temporary rejection'})});
+    });
+    await page.locator('#fleet-submit').click();
+    await expect(page.locator('#fleet-feedback')).toContainText('HTTP 502 · 실행 결과 미확인');
+    await page.locator('#fleet-submit').click();
+    await expect(page.locator('#fleet-feedback')).toHaveText('temporary rejection');
+    expect(requests[1].request).toEqual(requests[0].request);
+    await page.locator('#fleet-package').fill('edited-box');
+    await page.locator('#fleet-submit').click();
+    await expect(page.locator('#fleet-submit')).toBeEnabled();
+    expect(requests[2].request.request_id).not.toBe(requests[1].request.request_id);
+    await page.unroute('**/api/fleet/commands');
+    await page.route('**/api/fleet/commands', async route => {
+      requests.push(route.request().postDataJSON());
+      await route.continue();
+    });
+    await page.locator('#fleet-submit').click();
+    await expect(page.locator('#fleet-work')).toContainText('edited-box');
+    expect(requests[3].request).toEqual(requests[2].request);
+    await page.locator('#fleet-submit').click();
+    await expect(page.locator('#fleet-feedback')).toContainText('active task');
+    expect(requests[4].request.request_id).not.toBe(requests[3].request.request_id);
+
+    await page.unroute('**/api/fleet/commands');
+    await page.route('**/api/fleet/commands', route => route.fulfill({status: 503, contentType: 'text/html', body: '<h1>Unavailable</h1>'}));
+    await page.locator('#fleet-stop').click();
+    await expect(page.locator('#fleet-feedback')).toContainText('정지 여부 미확인');
+    await expect(page.locator('#fleet-feedback')).toContainText('HTTP 503');
+    await expect(page.locator('#fleet-feedback')).toContainText('현장 정지 수단');
+    await page.unroute('**/api/fleet/commands');
+    await page.locator('#fleet-stop').click();
+    await expect(page.locator('#fleet-feedback')).toHaveText('관제 보류 접수 · 기체 정지는 상태에서 확인하세요.');
+    await expect(page.locator('#fleet-state')).toContainText('operator_stop');
+    expect(errors).toEqual([]);
+  } finally { await owner.close(); }
+});
+
+test('fleet inputs and long goal options fit a narrow control panel', async ({page}) => {
+  const owner = await fixture();
+  try {
+    await page.goto(`${owner.url}/ui/?mode=fleet`);
+    await expect(page.locator('#fleet-goal option')).toHaveCount(1);
+    const overflows = await page.locator('#fleet-fields').evaluate(fields => {
+      fields.style.width = '180px';
+      fields.querySelector('#fleet-goal').options[0].text = 'long-customer-destination-'.repeat(8);
+      fields.querySelector('#fleet-package').value = 'long-package-'.repeat(8);
+      const bounds = fields.getBoundingClientRect();
+      return [...fields.querySelectorAll('input, select')].filter(input => input.getBoundingClientRect().right > bounds.right + 1).map(input => input.id);
+    });
+    expect(overflows).toEqual([]);
+  } finally { await owner.close(); }
+});

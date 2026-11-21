@@ -10,8 +10,8 @@ from .trial import TrialView
 class FleetView(TrialView):
     def _check_map(self, data):
         if (
-            data["map_version"] != self.map_version
-            or data["graph_version"] != self.graph_version
+            data.get("map_version") != self.map_version
+            or data.get("graph_version") != self.graph_version
         ):
             raise ValueError("fleet/map mismatch")
 
@@ -20,14 +20,19 @@ class FleetView(TrialView):
         return {"fleet": True, "trial": False}
 
     def command(self, request, *, secure_transport=False):
-        data = self.rpc({"action": "snapshot"})
-        if data["mode"] == "hardware" and not secure_transport:
-            raise PermissionError("실물 조작은 로컬 주소 또는 HTTPS에서만 가능합니다.")
         if not isinstance(request, dict) or "expires_at" in request:
             raise ValueError("invalid fleet request")
-        if request.get("action") != "stop":
-            self._check_map(data)
-        return self.rpc({**request, "expires_at": time.time() + 0.8})
+        stop = request.get("action") == "stop"
+        # Local/HTTPS STOP does not wait for a preliminary snapshot from a busy owner.
+        if not (stop and secure_transport):
+            data = self.rpc({"action": "snapshot"})
+            if data["mode"] == "hardware" and not secure_transport:
+                raise PermissionError(
+                    "실물 조작은 로컬 주소 또는 HTTPS에서만 가능합니다."
+                )
+            if not stop:
+                self._check_map(data)
+        return self.rpc({**request, "expires_at": None if stop else time.time() + 0.8})
 
     def snapshot(self):
         try:
@@ -47,6 +52,7 @@ class FleetView(TrialView):
             pose = None
             source = "위치 미수신"
             pose_age = None
+            invalid_pose_time = False
             live = bool(sample and sample["pose"] is not None)
             last_node = (data or {}).get("last_nodes", {}).get(rid)
             current_node = state.get("node")
@@ -62,9 +68,14 @@ class FleetView(TrialView):
                 p = sample["pose"]
                 pose = [p["x"], p["y"], 0, p["yaw"]]
                 source = sample["pose_source"]
-                pose_age = (
-                    datetime.now(UTC) - datetime.fromisoformat(sample["observed_at"])
-                ).total_seconds()
+                try:
+                    observed = datetime.fromisoformat(sample.get("observed_at"))
+                    if observed.tzinfo is None:
+                        observed = observed.replace(tzinfo=UTC)
+                    pose_age = (datetime.now(UTC) - observed).total_seconds()
+                except (ValueError, TypeError):
+                    invalid_pose_time = True
+                    live = False
             elif current_node in self.nodes:
                 pose = [*self.nodes[current_node], 0, state.get("heading_rad", 0)]
                 source = "노드 상태"
@@ -81,6 +92,7 @@ class FleetView(TrialView):
                     "pose_age": pose_age,
                     "pose_key": f"{report.get('boot_version')}:{sample and sample['sequence']}",
                     "pose_stale": stale
+                    or invalid_pose_time
                     or (not live and current_node not in self.nodes)
                     or (pose_age is not None and pose_age > 1),
                     "pose_live": live,

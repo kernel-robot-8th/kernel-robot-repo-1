@@ -455,7 +455,8 @@ nav a { margin-left:auto; color:var(--muted); padding:10px; }
 #scenario-editor summary { cursor: pointer; font-weight: 600; }
 #scenario-fields, #service-fields, #fleet-fields { border: 0; padding: 8px 0; min-width: 0; }
 #scenario-fields label, #service-fields label, #fleet-fields label { display: block; margin-block: 8px; }
-#scenario-fields input:not([type=checkbox]), #scenario-fields select, #service-fields select { max-width: 100%; box-sizing: border-box; padding: 6px; }
+#scenario-fields input:not([type=checkbox]), #scenario-fields select, #service-fields select, #fleet-fields input, #fleet-fields select { max-width: 100%; box-sizing: border-box; padding: 6px; }
+#fleet-fields .actions label { min-width: 0; max-width: 100%; }
 #scenario-steps { list-style: none; padding-left: 0; max-height: 420px; overflow: auto; }
 #scenario-steps li { border-bottom: 1px solid #d5dbde; padding-block: 10px; }
 #scenario-steps button { margin: 4px; }

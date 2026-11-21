@@ -25,13 +25,14 @@ class FleetSocket(TrialSocket):
             or request.get("session_id") != self.session_id
         ):
             raise ValueError("executor changed; refresh before acting")
+        action = request.get("action")
         expiry = request.get("expires_at")
-        if (
+        # A delayed STOP may only hold this owner session; other actions still expire.
+        if action != "stop" and (
             type(expiry) not in (int, float)
             or not time.time() < expiry <= time.time() + 2
         ):
             raise ValueError("expired operator request")
-        action = request.get("action")
         fields = {
             "enable": set(),
             "stop": set(),
