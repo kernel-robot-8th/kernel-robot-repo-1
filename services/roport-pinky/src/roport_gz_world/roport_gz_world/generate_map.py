@@ -12,6 +12,7 @@ SLAM 으로 만든 지도가 아니라 실측 배치를 그린 지도다. 해상
 """
 
 import argparse
+import math
 import os
 import struct
 import sys
@@ -28,18 +29,44 @@ OCCUPIED, UNKNOWN, FREE = 0, 205, 254
 
 
 def _rects(layout):
-    """지도에 그릴 사각형(실측 cm): [(x0, y0, x1, y1), ...]."""
+    """지도에 그릴 사각형(실측 cm): [(x0, y0, x1, y1), ...]. 축에 나란한 벽과 물체."""
     t = layout.wall_thickness / 2.0
     out = []
     for w in layout.raw.get('walls') or []:
         (ax, ay), (bx, by) = w['from'], w['to']
         if ax != bx and ay != by:
-            raise LayoutError(f"{w.get('name')}: map generation supports axis-aligned walls only")
+            continue                     # 기운 벽은 _slanted 에서
         out.append((min(ax, bx) - t, min(ay, by) - t, max(ax, bx) + t, max(ay, by) + t))
     for o in layout.raw.get('objects') or []:
         if float(o.get('height', layout.object_height)) > layout.map.lidar_height:
             out.append((o['min'][0], o['min'][1], o['max'][0], o['max'][1]))
     return out
+
+
+def _slanted(layout):
+    """기운 벽(실측 cm): [(cx, cy, ux, uy, a, b), ...] = 중심, 길이 방향 단위 벡터, 반길이·반두께.
+    축에 나란한 벽처럼 양 끝을 두께의 절반만큼 늘린다."""
+    t = layout.wall_thickness / 2.0
+    out = []
+    for w in layout.raw.get('walls') or []:
+        (ax, ay), (bx, by) = w['from'], w['to']
+        if ax == bx or ay == by:
+            continue
+        length = math.hypot(bx - ax, by - ay)
+        out.append(((ax + bx) / 2.0, (ay + by) / 2.0, (bx - ax) / length, (by - ay) / length,
+                    length / 2.0 + t, t))
+    return out
+
+
+def _cell_hits_slanted(x, y, half, wall):
+    """칸(중심 x, y, 반 변 half, 축 정렬)과 기운 사각형이 겹치는지(분리축 4개)."""
+    cx, cy, ux, uy, a, b = wall
+    dx, dy = x - cx, y - cy
+    vx, vy = -uy, ux
+    return (abs(dx) < half + a * abs(ux) + b * abs(vx)
+            and abs(dy) < half + a * abs(uy) + b * abs(vy)
+            and abs(dx * ux + dy * uy) < a + half * (abs(ux) + abs(uy))
+            and abs(dx * vx + dy * vy) < b + half * (abs(vx) + abs(vy)))
 
 
 def build_pixels(layout):
@@ -49,6 +76,7 @@ def build_pixels(layout):
         raise LayoutError('layout has no map section')
     half = m.resolution * 100.0 / 2.0   # 칸 반 변(cm)
     rects = _rects(layout)
+    slanted = _slanted(layout)
     rx0, ry0, rx1, ry1 = layout.room()
     px = bytearray()
     for r in range(m.height):
@@ -58,7 +86,8 @@ def build_pixels(layout):
             x, y = layout.frame.to_measured(wx, wy)
             # 칸(정사각형)과 사각형이 겹치면 점유
             if any(x0 - half < x < x1 + half and y0 - half < y < y1 + half
-                   for x0, y0, x1, y1 in rects):
+                   for x0, y0, x1, y1 in rects) or any(
+                    _cell_hits_slanted(x, y, half, w) for w in slanted):
                 px.append(OCCUPIED)
             elif rx0 <= x <= rx1 and ry0 <= y <= ry1:
                 px.append(FREE)
