@@ -102,3 +102,84 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 - `ok`가 `null`(시작 중, GPU 서버가 이 PC를 아직 허용 전)이어도 준비 아님입니다. 제어판은 `ok: false`일 때만 평가 시작을 거절하므로 Host가 먼저 막습니다.
 - 준비가 아니면 `executor_error`에 `AI_LINK_DOWN`·`AI_LINK_STALE`·`AI_LINK_NOT_UDP`·`AI_LINK_UNKNOWN`을 싣고, 작업 명령은 접수 전에 `EXECUTOR_ERROR`로 거절합니다(HOLD 없음).
 - PING 성공은 서버가 살아 있다는 뜻이며 첫 추론의 모델 적재 지연까지 보장하지 않습니다.
+
+## AI 추론 UDP 클라이언트 (시험 단계, FFT1-154)
+
+`src/roport_omx/infer_link/`는 Host PC가 GPU AI 추론 서버(`services/roport-ai-server`의 `omx_udp`)와 UDP 규약 `RPI1`로 통신하는 클라이언트입니다. 규약 파일 `wire.py`는 AI 서버 쪽 원본을 그대로 복사하며 두 곳을 함께 갱신합니다.
+
+통신 구조: 관제 서버 ↔ Host PC는 MQTT, Host PC ↔ AI 추론 서버는 UDP, Host PC ↔ OMX 팔은 USB 시리얼(Dynamixel Protocol 2.0)입니다. Host PC 안에서 관제 Host(`cooperative_host.py`)는 로봇 루프를 가진 OMX 제어판을 로컬 HTTP로 호출하고, 제어판이 이 클라이언트로 추론을 요청합니다. 현장에서는 제어판(3.13.0 이상)이 같은 코드의 복사본을 사용하며 추론 통신은 UDP만 씁니다.
+
+- 관측 한 묶음(관절 값 + 카메라 JPEG + 작업 정보)을 한 메시지로 보내고, 모든 조각이 모여 CRC·HMAC을 통과한 메시지만 씁니다.
+- `infer()`는 요청마다 새 `observation_seq`와 `schema_version·boot_id·inference_id·captured_at·deadline`, 실행 중인 MQTT 명령의 `task_id·command_id·execution_id`를 붙입니다. 응답이 같은 시도·모델을 되돌려주지 않으면 `RESULT_MISMATCH`·`MODEL_MISMATCH`로 거절해 모터 목표로 쓰지 않습니다.
+- 응답이 시간 안에 없으면 `InferenceTimeout`이며 스스로 재시도하지 않습니다. 호출자는 최신 관측으로 다시 요청하고 그동안 팔을 안전하게 유지합니다.
+- 한 번에 요청 하나만 보냅니다. `InferenceClient`는 소켓 하나로 모든 응답을 받으므로 스레드 사이에 공유하면 안 됩니다. 두 호출이 겹치면 한쪽 응답을 다른 쪽이 `stale_reply`로 버리고 원래 호출은 `InferenceTimeout`이 됩니다. 겹칠 수 있는 호출자는 직접 직렬화하거나 스레드마다 클라이언트를 따로 만듭니다.
+- 서버 주소는 IP나 호스트 이름 모두 됩니다(`("192.0.2.10", 5600)`, `("gpu-host", 5600)`, JSON의 `["…", 5600]`). 생성할 때 IPv4로 한 번 바꿔 두고, 그 주소에서 온 응답만 받습니다.
+- 공유 키 파일(hex, `chmod 600`)은 저장소에 올리지 않습니다.
+
+### 새 Host PC를 GPU 추론 서버에 붙이기
+
+GPU 추론 서버 하나를 여러 Host PC(예: OMX1·2 Host, OMX3 Host)가 함께 씁니다. 새 Host PC는 아래 세 가지가 갖춰져야 응답을 받습니다. 하나라도 빠지면 서버가 요청을 조용히 버리므로 호출 쪽에는 `InferenceTimeout`만 보입니다.
+
+1. **같은 현장망**: GPU PC와 같은 공유기·같은 Wi-Fi(또는 유선)에 붙습니다. 게스트 Wi-Fi(기기 간 격리), 휴대폰 핫스팟, VPN 주소로는 닿지 않습니다. 서버는 허용 IP로 받으므로 공유기에서 이 PC의 IP를 고정(DHCP 예약)합니다. 가능하면 유선을 씁니다: 요청 하나가 datagram 수십 개로 나뉘고, 하나만 빠져도 그 요청 전체가 버려집니다.
+2. **공유 키**: GPU PC 서버와 같은 키 파일이 필요합니다. GPU PC 담당자에게서 직접 받아 `~/.config/roport/omx-udp.key`에 두고 `chmod 600` 합니다. 키 내용은 메신저·이슈·PR·저장소에 붙이지 않습니다. 키가 다르면 응답이 `bad_mac`으로 버려집니다(`client.stats`).
+3. **허용 IP 등록**: 고정한 IP를 GPU PC 담당자(GPU 제어판)에게 알려 서버 허용 목록에 넣습니다. 등록 전에는 요청이 `untrusted_peer`로 버려집니다.
+
+확인 순서: 이 PC에서 `ip -4 -br addr`로 현장망 주소인지 보고, `ping <GPU PC IP>`가 되면 `InferenceClient((<GPU PC IP>, 5600), key).ping()`이 `{"ok": true, ...}`를 돌려주는지 봅니다.
+
+여러 Host가 한 서버를 쓸 때 주의:
+- 서버는 요청을 하나씩 처리합니다. 한 Host가 `load()`로 모델을 올리는 동안(수 초~수십 초) 다른 Host의 `infer()`는 응답이 늦어 시간 초과가 날 수 있습니다. 모델은 주행 전에 미리 올리고, 다른 Host가 주행 중일 때는 새로 올리지 않습니다.
+- 서버가 동시에 올려 두는 모델 수에는 한도가 있습니다. 여러 Host가 서로 다른 모델을 번갈아 쓰면 매번 다시 올리게 되므로, 함께 쓸 모델 수를 GPU PC 담당자와 맞춥니다.
+- Host와 세션별로 따로 조립·처리하므로 한 Host의 밀린 요청이 다른 Host의 요청을 밀어내지는 않습니다.
+- 검사: `ci/test_infer_link.py`(loopback 가짜 서버, `wire.py` 복사본이 AI 서버 원본과 같은지도 확인). 제어판 연결, 실제 망 손실·지연, GPU 추론, 실물 팔은 이 검사에 포함하지 않습니다. 규약은 팀 AI UDP 설계안(Confluence MFS 10125435)의 원칙을 따르며 팀 합의 전 초안입니다.
+
+### INFER 요청·응답 형식 (`schema_version` `roport-omx-infer-v1`)
+
+서버는 OMX 제어판의 추론 형식을 그대로 받습니다. 제어판이 아닌 호출자(예: OMX3 `ChunkPolicy` 어댑터)는 아래대로 `infer(header, data)`의 두 인자를 만듭니다. `schema_version`, `inference_id`, `observation_seq` 같은 식별자는 `infer()`가 붙이므로 넣지 않습니다.
+
+요청 `header`:
+
+| 키 | 형식 | 뜻 |
+|---|---|---|
+| `model` | str | GPU PC의 체크포인트 폴더 경로(`pretrained_model`). 팀 checkpoints 아래만 허용되고, 아니면 `MODEL_NOT_ALLOWED`입니다. 먼저 `load()`로 올립니다. |
+| `overrides` | dict | `load()`에 준 값과 같게 둡니다. 다르면 서버가 모델을 따로 올립니다. 없으면 `{}`입니다. |
+| `task`, `robot_type` | str \| null | LeRobot 정책에 그대로 넘기는 작업 문장과 로봇 종류입니다(언어 조건 모델만 `task`를 씀). |
+| `obs` | list | 관측 묶음입니다. 오래된 것부터 넣고 마지막이 최신입니다. `LOADED`의 `n_obs`개를 보냅니다(diffusion은 마지막 2개, 나머지 정책은 마지막 1개만 씀). |
+| `chunk` | int | 돌려받을 동작 수의 상한입니다. 없으면 50입니다. |
+| `rtc` | dict \| null | `{"delay": int, "left": [[…], …] \| null}`. RTC를 켠 smolvla·pi0·pi05 모델만 씁니다. `delay`는 추론 지연(제어 step 수), `left`는 이전 chunk에서 아직 실행하지 않은 동작의 `original` 값입니다. 그 밖의 모델은 무시합니다. |
+
+`obs`의 원소 하나와 `data`:
+
+```json
+{"state": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+ "images": {"observation.images.front": [0, 18234], "observation.images.wrist": [18234, 17012]}}
+```
+
+- `state`: 한 시점의 `observation.state`(float). 순서·단위는 모델이 학습한 데이터셋과 같아야 합니다(데이터셋 `meta/info.json`의 `observation.state` `names`).
+- `images`: 카메라 키 → `[offset, length]`. 키는 모델 `config.json`의 `input_features` 이미지 키와 같아야 합니다(`observation.images.<카메라 이름>`). `offset`·`length`는 `data` 안의 바이트 위치입니다.
+- `data`: 모든 JPEG를 `obs` 순서, 그 안의 이미지 순서대로 이어 붙인 바이트입니다. 각 JPEG는 RGB 카메라 프레임을 OpenCV로 인코딩한 것입니다(BGR로 바꿔 `cv2.imencode`, 제어판 기본 품질 90). `LOADED`에 `image_size: [h, w]`가 있으면 그 크기로 `cv2.INTER_AREA` 축소 뒤 인코딩합니다(제어판 `omx_tools/omx_infer.py`의 `pack_observations`와 같음). 서버는 `cv2.imdecode` 뒤 RGB로 되돌립니다.
+
+응답(`infer()`의 반환값):
+
+| 키 | 뜻 |
+|---|---|
+| `actions` | `[[…], …]` 길이 ≤ `chunk`, 행마다 모델의 action 차원(학습 데이터 `action`과 같은 순서·단위, 정규화를 푼 값). 로봇 목표값으로 쓰는 값입니다. |
+| `original` | 같은 모양의 정책 원래 출력(정규화된 값)입니다. RTC의 `left`로만 다시 씁니다. |
+| `infer_ms`, `load_ms` | GPU 추론 시간, 이 요청 때문에 모델을 올린 시간(이미 올라가 있으면 0)입니다. |
+| `model_version`, `valid_until` | 요청 모델(또는 `model_version`), 요청의 `deadline`입니다. |
+| 식별자 | `inference_id·observation_seq·task_id·command_id·execution_id`를 되돌려주며, `infer()`가 요청과 비교합니다. |
+
+동작 값이 NaN·Infinity면 서버가 `INFER_FAILED`로 거절하고, 규약도 유한하지 않은 수를 싣지 않습니다.
+
+관절 값과 카메라는 모델이 학습한 데이터가 기준입니다(데이터셋 `meta/info.json`의 `names`, 모델 `config.json`의 `input_features`). 팀 데이터의 실제 예:
+
+| | 한 팔 (`omx_follower`, 예: OMX3) | 양팔 (`bi_omx_follower`, 예: OMX1·2) |
+|---|---|---|
+| `state`·`actions` 한 행 | 6개: `shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper` | 12개: `left_` 6개 다음 `right_` 6개(같은 관절 순서) |
+| 단위 | 몸통 관절 −100~100, 그리퍼 0~100 | 같음 |
+| `images` 키 | 모델에 따라 다름. 예: 정면만 쓰는 ACT는 `observation.images.front` 하나 | 예: `front`, `front_2`, `wrist_left`, `wrist_right` |
+
+- 단위는 LeRobot `omx_follower` 기본값(`use_degrees=False`)입니다. 각도가 아니라 **팔마다의 캘리브레이션 파일** 범위로 정규화한 값이므로, 같은 값도 팔이 다르면 실제 자세가 다를 수 있습니다. 모델은 그 데이터를 기록한 팔과 같은 `robot_id`·캘리브레이션으로 씁니다.
+- 모델이 받지 않는 카메라는 넣지 않아도 됩니다. 모델이 받는 카메라가 빠지면 서버가 `INFER_FAILED`로 답합니다.
+- `chunk`는 모델이 한 번에 만드는 수(`config.json`의 `chunk_size`, 예: 100)보다 크게 받을 수 없습니다. 빼면 50으로 잘리므로 필요한 값을 직접 넣습니다.
+
+관측을 묶는 함수(`pack_observations`)를 `infer_link`에 두는 일은 OpenCV 의존성 때문에 후속 작업으로 남깁니다.
