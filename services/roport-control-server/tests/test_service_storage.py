@@ -161,9 +161,11 @@ def test_invalid_frames_do_not_commit_or_ack(dsn, change):
     incoming = request()
     change(incoming)
     sent = []
+    stop = asyncio.Event()
 
     class Socket:
         async def recv(self):
+            stop.set()
             return json.dumps(incoming)
 
         async def send(self, message):
@@ -173,8 +175,7 @@ def test_invalid_frames_do_not_commit_or_ack(dsn, change):
         link = ServiceLink(
             "ws://localhost/ws/v1/sites/test/control", "test-only", "test", store
         )
-        with pytest.raises(ValueError):
-            await link.exchange(Socket(), asyncio.Event())
+        await link.exchange(Socket(), stop)
 
     asyncio.run(scenario())
     assert not sent and not store.pending_tasks() and not store.outbox()
@@ -221,9 +222,11 @@ def test_malformed_ack_cannot_clear_outbox(dsn, change):
     ack = example("ack-event")
     ack["payload"]["message_id"] = pending[0]["message_id"]
     change(ack)
+    stop = asyncio.Event()
 
     class Socket:
         async def recv(self):
+            stop.set()
             return json.dumps(ack)
 
         async def send(self, message):
@@ -233,8 +236,7 @@ def test_malformed_ack_cannot_clear_outbox(dsn, change):
         link = ServiceLink(
             "ws://localhost/ws/v1/sites/test/control", "test-only", "test", store
         )
-        with pytest.raises(ValueError):
-            await link.exchange(Socket(), asyncio.Event())
+        await link.exchange(Socket(), stop)
 
     asyncio.run(scenario())
     assert store.outbox() == pending

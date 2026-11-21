@@ -4,6 +4,10 @@ import re
 from datetime import datetime
 
 
+class ServiceStorageError(RuntimeError):
+    """A service-store transaction failed; retry delivery without acknowledging it."""
+
+
 def validate_service_message(message, kind):
     fields = {
         "schema_version",

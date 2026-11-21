@@ -1,7 +1,10 @@
 """Service requests and executor state in the control-owned PostgreSQL database."""
 
 import argparse
+import hashlib
+import json
 import os
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,7 +16,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from ...contracts.service_policy import manifest_change_reason
-from ...contracts.service_wire import validate_service_message
+from ...contracts.service_wire import ServiceStorageError, validate_service_message
 
 SCHEMA = Path(__file__).with_name("002_service.sql")
 TERMINAL = {"COMPLETED", "FAILED", "REJECTED"}
@@ -62,8 +65,53 @@ class ServiceTaskStore:
     def __init__(self, dsn):
         self.dsn = dsn
 
+    @contextmanager
     def _connection(self):
-        return psycopg.connect(self.dsn, row_factory=dict_row)
+        try:
+            with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+                yield conn
+        except psycopg.Error as exc:
+            raise ServiceStorageError("service storage transaction failed") from exc
+
+    def receive(self, message):
+        """Persist valid-envelope refusals without blocking later frames or re-executing a replay."""
+        validate_service_message(message, message["type"])
+        digest = hashlib.sha256(
+            json.dumps(message, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        identity = (message["site_id"], message["message_id"], digest)
+        with self._connection() as conn:
+            previous = conn.execute(
+                "SELECT reason FROM control_service_quarantine WHERE site_id=%s AND message_id=%s AND digest=%s",
+                identity,
+            ).fetchone()
+        if previous:
+            return previous["reason"]
+        try:
+            if message["type"] == "handover.receipt_recorded":
+                self.accept_receipt(message)
+            else:
+                self.accept(message)
+        except ValueError as exc:
+            reason = {
+                "order already has an active task": "active_order",
+                "message_id reused with different content": "message_id_conflict",
+                "reservation site mismatch": "reservation_site_mismatch",
+                "receipt does not match task": "receipt_task_mismatch",
+                "conflicting receipt": "receipt_conflict",
+            }.get(
+                str(exc),
+                "request_rejected"
+                if message["type"] == "task.requested"
+                else "receipt_rejected",
+            )
+            with self._connection() as conn:
+                conn.execute(
+                    "INSERT INTO control_service_quarantine(site_id,message_id,digest,reason) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                    (*identity, reason),
+                )
+            return reason
+        return None
 
     @staticmethod
     def _received(conn, message):
@@ -157,7 +205,8 @@ class ServiceTaskStore:
                     reason = manifest_change_reason(
                         task["request"],
                         payload,
-                        task["dispatch_locked"] or task["state"] in TERMINAL,
+                        task["dispatch_locked"]
+                        or task["state"] in TERMINAL | {"RUNNING"},
                     )
                     if reason == "reservation_fields_changed":
                         raise ValueError(
@@ -225,11 +274,10 @@ class ServiceTaskStore:
                 or task["request"]["order_revision"] != order_revision
             ):
                 return None
-            conn.execute(
-                "UPDATE control_service_tasks SET dispatch_locked=true WHERE task_id=%s",
+            return conn.execute(
+                "UPDATE control_service_tasks SET dispatch_locked=true WHERE task_id=%s RETURNING *",
                 (task_id,),
-            )
-            return task
+            ).fetchone()
 
     def accept_receipt(self, message):
         """Persist first-receipt eligibility; ACK means stored, not arrival verified.
@@ -355,8 +403,9 @@ class ServiceTaskStore:
                 raise ValueError("package manifest is not ready")
             task = conn.execute(
                 """UPDATE control_service_tasks SET state=%s,progress=%s,
-                revision=revision+1,updated_at=now() WHERE task_id=%s RETURNING *""",
-                (state, Jsonb(progress), task_id),
+                revision=revision+1,updated_at=now(),
+                dispatch_locked=dispatch_locked OR %s WHERE task_id=%s RETURNING *""",
+                (state, Jsonb(progress), state in TERMINAL | {"RUNNING"}, task_id),
             ).fetchone()
             kind = {
                 "COMPLETED": "task.completed",
@@ -371,7 +420,7 @@ class ServiceTaskStore:
             return [
                 r["message"]
                 for r in conn.execute(
-                    "SELECT message FROM control_service_outbox WHERE acknowledged_at IS NULL ORDER BY created_at,message_id"
+                    "SELECT message FROM control_service_outbox WHERE acknowledged_at IS NULL ORDER BY seq LIMIT 100"
                 ).fetchall()
             ]
 

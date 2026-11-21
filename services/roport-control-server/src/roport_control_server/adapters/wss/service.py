@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from time import monotonic
@@ -11,7 +12,9 @@ from uuid import uuid4
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
-from ...contracts.service_wire import validate_service_message
+from ...contracts.service_wire import ServiceStorageError, validate_service_message
+
+LOG = logging.getLogger(__name__)
 
 
 class ServiceLink:
@@ -51,24 +54,28 @@ class ServiceLink:
                 raw = await asyncio.wait_for(socket.recv(), timeout=1)
             except TimeoutError:
                 continue
-            message = json.loads(raw)
-            if not isinstance(message, dict) or message.get("site_id") != self.site_id:
-                raise ValueError("unexpected service site")
-            validate_service_message(message, message.get("type"))
-            if message.get("type") == "message.ack":
+            try:
+                message = json.loads(raw)
+                if (
+                    not isinstance(message, dict)
+                    or message.get("site_id") != self.site_id
+                ):
+                    raise ValueError("unexpected service site")
+                validate_service_message(message, message.get("type"))
+            except (ValueError, TypeError):
+                LOG.warning("invalid_service_frame")
+                continue  # No trusted identity to ACK; keep processing later frames.
+            if message["type"] == "message.ack":
                 await asyncio.to_thread(
                     self.store.acknowledge,
                     message["payload"]["message_id"],
                     self.site_id,
                 )
                 continue
-            accept = (
-                self.store.accept_receipt
-                if message.get("type") == "handover.receipt_recorded"
-                else self.store.accept
-            )
-            await asyncio.to_thread(accept, message)
-            # accept() has committed before ACK is sent; a lost ACK replays the same task.
+            reason = await asyncio.to_thread(self.store.receive, message)
+            if reason:
+                LOG.warning("service_message_quarantined: %s", reason)
+            # Acceptance or quarantine has committed; ACK means stored, never executed.
             await socket.send(
                 json.dumps(
                     {
@@ -96,6 +103,8 @@ class ServiceLink:
             except ConnectionClosed as exc:
                 if exc.rcvd is not None and exc.rcvd.code == 4001:
                     return  # A replacement owner must not be evicted by reconnect.
+            except ServiceStorageError:
+                LOG.warning("service_storage_unavailable")
             except (
                 OSError,
                 WebSocketException,
