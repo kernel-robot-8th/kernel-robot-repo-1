@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { api, ApiError, fmt, loadErrorText as errText, loginErrorText, isActivePickupExists, reserveErrorText, shouldReloadTimes, statusLabel, timesErrorText, upcomingFlights } from './api';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { toDataURL } from 'qrcode';
+import { api, ApiError, fmt, loadErrorText as errText, loginErrorText, isActivePickupExists, qrErrorText, reserveErrorText, shouldReloadTimes, statusLabel, timesErrorText, upcomingFlights } from './api';
 import type { Flight, Location, Member, Order, Pickup } from './api';
-import { boardingNotice, progressIndex, PROGRESS_STEPS, splitLocations, when } from './view';
+import { boardingNotice, mmss, progressIndex, PROGRESS_STEPS, qrDeadline, qrSecondsLeft, splitLocations, when } from './view';
 
 type View =
   | { name: 'orders' }
@@ -57,7 +58,7 @@ export function App() {
     return (
       <main className="app">
         <SubHeader title="예약 QR" sub={`주문 ${view.pickup.orderNo}`} onBack={toPickups} />
-        <Ticket pickup={view.pickup} justCreated={view.justCreated} onStatus={() => setView({ name: 'status', pickup: view.pickup })} />
+        <Ticket pickup={view.pickup} justCreated={view.justCreated} onError={onError} onStatus={() => setView({ name: 'status', pickup: view.pickup })} />
       </main>
     );
   }
@@ -357,15 +358,57 @@ function Pickups({ onError, onTicket, onStatus }: { onError: (e: unknown) => boo
   );
 }
 
-// 예약 QR(SR-18). QR에 담을 값(인증 방식)은 서비스 서버 인증 API에서 정하므로, 그 전에는 가짜 QR을 그리지 않고
-// 카트 패드에서 직접 입력할 수 있는 예약번호를 크게 보여 준다.
-function Ticket({ pickup: p, justCreated, onStatus }: { pickup: Pickup; justCreated?: boolean; onStatus: () => void }) {
+type QrState =
+  | { st: 'loading' }
+  | { st: 'ready'; image: string; deadline: number }
+  | { st: 'expired' }
+  | { st: 'error'; msg: string };
+
+// 예약 QR(SR-18-1). 화면에 들어올 때 서버에서 새 QR을 받아 브라우저에서 그린다(토큰을 외부로 보내지 않음).
+// 발급할 때마다 이전 QR이 폐기되므로 자동으로 다시 받지 않고, 만료되면 고객이 "새 QR 받기"를 누른다.
+// QR이 인식되지 않을 때를 위해 카트 패드에 입력할 예약번호를 함께 크게 보여 준다(SR-18-2-E).
+function Ticket({ pickup: p, justCreated, onError, onStatus }: { pickup: Pickup; justCreated?: boolean; onError: (e: unknown) => boolean; onStatus: () => void }) {
+  const [qr, setQr] = useState<QrState>({ st: 'loading' });
+  const [now, setNow] = useState(() => Date.now());
+  const seq = useRef(0);
+
+  const issue = useCallback(async () => {
+    const mine = ++seq.current; // 늦게 온 이전 발급 결과가 새 QR을 덮지 않게 한다
+    setQr({ st: 'loading' });
+    try {
+      const t = await api.qrToken(p.pickupId);
+      const deadline = qrDeadline(t.issuedAt, t.expiresAt);
+      const image = await toDataURL(t.token, { errorCorrectionLevel: 'M', margin: 2, width: 320 });
+      if (mine !== seq.current) return;
+      setNow(Date.now());
+      setQr({ st: 'ready', image, deadline });
+    } catch (e) {
+      if (mine !== seq.current || onError(e)) return;
+      setQr({ st: 'error', msg: qrErrorText(e) });
+    }
+  }, [p.pickupId, onError]);
+
+  useEffect(() => {
+    void issue();
+    return () => { seq.current++; }; // 화면을 떠나면 진행 중인 발급 결과를 버린다
+  }, [issue]);
+
+  const left = qr.st === 'ready' ? qrSecondsLeft(qr.deadline, now) : 0;
+  useEffect(() => {
+    if (qr.st !== 'ready') return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [qr.st]);
+  useEffect(() => {
+    if (qr.st === 'ready' && left === 0) setQr({ st: 'expired' }); // 만료된 QR은 카트가 거절하므로 가린다
+  }, [qr.st, left]);
+
   return (
     <section className="content">
       {justCreated && (
         <div className="lead-block" role="status">
           <h2>예약이 접수되었습니다.</h2>
-          <p>현장 배정 전이며 수령이 확정된 것은 아닙니다. 수령 위치에서 QR이 준비되기 전까지는 카트 패드에 예약번호를 입력해 주세요.</p>
+          <p>현장 배정 전이며 수령이 확정된 것은 아닙니다. 수령 위치에서 카트에 아래 QR을 보여 주세요. 인식되지 않으면 카트 패드에 예약번호를 입력해 주세요.</p>
         </div>
       )}
       <article className="ticket">
@@ -374,11 +417,19 @@ function Ticket({ pickup: p, justCreated, onStatus }: { pickup: Pickup; justCrea
           <span>주문 {p.orderNo}</span>
         </header>
         <div className="ticket-body">
-          <div className="qr-slot">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2" /></svg>
-            <span>QR 준비 중</span>
-            <small>인증 방식이 정해지면 표시됩니다</small>
-          </div>
+          {qr.st === 'ready' ? (
+            <>
+              <img className="qr-img" src={qr.image} alt={`예약 ${p.reservationNo} QR 코드`} width={192} height={192} />
+              <p className="muted small" aria-live="polite">{mmss(left)} 후 만료 · 만료되면 새 QR을 받아 주세요</p>
+            </>
+          ) : (
+            <div className="qr-slot" role={qr.st === 'error' ? 'alert' : 'status'}>
+              {qr.st === 'loading' && <span>QR 받는 중…</span>}
+              {qr.st === 'expired' && <><span>QR이 만료되었습니다</span><small>새 QR을 받으면 이전 QR은 쓸 수 없습니다</small></>}
+              {qr.st === 'error' && <><span>QR을 받지 못했습니다</span><small>{qr.msg}</small></>}
+              {qr.st !== 'loading' && <button type="button" className="btn btn-primary btn-small" onClick={() => void issue()}>새 QR 받기</button>}
+            </div>
+          )}
           <p className="muted small">예약번호</p>
           <p className="resv-no mono">{p.reservationNo}</p>
         </div>

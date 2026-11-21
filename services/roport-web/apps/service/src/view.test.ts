@@ -1,7 +1,7 @@
 // 실행(CI와 동일): services/roport-web 에서 `node --test 'apps/service/src/**/*.test.ts'`
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { splitLocations, progressIndex, boardingNotice, hhmm, when } from './view.ts';
+import { splitLocations, progressIndex, boardingNotice, hhmm, when, mmss, qrDeadline, qrSecondsLeft } from './view.ts';
 
 const loc = (locationId: string, name: string) => ({ locationId, name });
 
@@ -43,4 +43,27 @@ test('when: 오늘(KST)은 시각만, 다른 날은 날짜와 함께', () => {
   assert.equal(when('2026-11-14T15:00:00Z', now), '11/15 00:00'); // KST 자정 넘김
   assert.equal(when('2025-11-14T03:00:00Z', now), '2025/11/14 12:00'); // 작년 같은 날은 오늘이 아니다
   assert.equal(when('2026-12-31T15:30:00Z', now), '2027/1/1 00:30'); // KST로 해가 바뀜
+});
+
+test('qrDeadline: 서버 유효 기간을 받은 순간부터 센다(휴대폰 시계가 서버와 달라도 같음)', () => {
+  const received = Date.parse('2026-11-21T03:20:00Z'); // 휴대폰 시계가 서버보다 20분 빠른 경우
+  assert.equal(qrDeadline('2026-11-21T03:00:00Z', '2026-11-21T03:10:00Z', received), received + 600_000);
+  // 해석할 수 없거나 기간이 0 이하이면 받은 즉시 만료
+  assert.equal(qrDeadline('x', '2026-11-21T03:10:00Z', received), received);
+  assert.equal(qrDeadline('2026-11-21T03:10:00Z', '2026-11-21T03:00:00Z', received), received);
+});
+
+test('qrSecondsLeft: 만료까지 남은 초(올림), 지났으면 0', () => {
+  const deadline = Date.parse('2026-11-21T03:10:00Z');
+  assert.equal(qrSecondsLeft(deadline, deadline - 600_000), 600);
+  assert.equal(qrSecondsLeft(deadline, deadline - 200), 1);
+  assert.equal(qrSecondsLeft(deadline, deadline), 0);
+  assert.equal(qrSecondsLeft(deadline, deadline + 60_000), 0);
+});
+
+test('mmss: 분:초 두 자리', () => {
+  assert.equal(mmss(600), '10:00');
+  assert.equal(mmss(581), '9:41');
+  assert.equal(mmss(5), '0:05');
+  assert.equal(mmss(-3), '0:00');
 });
