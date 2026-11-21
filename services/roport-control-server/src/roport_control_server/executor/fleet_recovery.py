@@ -56,9 +56,15 @@ def recover_stop(control, command_id, stop_id, boot_version, note):
         raise ValueError("fresh state for the requested boot required")
 
     ongoing = p.get("active_command_id")
-    if (
-        ongoing == command_id
-        and boot_version == stop["payload"]["expected_boot_version"]
+    if ongoing == command_id and (
+        boot_version == stop["payload"]["expected_boot_version"]
+        or (
+            robot in ROLES
+            and state.get("fault") == "recovery_required"
+            and state.get("stopped") is True
+            and not state.get("line_enabled")
+            and state.get("drive_owner") == "none"
+        )
     ):
         active["stop"] = new_stop(
             control.config["control_id"], active["message"], boot_version

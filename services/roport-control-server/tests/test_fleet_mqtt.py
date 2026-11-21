@@ -5,6 +5,7 @@ import threading
 import time
 from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import pytest
@@ -259,7 +260,11 @@ def test_duplicate_and_late_real_host_result_do_not_advance_over_mqtt(fleet_mqtt
     assert not env.control.data["fault"]
 
 
-def test_robot_restart_holds_active_command_over_mqtt(fleet_mqtt):
+def test_robot_restart_recovers_inherited_command_without_automatic_motion(fleet_mqtt):
+    from test_fleet_socket import request
+
+    from roport_control_server.executor.fleet_socket import FleetSocket
+
     env = fleet_mqtt
     key = env.submit("restart", "inbound")
     env.pump(lambda: any(c.journal.data["active"] for c in env.clients))
@@ -282,3 +287,108 @@ def test_robot_restart_holds_active_command_over_mqtt(fleet_mqtt):
     assert env.control.data["tasks"][key]["status"] == "HOLD"
     assert not env.executors["omx3"].tasks
     assert env.control.next_action() is None
+    runtime = FleetRuntime(env.control, env.transport)
+
+    def held_until(predicate):
+        deadline = time.monotonic() + 10
+        while not predicate():
+            for client in env.clients:
+                client.driver.tick()
+                client.poll(0)
+            for _ in range(12):
+                runtime.poll(0)
+            assert not env.control.data["enabled"]
+            assert env.control.next_action() is None
+            assert time.monotonic() < deadline, env.control.snapshot()
+            time.sleep(0.002)
+
+    cid = replacement.journal.data["active"]
+    held_until(lambda: bool(env.control.data["commands"][cid].get("stop")))
+    assert env.control.observed[old.robot]["active_command_id"] == cid
+    assert env.control.observed[old.robot]["state"]["fault"] == "recovery_required"
+    resources = dict(env.control.data["resources"])
+    old_record = replacement.journal.data["records"][cid]
+
+    with TemporaryDirectory(prefix="rp-reboot-") as directory:
+        owner = FleetSocket(Path(directory) / "s", env.control)
+        env.stack.callback(owner.close)
+
+        def operate(action, **fields):
+            return request(
+                owner,
+                action=action,
+                session_id=owner.session_id,
+                expires_at=time.time() + 1,
+                **fields,
+            )
+
+        assert not operate("release_hold", note="still unresolved")["ok"]
+        assert operate(
+            "recover_stop",
+            command_id=cid,
+            stop_id=env.control.data["commands"][cid]["stop"]["command_id"],
+            boot_version=replacement.boot,
+            note="checked stopped robot; inherited work needs removal",
+        )["ok"]
+        stop = env.control.data["commands"][cid]["stop"]
+        assert stop["payload"]["expected_boot_version"] == replacement.boot
+        held_until(
+            lambda: (
+                replacement.journal.data["active"] is None
+                and any(
+                    e["command_id"] == stop["command_id"]
+                    and e["payload"]["status"] == "completed"
+                    for e in env.control.data["events"].values()
+                )
+            )
+        )
+        interrupted = replacement.journal.data["records"][cid]["event"]
+        assert interrupted["payload"]["status"] == "interrupted"
+        assert (
+            replacement.journal.data["records"][cid]["command"] == old_record["command"]
+        )
+        held_until(
+            lambda: interrupted["message_id"] not in replacement.journal.data["outbox"]
+        )
+        assert env.control.data["events"][interrupted["message_id"]] == interrupted
+        assert env.control.data["resources"] == resources
+        assert not operate(
+            "reconcile", command_id=cid, outcome="completed", note="not completion"
+        )["ok"]
+        assert not operate(
+            "reconcile", command_id=cid, outcome="removed", note="endpoint still held"
+        )["ok"]
+
+        # Simulate the operator removing goods, parking, and restarting the endpoint/driver.
+        # Reopen the same journal; do not clear the inherited command history.
+        replacement.close()
+        driver = VirtualPinky(profile, role, threaded=False)
+        env.stack.callback(driver.close)
+        parked = FieldPinkyClient(
+            MqttConfig("127.0.0.1", "fleet-parked-" + old.robot, port=env.port),
+            profile,
+            role,
+            env.tmp_path / (old.robot + ".json"),
+            driver,
+        )
+        parked.start()
+        env.stack.callback(parked.close)
+        env.clients[index] = parked
+        held_until(
+            lambda: env.control.observed[old.robot]["boot_version"] == parked.boot
+        )
+        assert parked.halted is None and parked.journal.data["active"] is None
+        assert parked.journal.data["records"][cid]["event"] == interrupted
+        assert operate(
+            "reconcile",
+            command_id=cid,
+            outcome="removed",
+            note="goods removed; parked and checked",
+        )["ok"]
+        assert env.control.data["tasks"][key]["status"] == "CANCELED"
+        assert not env.control.data["commands"] and not env.control.data["resources"]
+        assert operate("release_hold", note="checked fleet")["ok"]
+        assert env.control.next_action() is None
+        assert not env.control.data["enabled"]
+        assert operate("enable")["ok"]
+        assert not env.executors["omx3"].tasks

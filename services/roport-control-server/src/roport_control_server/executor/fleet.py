@@ -799,9 +799,20 @@ class FleetControl:
         if not active:
             return False
         cmd, p = active["message"], message["payload"]
-        if (
-            message["source"] != cmd["target"]
-            or p["boot_version"] != cmd["payload"]["expected_boot_version"]
+        stop = active.get("stop", {}).get("payload", {})
+        # A restarted Pinky may interrupt inherited work only via the recorded STOP.
+        stop_interrupt = (
+            self.data["fault"]
+            and cmd["target"] in ROLES
+            and stop.get("expected_boot_version") == p["boot_version"]
+            and stop.get("target_command_id") == cmd["command_id"]
+            and p["status"] == "interrupted"
+            and p.get("reason") == "operator_stop"
+            and p.get("result", {}).get("stopped") is True
+        )
+        if message["source"] != cmd["target"] or (
+            p["boot_version"] != cmd["payload"]["expected_boot_version"]
+            and not stop_interrupt
         ):
             raise ValueError("command source/boot mismatch")
         if p["sequence"] <= active["sequence"]:

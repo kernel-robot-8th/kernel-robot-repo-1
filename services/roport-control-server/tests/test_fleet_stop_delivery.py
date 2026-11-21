@@ -118,6 +118,47 @@ def test_new_boot_does_not_receive_old_stop_and_requires_separate_removal(fleet)
     assert not fleet.data["enabled"]
 
 
+@pytest.mark.parametrize(
+    "problem", [None, "moving", "line_enabled", "owner", "fault", "active", "stale"]
+)
+def test_rebooted_active_pinky_requires_current_stopped_recovery_state(fleet, problem):
+    cmd = start_held(fleet)
+    cid, robot = cmd["command_id"], cmd["target"]
+    state = deepcopy(fleet.observed[robot])
+    state.update(boot_version="new-boot", active_command_id=cid)
+    state["state"]["fault"] = "recovery_required"
+    if problem == "moving":
+        state["state"]["stopped"] = False
+    elif problem == "line_enabled":
+        state["state"]["line_enabled"] = True
+    elif problem == "owner":
+        state["state"]["drive_owner"] = "line"
+    elif problem == "fault":
+        state["state"]["fault"] = "obstacle"
+    elif problem == "active":
+        state["active_command_id"] = "different-command"
+    fleet.observe(
+        {"source": robot, "payload": state}, age=4 if problem == "stale" else 0
+    )
+    transport = MemoryTransport()
+    FleetRuntime(fleet, transport).poll(0)
+    assert not any(m["type"] == "robot_stop_command" for _, m in transport.sent)
+    before = deepcopy(fleet.data)
+    stop_id = before["commands"][cid]["stop"]["command_id"]
+    if problem:
+        with pytest.raises(ValueError):
+            recover_stop(fleet, cid, stop_id, "new-boot", "checked stopped robot")
+        assert fleet.data == before
+        return
+    recover_stop(fleet, cid, stop_id, "new-boot", "checked stopped robot")
+    stop = fleet.data["commands"][cid]["stop"]
+    assert stop["command_id"] != stop_id
+    assert stop["payload"]["expected_boot_version"] == "new-boot"
+    assert stop["payload"]["target_command_id"] == cid
+    assert fleet.data["resources"] == before["resources"]
+    assert fleet.data["fault"] == before["fault"] and not fleet.data["enabled"]
+
+
 def test_original_observation_expires_before_receive_age(fleet):
     cmd = start_held(fleet)
     robot = cmd["target"]
@@ -144,3 +185,63 @@ def test_original_observation_expires_before_receive_age(fleet):
     complete(fleet, cmd, observe=False)
     with pytest.raises(ValueError, match="fresh stopped idle"):
         reconcile(fleet, cmd["command_id"], "completed", "checked")
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [None, "source", "boot", "completed", "in_progress", "moving", "reason", "stop"],
+)
+def test_new_boot_only_reports_interruption_for_recorded_stop(fleet, problem):
+    cmd = start_held(fleet)
+    cid, robot = cmd["command_id"], cmd["target"]
+    state = deepcopy(fleet.observed[robot])
+    state.update(boot_version="new-boot", active_command_id=cid)
+    state["state"]["fault"] = "recovery_required"
+    fleet.observe({"source": robot, "payload": state})
+    FleetRuntime(fleet, MemoryTransport()).poll(0)
+    recover_stop(
+        fleet,
+        cid,
+        fleet.data["commands"][cid]["stop"]["command_id"],
+        "new-boot",
+        "checked",
+    )
+    message = wire.build_message(
+        "command_status",
+        robot,
+        fleet.config["control_id"],
+        {
+            "boot_version": "new-boot",
+            "observed_at": datetime.now(UTC).isoformat(),
+            "sequence": 2,
+            "status": "interrupted",
+            "reason": "operator_stop",
+            "result": {"stopped": True},
+        },
+        command_id=cid,
+    )
+    if problem == "source":
+        message["source"] = "pinky2"
+    elif problem == "boot":
+        message["payload"]["boot_version"] = "unrelated-boot"
+    elif problem in {"completed", "in_progress"}:
+        message["payload"]["status"] = problem
+    elif problem == "moving":
+        message["payload"]["result"]["stopped"] = False
+    elif problem == "reason":
+        message["payload"]["reason"] = "unknown"
+    elif problem == "stop":
+        data = deepcopy(fleet.data)
+        del data["commands"][cid]["stop"]
+        fleet.save(data)
+    before = deepcopy(fleet.data)
+    if problem:
+        with pytest.raises(ValueError, match="source/boot mismatch"):
+            fleet.result(message)
+        assert fleet.data == before
+        return
+    assert fleet.result(message)
+    assert fleet.data["events"][message["message_id"]] == message
+    assert fleet.data["resources"] == before["resources"]
+    assert fleet.data["tasks"]["inbound-held-stop"]["status"] == "HOLD"
+    assert not fleet.data["enabled"]
