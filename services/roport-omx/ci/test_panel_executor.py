@@ -1387,6 +1387,44 @@ class PanelExecutorTest(unittest.TestCase):
         )
         self.assertIsNone(self.host.hold)
 
+    def test_handover_aligner_hold_holds_and_never_sends_the_arms_home(self):
+        # 2026-11-21: after taking the arms over, the aligner found no safe way home and left
+        # them by the shelf with the torque on (handover_align "hold", exit 2). Panel 3.21.0
+        # closes that as an ordinary alignment (stage done), so the Host must not recover it.
+        self.executor.end_on_place = True
+        self.panel.status["version"] = "3.21.0"
+        for on_shelf in (False, True, None):
+            for stage in ("done", "hold"):  # "hold": the panel fix agreed the same day
+                with self.subTest(on_shelf=on_shelf, stage=stage):
+                    self.host.clear_hold()
+                    self.panel.status["job"] = {"running": False}
+                    self.host._data["active"] = None
+                    homes = self.panel.home_returns
+                    self.send(self.inbound())
+                    self.panel.finish(
+                        exit_ok=True,
+                        align=align(
+                            ok=False,
+                            align="plan_error",
+                            on_shelf=on_shelf,
+                            released=False,
+                            returncode=2,
+                            handover_align="hold",
+                        ),
+                        handover={"mode": "handover", "state": "taken"},
+                        stage=stage,
+                        final=stage == "done",
+                    )
+                    (event,) = self.host.poll()
+                    p = event["payload"]
+                    self.assertEqual(event["type"], "shelf_inbound.failed")
+                    self.assertEqual(
+                        (p["error_code"], p["mission_result"]),
+                        ("PANEL_HANDOVER_HOLD", "MISSION_HOLD"),
+                    )
+                    self.assertIsNotNone(self.host.hold)
+                    self.assertEqual(self.panel.home_returns, homes)
+
     def test_early_complete_needs_released_hands_and_a_fresh_capture(self):
         # control agreement 2026-11-18: slot placement + hands really off the box + capture <= 3 s
         held = {
