@@ -765,3 +765,24 @@ Smac2D 선택 시 `cost_travel_multiplier=10`으로 모서리에 붙는 경로�
 관제의 실패 보고·현장 대조 후 동일 목적지 재시도와 선택형 ArUco 주차 설정은
 [관제 시험 가이드](../../../roport-control-server/docs/pinky-trial.md)의 마지막 두 절을 따른다.
 마커 주차는 앞면–벽 5cm를 목표로 하며 실물 보정 전에는 비활성 상태다.
+
+### 쇼핑 추종
+
+핑키에서 실물 추종을 실행할 때는 PC에서 `scripts/export_shopping_encoder.py DINO_SOURCE WEIGHTS dino140.onnx`로 외형 모델을 한 번 변환한다. 변환 환경에는 PyTorch, ONNX, ONNX Runtime이 필요하다. 실기 실행부의 `--encoder-source`와 `--weights`를 `--encoder-onnx dino140.onnx`로 바꾸면 핑키의 ONNX Runtime이 YOLO와 외형 대조를 모두 처리한다. 카메라의 보정된 광학 TF도 핑키에서 발행한다. 서버는 루프백에서만 열리므로 PC에서 `ssh -NT -L 127.0.0.1:8183:127.0.0.1:8183 pinky@<로봇주소>`로 같은 포트를 연결한다. 패드 화면에서 대상을 선택하고 시작하며, 조작 화면과의 연결이 끊기면 기존 주행 가드가 정지시킨다.
+
+실물 기본 추종 간격은 카트 중심(`base_footprint`)에서 대상 발 위치까지 22cm다. 대상을 처음 선택한 거리는 로그에 남기고, 25cm 이상 벌어지면 전진 목표를 보낸다. 다른 간격이 필요하면 `--follow-distance-m`로 지정한다. 지정한 간격보다 3cm 멀어질 때 전진하고, 쇼핑 전용 Nav2의 위치 도착 허용 오차는 최대 1.5cm다. 실물 시험에서는 정지 후 실제 간격도 별도로 측정한다.
+
+PC에서 도연님 카트 패드와 카메라 대상 선택 API를 같은 로컬 주소로 연다. 자동 후보는 기존 YOLO ONNX로 찾고, 직접 선택은 현재 화면의 사각형을 기준으로 등록한다. 등록한 모습과의 DINO 유사도 및 2순위와의 차이를 확인한다. 산타·바비 이름이나 마커는 필요 없다. 비슷한 후보가 겹치거나 위치가 크게 뛰면 멈춰 다시 확인한다. 이동 방향이 확인된 코너에서는 최대 12cm 앞을 예측하며, 2초 안에 재확인되지 않으면 예측을 만료한다. 이동 명령은 Nav2와 기존 trial_guard를 거친다.
+
+1. `services/roport-web`에서 Node 24로 `npm ci && npm run build --workspace @roport/pad`를 실행한다.
+2. 현장 시험 스택은 `field_trial.launch.py`의 `shopping_follow:=true`로 로컬·글로벌 비용지도에 라이다와 12초 만료 초음파 레이어를 구성한다. 단독 쇼핑 동안 trial_guard 하나가 구동 출력을 맡고, 쇼핑 실행부 하나가 lease를 발행해야 한다.
+3. ROS Jazzy 워크스페이스를 source한 PC에 ONNX Runtime, PyTorch, Pillow, NumPy와 OpenCV, 신뢰할 수 있는 로컬 DINOv2 소스·가중치, 팀의 adult/child/human ONNX 검출기를 준비한다. 다음은 브라우저에서 직접 시작하는 시뮬레이션용 예다.
+
+```bash
+ros2 run roport_smartcart shopping_follow --sim --pad-dist "$PAD_DIST" \
+  --onnx "$DETECTOR_ONNX" --encoder-source "$DINO_SOURCE" --weights "$DINO_WEIGHTS"
+```
+
+`http://127.0.0.1:8182`를 연다. Gazebo에서는 실기와 구분된 ROS 도메인, localhost discovery, 카메라 영상·CameraInfo·광학 TF, 지도 위치 추정이 필요하다. Gazebo가 `camera/image_raw/compressed`를 발행하면 `--compressed`로 실물과 같은 JPEG 입력을 사용할 수 있다. 현장 단독 시험에서는 `--field-standalone --calibration "$CAMERA_YAML" --optical-frame "$OPTICAL_FRAME"`을 사용한다. 이 모드는 실측한 광학 TF와 180도 회전된 실물 영상에 맞춘 보정 파일을 사용하고, 실물 카메라의 compressed 토픽을 받는다. 발끝 또는 인형 바닥이 보이는 범위에서 지도상 대상 위치를 계산한다. 관제와 명령 소유권을 공유하는 모드는 별도 연동 대상이다.
+
+쇼핑 중 패드 안내와 본체 안내는 같은 판정을 사용한다. 본체의 기존 `status_indicator`를 스마트카트 모드로 실행하면 얼굴·쇼핑 모드·재접근 요청과 경로 막힘이 LCD와 LED에 반영된다. [본체 실행 방법과 색상](../roport_line_nav/README.md#상태-표시-lcdled-status_indicator)

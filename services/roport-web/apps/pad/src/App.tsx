@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
+import { Shopping } from './Shopping';
 import * as api from './api';
 import { bigButton, initialState, movingPhase, reduce, type MovingPhase, type Notice, type Step } from './flow';
 import { Icon, PhoneQr, type IconName } from './icons';
@@ -30,7 +31,7 @@ function pickupOf(step: Step): VerifiedPickup | null {
 function progressOf(step: Step, arrival: boolean): { labels: string[]; current: number } {
   const labels = arrival ? ['예약 확인', '물품 확인', '서비스 이용', '수령 완료'] : ['예약 확인', '물품 확인', '수령 완료'];
   const order: Partial<Record<Step['name'], number>> = arrival
-    ? { items: 1, chooseService: 2, moving: 2, receipt: 3, returning: 4 }
+    ? { items: 1, chooseService: 2, shopping: 2, moving: 2, receipt: 3, returning: 4 }
     : { items: 1, receipt: 2, returning: 3 };
   return { labels, current: order[step.name] ?? 0 };
 }
@@ -42,7 +43,7 @@ function movingText(phase: MovingPhase, mode: ServiceMode, gate: string): { labe
       return { label: '출발 확인 중', title: '출발 요청을 보냈습니다', lead: '카트가 움직이기 시작하면 화면이 바뀝니다. 카트 앞을 비워 주세요.', icon: mode === 'FOLLOW' ? 'follow' : 'gate', warn: false };
     case 'MOVING':
       return mode === 'FOLLOW'
-        ? { label: `${MODE_LABEL[mode]} 중`, title: '카드를 들고 천천히 걸어 주세요', lead: '마커 카드가 카트 쪽을 향하도록 들어 주세요. 추종을 끝내려면 먼저 중지해 주세요.', icon: 'follow', warn: false }
+        ? { label: `${MODE_LABEL[mode]} 중`, title: '선택한 대상을 따라갑니다', lead: '추종을 끝내려면 먼저 중지해 주세요.', icon: 'follow', warn: false }
         : { label: `${MODE_LABEL[mode]} 중`, title: `${gate}으로 안내합니다`, lead: '카트를 따라 이동해 주세요.', icon: 'gate', warn: false };
     case 'PAUSE_PENDING':
       return { label: '중지 확인 중', title: '중지 요청을 보냈습니다', lead: '카트가 완전히 멈출 때까지 가까이 가지 마세요.', icon: 'pause', warn: true };
@@ -125,7 +126,7 @@ export function App() {
         <div className="brand">
           <span className="logo">RO<span className="logo-accent">:PORT</span></span>
           <span className="cart-id">{api.CART_LABEL}</span>
-          {api.IS_DEMO && <span className="badge-demo" title="데모 데이터로 동작하며 로봇 명령을 보내지 않습니다">데모</span>}
+          {api.IS_DEMO && <span className="badge-demo" title="예약 확인 방식은 데모입니다. 쇼핑 모드는 연결된 카트의 상태를 표시합니다.">데모</span>}
         </div>
         {pickup && (
           <dl className="flight" aria-label="탑승 정보">
@@ -225,16 +226,22 @@ export function App() {
                 </span>
                 <span className="choice-arrow"><Icon name="arrow" /></span>
               </button>
-              <button className="choice" disabled={busy} onClick={() => startService(step.pickup, 'FOLLOW')}>
+              <button className="choice" disabled={busy} onClick={() => go({ name: 'shopping', pickup: step.pickup })}>
                 <span className="choice-icon"><Icon name="follow" /></span>
                 <span className="choice-text">
-                  <b>짐 운반·추종</b>
-                  <span>마커 카드를 들고 걸으면 카트가 뒤따라옵니다. 면세점을 둘러보는 동안에도 쓸 수 있습니다.</span>
+                  <b>쇼핑 모드 · 짐 운반</b>
+                  <span>카트가 짐을 싣고 뒤따라갑니다. 내 모습을 선택하고 쇼핑을 시작하세요.</span>
                 </span>
                 <span className="choice-arrow"><Icon name="arrow" /></span>
               </button>
             </div>
           </div>
+        )}
+
+        {step.name === 'shopping' && (
+          <Shopping onBack={() => go({ name: 'chooseService', pickup: step.pickup })}
+            onFinish={() => go({ name: 'receipt', pickup: step.pickup })}
+            onGate={() => startService(step.pickup, 'GATE_GUIDE')} />
         )}
 
         {step.name === 'moving' && (() => {
@@ -308,7 +315,7 @@ export function App() {
         {notice && <p className="notice" role="alert">{NOTICE_TEXT[notice]}</p>}
       </main>
 
-      {api.IS_DEMO && (
+      {api.IS_DEMO && step.name !== 'shopping' && (
         <footer className="demo-bar" aria-label="데모 조작">
           <span className="demo-label">데모 조작</span>
           {step.name === 'idle' && (
