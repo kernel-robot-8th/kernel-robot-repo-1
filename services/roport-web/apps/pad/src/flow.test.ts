@@ -144,3 +144,17 @@ test('수령 확인 응답이 와야 복귀 화면으로 간다', () => {
   assert.equal(s.step.name, 'receipt');
   assert.equal(reduce(s, { type: 'receiptAnswered', token: 1, res: { accepted: true } }).step.name, 'returning');
 });
+
+test('시도 제한 결과는 남은 초를 실패 화면까지 전달하고, 없으면 붙이지 않는다', () => {
+  const failed = (result: Action & { type: 'verified' }) =>
+    run([{ type: 'send', token: 1, step: { name: 'verifying' } }, result]).step;
+  assert.deepEqual(failed({ type: 'verified', token: 1, result: { ok: false, reason: 'TOO_MANY_ATTEMPTS', retryAfterS: 31 } }), {
+    name: 'verifyFailed',
+    reason: 'TOO_MANY_ATTEMPTS',
+    retryAfterS: 31,
+  });
+  assert.deepEqual(failed({ type: 'verified', token: 1, result: { ok: false, reason: 'NOT_FOUND' } }), {
+    name: 'verifyFailed',
+    reason: 'NOT_FOUND',
+  });
+});

@@ -23,8 +23,8 @@ class ResolveMarkerId(unittest.TestCase):
                 self.assertEqual(resolve_marker_id({"package_id": value}), int(value))
 
     def test_rejects_non_package_markers(self):
-        # 경계 14·23, P4 바닥 4, 예비 0·11~14·34~49, 다른 그룹 1~10·23~33
-        for marker in (0, 1, 4, 10, 11, 12, 14, 23, 26, 27, 28, 33, 34, 40, 49, 50):
+        # 경계 14·23, TRAY 18, P4 바닥 4, 예비 0·11~14·34~49, 다른 그룹 1~10·23~33
+        for marker in (0, 1, 4, 10, 11, 12, 14, 18, 23, 26, 27, 28, 33, 34, 40, 49, 50):
             with self.subTest(marker=marker), self.assertRaises(InvalidTarget):
                 resolve_marker_id({"package_id": str(marker)})
 

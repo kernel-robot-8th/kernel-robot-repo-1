@@ -5,6 +5,7 @@ must supply measured map identity, localization and exclusive drive ownership.
 """
 
 from datetime import UTC, datetime
+import json
 import math
 import re
 
@@ -15,6 +16,21 @@ _ID = re.compile(r'[A-Za-z0-9_.:-]{1,128}\Z')
 _STATE = ('node_id', 'mode', 'stopped', 'line_enabled', 'nav2_ready',
           'localization_ready', 'drive_owner', 'graph_version', 'map_id',
           'map_version', 'heading_rad', 'fault')
+
+
+def guard_body(data):
+    """Reject malformed guard observations before callers update freshness."""
+    try:
+        body = json.loads(data)
+        if (isinstance(body, dict) and isinstance(body.get('boot'), str) and body['boot']
+                and body.get('owner') in ('none', 'line', 'nav2')
+                and type(body.get('blocked')) is bool
+                and type(body.get('sent_at')) in (int, float)
+                and math.isfinite(body['sent_at'])):
+            return body
+    except (ValueError, TypeError, OverflowError):
+        pass
+    return {}
 
 
 def _fresh(stamp, now):
