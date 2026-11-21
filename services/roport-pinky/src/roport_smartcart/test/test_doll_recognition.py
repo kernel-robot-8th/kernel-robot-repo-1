@@ -1,5 +1,7 @@
 """Synthetic geometry only: real artwork stays outside the repository."""
 import json
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -42,6 +44,27 @@ def test_empty_manifest_rejected(tmp_path, recognition):
     path.write_text('[]')
     with pytest.raises(ValueError, match='empty'):
         DollRecognizer(path)
+
+
+def test_selected_label_skips_other_matchers_and_preserves_detection(tmp_path, recognition):
+    cv2, np, DollRecognizer = recognition
+    image = np.random.default_rng(7).integers(0, 256, (240, 180), dtype=np.uint8)
+    cv2.imwrite(str(tmp_path/'ref.png'), image)
+    cv2.imwrite(str(tmp_path/'mask.png'), np.full(image.shape, 255, np.uint8))
+    manifest = tmp_path/'refs.json'
+    manifest.write_text(json.dumps([
+        dict(label=label, view='front', image='ref.png', mask='mask.png') for label in 'ABC']))
+    detector = DollRecognizer(manifest)
+    match = Mock(wraps=detector.matcher.knnMatch)
+    detector.matcher = SimpleNamespace(knnMatch=match)
+    frame = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    all_hits = detector.detect(frame)
+    assert {d['label'] for d in all_hits} == set('ABC') and match.call_count == 3
+    match.reset_mock()
+    assert detector.detect(frame, label='A') == [d for d in all_hits if d['label'] == 'A']
+    assert match.call_count == 1
+    with pytest.raises(ValueError, match='label'):
+        detector.detect(frame, label='unknown')
 
 
 def test_missing_mask_rejected(tmp_path, recognition):

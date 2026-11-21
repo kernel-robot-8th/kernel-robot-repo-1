@@ -1,7 +1,7 @@
 // 실행(CI와 동일): services/roport-web 에서 `node --test 'apps/service/src/**/*.test.ts'`
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { splitLocations, progressIndex, boardingNotice, hhmm, when } from './view.ts';
+import { splitLocations, progressIndex, boardingNotice, hhmm, when, mmss, qrDeadline, qrSecondsLeft } from './view.ts';
 
 const loc = (locationId: string, name: string) => ({ locationId, name });
 
@@ -43,4 +43,35 @@ test('when: 오늘(KST)은 시각만, 다른 날은 날짜와 함께', () => {
   assert.equal(when('2026-11-14T15:00:00Z', now), '11/15 00:00'); // KST 자정 넘김
   assert.equal(when('2025-11-14T03:00:00Z', now), '2025/11/14 12:00'); // 작년 같은 날은 오늘이 아니다
   assert.equal(when('2026-12-31T15:30:00Z', now), '2027/1/1 00:30'); // KST로 해가 바뀜
+});
+
+test('qrDeadline: 서버 유효 기간을 발급 요청 시점부터 센다(벽시계를 쓰지 않음)', () => {
+  const requested = 1_000_000; // 단조 시계 값(ms). 휴대폰 벽시계가 서버와 20분 달라도 결과는 같다.
+  assert.equal(qrDeadline('2026-11-21T03:00:00Z', '2026-11-21T03:10:00Z', requested), requested + 600_000);
+  // 해석할 수 없거나 기간이 0 이하이면 요청 시점에 이미 만료
+  assert.equal(qrDeadline('x', '2026-11-21T03:10:00Z', requested), requested);
+  assert.equal(qrDeadline('2026-11-21T03:10:00Z', '2026-11-21T03:00:00Z', requested), requested);
+});
+
+test('qrDeadline: 응답이 늦게 와도 서버 만료보다 늦게 만료로 보이지 않는다', () => {
+  const requested = 1_000_000;
+  const deadline = qrDeadline('2026-11-21T03:00:00Z', '2026-11-21T03:10:00Z', requested);
+  const received = requested + 5_000; // 응답 5초 지연
+  assert.equal(qrSecondsLeft(deadline, received), 595); // 600이 아니라 595
+  assert.equal(qrSecondsLeft(deadline, requested + 600_000), 0); // 서버 만료 시점에 0
+});
+
+test('qrSecondsLeft: 단조 시계 기준 남은 초(올림), 지났으면 0', () => {
+  const deadline = 2_000_000;
+  assert.equal(qrSecondsLeft(deadline, deadline - 600_000), 600);
+  assert.equal(qrSecondsLeft(deadline, deadline - 200), 1);
+  assert.equal(qrSecondsLeft(deadline, deadline), 0);
+  assert.equal(qrSecondsLeft(deadline, deadline + 60_000), 0);
+});
+
+test('mmss: 분:초 두 자리', () => {
+  assert.equal(mmss(600), '10:00');
+  assert.equal(mmss(581), '9:41');
+  assert.equal(mmss(5), '0:05');
+  assert.equal(mmss(-3), '0:00');
 });
