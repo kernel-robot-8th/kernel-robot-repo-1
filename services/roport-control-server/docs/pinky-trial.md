@@ -456,7 +456,7 @@ uv run python -m roport_control_server.executor.pinky_trial --config "$TRIAL_DIR
 3. LAN 브로커 host/port/TLS를 세 PC에서 일치시킨다. Pinky IP를 관제 MQTT 명령에 넣지 않는다. 역할은 `--role logistics` / `--role smartcart`, 슬롯·binding은 동일 JSON으로 구분한다. 두 runner의 시작 노드는 각각 `ROPORT_PINKY_START_NODE=N16` / `H1`이다.
 4. 현장 확인 후 hardware JSON을 최종 확정·재배포하고 역할별 새 journal로 실행한다. PR #35 driver·guard와 공통 runner에 **PR #38의 지도·그래프 코드를 함께 반영하고 로봇 workspace를 다시 빌드/source**한다. MQTT JSON Schema는 그대로이며 `field_verified=true`와 `--hardware-authorized`는 현장 확인 후 적용한다.
 
-지도 v15에서는 `graph_version=line-v15-20261116`, `map_version=5ed19688b83a5ae4`다(v14는 `line-v14-20261106`, `4656a67672d005a5`). v15는 2026-11-16 실측으로 가로선 노드(N21·N22·H1·H2) y만 바꿨고(N11은 v14 위치 유지) 연결·경로 후보는 같다. 점유 픽셀은 v14와 같지만 지도 파일 머리말의 버전 문자열이 바뀌어 `map_version`이 달라졌다. v13 설정·성공 기록은 보존하고 새 폴더에 설정을 생성한다. 관제와 로봇 모두 같은 새 JSON을 써야 하며 기존 journal을 재사용하지 않는다. N23·N24는 경유 노드이고 이번 시험의 인도장 정차점은 계속 N11이다. N21·N22 정차 시나리오는 포함하지 않는다. PR #39의 선반 마커(28~33)는 이번 더미 OMX 시험의 완료 조건에 사용하지 않는다.
+지도 v16에서는 `graph_version=line-v15-20261116`, `map_version=68aa56ae0098061f`다(v15는 같은 graph에 `5ed19688b83a5ae4`, v14는 `line-v14-20261106`, `4656a67672d005a5`). v16은 2026-11-19 본선 ↔ 벽 실측에 맞춰 03 아래 벽과 x 280 동쪽 통로 벽만 옮겼고 노드 좌표·연결·경로 후보는 v15와 같아 `graph_version`은 그대로다. 벽 점유 픽셀이 바뀌어 `map_version`이 달라졌다. v15는 2026-11-16 실측으로 가로선 노드(N21·N22·H1·H2) y만 바꿨다(N11은 v14 위치 유지). v13 설정·성공 기록은 보존하고 새 폴더에 설정을 생성한다. 관제와 로봇 모두 같은 새 JSON을 써야 하며 기존 journal을 재사용하지 않는다. N23·N24는 경유 노드이고 이번 시험의 인도장 정차점은 계속 N11이다. N21·N22 정차 시나리오는 포함하지 않는다. PR #39의 선반 마커(28~33)는 이번 더미 OMX 시험의 완료 조건에 사용하지 않는다.
 
 배포 때는 현재 소스에서 생성한 키트를 사용한다. 이전 키트에는 관제 통합 과정에서 반영한 MQTT 수신 시각/상태 전송 확장과 오류가 담긴 status 응답 검증 수정이 빠져 있을 수 있다. 메시지 스키마가 같아도 파일 버전까지 같다는 뜻은 아니므로 `manifest.json`의 파일 해시를 함께 확인한다. 시험 브로커 포트 기본값은 1대 실물 시험과 동일한 **18883**이며 실제 listener 설정과 대조한다.
 
@@ -513,7 +513,7 @@ FastAPI는 기존 명령에서 `ROPORT_TRIAL_SOCKET`을 위 소켓으로 지정�
 | --- | --- |
 | 실행 단위 | route, gate(더미), request(운영자 물품 요청), mode_switch, navigate; 최대 24단계, 순차 실행 |
 | 노드 경로 | 실제 그래프 연결·연속성·기체별 모드 검사; 경로 중간 U턴과 정차선 노드 통과 금지 |
-| 정차 목적지 | 현재 v15: N01, N11, N12, N16, N17, N21, N22, H1, H2. N19 등의 교차로는 경유만 가능 |
+| 정차 목적지 | 현재 v16(graph line-v15): N01, N11, N12, N16, N17, N21, N22, H1, H2. N19 등의 교차로는 경유만 가능 |
 | 시작 위치·방향 | UI는 물리 위치/heading을 변경하지 않는다. 기존 runner의 START_NODE와 실제 자세가 맞아야 한다. loading 이후 방향과 일반 구간 첫 방향은 Pinky 드라이버가 최종 검증 |
 | 속도·모드 | 계획 허용 범위 0.015~0.08 m/s, 기본 0.06; 실제 속도는 로봇 로컬 설정과 함께 결정. start_maneuver=none, N12 line→Nav2만 지원 |
 | 부분 작업 | 선행 물품 상태는 시험 가정으로 기록. 실제 OMX 완료로 위조하지 않음. 물품은 기존 설정 1개, 수량 1 |
@@ -611,7 +611,7 @@ env -u PYTHONPATH uv run python tools/run_virtual_trial.py \
 `--record`는 hardware 관제 journal의 설정을 읽어 경로·출발 방향·제한 속도·deadline·Nav2 목표를 유지한다.
 연결 ID와 hardware 승인은 가상 시험용으로 바꾸고 원본 파일은 수정하지 않는다. 현재 지도/graph/node/scenario와
 다른 기록은 거부한다. v13 실물 기록을 v14에 그대로 재생하지 않는다. `smartcart`는 two 기록을 사용할 수 있다.
-기록 미지정 시 현재 v15 경로와 가상 시험 기본 속도 0.08m/s를 사용한다. 이 기본값은 실물 설정을 변경하지 않는다.
+기록 미지정 시 현재 v16 경로와 가상 시험 기본 속도 0.08m/s를 사용한다. 이 기본값은 실물 설정을 변경하지 않는다.
 
 - `run.json`: 시뮬레이션 조건, 원본 기록 SHA256, 실제 accepted→completed 구간 시간, 실행한 코드·지도 해시, PID.
 - `control.json`, `logistics.json`, `smartcart.json`: 실제 MQTT 명령·응답 및 상태 전이 이력.

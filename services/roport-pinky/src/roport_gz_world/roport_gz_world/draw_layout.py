@@ -58,7 +58,7 @@ def draw(layout, path, detail=False):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Circle, Rectangle
+    from matplotlib.patches import Circle, Polygon, Rectangle
 
     plt.rcParams['font.family'] = _korean_font()
     raw = layout.raw
@@ -77,10 +77,13 @@ def draw(layout, path, detail=False):
         ax.set_ylim(y0 - 40, y1 + 30)
     ax.axis('off')
 
-    # 03 공용 내부공간 바탕
-    z = next(w for w in raw['walls'] if w['name'] == 'zone03_bottom')
-    ax.add_patch(Rectangle((z['from'][0], z['from'][1]), x1 - z['from'][0], y1 - z['from'][1],
-                           fc=C['zone03'], ec='none', zorder=0))
+    # 03 공용 내부공간 바탕(아래 벽 = zone03_bottom 꺾은선, v16)
+    zb = sorted((w for w in raw['walls']
+                 if w['name'] == 'zone03_bottom' or w['name'].startswith('zone03_bottom_')),
+                key=lambda w: w['from'][0])
+    zpts = [tuple(zb[0]['from'])] + [tuple(w['to']) for w in zb]
+    zpts += [(x1, zpts[-1][1]), (x1, y1), (zpts[0][0], y1)]
+    ax.add_patch(Polygon(zpts, closed=True, fc=C['zone03'], ec='none', zorder=0))
 
     # 물체
     for o in raw.get('objects') or []:
@@ -94,7 +97,7 @@ def draw(layout, path, detail=False):
         label = LABELS.get(o['name'], o['name'])
         if label:
             ax.text((ox0 + ox1) / 2, (oy0 + oy1) / 2, label, fontsize=8.5, ha='center',
-                    va='center', color=C['text'], zorder=3)
+                    va='center', color=C['text'], zorder=3, clip_on=True)
 
     # 벽
     t = layout.wall_thickness
@@ -182,6 +185,31 @@ def draw(layout, path, detail=False):
                                for i in ('N19', 'N23', 'N24', 'N09', 'N08'))
     bar11 = n11.y - hw_
     t_ = raw['defaults']['wall_thickness'] / 2   # 벽 면 = 중심 ± 0.25 cm
+
+    def wall_y(walls, x):
+        """선분 목록에서 x 위치의 벽 중심 y(v16 기운 벽)."""
+        for w in walls:
+            (ax_, ay_), (bx_, by_) = w['from'], w['to']
+            if min(ax_, bx_) <= x <= max(ax_, bx_) and ax_ != bx_:
+                return ay_ + (by_ - ay_) * (x - ax_) / (bx_ - ax_)
+        raise ValueError(f'no wall at x {x}')
+
+    aisle_walls = [w for w in raw['walls'] if w['name'] in ('outer_aisle', 'outer_aisle_east')]
+    f03 = wall_y(zb, 150)
+    dd_x = 293
+    dd = (wall_y(zb, dd_x) - t_) - (wall_y(aisle_walls, dd_x) + t_)
+    # 2026-11-19 본선 ↔ 벽 실측(A = 본선 03 쪽 가장자리 → 03 아래 벽 면, B = 통로 벽 → 본선 통로 쪽 가장자리)
+    trunk_dims = []
+    # 글자는 03 아래 벽 위(03 구역)에 가로로. N08·N12 는 가까워 높이를 엇갈리게 둔다
+    for n, a, dx, ty in ((n19, '16.2', 9, 15), (n24, '16.2', 9, 15), (n09, '15.5', 9, 15),
+                         (n08, '15.2', 9, 15), (n12, '14.8', -9, 24)):
+        trunk_dims.append(((n.x + dx, n.y + hw_), (n.x + dx, wall_y(zb, n.x + dx) - t_),
+                           f'A{n.id[1:]}', a, f'{n.id}: 본선 03 쪽 가장자리 → 03 아래 벽 면',
+                           '11-19 줄자. v15 지도 19.35', (0, ty), 0))
+    for n, b, dx in ((n08, '75.0', -12), (n12, '75.4', -3)):
+        trunk_dims.append(((n.x + dx, wall_y(aisle_walls, n.x + dx)), (n.x + dx, n.y - hw_),
+                           f'B{n.id[1:]}', b, f'{n.id}: 통로 벽 면 → 본선 통로 쪽 가장자리',
+                           '11-19 줄자. v15 지도 72.0(b)', (0, -18), 90))
     dims = [
         # (시작, 끝, 기호(None = 새 번호), 값, 구간, 비고, 글자 위치 보정, 회전)
         # [n] = 2026-11-03 저녁 재측정 기록지 번호(Confluence 19136514)
@@ -190,11 +218,11 @@ def draw(layout, path, detail=False):
         ((138, y1 + 18), (x1, y1 + 18), 'H', '306.5', '03 왼쪽 벽 → 오른쪽 벽', '메모 305 → 재측정',
          (0, 0), 0),
         ((x1 + 15, 0), (x1 + 15, y1), 'e', '221', '통로 벽 → 창가 벽', '', (0, 0), 90),
-        ((150, 94), (150, y1), 'f', '127', '03 아래 벽 → 창가 벽',
-         '⑤ 기준(e − 94). 메모 129·[19] 129.5와 다름', (0, 25), 90),
-        ((138, 85), (379.5, 85), 'I', '241.5', '03 아래 벽 길이(03 왼쪽 벽 → 입구)',
-         '메모 243. H − 입구', (-85, 0), 0),
-        ((379.5, 85), (x1, 85), '입구', '65', '03 입구 폭', '메모 64.5 → 재측정', (0, 0), 0),
+        ((150, f03), (150, y1), 'f', f'{y1 - f03:g}', '03 아래 벽 → 창가 벽',
+         f'지도 e − {f03:g}(11-19 A). 메모 129·[19] 129.5', (0, 25), 90),
+        ((138, 130), (379.5, 130), 'I', '241.5', '03 아래 벽 길이(03 왼쪽 벽 → 입구)',
+         '메모 243. H − 입구', (20, 0), 0),
+        ((379.5, 130), (x1, 130), '입구', '65', '03 입구 폭', '메모 64.5 → 재측정', (0, 0), 0),
         ((0, 100), (20.5, 100), 'a', '20.5', '왼쪽 벽 → 루프 왼쪽 바깥선', '', (0, 5), 0),
         ((8, 0), (8, 72), 'b', '72', '통로 벽 → 간선 바깥선(통로 쪽)', '', (0, 0), 90),
         ((20.5, 145), (113.7, 145), 'D', '93.2', '루프 가로(바깥선 → 바깥선)', '', (0, 4), 0),
@@ -261,9 +289,11 @@ def draw(layout, path, detail=False):
         ((138, -22), (280, -22), None, '142', '02 인도장 가로(왼쪽 칸막이 → 오른쪽 칸막이)', '',
          (0, 0), 0),
         ((138.25, 125), (196, 125), None, '58', '03 왼쪽 벽 → 카메라 삼각대', '', (0, 4), 0),
-        ((293, t_), (293, 94 - t_), None, '93.5', '통로 벽 ↔ 03 아래 벽(안쪽 면 사이)',
-         '11-03 Ⓓ, 메모 ㅂ 94.5(두 벽 포함)', (0, -25), 90),
-    ]
+        ((dd_x, wall_y(aisle_walls, dd_x) + t_), (dd_x, wall_y(zb, dd_x) - t_), None,
+         f'{dd:.1f}', f'통로 벽 ↔ 03 아래 벽(안쪽 면 사이, x {dd_x})',
+         '지도. 11-03 Ⓓ 93.5·ㅂ 94.5 → 11-19 A·B 로 대체',
+         (0, -25), 90),
+    ] + trunk_dims
     drows = []
     num = 0
     for p0, p1, key, value, desc, note, off, rot in dims:
@@ -331,7 +361,7 @@ def draw(layout, path, detail=False):
         dax.axis('off')
         dtab = dax.table(cellText=part, colLabels=['기호', '값 (cm)', '구간', '비고'],
                          colWidths=[0.07, 0.1, 0.46, 0.37], loc='upper center', cellLoc='center')
-        # v14 한 단 19행 높이에 맞춘다(v15 는 11-16 실측 M1~M6 이 늘어 칸 높이를 줄임)
+        # v14 한 단 19행 높이에 맞춘다(v15 M1~M6, v16 A·B 가 늘어 칸 높이를 줄임)
         _style_table(dtab, [C['text']] * len(part), yscale=min(1.22, 1.22 * 19 / half_rows))
         for (r, c), cell in dtab.get_celld().items():
             if r > 0 and c >= 2:
