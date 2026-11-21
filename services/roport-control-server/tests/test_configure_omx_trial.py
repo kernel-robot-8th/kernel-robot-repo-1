@@ -20,6 +20,7 @@ def configure(config, **changes):
         "slot": "2b",
         "model": "test-model",
         "calibration": "test-cal",
+        "package_marker": 16,
     }
     return module.configure(config, **(options | changes))
 
@@ -28,13 +29,32 @@ def test_preserves_original_and_existing_binding(profile):  # noqa: F811
     before = deepcopy(profile)
     result = configure(profile)
     assert profile == before
-    assert {k: v for k, v in result.items() if k != "omx"} == before
+    # everything but the OMX settings and the package_id (now the box marker) is kept
+    kept = {k: v for k, v in result.items() if k not in {"omx", "package_id"}}
+    assert kept == {k: v for k, v in before.items() if k != "package_id"}
+    assert result["package_id"] == "16"
     again = configure(result, slot="1a")
     assert again["omx"]["binding_id"] == result["omx"]["binding_id"]
 
 
+def test_package_id_is_the_box_marker(profile):  # noqa: F811
+    # 2026-11-21 review: "trial-package-1" was kept and the Host refused it (INVALID_TARGET)
+    assert profile["package_id"] != "16"
+    assert configure(profile)["package_id"] == "16"
+    assert configure(profile, package_marker=22)["package_id"] == "22"
+
+
 @pytest.mark.parametrize(
-    "changes", [{"mode": "hardware"}, {"slot": "3a"}, {"model": ""}]
+    "changes",
+    [
+        {"mode": "hardware"},
+        {"slot": "3a"},
+        {"model": ""},
+        {"package_marker": 18},  # the Pinky tray marker
+        {"package_marker": 14},
+        {"package_marker": "16"},
+        {"package_marker": True},
+    ],
 )
 def test_rejects_invalid_or_real_executor_for_simulation(profile, changes):  # noqa: F811
     with pytest.raises(ValueError):
@@ -73,11 +93,15 @@ def test_cli_never_overwrites_source_or_output(profile, tmp_path):  # noqa: F811
         "test-model",
         "--calibration-version",
         "test-cal",
+        "--package-marker",
+        "16",
     ]
     first = subprocess.run(command, capture_output=True, text=True, check=False)
     assert first.returncode == 0, first.stderr
     config = json.loads(output.read_text())
     assert config["omx"]["binding_id"] in first.stdout
+    assert config["package_id"] == "16"
+    assert "--box-marker" not in first.stdout
     assert profile["site_id"] in first.stdout and "MOCK ONLY" in first.stdout
     saved = output.read_bytes()
     assert subprocess.run(command, capture_output=True, check=False).returncode == 2
