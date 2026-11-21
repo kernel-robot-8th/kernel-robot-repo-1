@@ -55,8 +55,10 @@ def main():
     )
     parser.add_argument(
         "--verify",
-        action="store_true",
-        help="explicitly run one small inbound/outbound/return; 1x physical timing",
+        nargs="?",
+        choices=("small", "large"),
+        const="small",
+        help="explicitly run inbound/outbound/return (default: small); 1x timing",
     )
     parser.add_argument(
         "--service-env", type=Path, help="isolated service launcher configuration"
@@ -245,6 +247,7 @@ def main():
         print(json.dumps(info), flush=True)
         began = time.monotonic()
         submitted = False
+        package = f"package-{args.verify}-1" if args.verify else None
         ready_shown = False
         expected_robots = robots.keys() | profile["omx"].keys()
         while True:
@@ -287,7 +290,7 @@ def main():
                         request={
                             "request_id": "verify-in",
                             "operation": "inbound",
-                            "package_id": "package-small-1",
+                            "package_id": package,
                             "goal": None,
                         },
                     )
@@ -306,14 +309,14 @@ def main():
                         request={
                             "request_id": "verify-out",
                             "operation": "outbound",
-                            "package_id": "package-small-1",
+                            "package_id": package,
                             "goal": "PUBLIC_SPACE_TRIAL",
                         },
                     )
                 if tasks.get("verify-out", {}).get("stage") == "await_receipt":
                     send(url, token, state, "receipt", request_id="verify-out")
                 if tasks.get("verify-out", {}).get("status") == "COMPLETE":
-                    result = {"result": "passed", "tasks": tasks}
+                    result = {"result": "passed", "case": args.verify, "tasks": tasks}
                     break
                 if time.monotonic() - began > args.timeout:
                     raise RuntimeError("verification timeout")

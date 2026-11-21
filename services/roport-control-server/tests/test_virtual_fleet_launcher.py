@@ -146,3 +146,50 @@ def test_busy_port_keeps_existing_listener_and_creates_no_run(tmp_path):
         assert not root.exists()
         with socket.create_connection(listener.getsockname(), timeout=1):
             pass
+
+
+@pytest.mark.parametrize("case", [None, "small", "large"])
+def test_explicit_verification_submits_selected_package(broker, tmp_path, case):
+    # The shared broker fixture enforces MQTT availability; the launcher owns its broker.
+    binary = os.environ.get("MOSQUITTO_BIN") or shutil.which("mosquitto")
+    root = tmp_path / "run"
+    port = free_port()
+    with (tmp_path / "launcher.log").open("w") as log:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(SERVICE / "tools/run_virtual_fleet.py"),
+                "--mosquitto",
+                binary,
+                "--output",
+                str(root),
+                "--port",
+                str(port),
+                "--verify",
+                *([case] if case else []),
+            ],
+            stdout=log,
+            stderr=log,
+        )
+        try:
+
+            def submitted():
+                assert proc.poll() is None, "verification exited before submission"
+                try:
+                    state = fetch(f"http://127.0.0.1:{port}")
+                except (OSError, KeyError):
+                    return False
+                task = state.get("tasks", {}).get("verify-in")
+                if not task:
+                    return False
+                assert task["request"]["package_id"] == f"package-{case or 'small'}-1"
+                return True
+
+            wait_until(submitted, timeout=30)
+        finally:
+            proc.send_signal(signal.SIGINT)
+            proc.wait(timeout=30)
+    assert proc.returncode == 0
+    for pid in json.loads((root / "run.json").read_text())["pids"].values():
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
