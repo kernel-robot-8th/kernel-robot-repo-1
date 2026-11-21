@@ -260,7 +260,10 @@ def test_duplicate_and_late_real_host_result_do_not_advance_over_mqtt(fleet_mqtt
     assert not env.control.data["fault"]
 
 
-def test_robot_restart_recovers_inherited_command_without_automatic_motion(fleet_mqtt):
+@pytest.mark.parametrize("restart_during_stop", [False, True])
+def test_robot_restart_recovers_inherited_command_without_automatic_motion(
+    fleet_mqtt, monkeypatch, restart_during_stop
+):
     from test_fleet_socket import request
 
     from roport_control_server.executor.fleet_socket import FleetSocket
@@ -332,13 +335,48 @@ def test_robot_restart_recovers_inherited_command_without_automatic_motion(fleet
         )["ok"]
         stop = env.control.data["commands"][cid]["stop"]
         assert stop["payload"]["expected_boot_version"] == replacement.boot
+        if restart_during_stop:
+            rejected = set()
+            received = set()
+            handle = runtime.handle
+
+            def record_rejection(delivery):
+                try:
+                    handle(delivery)
+                except ValueError:
+                    rejected.add(wire.decode(delivery.payload)["message_id"])
+                    raise
+                finally:
+                    received.add(wire.decode(delivery.payload)["message_id"])
+
+            monkeypatch.setattr(runtime, "handle", record_rejection)
+            # Crash after durable STOP acceptance, before it can produce completion.
+            monkeypatch.setattr(replacement, "_finish_stop", lambda: None)
+            held_until(lambda: replacement.journal.data["active"] == stop["command_id"])
+            replacement.close()
+            replacement = FieldPinkyClient(
+                MqttConfig(
+                    "127.0.0.1", "fleet-stop-restarted-" + old.robot, port=env.port
+                ),
+                profile,
+                role,
+                env.tmp_path / (old.robot + ".json"),
+                old.driver,
+            )
+            replacement.start()
+            env.stack.callback(replacement.close)
+            env.clients[index] = replacement
+            assert replacement.boot != stop["payload"]["expected_boot_version"]
         held_until(
             lambda: (
                 replacement.journal.data["active"] is None
-                and any(
-                    e["command_id"] == stop["command_id"]
-                    and e["payload"]["status"] == "completed"
-                    for e in env.control.data["events"].values()
+                and (
+                    restart_during_stop
+                    or any(
+                        e["command_id"] == stop["command_id"]
+                        and e["payload"]["status"] == "completed"
+                        for e in env.control.data["events"].values()
+                    )
                 )
             )
         )
@@ -347,10 +385,19 @@ def test_robot_restart_recovers_inherited_command_without_automatic_motion(fleet
         assert (
             replacement.journal.data["records"][cid]["command"] == old_record["command"]
         )
-        held_until(
-            lambda: interrupted["message_id"] not in replacement.journal.data["outbox"]
-        )
-        assert env.control.data["events"][interrupted["message_id"]] == interrupted
+        if restart_during_stop:
+            completed = replacement.journal.data["records"][stop["command_id"]]["event"]
+            unconfirmed = {e["message_id"]: e for e in (interrupted, completed)}
+            held_until(lambda: unconfirmed.keys() <= rejected)
+            assert unconfirmed.keys() <= replacement.journal.data["outbox"].keys()
+            assert not unconfirmed.keys() & env.control.data["events"].keys()
+        else:
+            held_until(
+                lambda: (
+                    interrupted["message_id"] not in replacement.journal.data["outbox"]
+                )
+            )
+            assert env.control.data["events"][interrupted["message_id"]] == interrupted
         assert env.control.data["resources"] == resources
         assert not operate(
             "reconcile", command_id=cid, outcome="completed", note="not completion"
@@ -379,6 +426,20 @@ def test_robot_restart_recovers_inherited_command_without_automatic_motion(fleet
         )
         assert parked.halted is None and parked.journal.data["active"] is None
         assert parked.journal.data["records"][cid]["event"] == interrupted
+        if restart_during_stop:
+            assert not operate(
+                "reconcile",
+                command_id=cid,
+                outcome="removed",
+                note="stop not confirmed",
+            )["ok"]
+            assert operate(
+                "recover_stop",
+                command_id=cid,
+                stop_id=stop["command_id"],
+                boot_version=parked.boot,
+                note="checked current idle robot and removed goods",
+            )["ok"]
         assert operate(
             "reconcile",
             command_id=cid,
@@ -390,5 +451,14 @@ def test_robot_restart_recovers_inherited_command_without_automatic_motion(fleet
         assert operate("release_hold", note="checked fleet")["ok"]
         assert env.control.next_action() is None
         assert not env.control.data["enabled"]
+        if restart_during_stop:
+            received.clear()
+            for event in unconfirmed.values():
+                parked._send(event)
+            held_until(lambda: unconfirmed.keys() <= received)
+            assert unconfirmed.keys() <= parked.journal.data["outbox"].keys()
+            assert not unconfirmed.keys() & env.control.data["events"].keys()
+            assert env.control.data["fault"] is None
+            assert env.control.data["tasks"][key]["status"] == "CANCELED"
         assert operate("enable")["ok"]
         assert not env.executors["omx3"].tasks

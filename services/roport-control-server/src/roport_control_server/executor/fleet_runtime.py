@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import signal
 from contextlib import ExitStack
 from copy import deepcopy
@@ -18,6 +19,8 @@ from roport_control_server.adapters.mqtt.trial_wire import mqtt_config
 from .fleet import ROLES, TARGETS, FleetControl
 from .fleet_recovery import new_stop, stop_current
 from .fleet_socket import FleetSocket
+
+LOG = logging.getLogger(__name__)
 
 
 def expiry(seconds=5):
@@ -53,6 +56,13 @@ class FleetRuntime:
         # Delivery age is not observation age; replayed old state must not renew readiness.
         age = (datetime.now(UTC) - wire.timestamp(p["observed_at"])).total_seconds()
         if event["type"] in {"robot_state", "robot_pose"} and not -1 <= age <= 3:
+            LOG.warning(
+                "Rejected %s from %s: clock_skew_or_delay "
+                "(observation_age_s=%.3f; allowed=-1..3)",
+                event["type"],
+                source,
+                age,
+            )
             return
         if event["type"] == "robot_state":
             if source in ROLES and any(
@@ -245,12 +255,14 @@ def main():
 
         previous = signal.signal(signal.SIGTERM, terminate)
         stack.callback(signal.signal, signal.SIGTERM, previous)
-        print("Fleet owner ready; enable explicitly in the web UI.", flush=True)
+        print("Fleet owner ready; send enable through the local socket.", flush=True)
         try:
             while True:
                 runtime.poll()
                 web.poll()
         except KeyboardInterrupt:
+            pass
+        finally:
             control.hold("owner_stopped")
 
 

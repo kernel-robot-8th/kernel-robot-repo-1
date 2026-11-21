@@ -18,7 +18,7 @@ def profiles(*, map_path=MAP, layout_path=LAYOUT, simulation=True):
         route["speed_limit_mps"] = speed
     grid = load_map(map_path, layout_path)
     positions = {n["id"]: n["position"] for n in grid["layout"]["nodes"]}
-    # The IR bar is 3 cm in front of the body; use the same graph return calibration.
+    # Simulation-only IR offset and return tolerances; hardware needs measured values.
     import yaml
 
     layout = yaml.safe_load(Path(layout_path).read_text())
@@ -56,6 +56,7 @@ def profiles(*, map_path=MAP, layout_path=LAYOUT, simulation=True):
     if not simulation:
         # Neither simulated clearance nor model names are field calibration.
         fleet.pop("node_clearance_m")
+        fleet.pop("n12_goal")
         fleet["omx"] = {
             r: {"model_version": None, "calibration_version": None}
             for r in fleet["omx"]
