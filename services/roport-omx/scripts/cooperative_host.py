@@ -91,6 +91,12 @@ class HoldChannel:
          pinky_checked}, "requested_at": <unix s>, "by": "panel"}
     <journal stem>.hold-result.json  written by the Host: {"request_id", "cleared", "reason", ...}
     A request is read once and removed; one older than REQUEST_MAX_AGE_S is refused.
+
+    These files are for the panel's screen only: an I/O error on them is logged and retried on
+    the next tick, never raised into the MQTT loop (2026-11-21 review: a result file that could
+    not be replaced stopped the Host after the HOLD was already cleared). A request already run
+    is never run again; its result is kept and written once the file can be written. Journal
+    errors (StorageError) still propagate and stop the Host as before.
     """
 
     REQUEST_MAX_AGE_S = 60.0
@@ -101,22 +107,45 @@ class HoldChannel:
         self.request_path = stem.with_name(stem.name + ".hold-request.json")
         self.result_path = stem.with_name(stem.name + ".hold-result.json")
         self._last_state = None
+        self._result: dict | None = None  # run (journal updated) but not written yet
+        self._handled = None  # (file mtime, request_id) of the request last run
 
     @staticmethod
-    def _write(path: Path, data: dict) -> None:
+    def _write(path: Path, data: dict) -> bool:
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1))
-        tmp.replace(path)  # the panel never reads half a file
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1))
+            tmp.replace(path)  # the panel never reads half a file
+        except OSError as exc:
+            log.warning("%s not written (retrying): %s", path.name, exc)
+            return False
+        return True
+
+    def _take_request(self) -> dict | None:
+        """The panel's request, removed once read; None when there is none or it was run."""
+        try:
+            seen = self.request_path.stat().st_mtime_ns
+        except OSError:  # absent (or unreadable: nothing to run)
+            return None
+        try:
+            request = json.loads(self.request_path.read_text())
+        except (OSError, ValueError):
+            request = {}
+        request = request if isinstance(request, dict) else {}
+        try:
+            self.request_path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("%s not removed: %s", self.request_path.name, exc)
+        key = (seen, request.get("request_id"))
+        if key == self._handled:  # the same file again (it could not be removed)
+            return None
+        self._handled = key
+        return request
 
     def tick(self, host: CooperativeHost, now: float | None = None) -> None:
         now = time.time() if now is None else now
-        if self.request_path.exists():
-            try:
-                request = json.loads(self.request_path.read_text())
-            except (OSError, ValueError):
-                request = {}
-            self.request_path.unlink(missing_ok=True)
-            request = request if isinstance(request, dict) else {}
+        request = self._take_request()
+        if request is not None:
             asked = request.get("requested_at")
             if isinstance(asked, bool) or not isinstance(asked, (int, float)):
                 asked = None
@@ -128,16 +157,19 @@ class HoldChannel:
                     "reason": "STALE_REQUEST",
                 }
             else:
-                result = host.release_hold(request)
-            self._write(self.result_path, result | {"at": now})
+                result = host.release_hold(request)  # StorageError propagates
+            self._result = result | {"at": now}
             log.warning("HOLD release request %s: %s", result.get("request_id"), result)
+        if self._result is not None and self._write(self.result_path, self._result):
+            self._result = None
         state = {
             "boot_id": host.boot_id,
             "active": host.active,
             "hold": host.hold_info(),
         }
-        if state != self._last_state:
-            self._write(self.state_path, state | {"updated_at": now})
+        if state != self._last_state and self._write(
+            self.state_path, state | {"updated_at": now}
+        ):
             self._last_state = state
 
 

@@ -125,6 +125,83 @@ class HoldReleaseTest(unittest.TestCase):
                 self.assertEqual(result["reason"], "STALE_REQUEST")
                 self.assertEqual(self.host.hold, command_id)
 
+    def ask_release(self, command_id, request_id="r9", at=1001.0):
+        ask = {"request_id": request_id, "hold": command_id, "checks": CHECKED}
+        self.holds.request_path.write_text(json.dumps(ask | {"requested_at": at}))
+
+    def count_releases(self):
+        calls = []
+        release = self.host.release_hold
+
+        def counted(request):
+            calls.append(request)
+            return release(request)
+
+        self.host.release_hold = counted
+        return calls
+
+    def test_result_file_error_keeps_the_host_and_writes_the_result_later(self):
+        # 2026-11-21 review: the result file could not be replaced → IsADirectoryError stopped
+        # the Host after the journal had cleared the HOLD; the screen kept the old HOLD
+        command_id = self.fail_with_arm_away()
+        self.executor.unreturned = set()
+        calls = self.count_releases()
+        self.holds.result_path.mkdir()  # replace() onto a directory fails
+        self.ask_release(command_id)
+        with self.assertLogs("cooperative_host", "WARNING"):
+            self.holds.tick(self.host, now=1002.0)  # does not raise
+        self.assertIsNone(self.journal.data["hold"])  # the release itself is saved
+        self.assertFalse(self.holds.request_path.exists())
+        self.assertIsNone(json.loads(self.holds.state_path.read_text())["hold"])
+        self.holds.result_path.rmdir()
+        self.holds.tick(self.host, now=1003.0)
+        result = json.loads(self.holds.result_path.read_text())
+        self.assertEqual((result["request_id"], result["cleared"]), ("r9", True))
+        self.assertEqual(len(calls), 1)  # written again, not run again
+
+    def test_state_file_error_is_retried(self):
+        command_id = self.fail_with_arm_away()
+        self.holds.state_path.mkdir()
+        with self.assertLogs("cooperative_host", "WARNING"):
+            self.holds.tick(self.host, now=1000.0)
+        self.holds.state_path.rmdir()
+        self.holds.tick(self.host, now=1001.0)
+        state = json.loads(self.holds.state_path.read_text())
+        self.assertEqual(state["hold"]["command_id"], command_id)
+
+    def test_request_that_cannot_be_removed_runs_once(self):
+        command_id = self.fail_with_arm_away()
+        self.executor.unreturned = set()
+        calls = self.count_releases()
+        # the panel files only; the journal stays writable
+        folder = Path(self.dir.name) / "panel"
+        folder.mkdir()
+        self.holds = ch.HoldChannel(folder / self.path.name)
+        self.ask_release(command_id)
+        folder.chmod(0o500)  # no unlink, no result/state writes
+        try:
+            with self.assertLogs("cooperative_host", "WARNING"):
+                self.holds.tick(self.host, now=1002.0)
+                self.holds.tick(self.host, now=1003.0)
+        finally:
+            folder.chmod(0o700)
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(self.host.hold)
+        self.holds.tick(self.host, now=1004.0)
+        self.assertIs(json.loads(self.holds.result_path.read_text())["cleared"], True)
+        self.assertEqual(len(calls), 1)
+
+    def test_journal_error_still_stops_the_host(self):
+        command_id = self.fail_with_arm_away()
+
+        def broken(_request):
+            raise ch.StorageError("journal not saved")
+
+        self.host.release_hold = broken
+        self.ask_release(command_id)
+        with self.assertRaises(ch.StorageError):
+            self.holds.tick(self.host, now=1002.0)
+
 
 if __name__ == "__main__":
     unittest.main()
