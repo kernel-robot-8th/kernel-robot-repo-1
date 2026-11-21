@@ -17,7 +17,7 @@ from queue import Empty
 from time import monotonic
 from uuid import uuid4
 
-from roport_omx.cooperative import PROFILE, SLOTS, WORKCELL
+from roport_omx.cooperative import PROFILE, SLOT_ARMS, SLOTS, WORKCELL
 from roport_omx.mqtt_link.messages import decode, topic
 from roport_omx.mqtt_link.mqtt import MqttConfig, MqttTransport
 
@@ -148,6 +148,11 @@ def main() -> None:
     parser.add_argument("--slot", default="1a", choices=list(SLOTS))
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument(
+        "--package",
+        default="16",
+        help="package_id = the box's ArUco marker number (agreed with control, as OMX3)",
+    )
+    parser.add_argument(
         "--log", type=Path, default=Path("cooperative_sim_events.jsonl")
     )
     args = parser.parse_args()
@@ -179,10 +184,13 @@ def main() -> None:
                 "expected_boot_id": boot_id,
                 "operation": operation,
                 "workcell_id": WORKCELL,
-                "manipulation_mode": "COOPERATIVE",
-                "assigned_arm_id": None,
-                "robot_ids": ["omx1", "omx2"],
-                "package_id": "sim-package-001",
+                # the slot decides the arms: B both, A OMX1, C OMX2 (Host SLOT_ARMS)
+                "manipulation_mode": SLOT_ARMS[args.slot[1]][0],
+                "assigned_arm_id": SLOT_ARMS[args.slot[1]][1],
+                "robot_ids": [SLOT_ARMS[args.slot[1]][1]]
+                if SLOT_ARMS[args.slot[1]][1]
+                else ["omx1", "omx2"],
+                "package_id": args.package,
                 "quantity": 1,
                 "slot_id": args.slot,
                 "pinky_id": "pinky3" if operation == "OUTBOUND" else "pinky1",

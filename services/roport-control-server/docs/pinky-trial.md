@@ -678,11 +678,16 @@ OMX PC에서 별도 브로커를 열거나 Pinky runner를 OMX용으로 복제�
 uv run python tools/configure_omx_trial.py \
   --config "$TRIAL_DIR/trial.json" --output "$TRIAL_DIR/trial-omx.json" \
   --execution-mode mock --slot 2b \
-  --model-version test-model --calibration-version test-cal
+  --model-version test-model --calibration-version test-cal \
+  --package-marker 16
 ```
 
 이 명령은 연결하거나 구동하지 않는다. 기존 site/control/Pinky binding·경로·속도·현장 확인 값을
-보존하고 `omx` 설정만 추가한다. 이미 OMX 설정이 있으면 binding도 보존한다. 출력 파일이 있으면
+보존하고 `omx` 설정을 추가한다. 이미 OMX 설정이 있으면 binding도 보존한다. `package_id`는
+`--package-marker`로 받은 실물 상자 윗면 마커 번호 문자열(예: `"16"`; 15·16·17·19·20·21·22만,
+18은 Pinky 쟁반 마커)로 바뀐다. OMX Host는 이 규칙이 아닌 `package_id`(예: `trial-package-1`)를
+`INVALID_TARGET`으로 거절하므로, 이 설정으로 시험할 때 창고 복귀 후 요청도 `request 16`처럼 같은
+번호로 한다. 출력 파일이 있으면
 거부한다. 기존 관제 실행 명령의 `--config`만 `trial-omx.json`으로 바꾸고 **새 journal**을 사용한다.
 Pinky에는 기존 trial.json을 유지할 수 있다(기체가 사용하는 값은 동일). 이전 owner와 함께 실행하지 않는다.
 
@@ -743,9 +748,10 @@ main의 PR45 Host는 mock만 제공한다. 실물 제어판 어댑터는 FFT1-15
   정상 종료와 양팔 복귀·그리퍼 열림이 확인되어야 완료한다. 실패·결과 유실은 HOLD한다.
 
 이 경계가 충족된 뒤 설정 도구에 `--execution-mode hardware`와 현장 모델/보정 버전을 지정한다.
-도구가 출력하는 panel 명령에는 `--executor panel --routes ... --box-marker ...`가 추가된다.
+도구가 출력하는 panel 명령에는 `--executor panel --routes ...`가 추가된다. 상자는 명령의
+`package_id`(마커 번호)로 정해지며 `--box-marker`는 쓰지 않는다.
 `--routes`에는 `(INBOUND 또는 OUTBOUND, slot_id)`별 실제 모델 경로·작업 문장·episode_s·reset_s를
-등록하고, 상자 마커는 실물 물품과 확인한다. package_id→마커 자동 매핑은 아직 없다.
+등록하고, 상자 마커는 실물 물품과 확인한다(경로의 `markers`는 그 칸 모델이 학습한 상자 번호).
 제어판 v3.8+의 실제 실행 명령·시리얼/카메라·모델·보정 파일은 현장 담당자가 제공해야 한다.
 
 UI 수동 완료와 MQTT 완료는 같은 정차 세션에서 한 번만 처리된다. 이미 작업을 보냈다면 수동 완료에도

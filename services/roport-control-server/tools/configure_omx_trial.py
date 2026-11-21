@@ -9,11 +9,21 @@ from uuid import uuid4
 
 from roport_control_server.executor.pinky_trial import validate_config
 
+# The OMX command's package_id is the box's top ArUco marker number as a string (Host and OMX3
+# rule; 18 is the Pinky tray marker, docs/aruco/markers.yaml v1.6). Anything else is refused by
+# the Host with INVALID_TARGET once the Pinky has docked (2026-11-21 review).
+PACKAGE_MARKERS = frozenset({15, 16, 17, 19, 20, 21, 22})
 
-def configure(profile, *, mode, slot, model, calibration):
+
+def configure(profile, *, mode, slot, model, calibration, package_marker):
     if not isinstance(profile, dict) or not isinstance(profile.get("omx", {}), dict):
         raise TypeError("trial profile and OMX settings must be objects")
+    if type(package_marker) is not int or package_marker not in PACKAGE_MARKERS:
+        raise ValueError(
+            f"package marker must be one of {sorted(PACKAGE_MARKERS)}: {package_marker!r}"
+        )
     result = deepcopy(profile)
+    result["package_id"] = str(package_marker)
     result["omx"] = {
         "binding_id": profile.get("omx", {}).get("binding_id", str(uuid4())),
         "slot_id": slot,
@@ -35,6 +45,12 @@ def main():
     )
     parser.add_argument("--model-version", required=True)
     parser.add_argument("--calibration-version", required=True)
+    parser.add_argument(
+        "--package-marker",
+        type=int,
+        required=True,
+        help="ArUco marker number on the real box (15-17, 19-22); becomes package_id",
+    )
     args = parser.parse_args()
     try:
         profile = configure(
@@ -43,12 +59,17 @@ def main():
             slot=args.slot,
             model=args.model_version,
             calibration=args.calibration_version,
+            package_marker=args.package_marker,
         )
         with args.output.open("x") as output:
             output.write(json.dumps(profile, ensure_ascii=False, indent=2) + "\n")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         parser.error(str(exc))
     print(f"Created {args.output}; original profile and Pinky identities preserved.")
+    print(
+        f'package_id is now "{profile["package_id"]}" (box marker); check it on the real box. '
+        f"Request it with: request {profile['package_id']}"
+    )
     command = [
         "uv",
         "run",
@@ -71,9 +92,7 @@ def main():
             "panel",
             "--routes",
             "REPLACE_WITH_ROUTES_PATH",
-            "--box-marker",
-            "REPLACE_WITH_BOX_MARKER",
-        ]
+        ]  # the box comes from each command's package_id (no --box-marker)
         print(
             "Hardware needs the panel Host branch and live arm readiness; see docs/pinky-trial.md."
         )
