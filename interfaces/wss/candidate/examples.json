@@ -1,0 +1,253 @@
+[
+  {
+    "label": "request",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "request-1",
+      "type": "task.requested",
+      "site_id": "test",
+      "source": "service-01",
+      "target": "control-01",
+      "sent_at": "2030-01-01T00:00:00Z",
+      "payload": {
+        "order_id": "order-1",
+        "reservation_id": "reservation-1",
+        "operation": "customer_service",
+        "packages": [
+          {
+            "package_id": "package-1",
+            "quantity": 1
+          }
+        ],
+        "pickup_point_id": "G1",
+        "pickup_at": "2030-01-01T01:00:00Z",
+        "order_revision": 0
+      }
+    }
+  },
+  {
+    "label": "prepare",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "prepare-1",
+      "type": "task.requested",
+      "site_id": "test",
+      "source": "service-01",
+      "target": "control-01",
+      "sent_at": "2030-01-01T00:00:00Z",
+      "payload": {
+        "order_id": "order-2",
+        "reservation_id": "reservation-2",
+        "operation": "prepare_order",
+        "packages": [
+          {
+            "package_id": "package-2",
+            "quantity": 1,
+            "marker": "15"
+          }
+        ],
+        "pickup_point_id": "G1",
+        "pickup_at": "2030-01-01T01:00:00Z",
+        "order_revision": 0
+      }
+    }
+  },
+  {
+    "label": "waiting-manifest",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "manifest-0",
+      "type": "task.requested",
+      "site_id": "test",
+      "source": "service-01",
+      "target": "control-01",
+      "sent_at": "2030-01-01T00:00:00Z",
+      "payload": {
+        "order_id": "order-1",
+        "reservation_id": "reservation-1",
+        "operation": "customer_service",
+        "packages": [],
+        "pickup_point_id": "G1",
+        "pickup_at": "2030-01-01T01:00:00Z",
+        "order_revision": 0
+      }
+    }
+  },
+  {
+    "label": "manifest-update",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "manifest-1",
+      "type": "task.requested",
+      "site_id": "test",
+      "source": "service-01",
+      "target": "control-01",
+      "sent_at": "2030-01-01T00:00:00Z",
+      "payload": {
+        "order_id": "order-1",
+        "reservation_id": "reservation-1",
+        "operation": "customer_service",
+        "packages": [
+          {
+            "package_id": "package-1",
+            "quantity": 1
+          }
+        ],
+        "pickup_point_id": "G1",
+        "pickup_at": "2030-01-01T01:00:00Z",
+        "order_revision": 1
+      }
+    }
+  },
+  {
+    "label": "accepted",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "event-accepted",
+      "type": "task.accepted",
+      "site_id": "test",
+      "source": "control-01",
+      "target": "service-01",
+      "sent_at": "2030-01-01T00:00:00Z",
+      "payload": {
+        "reservation_id": "reservation-1",
+        "order_id": "order-1",
+        "task_revision": 0,
+        "state": "QUEUED",
+        "progress": {}
+      },
+      "task_id": "task-example"
+    }
+  },
+  {
+    "label": "progress",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "event-progress",
+      "type": "task.progress",
+      "site_id": "test",
+      "source": "control-01",
+      "target": "service-01",
+      "sent_at": "2030-01-01T00:00:00Z",
+      "payload": {
+        "reservation_id": "reservation-1",
+        "order_id": "order-1",
+        "task_revision": 1,
+        "state": "RUNNING",
+        "progress": {}
+      },
+      "task_id": "task-example"
+    }
+  },
+  {
+    "label": "completed",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "event-completed",
+      "type": "task.completed",
+      "site_id": "test",
+      "source": "control-01",
+      "target": "service-01",
+      "sent_at": "2030-01-01T00:00:00Z",
+      "payload": {
+        "reservation_id": "reservation-1",
+        "order_id": "order-1",
+        "task_revision": 2,
+        "state": "COMPLETED",
+        "progress": {}
+      },
+      "task_id": "task-example"
+    }
+  },
+  {
+    "label": "failed",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "event-failed",
+      "type": "task.failed",
+      "site_id": "test",
+      "source": "control-01",
+      "target": "service-01",
+      "sent_at": "2030-01-01T00:00:00Z",
+      "payload": {
+        "reservation_id": "reservation-1",
+        "order_id": "order-1",
+        "task_revision": 1,
+        "state": "FAILED",
+        "progress": {}
+      },
+      "task_id": "task-example"
+    }
+  },
+  {
+    "label": "rejected",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "event-rejected",
+      "type": "task.rejected",
+      "site_id": "test",
+      "source": "control-01",
+      "target": "service-01",
+      "sent_at": "2030-01-01T00:00:00Z",
+      "payload": {
+        "reservation_id": "reservation-1",
+        "order_id": "order-1",
+        "task_revision": 1,
+        "state": "REJECTED",
+        "progress": {}
+      },
+      "task_id": "task-example"
+    }
+  },
+  {
+    "label": "receipt",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "receipt-message-1",
+      "type": "handover.receipt_recorded",
+      "site_id": "test",
+      "source": "service-01",
+      "target": "control-01",
+      "sent_at": "2030-01-01T00:00:00Z",
+      "payload": {
+        "receipt_id": "receipt-1",
+        "reservation_id": "reservation-1",
+        "order_id": "order-1",
+        "package_ids": [
+          "package-1"
+        ]
+      },
+      "task_id": "task-example"
+    }
+  },
+  {
+    "label": "ack-request",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "ack-request",
+      "type": "message.ack",
+      "site_id": "test",
+      "source": "control-01",
+      "target": "service-01",
+      "sent_at": "2030-01-01T00:00:00Z",
+      "payload": {
+        "message_id": "request-1"
+      }
+    }
+  },
+  {
+    "label": "ack-event",
+    "message": {
+      "schema_version": "1.0",
+      "message_id": "ack-event",
+      "type": "message.ack",
+      "site_id": "test",
+      "source": "service-01",
+      "target": "control-01",
+      "sent_at": "2030-01-01T00:00:00Z",
+      "payload": {
+        "message_id": "event-accepted"
+      }
+    }
+  }
+]

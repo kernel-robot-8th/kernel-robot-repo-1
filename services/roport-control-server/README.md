@@ -385,3 +385,7 @@ OMX1·2 단계는 `roport-omx-task-v1`을 사용하며, UI 수동 완료와 MQTT
 ```
 
 `execution_mode`는 실제 연결한 OMX 실행부를 나타냅니다. 현재 제공되는 `cooperative_host.py`는 mock 전용입니다. 실물 Pinky 설정과 OMX 실행 모드는 별개이며 실물 동작은 현장 설정·구동권·도킹 검증이 추가로 필요합니다. 생성한 resource_token은 격리 순차 시험의 상관 ID이며 운영 자원 예약/permit을 대신하지 않습니다. 관제 재시작·MQTT 단절·결과 timeout은 HOLD로 남기고 자동 재집기/재출발하지 않습니다. 시험 journal은 요청 32개 및 4 MiB 제한이 있으므로 보존·정리 후 새 이력으로 시험합니다.
+
+## 서비스 WSS 관제 기반 (합의 전 후보)
+
+[단독 검증·저장소 경계](docs/service-link.md)와 [S1 대비 계약 차이](../../interfaces/wss/candidate/README.md)를 참고한다. API/Fleet 시작 경로에는 연결하지 않았으며 실제 서비스 Java·운영 DB·실물 연동 완료로 해석하지 않는다.
