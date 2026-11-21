@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from roport_omx import panel_executor
-from roport_omx.cooperative import PROFILE, CooperativeHost
+from roport_omx.cooperative import PROFILE, CooperativeHost, StartRefused
 from roport_omx.mqtt_link.journal import Journal
 from roport_omx.panel_executor import PanelExecutor, Route, load_routes
 
@@ -481,7 +481,9 @@ class PanelExecutorTest(unittest.TestCase):
 
     def test_route_takes_only_the_boxes_its_model_learned(self):
         key = ("INBOUND", "2b", "COOPERATIVE")
-        self.executor.routes = {key: Route(MODEL, "t {box}", 40, 15, markers=frozenset({16, 20}))}
+        self.executor.routes = {
+            key: Route(MODEL, "t {box}", 40, 15, markers=frozenset({16, 20}))
+        }
         message = self.inbound()
         message["payload"]["package_id"] = "17"
         (event,) = self.send(message)
@@ -490,6 +492,32 @@ class PanelExecutorTest(unittest.TestCase):
         message["payload"]["package_id"] = "20"
         (event,) = self.send(message)
         self.assertEqual(event["payload"]["phase"], "ACCEPTED")
+
+    def test_one_arm_slot_is_refused_even_with_a_route(self):
+        # 2026-11-21 review: panel 3.21 has no single-arm control-tower evaluation; with a
+        # route for 2a the start would run its default arm set (both arms)
+        self.executor.routes |= {
+            ("INBOUND", "2a", "DEDICATED"): self.executor.routes[
+                ("INBOUND", "2b", "COOPERATIVE")
+            ]
+        }
+        message = self.inbound(slot="2a")
+        message["payload"] |= {
+            "manipulation_mode": "DEDICATED",
+            "assigned_arm_id": "omx1",
+            "robot_ids": ["omx1"],
+        }
+        (event,) = self.send(message)
+        self.assertEqual(event["payload"]["error_code"], "UNSUPPORTED_SLOT")
+        self.assertEqual(self.panel.starts, [])  # nothing sent to the panel
+        task = {
+            "manipulation_mode": "DEDICATED",
+            "operation": "INBOUND",
+            "slot_id": "2a",
+        }
+        with self.assertRaises(StartRefused):
+            self.executor.start(task)
+        self.assertEqual(self.panel.starts, [])
 
     def test_one_arm_slot_needs_its_own_route(self):
         message = self.inbound(slot="2a")
@@ -1008,7 +1036,9 @@ class PanelExecutorTest(unittest.TestCase):
         self.host.clear_hold()
         self.send(self.outbound())
         good = {"tray_reference_state": "ok", "pre_mission_match": True}
-        self.panel.finish(pinky=pinky(slot_empty=True, **good), stage="done", final=True)
+        self.panel.finish(
+            pinky=pinky(slot_empty=True, **good), stage="done", final=True
+        )
         (event,) = self.host.poll()
         self.assertEqual(event["payload"]["mission_result"], "MISSION_COMPLETE")
 
@@ -1241,7 +1271,6 @@ class PanelExecutorTest(unittest.TestCase):
         example = ROOT / "config/cooperative_routes.example.json"
         self.assertEqual(list(load_routes(example)), [key])
 
-
     # Loading in two reports (2026-11-17): COMPLETE when the box is in its slot, then the alignment.
     def use_two_reports(self, version="3.20.0"):
         self.panel.status["version"] = version
@@ -1267,7 +1296,9 @@ class PanelExecutorTest(unittest.TestCase):
                 self.executor.end_on_place = hand_over
                 self.send(self.inbound())
                 start = self.panel.starts[-1]
-                got = {k: start[k] for k in ("place_shadow", "end_on_place") if k in start}
+                got = {
+                    k: start[k] for k in ("place_shadow", "end_on_place") if k in start
+                }
                 self.assertEqual(got, want)
 
     def test_end_on_place_needs_the_option_and_panel_3_18(self):
@@ -1425,7 +1456,9 @@ class PanelExecutorTest(unittest.TestCase):
                         ("MISSION_COMPLETE_NOT_ALIGNED", code),
                     )
                 else:
-                    self.assertEqual((p["mission_result"], p["error_code"]), (result, code))
+                    self.assertEqual(
+                        (p["mission_result"], p["error_code"]), (result, code)
+                    )
 
     def test_two_reports_handover_not_taken_reports_not_aligned(self):
         self.use_two_reports("3.20.0")

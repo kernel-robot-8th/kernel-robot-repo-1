@@ -497,6 +497,11 @@ class PanelExecutor:
         route = self.routes.get(_route_key(task))
         if route is None:
             raise Rejected("UNSUPPORTED_SLOT")
+        if task["manipulation_mode"] != "COOPERATIVE":
+            # A/C columns (one arm): panel 3.21 has no single-arm control-tower evaluation and
+            # would run its default arm set, both arms with a cooperative model (2026-11-21
+            # review). Refused before acceptance even when a route is configured.
+            raise Rejected("UNSUPPORTED_SLOT")
         marker = package_marker(task["package_id"])  # INVALID_TARGET
         if route.markers is not None and marker not in route.markers:
             raise Rejected(
@@ -518,6 +523,12 @@ class PanelExecutor:
         return paths
 
     def start(self, task: dict) -> None:
+        if (
+            task["manipulation_mode"] != "COOPERATIVE"
+        ):  # never reached past check(); no arm move
+            raise StartRefused(
+                "UNSUPPORTED_SLOT", "one-arm slots are not run by the panel yet"
+            )
         route = self.routes[_route_key(task)]
         box = package_marker(task["package_id"])
         body = {
