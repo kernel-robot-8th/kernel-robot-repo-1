@@ -88,7 +88,8 @@ class FakeGpu:
         self.loaded = {"ok": True, "type": "act", "image_size": [480, 640], "n_obs": 1}
         self.actions = [[float(k), 0, 0, 0, 0, 0] for k in range(100)]
         self.load_ms = 0.0  # 이 요청 때 모델을 올린 시간(README 응답 필드)
-        self.silent, self.requests = False, []
+        self.load_delay = 0.0
+        self.silent, self.requests, self.kinds = False, [], []
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -107,7 +108,9 @@ class FakeGpu:
             req = self.reassembler.feed(packet, peer)
             if req is None or self.silent:
                 continue
+            self.kinds.append(req.kind)  # 받은 순서(LOAD·INFER)
             if req.kind == wire.LOAD:
+                time.sleep(self.load_delay)  # 모델을 올리는 동안
                 kind, reply = LOADED, dict(self.loaded)
             elif req.header.get("model") != MODEL:
                 kind, reply = ERROR, {"code": "MODEL_NOT_LOADED"}
@@ -232,6 +235,77 @@ class Adapter(unittest.TestCase):
         finally:
             self.client._lock.release()
         self.assertEqual(self.gpu.requests, [])
+
+    def _reload_in_background(self):
+        failed = []
+
+        def reload():
+            try:
+                self.client.load()
+            except ValueError as exc:
+                failed.append(exc)
+
+        loader = threading.Thread(target=reload)
+        loader.start()
+        return loader, failed
+
+    def test_infer_waiting_behind_a_failed_reload_sends_nothing(self):
+        # 성공 로드 → 재로드 중(잠금 잡음) 추론 → 재로드 실패 → 그 추론은 보내지 않는다
+        self.client.load()
+        self.gpu.loaded["n_obs"], self.gpu.load_delay = 2, 0.3
+        self.client.timeout_s = 2.0
+        loader, failed = self._reload_in_background()
+        time.sleep(0.1)
+        with self.assertRaises(RuntimeError):
+            self.client.infer([0] * 6, FakeFrame(), "t", "omx_follower")
+        loader.join()
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(self.gpu.requests, [])
+
+    def test_infer_paused_in_encoding_never_sends_after_a_failed_reload(self):
+        # #115 리뷰 재현: 추론이 인코딩 중 멈춘 사이 재로드가 시작·실패해도, 실패 뒤에 보내지 않는다
+        self.client.load()
+        self.gpu.loaded["n_obs"] = 2
+        self.client.timeout_s = 2.0
+        entered, go = threading.Event(), threading.Event()
+
+        def slow_cvt(img, code):
+            entered.set()
+            go.wait(2)
+            return _cvt(img, code)
+
+        FAKE_CV2.cvtColor = slow_cvt
+        self.addCleanup(setattr, FAKE_CV2, "cvtColor", _cvt)
+        out = []
+        worker = threading.Thread(
+            target=lambda: out.append(
+                self.client.infer([0] * 6, FakeFrame(), "t", "omx_follower")
+            )
+        )
+        worker.start()
+        self.assertTrue(entered.wait(2))
+        loader, failed = self._reload_in_background()
+        time.sleep(0.1)  # 재로드는 인코딩이 끝날 때까지 잠금 앞에서 기다린다
+        go.set()
+        worker.join()
+        loader.join()
+        self.assertEqual(len(failed), 1)
+        # 추론은 재로드 전에 끝났고(그때 상태는 유효), 실패한 재로드 뒤 INFER는 없다
+        self.assertEqual(self.gpu.kinds[1:], [wire.INFER, wire.LOAD])
+        with self.assertRaises(RuntimeError):
+            self.client.infer([0] * 6, FakeFrame(), "t", "omx_follower")
+
+    def test_lock_wait_counts_toward_the_request_timeout(self):
+        # 잠금을 만료 직전에 얻고 응답이 없어도 전체가 timeout_s 안에 끝난다
+        self.client.load()
+        self.gpu.silent = True
+        self.client.timeout_s = 0.2
+        self.client._lock.acquire()
+        threading.Timer(0.15, self.client._lock.release).start()
+        start = time.monotonic()
+        with self.assertRaises(InferenceTimeout):
+            self.client.infer([0] * 6, FakeFrame(), "t", "omx_follower")
+        self.assertLess(time.monotonic() - start, 0.3)
 
     def test_no_reply_raises_timeout(self):
         self.client.load()

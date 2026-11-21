@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import stat
 import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -53,39 +54,47 @@ class UdpInferClient:
         self._loaded = False
 
     def load(self, timeout: float = 180.0) -> dict:
-        # 재로드가 실패하면 이전 모델 상태로 보내지 않게, 새 응답 검증 전까지 막는다
-        self._loaded, self._image_size = False, None
+        # 초기화·응답 검증·적용을 한 잠금 안에서: 재로드가 실패하면 그 뒤 추론은 보내지 않는다
         with self._lock:
+            self._loaded, self._image_size = False, None
             info = self.client.load(self.model, timeout=timeout)
-        if info.get("n_obs", 1) != 1:  # 관측 1개만 보낸다(ACT). 0·None도 거절
-            raise ValueError(f"model needs {info['n_obs']} observations")
-        size = info.get("image_size")
-        self._image_size = (int(size[0]), int(size[1])) if size else None
-        self._loaded = True
+            if info.get("n_obs", 1) != 1:  # 관측 1개만 보낸다(ACT). 0·None도 거절
+                raise ValueError(f"model needs {info['n_obs']} observations")
+            size = info.get("image_size")
+            self._image_size = (int(size[0]), int(size[1])) if size else None
+            self._loaded = True
         return info
 
     def infer(
         self, state: Sequence[float], marked_front: Any, task: str, robot_type: str
     ) -> Sequence[Sequence[float]]:
-        if not self._loaded:
-            raise RuntimeError("call load() before infer()")
-        jpeg = self._encode(marked_front)
-        header = {
-            "model": self.model,
-            "overrides": {},  # load()와 같게
-            "task": task,
-            "robot_type": robot_type,
-            "obs": [
-                {"state": [float(v) for v in state], "images": {FRONT: [0, len(jpeg)]}}
-            ],
-            "chunk": self.chunk,
-            "rtc": None,
-        }
-        # load()가 잠금을 오래 잡아도 timeout_s 안에 끝낸다(InferClient 약속)
+        # 잠금 대기와 UDP 요청이 같은 마감 시각을 쓴다: 전체가 timeout_s 안에 끝난다(InferClient 약속)
+        deadline = time.monotonic() + self.timeout_s
         if not self._lock.acquire(timeout=self.timeout_s):
             raise InferenceTimeout("another request holds the link")
         try:
-            reply = self.client.infer(header, jpeg, timeout=self.timeout_s)
+            # 준비 상태와 영상 크기는 잠금을 얻은 뒤의 값으로 본다(load()와 겹쳐도 섞이지 않게)
+            if not self._loaded:
+                raise RuntimeError("call load() before infer()")
+            jpeg = self._encode(marked_front)
+            header = {
+                "model": self.model,
+                "overrides": {},  # load()와 같게
+                "task": task,
+                "robot_type": robot_type,
+                "obs": [
+                    {
+                        "state": [float(v) for v in state],
+                        "images": {FRONT: [0, len(jpeg)]},
+                    }
+                ],
+                "chunk": self.chunk,
+                "rtc": None,
+            }
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise InferenceTimeout("no time left after waiting for the link")
+            reply = self.client.infer(header, jpeg, timeout=left)
         finally:
             self._lock.release()
         if (reply.get("load_ms") or 0) > 0:
