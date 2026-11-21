@@ -53,12 +53,16 @@ def validate_settings(settings):
 # Loading in two reports (2026-11-17, Host --report-placement): "shelf_placed" = the box sits in
 # its slot and the hands left it, the Pinky may leave while the arms still align. The arms are not
 # home yet then; the alignment result follows as a progress event (payload align_result).
+# Each evidence counts only for its own operation (2026-11-21 review): a loading completion that
+# carried "pinky_load" must not let the Pinky return.
 OMX_COMPLETIONS = {
-    "arm_return_only",
-    "shelf_placed",
-    "shelf_align",
-    "shelf_load_not_aligned",
-    "pinky_load",
+    "INBOUND": {
+        "arm_return_only",
+        "shelf_placed",
+        "shelf_align",
+        "shelf_load_not_aligned",
+    },
+    "OUTBOUND": {"arm_return_only", "pinky_load"},
 }
 
 
@@ -418,7 +422,8 @@ class OmxTrial:
                         if placed
                         else not returned(p)
                     )
-                    or p.get("evidence") not in OMX_COMPLETIONS
+                    or p.get("evidence")
+                    not in OMX_COMPLETIONS.get(cmd["payload"].get("operation"), set())
                 ):
                     c.hold("omx_completion_not_safe")
                 elif c.state["phase"] != "HOLD":
