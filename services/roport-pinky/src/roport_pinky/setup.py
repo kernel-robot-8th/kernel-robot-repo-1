@@ -11,6 +11,7 @@ setup(
         ("share/roport_pinky", ["package.xml", "README.md"]),
         ('share/roport_pinky/launch', glob('launch/*.launch.py')),
         ('share/roport_pinky/behavior_trees', glob('behavior_trees/*.xml')),
+        ('share/roport_pinky/config', glob('config/*.yaml')),
     ],
     entry_points={'console_scripts': ['trial_guard = roport_pinky.trial_guard:main']},
     install_requires=["setuptools"],

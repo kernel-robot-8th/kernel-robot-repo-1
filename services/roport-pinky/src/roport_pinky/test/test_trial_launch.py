@@ -21,7 +21,8 @@ def context(limit, linear=.03, line_speed=.03, line_rotate_speed=.15):
     ctx.launch_configurations.update(max_angular=str(limit), max_linear=str(linear), robot='test_robot',
                                     line_speed=str(line_speed), line_rotate_speed=str(line_rotate_speed),
                                     map='/unused/map.yaml', layout_file='/unused/layout.yaml',
-                                    params_file='/unused/params.yaml', ir_node='false', goal_xy_tolerance='0.08')
+                                    params_file='/unused/params.yaml', ir_node='false', goal_xy_tolerance='0.08',
+                                    planner_tolerance='0.1')
     return ctx
 
 
@@ -125,3 +126,17 @@ def test_docking_controller_is_opt_in_and_retains_collision_and_speed_caps(trial
     assert cfg['GateDock.use_collision_detection'] is True
     assert cfg['GateDock.allow_reversing'] is False
     assert cfg['gate_dock_goal_checker.xy_goal_tolerance'] == .01
+
+
+def test_planner_tolerance_default_and_follow_value(trial_launch):
+    """기본 0.1 m(공공 공간 목표가 지도 끝 근처) 그대로, 추종 시험은 0.3 m(11-20 실로봇: 사이에 선 인형 위 목표)."""
+    ctx = context(.15)
+    nodes = {n['executable']: n for n in trial_launch._nodes(ctx)}
+    assert nodes['planner_server']['parameters'][1]['GridBased.tolerance'] == .1
+    ctx.launch_configurations['planner_tolerance'] = '0.3'
+    nodes = {n['executable']: n for n in trial_launch._nodes(ctx)}
+    assert nodes['planner_server']['parameters'][1]['GridBased.tolerance'] == .3
+    for invalid in ('nan', '0.01', '0.5'):
+        ctx.launch_configurations['planner_tolerance'] = invalid
+        with pytest.raises(ValueError):
+            trial_launch._nodes(ctx)

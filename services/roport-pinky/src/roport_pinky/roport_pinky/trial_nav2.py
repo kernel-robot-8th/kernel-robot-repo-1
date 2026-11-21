@@ -216,11 +216,21 @@ class Nav2Bridge:
             return {'nav2_ready': False, 'localization_ready': False,
                     'pose': None, 'stopped': False}
 
-    def start(self, payload):
+    def start(self, payload, *, behavior_tree='', stamp=None, max_recoveries=MAX_RECOVERIES):
+        """behavior_tree: per-goal BT file (empty = bt_navigator default). stamp: header time in s.
+
+        max_recoveries: cap on Nav2 feedback number_of_recoveries for this goal. None = no cumulative cap
+        (the BT bounds its own retries; RECOVERY_TIMEOUT_S still applies). Nav2 counts every recovery
+        node tick (clear costmap and wait are one each), cumulatively for the whole goal.
+        """
         from nav2_msgs.action import NavigateToPose
         goal = NavigateToPose.Goal()
+        goal.behavior_tree = behavior_tree
         goal.pose.header.frame_id = payload['frame_id']
         goal.pose.header.stamp = self.node.get_clock().now().to_msg()
+        if stamp is not None:
+            goal.pose.header.stamp.sec = int(math.floor(stamp))
+            goal.pose.header.stamp.nanosec = min(int(round((stamp % 1) * 1e9)), 999_999_999)
         p = payload['pose']
         goal.pose.pose.position.x, goal.pose.pose.position.y = float(p['x']), float(p['y'])
         goal.pose.pose.orientation.z = math.sin(p['yaw'] / 2)
@@ -229,10 +239,11 @@ class Nav2Bridge:
         generation = self.generation
         self.goal, self.handle, self.result = payload, None, None
         self.recovery_started = self.recovery_pose = None
+        self.max_recoveries = max_recoveries
         self.navigation = {
             'phase': 'navigating', 'goal_id': payload['goal_id'],
             'target_pose': dict(p), 'current_pose': None,
-            'recoveries': 0, 'max_recoveries': MAX_RECOVERIES,
+            'recoveries': 0, 'max_recoveries': max_recoveries,
             'recovery_elapsed_s': 0.0, 'recovery_timeout_s': RECOVERY_TIMEOUT_S,
             'nav2_error_code': 0, 'action_status': 0, 'error_code': None,
         }
@@ -305,7 +316,8 @@ class Nav2Bridge:
                     self.recovery_started = time.monotonic()
                     self.recovery_pose = self.snapshot().get('pose')
                 self.navigation.update(phase='recovering', recoveries=count)
-            if count > MAX_RECOVERIES:
+            limit = getattr(self, 'max_recoveries', MAX_RECOVERIES)
+            if limit is not None and count > limit:
                 self._fail('nav2_recovery_limit')
 
     def _check_recovery(self, state):
