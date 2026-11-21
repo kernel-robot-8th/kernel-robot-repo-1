@@ -369,18 +369,20 @@ type QrState =
 // QR이 인식되지 않을 때를 위해 카트 패드에 입력할 예약번호를 함께 크게 보여 준다(SR-18-2-E).
 function Ticket({ pickup: p, justCreated, onError, onStatus }: { pickup: Pickup; justCreated?: boolean; onError: (e: unknown) => boolean; onStatus: () => void }) {
   const [qr, setQr] = useState<QrState>({ st: 'loading' });
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState(() => performance.now()); // 단조 시계(ms): 휴대폰 시계를 바꿔도 영향 없음
   const seq = useRef(0);
 
   const issue = useCallback(async () => {
     const mine = ++seq.current; // 늦게 온 이전 발급 결과가 새 QR을 덮지 않게 한다
     setQr({ st: 'loading' });
     try {
+      const requestedAt = performance.now(); // 응답 지연이 유효 기간을 늘리지 않게 요청 시점부터 센다
       const t = await api.qrToken(p.pickupId);
-      const deadline = qrDeadline(t.issuedAt, t.expiresAt);
-      const image = await toDataURL(t.token, { errorCorrectionLevel: 'M', margin: 2, width: 320 });
+      const deadline = qrDeadline(t.issuedAt, t.expiresAt, requestedAt);
+      // 카메라 인식에 필요한 사방 4모듈 흰 여백(QR 표준 quiet zone). 이미지 테두리·배경은 여백으로 치지 않는다.
+      const image = await toDataURL(t.token, { errorCorrectionLevel: 'M', margin: 4, width: 320 });
       if (mine !== seq.current) return;
-      setNow(Date.now());
+      setNow(performance.now());
       setQr({ st: 'ready', image, deadline });
     } catch (e) {
       if (mine !== seq.current || onError(e)) return;
@@ -396,7 +398,7 @@ function Ticket({ pickup: p, justCreated, onError, onStatus }: { pickup: Pickup;
   const left = qr.st === 'ready' ? qrSecondsLeft(qr.deadline, now) : 0;
   useEffect(() => {
     if (qr.st !== 'ready') return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
+    const id = setInterval(() => setNow(performance.now()), 1000);
     return () => clearInterval(id);
   }, [qr.st]);
   useEffect(() => {

@@ -45,16 +45,24 @@ test('when: 오늘(KST)은 시각만, 다른 날은 날짜와 함께', () => {
   assert.equal(when('2026-12-31T15:30:00Z', now), '2027/1/1 00:30'); // KST로 해가 바뀜
 });
 
-test('qrDeadline: 서버 유효 기간을 받은 순간부터 센다(휴대폰 시계가 서버와 달라도 같음)', () => {
-  const received = Date.parse('2026-11-21T03:20:00Z'); // 휴대폰 시계가 서버보다 20분 빠른 경우
-  assert.equal(qrDeadline('2026-11-21T03:00:00Z', '2026-11-21T03:10:00Z', received), received + 600_000);
-  // 해석할 수 없거나 기간이 0 이하이면 받은 즉시 만료
-  assert.equal(qrDeadline('x', '2026-11-21T03:10:00Z', received), received);
-  assert.equal(qrDeadline('2026-11-21T03:10:00Z', '2026-11-21T03:00:00Z', received), received);
+test('qrDeadline: 서버 유효 기간을 발급 요청 시점부터 센다(벽시계를 쓰지 않음)', () => {
+  const requested = 1_000_000; // 단조 시계 값(ms). 휴대폰 벽시계가 서버와 20분 달라도 결과는 같다.
+  assert.equal(qrDeadline('2026-11-21T03:00:00Z', '2026-11-21T03:10:00Z', requested), requested + 600_000);
+  // 해석할 수 없거나 기간이 0 이하이면 요청 시점에 이미 만료
+  assert.equal(qrDeadline('x', '2026-11-21T03:10:00Z', requested), requested);
+  assert.equal(qrDeadline('2026-11-21T03:10:00Z', '2026-11-21T03:00:00Z', requested), requested);
 });
 
-test('qrSecondsLeft: 만료까지 남은 초(올림), 지났으면 0', () => {
-  const deadline = Date.parse('2026-11-21T03:10:00Z');
+test('qrDeadline: 응답이 늦게 와도 서버 만료보다 늦게 만료로 보이지 않는다', () => {
+  const requested = 1_000_000;
+  const deadline = qrDeadline('2026-11-21T03:00:00Z', '2026-11-21T03:10:00Z', requested);
+  const received = requested + 5_000; // 응답 5초 지연
+  assert.equal(qrSecondsLeft(deadline, received), 595); // 600이 아니라 595
+  assert.equal(qrSecondsLeft(deadline, requested + 600_000), 0); // 서버 만료 시점에 0
+});
+
+test('qrSecondsLeft: 단조 시계 기준 남은 초(올림), 지났으면 0', () => {
+  const deadline = 2_000_000;
   assert.equal(qrSecondsLeft(deadline, deadline - 600_000), 600);
   assert.equal(qrSecondsLeft(deadline, deadline - 200), 1);
   assert.equal(qrSecondsLeft(deadline, deadline), 0);
