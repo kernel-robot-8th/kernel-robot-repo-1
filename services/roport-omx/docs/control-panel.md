@@ -30,7 +30,7 @@
 | 2026-11-19 | v3.19.0 (`8bc9464`, 태그) | 위 | 카메라 front_3·front_4 추가(Host 변경 없음) |
 | 2026-11-19 | **v3.20.0 (`89c44a7`, 태그)** | 위 + #107 `48aad80` · #112 `a9da33e` (현장 `field/omx-cooperative` `379ce03`) | 두 PC 배포, 현장 정렬기 교체. 모의 시험 통과, 실물 미검증 |
 
-Host가 요구하는 제어판 최소 버전: **3.14.0**(입고만), **3.15.0**(경로표에 OUTBOUND가 있을 때). 낮으면 `executor_error: PANEL_VERSION`. 그보다 새 기능은 제어판 버전을 보고 있을 때만 씁니다: 칸·`pinky_id` 전달은 3.17.0+, 넘겨받기(`end_on_place`)·그림자 판정(`place_shadow`)은 3.18.0+, 놓였음 조기 보고(`--report-placement`)는 판정 근거가 생긴 3.20.0+.
+Host가 요구하는 제어판 최소 버전: **3.14.0**(입고만), **3.15.0**(경로표에 OUTBOUND가 있을 때; #107 `20ea6bf`부터 **3.20.0**, 작업 직전 쟁반 사진 확인이 필요). 낮으면 `executor_error: PANEL_VERSION`. 그보다 새 기능은 제어판 버전을 보고 있을 때만 씁니다: 칸·`pinky_id` 전달은 3.17.0+, 넘겨받기(`end_on_place`)·그림자 판정(`place_shadow`)은 3.18.0+, 놓였음 조기 보고(`--report-placement`)는 판정 근거가 생긴 3.20.0+.
 
 ## 3. Host가 쓰는 제어판 기능
 
@@ -52,8 +52,10 @@ Host가 요구하는 제어판 최소 버전: **3.14.0**(입고만), **3.15.0**(
 | 정렬 뒤 모델 홈 복귀 | `last_result.align.rest{check, rest_ref: "home"}` | 정렬 뒤 쉬는 자세 판정 | 3.17.1 |
 | 안전 정지 홈 이동: 모든 관절 동시 도착, 먼저 손끝 4 cm 들기 | 평가 종료·중지·`/api/home/return` 공통 | 실패 뒤 홈 복귀 경로(충돌 감소) | 3.17.2 · 3.17.3 |
 | 하차 직전 쟁반 확인과 직전 사진 기준 판정 | `POST /api/eval/start`(하차) 안에서 직전 쟁반 확인, 비어 있지 않으면 400 `{"refused": "tray_check", "tray_check": {...}}` → `last_result.pinky{tray_reference: "pre_mission", reference_at, tray_reference_state, pre_mission_match}` | 거절은 `PANEL_TRAY_NOT_EMPTY`·`PANEL_TRAY_CHECK_FAILED`(HOLD 없음), 직전 사진 기준이 아니면 `PANEL_PINKY_NO_REFERENCE`(HOLD) | 3.20.0 |
-| 놓였음 판정 근거 | `last_result.placement{tips_clear, tip_y, y_out, gripper, observed_ts(카메라 촬영 시각), eval_end{all_at_home, arms{gripper}}}` | 조기 COMPLETE의 그리퍼 해제·촬영 3초 이내 판정(`grasp_released: true`) | 3.20.0 |
+| 놓였음 판정 근거 | `last_result.placement{tips_clear, tip_y, y_out, gripper, observed_ts, observed_clock, eval_end{all_at_home, arms{gripper}}}` | 조기 COMPLETE의 그리퍼 해제·촬영 3초 이내 판정(`grasp_released: true`). 시각 출처는 아래 참고 | 3.20.0 |
 | 넘겨받기, 그림자 판정 | `POST /api/eval/start` `end_on_place: true` 또는 `place_shadow: true` → `last_result.handover{state, fallback, fallback_ok, …}`, `last_episode.end_reason` | 놓은 직후 정렬기가 팔을 이어받음, 실패 시 판정(`PANEL_HANDOVER_*`) | 3.18.0 |
+
+**놓였음 시각(`observed_ts`)의 출처**: 제어판 3.20.0의 넘겨받기 판정(`source: "eval_judge"`)은 판정에 쓴 위 카메라 프레임의 촬영 시각을 넣고 `observed_clock: "capture"`로 표시합니다. 촬영 시각을 모르면 제어 주기 시각을 넣고 `observed_clock: "control_step"`으로 표시합니다. 이 값은 촬영 시각이 아니므로 "촬영 3초 이내" 근거가 되지 않습니다. 정렬 실행기가 읽은 놓였음(`source: "align"` 등)은 아직 `observed_clock`을 남기지 않습니다. Host는 #112 `7b988d4`부터 `observed_clock: "capture"`일 때만 조기 COMPLETE를 보내고, 그 전 코드는 출처를 확인하지 않습니다. 관제의 촬영 시각·`ALIGN_HOLD` 검증 전까지 현장 Host는 `--report-placement`를 끈 상태로 둡니다(제어판 Host 실행기도 이 옵션을 넘기지 않음). 그동안 입고는 정렬 뒤 한 번 보고합니다.
 
 평가 시작 요청 본문(Host가 보냄): `source`, `model_path`, `task`, `episodes: 1`, `episode_s`, `reset_s`, `target_marker`, `end_on_return`, 입고는 `shelf_align: true`·`fast_release: true`, 하차는 `pinky_check: true`·`shelf_align: false`·`draw_target: false`, 3.17.0+는 `slot`·`pinky_id`, 3.18.0+ 입고는 옵션에 따라 `end_on_place` 또는 `place_shadow`, 경로표의 `output_filter`·`filter_gripper`·`eval_options`.
 
