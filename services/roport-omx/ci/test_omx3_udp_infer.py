@@ -5,6 +5,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -86,6 +87,7 @@ class FakeGpu:
         self.reassembler = wire.Reassembler(KEY)
         self.loaded = {"ok": True, "type": "act", "image_size": [480, 640], "n_obs": 1}
         self.actions = [[float(k), 0, 0, 0, 0, 0] for k in range(100)]
+        self.load_ms = 0.0  # 이 요청 때 모델을 올린 시간(README 응답 필드)
         self.silent, self.requests = False, []
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -113,7 +115,11 @@ class FakeGpu:
                 self.requests.append((req.header, req.data))
                 kind = ACTIONS
                 reply = {k: req.header.get(k) for k in wire.ECHO_FIELDS}
-                reply |= {"actions": self.actions, "model_version": MODEL}
+                reply |= {
+                    "actions": self.actions,
+                    "model_version": MODEL,
+                    "load_ms": self.load_ms,
+                }
             out = Message(kind, req.session, req.request_id, reply)
             for datagram in wire.pack(out, KEY):
                 self.sock.sendto(datagram, peer)
@@ -198,6 +204,35 @@ class Adapter(unittest.TestCase):
             self.client.infer([0] * 6, FakeFrame(), "t", "omx_follower")
         self.assertEqual(self.gpu.requests, [])
 
+    def test_rejects_zero_or_missing_obs_count(self):
+        for n_obs in (0, None):
+            with self.subTest(n_obs=n_obs):
+                self.gpu.loaded["n_obs"] = n_obs
+                with self.assertRaises(ValueError):
+                    self.client.load()
+
+    def test_server_reload_during_run_is_logged(self):
+        self.client.load()
+        with self.assertNoLogs("roport_omx.omx3.adapters.udp_infer"):
+            self.client.infer([0] * 6, FakeFrame(), "t", "omx_follower")
+        self.gpu.load_ms = 850.0  # 캐시에서 밀려 서버가 다시 올림
+        with self.assertLogs("roport_omx.omx3.adapters.udp_infer", "WARNING") as logs:
+            actions = self.client.infer([0] * 6, FakeFrame(), "t", "omx_follower")
+        self.assertEqual(len(actions), 100)  # 받은 동작은 그대로 쓴다
+        self.assertIn("load_ms=850.0", logs.output[0])
+
+    def test_waiting_for_the_link_is_bounded(self):
+        # load()가 잠금을 오래 잡고 있어도 infer()는 timeout_s 안에 시간 초과로 끝난다
+        self.client.load()
+        self.client.timeout_s = 0.1
+        self.client._lock.acquire()
+        try:
+            with self.assertRaises(InferenceTimeout):
+                self.client.infer([0] * 6, FakeFrame(), "t", "omx_follower")
+        finally:
+            self.client._lock.release()
+        self.assertEqual(self.gpu.requests, [])
+
     def test_no_reply_raises_timeout(self):
         self.client.load()
         self.gpu.silent = True
@@ -210,12 +245,14 @@ class Adapter(unittest.TestCase):
         self.client.load()
         policy = ChunkPolicy(self.client, Omx3Settings())
         policy.reset(17)
-        action = None
-        for _ in range(500):
+        action, deadline = (
+            None,
+            time.monotonic() + 5,
+        )  # 바쁜 CI에서도 흔들리지 않게 상한 5초
+        while action is None and time.monotonic() < deadline:
             action = policy.act([0.0] * 6, FakeFrame())
-            if action is not None:
-                break
-            threading.Event().wait(0.002)
+            if action is None:
+                time.sleep(0.002)
         self.assertEqual(action, [0.0, 0, 0, 0, 0, 0])
         header = self.gpu.requests[0][0]
         self.assertEqual(

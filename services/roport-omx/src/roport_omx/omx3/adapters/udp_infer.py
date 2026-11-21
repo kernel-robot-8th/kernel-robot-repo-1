@@ -8,6 +8,7 @@ InferenceClient는 스레드에 안전하지 않으므로 호출을 잠금으로
 
 from __future__ import annotations
 
+import logging
 import stat
 import threading
 from collections.abc import Sequence
@@ -16,9 +17,10 @@ from typing import Any
 
 import cv2
 
-from ...infer_link.client import InferenceClient
+from ...infer_link.client import InferenceClient, InferenceTimeout
 from ...infer_link.wire import check_key
 
+log = logging.getLogger(__name__)
 FRONT = "observation.images.front"  # 마커 ACT 모델의 유일한 카메라 입력
 
 
@@ -40,6 +42,7 @@ class UdpInferClient:
         chunk: int = 100,  # 모델 chunk_size. 빼면 서버가 50으로 자른다
         timeout_s: float = 1.0,  # 요청 1개의 응답 대기. 넘으면 ChunkPolicy가 새 관측으로 재요청
         jpeg_quality: int = 90,  # 제어판 기본값(학습·평가와 같게)
+        # 테스트용. 넘기면 server·key는 쓰지 않는다
         client: InferenceClient | None = None,
     ):
         self.client = client or InferenceClient(server, key)
@@ -54,7 +57,7 @@ class UdpInferClient:
         self._loaded, self._image_size = False, None
         with self._lock:
             info = self.client.load(self.model, timeout=timeout)
-        if int(info.get("n_obs") or 1) != 1:  # 관측 1개만 보낸다(ACT)
+        if info.get("n_obs", 1) != 1:  # 관측 1개만 보낸다(ACT). 0·None도 거절
             raise ValueError(f"model needs {info['n_obs']} observations")
         size = info.get("image_size")
         self._image_size = (int(size[0]), int(size[1])) if size else None
@@ -78,8 +81,20 @@ class UdpInferClient:
             "chunk": self.chunk,
             "rtc": None,
         }
-        with self._lock:
+        # load()가 잠금을 오래 잡아도 timeout_s 안에 끝낸다(InferClient 약속)
+        if not self._lock.acquire(timeout=self.timeout_s):
+            raise InferenceTimeout("another request holds the link")
+        try:
             reply = self.client.infer(header, jpeg, timeout=self.timeout_s)
+        finally:
+            self._lock.release()
+        if (reply.get("load_ms") or 0) > 0:
+            # 서버 캐시(2개, LRU)에서 밀려나 이 요청 때 다시 올림. 1초 넘게 걸리면 시간 초과로 이 응답은 못 받는다
+            log.warning(
+                "GPU server reloaded %s during a run (load_ms=%s); load models before driving",
+                self.model,
+                reply["load_ms"],
+            )
         return reply["actions"]
 
     def close(self) -> None:
