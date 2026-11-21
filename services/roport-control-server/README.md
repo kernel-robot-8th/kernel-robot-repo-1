@@ -86,6 +86,29 @@ STOP 수락 직후 **다시 재부팅**하면 새 기동에서 생성된 STOP �
 
 상태·위치 관측이 허용 시각 범위(-1~3초)를 벗어나면 `clock_skew_or_delay`와 기체·메시지 종류·관측 경과 시간을 로그에 남깁니다. 시계 동기화와 전달 지연을 점검하되 상태 유효기간을 늘리지 않습니다. 예상 밖 실행 오류에서도 종료 전에 HOLD를 저장하고 자원을 닫으며, 오류 자체는 숨기지 않습니다. `fleet_profiles(simulation=False)`에는 모의 N12 복귀점·허용 오차·IR 오프셋을 담은 `n12_goal`을 제공하지 않습니다. 실물용 측정·합의 후 따로 설정해야 하며 현재 Fleet CLI의 simulation·loopback 제한은 유지합니다.
 
+## Fleet 웹 UI 연결
+
+기존 3D 화면을 `?mode=fleet`으로 열어 단일 Fleet 실행부의 상태·역할·선반·입출고 요청을 공유합니다. 웹 서버는 MQTT나 journal을 직접 쓰지 않고 Unix 소켓으로 조작하며, 화면 접속·새로고침만으로 작업 처리를 시작하지 않습니다. 기존 TRIAL/DEMO/OFFLINE 모드는 유지합니다.
+
+앞 절의 Fleet 실행부와 **같은 사용자 계정·PC**에서 다음을 실행합니다. 지도와 layout은 Fleet 설정을 생성할 때 사용한 파일과 같아야 합니다.
+
+```bash
+export ROPORT_MAP="$PWD/../roport-pinky/maps/airport_map.yaml"
+export ROPORT_TRIAL_LAYOUT="$PWD/../roport-pinky/src/roport_gz_world/layout/roport_airport.yaml"
+export ROPORT_FLEET_SOCKET=/tmp/fleet.sock
+export ROPORT_TRIAL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --port 8000
+```
+
+`http://127.0.0.1:8000/ui/?mode=fleet`에서 `ROPORT_TRIAL_TOKEN` 값을 조작 키에 입력합니다. 역할·입출고 요청을 지정하고 **요청 처리 시작**을 누릅니다. 조작 키는 브라우저 저장소에 보관하지 않아 새로고침 후 다시 입력합니다. 실제 고객 수령 증거가 없는 수동 수령 버튼은 simulation 모드에만 표시합니다.
+
+- 상태: 현재 관측 좌표·노드, 상태 지연, 역할, 6칸 선반, 작업 단계, 미완료 명령과 자원 예약을 표시합니다. 마지막 노드 위치는 흐리게 표시하는 참고 위치이며 도착 근거로 사용하지 않습니다.
+- 중단: **관제 보류**는 실행부의 기존 STOP/HOLD 처리를 요청합니다. 브라우저 연결이 끊기면 조작을 막고 마지막 수신 상태임을 표시합니다. 물리 비상 정지를 대체하지 않습니다.
+- 복구: **중단·복구 확인**에서 대상과 현장 확인 기록을 입력합니다. 저장된 완료 반영·거절 작업 재배정·물품 제거 후 취소는 기존 실행부의 증거 검사를 그대로 통과해야 합니다. STOP 재요청과 재부팅 후 도착 재확인은 별도 버튼이며, 화면이 보고 있던 명령·기동 ID를 전달합니다. 대상/처리 변경이나 연결 단절 시 확인 체크를 다시 해야 합니다.
+- 재개: 미완료 명령과 도착 재확인을 처리한 뒤 **보류 해제**, 별도 **요청 처리 시작** 순서입니다. 조회나 복구 성공을 자동 재출발로 취급하지 않습니다.
+
+이번 연결은 루프백 simulation Fleet용이며 실물 Fleet 실행·운영 인증·서비스 WSS·운영 DB는 후속입니다. 웹 화면/가상 실행기 시험은 실제 센서·팔·주행 검증을 대신하지 않습니다. 가상 전체 실행기 배포는 후속으로 분리했고, 이 PR의 UI 회귀는 `npm run test:web -- tests/browser/fleet.spec.mjs`, HTTP→MQTT 입출고 회귀는 `REQUIRE_MQTT_TESTS=1 uv run pytest tests/test_fleet_web_mqtt.py`로 실행합니다.
+
 ## Pinky MQTT 주행 시험 · FFT1-56
 
 1대/2대/스마트카트 시나리오를 CLI 또는 원본 웹 UI에서 실행합니다. `route → 수동/MQTT 상하차 완료 → N12 mode_switch → navigate`를 완료 응답으로 진행하며, 파일 이력·중복 방지·저장 ACK·오류 시 HOLD를 포함합니다. 같은 실행부를 사용하며 운영 DB는 연결하지 않습니다. 웹 연결·조작 키·시험 범위는 [가이드 7.4절](docs/pinky-trial.md)을 참고하세요.
