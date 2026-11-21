@@ -27,6 +27,7 @@ setup(
                     'preview': ['ultralytics==8.4.208', 'lap==0.5.14',
                                 'opencv-python==4.11.0.86', 'numpy==1.26.4']},
     entry_points={'console_scripts': ['navigate = roport_smartcart.navigate:main',
+                                     'reid_video = roport_smartcart.reid_video:main',
                                      'target_preview = roport_smartcart.target_preview:main',
                                      'doll_recognition = roport_smartcart.doll_recognition:main',
                                      'doll_follow_demo = roport_smartcart.doll_follow_demo:main',
