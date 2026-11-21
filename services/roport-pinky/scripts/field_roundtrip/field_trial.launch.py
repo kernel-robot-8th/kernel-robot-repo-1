@@ -50,7 +50,7 @@ def _nodes(context):
     config = LaunchConfiguration('params_file')
     params_files = [config]
     if LaunchConfiguration('shopping_follow').perform(context).lower() == 'true':
-        # A 5 cm following step must extend beyond Nav2's arrival tolerance.
+        # Short following steps must extend beyond Nav2's arrival tolerance.
         goal_xy_tolerance = min(goal_xy_tolerance, .015)
         params_files.append(str(Path(get_package_share_directory('roport_smartcart')) /
                                 'config' / 'shopping_costmaps.yaml'))

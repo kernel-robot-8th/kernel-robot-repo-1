@@ -1,4 +1,4 @@
-"""Local pad + camera identity + Nav2. Run on the operator PC, never during bringup."""
+"""Serve the shopping pad and track its selected shopper on Pinky or in Gazebo."""
 import argparse
 from collections import OrderedDict, deque
 import hashlib
