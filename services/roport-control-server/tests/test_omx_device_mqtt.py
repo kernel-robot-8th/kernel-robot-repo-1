@@ -200,10 +200,10 @@ def test_device_executor_command_to_saved_result_over_mqtt(
         host = FieldOmxHost(
             host_journal,
             {target: executor},
-            alignment=lambda _: {
-                "pinky_id": "pinky1",
-                "pinky_boot_version": "device-test-pinky-boot",
-                "arrival_command_id": arrival,
+            alignment=lambda _, p: {
+                "pinky_id": p["pinky_id"],
+                "pinky_boot_version": p["boot_version"],
+                "arrival_command_id": p["state"]["arrival_command_id"],
                 "observed_at": now(),
                 "alignment": "confirmed",
             },
@@ -456,10 +456,10 @@ def test_panel_start_delay_keeps_mqtt_status_and_stop_responsive(broker, tmp_pat
         host = FieldOmxHost(
             journal,
             {"shelf-01": device.executor},
-            alignment=lambda _: {
-                "pinky_id": "pinky1",
-                "pinky_boot_version": "pinky-boot",
-                "arrival_command_id": "arrival",
+            alignment=lambda _, p: {
+                "pinky_id": p["pinky_id"],
+                "pinky_boot_version": p["boot_version"],
+                "arrival_command_id": p["state"]["arrival_command_id"],
                 "observed_at": now(),
                 "alignment": "confirmed",
             },

@@ -8,7 +8,8 @@ from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event, current_thread, main_thread
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "scripts")]
@@ -51,14 +52,14 @@ class FieldHostTest(unittest.TestCase):
         self.journal = Journal(Path(self.temp.name) / "journal.json")
         self.executors = virtual_executors(0)
         self.host = FieldOmxHost(self.journal, self.executors)
-        self.host.alignment = lambda command: virtual_alignment(self.host, command)
+        self.host.alignment = virtual_alignment
         self.observe("N11")
 
     def tearDown(self):
         self.journal.close()
         self.temp.cleanup()
 
-    def observe(self, node, *, boot_version="pinky-boot", **changes):
+    def observe(self, node, *, robot="pinky1", boot_version="pinky-boot", **changes):
         state = {
             "node": node,
             "arrival_command_id": "arrival-1",
@@ -77,13 +78,12 @@ class FieldHostTest(unittest.TestCase):
         self.host.observe_pinky(
             build_message(
                 "robot_state",
-                "pinky1",
+                robot,
                 "control-01",
                 {
                     "boot_version": boot_version,
                     "observed_at": datetime.now(UTC).isoformat(),
-                    "sequence": self.host.pinkies.get("pinky1", {}).get("sequence", 0)
-                    + 1,
+                    "sequence": self.host.pinkies.get(robot, {}).get("sequence", 0) + 1,
                     "active_command_id": None,
                     "state": state,
                 },
@@ -239,7 +239,7 @@ class FieldHostTest(unittest.TestCase):
             )
         )
         self.host = FieldOmxHost(self.journal, self.executors)
-        self.host.alignment = lambda cmd: virtual_alignment(self.host, cmd)
+        self.host.alignment = virtual_alignment
         self.observe("N11")
         self.assertEqual(self.host.handle(first), [done])
         second = self.command()
@@ -283,7 +283,7 @@ class FieldHostTest(unittest.TestCase):
         self.host.data["commands"]["command-1"].pop("arrival_consumed")
         self.host._save()
         self.host = FieldOmxHost(self.journal, self.executors)
-        self.host.alignment = lambda cmd: virtual_alignment(self.host, cmd)
+        self.host.alignment = virtual_alignment
         self.observe("N11")
         second = self.command()
         second["command_id"] = "new-owner"
@@ -393,10 +393,140 @@ class FieldHostTest(unittest.TestCase):
         self.assertEqual(len(self.executors["shelf-01"].tasks), 1)
 
     def test_missing_alignment_is_not_invented(self):
-        self.host.alignment = lambda cmd: None
+        self.host.alignment = lambda cmd, pinky_observation: None
         event = self.host.handle(self.command())[0]
         self.assertEqual(event["payload"]["reason"], "docking_alignment_unconfirmed")
         self.assertFalse(self.executors["shelf-01"].tasks)
+
+    def test_alignment_receives_the_matching_pinky_observation_copy(self):
+        for target, node in (
+            ("omx3", "N01"),
+            ("omx1", "N21"),
+            ("omx2", "N22"),
+            ("shelf-01", "N11"),
+        ):
+            for robot in ("pinky1", "pinky2", "pinky3"):
+                with self.subTest(target=target, robot=robot):
+                    self.observe(node, robot=robot)
+                    command = self.command(target)
+                    p = command["payload"]
+                    if target in {"omx1", "omx2"}:
+                        p["source_location"]["robot_id"] = robot
+                    else:
+                        p["pinky_id"] = robot
+                    before = deepcopy(self.host.pinkies)
+
+                    def sensor(cmd, observed):
+                        self.assertEqual(cmd, command)
+                        self.assertEqual(observed, {"pinky_id": robot, **before[robot]})
+                        result = virtual_alignment(cmd, observed)
+                        observed["boot_version"] = "changed"
+                        observed["state"]["node"] = "elsewhere"
+                        return result
+
+                    self.host.alignment = sensor
+                    self.host._visit(command)
+                    self.assertEqual(self.host.pinkies, before)
+
+    def test_invalid_pinky_observation_never_reaches_alignment_sensor(self):
+        for changes in (
+            {"stopped": False},
+            {"line_enabled": True},
+            {"drive_owner": "line"},
+            {"arrival_command_id": "old"},
+            {"boot_version": "old"},
+        ):
+            with self.subTest(changes=changes):
+                self.observe("N11", **changes)
+                self.host.alignment = Mock()
+                with self.assertRaisesRegex(ValueError, "pinky_visit_not_confirmed"):
+                    self.host._visit(self.command())
+                self.host.alignment.assert_not_called()
+        self.observe("N11", boot_version="latest-boot")
+        self.host.pinkies["pinky1"]["observed_at"] = "2000-01-01T00:00:00+00:00"
+        self.host.alignment = Mock()
+        with self.assertRaisesRegex(ValueError, "pinky_observation_stale"):
+            self.host._visit(self.command(expected_pinky_boot_version="latest-boot"))
+        self.host.alignment.assert_not_called()
+
+    def test_sensor_record_must_match_observation_and_have_its_own_fresh_time(self):
+        for changes in (
+            {"pinky_id": "pinky2"},
+            {"pinky_boot_version": "old"},
+            {"arrival_command_id": "old"},
+            {"alignment": "unconfirmed"},
+            {"observed_at": "2000-01-01T00:00:00+00:00"},
+        ):
+            with self.subTest(changes=changes):
+                self.host.alignment = lambda cmd, p: {
+                    **virtual_alignment(cmd, p),
+                    **changes,
+                }
+                command = self.command()
+                command["command_id"] = str(len(self.host.data["commands"]))
+                event = self.host.handle(command)[0]
+                self.assertEqual(
+                    event["payload"]["reason"], "docking_alignment_unconfirmed"
+                )
+                self.assertFalse(self.executors["shelf-01"].tasks)
+
+    def test_docking_state_preserves_sensor_result_but_excludes_stale_visits(self):
+        self.host.handle(self.command())
+        self.host.poll()
+        sensor = Mock(
+            side_effect=lambda cmd, p: {
+                **virtual_alignment(cmd, p),
+                "alignment": "unconfirmed",
+            }
+        )
+        self.host.alignment = sensor
+        state = self.host.state("shelf-01")["payload"]["state"]
+        self.assertEqual(state["docking"]["alignment"], "unconfirmed")
+        self.assertEqual(sensor.call_args.args[1]["pinky_id"], "pinky1")
+        self.host.pinkies["pinky1"]["observed_at"] = "2000-01-01T00:00:00+00:00"
+        sensor.reset_mock()
+        self.assertIsNone(self.host.state("shelf-01")["payload"]["state"]["docking"])
+        sensor.assert_not_called()
+
+    def test_factory_sensor_receives_host_observation_without_host_access(self):
+        import field_host as cli
+
+        self.observe("N01")
+        observation = deepcopy(self.host.pinkies["pinky1"])
+        sensor = Mock(side_effect=virtual_alignment)
+        factory = Mock(return_value=(self.executors, sensor))
+
+        def serve(host, transport):
+            host.observe_pinky(
+                build_message("robot_state", "pinky1", "control-01", observation)
+            )
+            command = self.command("omx3", expected_boot_version=host.boot_version)
+            self.assertEqual(host.handle(command)[0]["payload"]["status"], "accepted")
+            self.assertEqual(host.poll()[0]["payload"]["status"], "completed")
+            self.assertEqual(
+                sensor.call_args.args[1], {"pinky_id": "pinky1", **observation}
+            )
+
+        argv = [
+            "field_host.py",
+            "--journal",
+            str(Path(self.temp.name) / "factory.json"),
+            "--factory",
+            "test_alignment_factory:create",
+            "--hardware-authorized",
+            "--host",
+            "127.0.0.1",
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            patch.dict(
+                sys.modules, {"test_alignment_factory": SimpleNamespace(create=factory)}
+            ),
+            patch.object(cli, "MqttTransport"),
+            patch.object(cli, "serve", side_effect=serve),
+        ):
+            cli.main()
+        factory.assert_called_once_with()
 
     def test_pinky_departure_during_action_holds(self):
         self.host.handle(self.command())

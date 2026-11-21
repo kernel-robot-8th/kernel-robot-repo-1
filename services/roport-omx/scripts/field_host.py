@@ -94,7 +94,8 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--mock", action="store_true")
     mode.add_argument(
-        "--factory", help="module:function returning (executors, alignment_sensor)"
+        "--factory",
+        help="module:function returning (executors, alignment_sensor(command, pinky_observation))",
     )
     parser.add_argument("--hardware-authorized", action="store_true")
     parser.add_argument(
@@ -133,8 +134,8 @@ def main():
                 journal,
                 virtual_executors(args.run_s, args.package_size, sizes),
                 control=args.control,
+                alignment=virtual_alignment,
             )
-            host.alignment = lambda command: virtual_alignment(host, command)
         else:
             module, separator, name = args.factory.partition(":")
             if not separator:

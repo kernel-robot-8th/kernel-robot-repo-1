@@ -63,8 +63,12 @@ def fleet_mqtt(broker, tmp_path):
         omx_store = Journal(tmp_path / "omx.json")
         stack.callback(omx_store.close)
         executors = virtual_executors(0.01, package_sizes={"large": "large"})
-        host = FieldOmxHost(omx_store, executors, control=config["control_id"])
-        host.alignment = lambda cmd: virtual_alignment(host, cmd)
+        host = FieldOmxHost(
+            omx_store,
+            executors,
+            control=config["control_id"],
+            alignment=virtual_alignment,
+        )
         omx_transport = MqttTransport(
             MqttConfig("127.0.0.1", "fleet-e2e-omx", port=port),
             [wire.topic(r, c) for r in executors for c in ("cmd", "ack")]
