@@ -159,6 +159,56 @@ class HoldReleaseTest(unittest.TestCase):
         self.assertEqual((result["request_id"], result["cleared"]), ("r9", True))
         self.assertEqual(len(calls), 1)  # written again, not run again
 
+    def test_second_request_waits_until_the_first_result_is_written(self):
+        # second 2026-11-21 review: a new request read while the first result could not be
+        # written replaced it (NO_HOLD) and the first request's success was never reported
+        command_id = self.fail_with_arm_away()
+        self.executor.unreturned = set()
+        calls = self.count_releases()
+        self.holds.result_path.mkdir()
+        self.ask_release(command_id, "r9", at=1001.0)
+        with self.assertLogs("cooperative_host", "WARNING"):
+            self.holds.tick(
+                self.host, now=1002.0
+            )  # r9 cleared the HOLD, result not written
+        self.ask_release(command_id, "r10", at=1003.0)  # the person presses again
+        with self.assertLogs("cooperative_host", "WARNING"):
+            self.holds.tick(self.host, now=1004.0)
+        self.assertTrue(self.holds.request_path.exists())  # r10 left unread
+        self.assertEqual(len(calls), 1)
+        self.holds.result_path.rmdir()
+        with self.assertLogs("cooperative_host", "WARNING"):
+            self.holds.tick(self.host, now=1005.0)  # r9's result first, then r10
+        self.assertEqual(len(calls), 2)
+        result = json.loads(self.holds.result_path.read_text())
+        self.assertEqual((result["request_id"], result["reason"]), ("r10", "NO_HOLD"))
+
+    def test_second_request_never_hides_the_first_result(self):
+        command_id = self.fail_with_arm_away()
+        self.executor.unreturned = set()
+        self.holds.result_path.mkdir()
+        self.ask_release(command_id, "r9", at=1001.0)
+        with self.assertLogs("cooperative_host", "WARNING"):
+            self.holds.tick(self.host, now=1002.0)
+        self.ask_release(command_id, "r10", at=1003.0)
+        self.holds.result_path.rmdir()
+        self.holds.result_path.write_text("{}")  # writable again before the next tick
+        written = []
+        write = self.holds._write
+
+        def seen(path, data):
+            ok = write(path, data)
+            if ok and path == self.holds.result_path:
+                written.append(data["request_id"])
+            return ok
+
+        self.holds._write = seen
+        with self.assertLogs("cooperative_host", "WARNING"):
+            self.holds.tick(self.host, now=1004.0)
+        self.assertEqual(
+            written, ["r9", "r10"]
+        )  # the success is reported, then the reply
+
     def test_state_file_error_is_retried(self):
         command_id = self.fail_with_arm_away()
         self.holds.state_path.mkdir()

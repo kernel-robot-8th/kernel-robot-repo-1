@@ -95,8 +95,9 @@ class HoldChannel:
     These files are for the panel's screen only: an I/O error on them is logged and retried on
     the next tick, never raised into the MQTT loop (2026-11-21 review: a result file that could
     not be replaced stopped the Host after the HOLD was already cleared). A request already run
-    is never run again; its result is kept and written once the file can be written. Journal
-    errors (StorageError) still propagate and stop the Host as before.
+    is never run again; its result is kept and written once the file can be written, and until
+    then a new request stays in its file unread (it must not replace the pending result: second
+    2026-11-21 review). Journal errors (StorageError) still propagate and stop the Host as before.
     """
 
     REQUEST_MAX_AGE_S = 60.0
@@ -144,7 +145,10 @@ class HoldChannel:
 
     def tick(self, host: CooperativeHost, now: float | None = None) -> None:
         now = time.time() if now is None else now
-        request = self._take_request()
+        # a result still waiting for its file goes first; a new request waits in its file
+        if self._result is not None and self._write(self.result_path, self._result):
+            self._result = None
+        request = self._take_request() if self._result is None else None
         if request is not None:
             asked = request.get("requested_at")
             if isinstance(asked, bool) or not isinstance(asked, (int, float)):
@@ -160,8 +164,8 @@ class HoldChannel:
                 result = host.release_hold(request)  # StorageError propagates
             self._result = result | {"at": now}
             log.warning("HOLD release request %s: %s", result.get("request_id"), result)
-        if self._result is not None and self._write(self.result_path, self._result):
-            self._result = None
+            if self._write(self.result_path, self._result):
+                self._result = None
         state = {
             "boot_id": host.boot_id,
             "active": host.active,
