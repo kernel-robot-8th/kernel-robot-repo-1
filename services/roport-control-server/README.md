@@ -6,7 +6,7 @@ RO:PORT · GATE CREW — 통합관제 및 로봇 통신
 
 Python 3.12 / FastAPI / uv / Three.js / Paho MQTT / pytest / Playwright / Ruff. 정확한 버전은 manifest와 lockfile을 따릅니다.
 2026-11-03 팀 합의: **브라우저 웹 UI ↔ FastAPI ↔ 운영 DB ↔ 관제 실행부(별도 프로세스 1개)**. API와 실행부의 목표 연결은 운영 DB이며, 원격 서비스 WSS는 실행부가 담당합니다. AI 노트북에 서버를 배치하고 다른 PC에서 접속합니다. AI 추론은 API와 별도 프로세스로 운영합니다.
-현재 구현은 **웹 UI·REST 조회·WebSocket 모의/OFFLINE 상태 스트림**과 독립 MQTT/UDP 모듈입니다. 운영 DB 연결·WSS·카메라 웹 중계는 후속입니다. 공유 등록 계약·PostgreSQL 저장소는 제공하되 API/UI에는 아직 연결하지 않았고, Pinky 시험은 **원본 웹 UI ↔ FastAPI ↔ Unix socket ↔ 시험 실행부 1개 ↔ MQTT**로 연결합니다. 시험 이력은 파일 journal에 저장합니다. 브라우저는 DB/MQTT/UDP에 직접 연결하지 않습니다.
+현재 구현은 **웹 UI·REST 조회·WebSocket 모의/OFFLINE 상태 스트림**과 독립 MQTT/UDP 모듈입니다. Fleet 실행 스냅샷·서비스 요청은 PostgreSQL/WSS로 연결하며 운영 배포·카메라 웹 중계는 후속입니다. 공유 등록 계약·PostgreSQL 저장소는 제공하되 API/UI에는 아직 연결하지 않았고, Pinky 시험은 **원본 웹 UI ↔ FastAPI ↔ Unix socket ↔ 시험 실행부 1개 ↔ MQTT**로 연결합니다. 시험 이력은 파일 journal에 저장합니다. 브라우저는 DB/MQTT/UDP에 직접 연결하지 않습니다.
 
 ## 공통 실행부 · 구간별 시험
 
@@ -41,7 +41,7 @@ tests/         test_layers.py: 아래 import 규칙 검사
 | `domain/` (골격) | 표준 라이브러리 |
 | `executor/` | 표준 라이브러리, `domain`, `contracts`, `adapters`(api 제외) |
 
-패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`은 골격이며 `executor/pinky_trial.py`는 웹 API와 IPC로 연결되는 DB 비의존 시험 실행부입니다. `adapters/db/`는 등록 저장소이며 웹 API/실행부 연결은 후속입니다. `adapters/wss/`는 WSS 메시지 계약 확정 후 만듭니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
+패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`은 골격이며 `executor/pinky_trial.py`는 웹 API와 IPC로 연결되는 DB 비의존 시험 실행부입니다. `adapters/db/`는 등록 저장소와 Fleet 서비스 저장소를 제공하고, `adapters/wss/`는 명시적으로 설정한 Fleet 실행부에서 연결합니다. API는 Unix socket으로 Fleet을 호출합니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
 
 ## 현재 범위
 
@@ -108,7 +108,7 @@ uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --por
 - 복구: **중단·복구 확인**에서 대상과 현장 확인 기록을 입력합니다. 저장된 완료 반영·거절 작업 재배정·물품 제거 후 취소는 기존 실행부의 증거 검사를 그대로 통과해야 합니다. STOP 재요청과 재부팅 후 도착 재확인은 별도 버튼이며, 화면이 보고 있던 명령·기동 ID를 전달합니다. 대상/처리 변경이나 연결 단절 시 확인 체크를 다시 해야 합니다.
 - 재개: 미완료 명령과 도착 재확인을 처리한 뒤 **보류 해제**, 별도 **요청 처리 시작** 순서입니다. 조회나 복구 성공을 자동 재출발로 취급하지 않습니다.
 
-이번 연결은 루프백 simulation Fleet용이며 실물 Fleet 실행·운영 인증·서비스 WSS·운영 DB는 후속입니다. 웹 화면/가상 실행기 시험은 실제 센서·팔·주행 검증을 대신하지 않습니다. 가상 전체 실행기 배포는 후속으로 분리했고, 이 PR의 UI 회귀는 `npm run test:web -- tests/browser/fleet.spec.mjs`, HTTP→MQTT 입출고 회귀는 `REQUIRE_MQTT_TESTS=1 uv run pytest tests/test_fleet_web_mqtt.py`로 실행합니다.
+이번 실행기는 루프백 simulation Fleet용입니다. 서비스 WSS와 PostgreSQL 연결을 포함하며 실물 Fleet 실행·운영 인증은 후속입니다. 웹 화면/가상 실행기 시험은 실제 센서·팔·주행 검증을 대신하지 않습니다. 전체 가상 실행은 `tools/start_virtual_ui.sh`, 고객 서비스 통합은 [실행 안내](docs/service-web-local-test.md)를 따릅니다. UI 회귀는 `npm run test:web -- tests/browser/fleet.spec.mjs`, HTTP→MQTT 입출고 회귀는 `REQUIRE_MQTT_TESTS=1 uv run pytest tests/test_fleet_web_mqtt.py`로 실행합니다.
 
 ## Pinky MQTT 주행 시험 · FFT1-56
 
@@ -388,7 +388,7 @@ OMX1·2 단계는 `roport-omx-task-v1`을 사용하며, UI 수동 완료와 MQTT
 
 ## 서비스 WSS 관제 기반 (합의 전 후보)
 
-API/Fleet 시작 경로에는 아직 연결하지 않은 단독 모듈이다. 기존 실행만으로 DB 설치·서비스 접속·로봇 동작이 시작되지 않는다. 계약과 공용 JSON은 [WSS 후보](../../interfaces/wss/candidate/README.md)에 있다. S1 제안과는 호환되지 않으며 운영 계약은 양측 합의 대상이다.
+Fleet은 `--journal` 또는 `ROPORT_DATABASE_URL` 중 하나를 선택한다. WSS는 DB와 `ROPORT_SERVICE_WSS_URL`, `ROPORT_SERVICE_TOKEN`, `ROPORT_SERVICE_SITE`를 모두 설정했을 때만 연결하며 DB migration은 별도로 수행한다. UI 접속·서비스 접수만으로 로봇 처리를 시작하지 않는다. 계약과 공용 JSON은 [WSS 후보](../../interfaces/wss/candidate/README.md)에 있다. S1 제안과는 호환되지 않으며 운영 계약은 양측 합의 대상이다.
 
 - `adapters/wss/service.py`: Bearer WebSocket, 저장 후 ACK, 1초 재접속 대기, 최대 64 KiB 수신. 4001 종료는 자동 재접속하지 않는다.
 - `adapters/db/service_tasks.py`: inbox·작업·outbox 원자 저장, 메시지별 거절 격리, 실행 스냅샷의 단일 DB owner.
@@ -412,4 +412,6 @@ ROPORT_TEST_DATABASE_URL='postgresql://localhost/roport_wss_test' \
   REQUIRE_REGISTRY_TESTS=1 PYTHONPATH=src uv run pytest -q tests/test_service_*.py
 ```
 
-실제 Java 상호운용·운영 TLS/프록시/인증·실물 로봇 검증은 후속 범위다.
+서비스 Java와의 로컬 상호운용은 [통합 시험](docs/service-web-local-test.md)으로 검사한다. 운영 TLS/프록시/인증·실물 로봇 검증은 후속 범위다.
+
+서비스 작업은 `service_tick`이 주문의 포장품마다 안정적인 request_id로 Fleet에 제출한다. `customer_service`는 기본적으로 pickup_at 300초 전에 배차하며 `service_policy.dispatch_lead_s`로 시험 정책을 지정한다. 업무 package_id는 재고에 보존하고 선택 marker만 OMX 명령에 매핑한다. 빈 명세/미등록 재고/미보정 목표는 주행을 생성하지 않는다. 수령 증거가 확인된 포장품만 복귀한다. WSS worker의 예상 밖 종료는 owner에 전달하며 기존 STOP·도착 재확인·복구 조건은 유지한다.

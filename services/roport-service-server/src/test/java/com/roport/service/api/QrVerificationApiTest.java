@@ -294,4 +294,72 @@ class QrVerificationApiTest {
         assertThat(afterExpiry.body().path("verificationId").asString("")).isEqualTo(first.body().path("verificationId").asString(""));
         assertThat(afterExpiry.body().path("pickup").isNull()).as(String.valueOf(afterExpiry.body())).isTrue();
     }
+
+    void packageRow(String id) {
+        db.sql("INSERT INTO packages(package_id,order_id,package_revision,label_ref,manifest_locked_at) VALUES(?,?,0,'test',now())")
+                .param(id).param("oa" + s).update();
+    }
+
+    void arrived(String id) {
+        String progress = json.writeValueAsString(java.util.Map.of("progress", java.util.Map.of("packages", java.util.List.of(
+                java.util.Map.of("package_id", id, "robot", cartId(), "stage", "await_receipt")))));
+        db.sql("""
+                INSERT INTO control_task_views(task_ref,pickup_id,site_id,task_revision,state,progress_payload,observed_at,synced_at)
+                VALUES(?,?,'DEV-SITE',1,'RUNNING',?::jsonb,now(),now()) ON CONFLICT(task_ref) DO UPDATE
+                SET progress_payload=excluded.progress_payload,task_revision=control_task_views.task_revision+1
+                """).param("task-" + s).param("pa" + s).param(progress).update();
+    }
+
+    Res receive(String verification, String request, String cartId) throws Exception {
+        return call(cart, "POST", "/cart-api/receipts", json.writeValueAsString(java.util.Map.of(
+                "verificationId", verification, "confirmationRequestId", request)), cartId);
+    }
+
+    @Test
+    void receiptRequiresExplicitConfirmationAndMatchingCartArrival() throws Exception {
+        packageRow("a-" + s);
+        String verified = verify("verify-" + s, "RESERVATION_NO", reservationNo).body().path("verificationId").asString();
+        problem(receive(verified, "receive-" + s, cartId()), 409, "CART_NOT_ARRIVED");
+        arrived("a-" + s);
+        problem(receive(verified, "receive-" + s, "other"), 409, "VERIFICATION_REQUIRED");
+        Res first = receive(verified, "receive-" + s, cartId());
+        assertThat(first.status()).as(first.body().toString()).isEqualTo(200);
+        assertThat(first.body().path("orderComplete").asBoolean()).isTrue();
+        assertThat(receive(verified, "receive-" + s, cartId()).body().path("receiptId")).isEqualTo(first.body().path("receiptId"));
+        assertThat(db.sql("SELECT count(*) FROM receipts WHERE order_id=?").param("oa" + s).query(Integer.class).single()).isEqualTo(1);
+    }
+
+    @Test
+    void sequentialPackageReceiptsCompleteOrderOnlyAfterLastDelivery() throws Exception {
+        packageRow("a-" + s); packageRow("b-" + s);
+        String verified = verify("verify-" + s, "RESERVATION_NO", reservationNo).body().path("verificationId").asString();
+        arrived("a-" + s);
+        Res first = receive(verified, "receive-a-" + s, cartId());
+        assertThat(first.status()).as(first.body().toString()).isEqualTo(200);
+        assertThat(first.body().path("orderComplete").asBoolean()).isFalse();
+        problem(receive(verified, "another-a-" + s, cartId()), 409, "PACKAGE_NOT_AVAILABLE");
+        arrived("b-" + s);
+        Res last = receive(verified, "receive-b-" + s, cartId());
+        assertThat(last.status()).as(last.body().toString()).isEqualTo(200);
+        assertThat(last.body().path("orderComplete").asBoolean()).isTrue();
+        assertThat(db.sql("SELECT count(*) FROM receipts WHERE order_id=?").param("oa" + s).query(Integer.class).single()).isEqualTo(2);
+    }
+
+    @Test
+    void expiredVerificationCannotConfirmHandover() throws Exception {
+        packageRow("a-" + s); arrived("a-" + s);
+        String verified = verify("verify-" + s, "RESERVATION_NO", reservationNo).body().path("verificationId").asString();
+        db.sql("UPDATE verifications SET verified_at=now()-interval '10 minutes' WHERE verification_id=?").param(verified).update();
+        problem(receive(verified, "receive-" + s, cartId()), 409, "VERIFICATION_REQUIRED");
+    }
+
+    @Test
+    void manifestRefreshUsesStoredPackagesAndOwnership() throws Exception {
+        packageRow("a-" + s);
+        problem(call(bob, "POST", "/api/pickups/pa" + s + "/manifest-refresh", null, null), 404, "PICKUP_NOT_FOUND");
+        Res result = call(alice, "POST", "/api/pickups/pa" + s + "/manifest-refresh", null, null);
+        assertThat(result.status()).as(result.body().toString()).isEqualTo(200);
+        assertThat(result.body().path("submitted").asBoolean()).isTrue();
+        assertThat(call(alice, "POST", "/api/pickups/pa" + s + "/manifest-refresh", null, null).body().path("submitted").asBoolean()).isFalse();
+    }
 }

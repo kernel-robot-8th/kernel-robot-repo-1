@@ -17,9 +17,9 @@ const pickup: VerifiedPickup = {
 
 test('확인되면 서버 pickup을 그대로 쓴다(새 확인 201·재전송 200)', () => {
   for (const status of [201, 200]) {
-    assert.deepEqual(toVerifyResult(status, { result: 'VERIFIED', reasonCode: null, cartAssignmentChecked: false, pickup }), {
+    assert.deepEqual(toVerifyResult(status, { verificationId: 'verification-1', result: 'VERIFIED', reasonCode: null, cartAssignmentChecked: false, pickup }), {
       ok: true,
-      pickup,
+      pickup: { ...pickup, verificationId: "verification-1" },
     });
   }
 });

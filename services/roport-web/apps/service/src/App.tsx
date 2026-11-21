@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { toDataURL } from 'qrcode';
 import { api, ApiError, fmt, loadErrorText as errText, loginErrorText, isActivePickupExists, qrErrorText, reserveErrorText, shouldReloadTimes, statusLabel, timesErrorText, upcomingFlights } from './api';
-import type { Flight, Location, Member, Order, Pickup } from './api';
-import { boardingNotice, mmss, progressIndex, PROGRESS_STEPS, qrDeadline, qrSecondsLeft, splitLocations, when } from './view';
+import type { Flight, Location, Member, Order, Pickup, PickupProgress } from './api';
+import { boardingNotice, mmss, controlProgress, PROGRESS_STEPS, qrDeadline, qrSecondsLeft, splitLocations, when } from './view';
 
 type View =
   | { name: 'orders' }
@@ -410,7 +410,7 @@ function Ticket({ pickup: p, justCreated, onError, onStatus }: { pickup: Pickup;
       {justCreated && (
         <div className="lead-block" role="status">
           <h2>예약이 접수되었습니다.</h2>
-          <p>현장 배정 전이며 수령이 확정된 것은 아닙니다. 수령 위치에서 카트에 아래 QR을 보여 주세요. 인식되지 않으면 카트 패드에 예약번호를 입력해 주세요.</p>
+          <p>예약 접수는 수령 완료가 아닙니다. 실제 운송은 진행 상태 보기에서 확인해 주세요. 수령 위치에서 카트에 아래 QR을 보여 주세요. 인식되지 않으면 카트 패드에 예약번호를 입력해 주세요.</p>
         </div>
       )}
       <article className="ticket">
@@ -450,9 +450,25 @@ function Ticket({ pickup: p, justCreated, onError, onStatus }: { pickup: Pickup;
   );
 }
 
-// 진행 상태(SR-06). 서버 계약에는 접수 상태만 있어 이후 단계는 "예정"으로 그리고, 관제 연동 전임을 밝힌다.
+// 서비스 DB의 관제 수신 상태를 조회한다. 화면 조회는 로봇 명령을 만들지 않는다.
 function Status({ pickup: p, onTicket }: { pickup: Pickup; onTicket: () => void }) {
-  const cur = progressIndex(p.status);
+  const [progress, setProgress] = useState<PickupProgress | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    async function refresh() {
+      try {
+        const next = await api.progress(p.pickupId);
+        if (active) { setProgress(next); setError(''); }
+      } catch (e) { if (active) setError(errText(e)); }
+      if (active) timer = setTimeout(refresh, 2000);
+    }
+    void refresh();
+    return () => { active = false; clearTimeout(timer); };
+  }, [p.pickupId]);
+  const display = progress ? controlProgress(progress) : { index: -1, text: '진행 상태를 확인하고 있습니다' };
+  const cur = display.index;
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 30_000); // 탑승 알림 남은 시간 갱신
@@ -473,11 +489,11 @@ function Status({ pickup: p, onTicket }: { pickup: Pickup; onTicket: () => void 
     <section className="content">
       <div className="hero-card">
         <p className="hero-kicker">예약 {p.reservationNo}</p>
-        <h2>{cur >= 0 ? '예약이 접수되었습니다' : '상태를 확인할 수 없습니다'}</h2>
-        <p>{statusLabel(p.status)}</p>
+        <h2>{display.text}</h2>
+        <p>{progress?.receivedPackages ? `수령한 포장 ${progress.receivedPackages}개` : statusLabel(p.status)}</p>
       </div>
       <ol className="timeline" aria-label="진행 단계">{steps}</ol>
-      <p className="note">카트 배정 이후 단계는 관제 연동 후 실시간으로 표시됩니다. 지금은 연결 전입니다.</p>
+      {error ? <p role="alert">{error} 마지막 조회 결과입니다.</p> : <p className="note">{progress?.updatedAt ? `마지막 관제 변경: ${fmt(progress.updatedAt)}` : '관제 접수를 기다리고 있습니다.'} · 2초마다 조회</p>}
       <div className={`boarding ${notice.tone}`} role="status">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 21l2-1.5V14l8 2.5V14.5l-8-5V4a1.5 1.5 0 0 0-3 0v5.5l-8 5V16.5l8-2.5v5.5l-2 1.5" /></svg>
         <div>

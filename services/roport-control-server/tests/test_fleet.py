@@ -135,7 +135,7 @@ def complete(c, cmd, *, size="small", broken=None, observe=True):
             else ["omx3"]
         )
         result.update(
-            package_id=task["request"]["package_id"],
+            package_id=p["package_id"],
             pinky_id=task["robot"],
             arrival_command_id=task["arrival"],
             placement_confirmed=True,

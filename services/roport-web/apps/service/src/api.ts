@@ -1,4 +1,4 @@
-// 서버 계약(서비스 서버·고객 웹 첫 슬라이스)의 응답 타입. 필드를 추가하지 않는다.
+// 서비스 API 응답 타입. 관제 진행과 실제 수령 기록은 별도 projection으로 조회한다.
 export type Member = { memberId: string; displayName: string };
 export type ActivePickup = { pickupId: string; reservationNo: string; status: string };
 export type Order = {
@@ -38,6 +38,14 @@ export type PickupRequest = {
   locationId: string;
   flightId: string;
   pickupAt: string;
+};
+
+export type PickupProgress = {
+  state: string;
+  stages: string[];
+  updatedAt: string | null;
+  receivedPackages: number;
+  orderComplete: boolean;
 };
 
 export class ApiError extends Error {
@@ -98,11 +106,13 @@ export const api = {
   pickups: () => call<Pickup[]>('GET', '/api/pickups'),
   // 발급할 때마다 같은 예약의 이전 QR은 서버에서 폐기된다.
   qrToken: (pickupId: string) => call<QrToken>('POST', `/api/pickups/${encodeURIComponent(pickupId)}/qr-token`),
+  progress: (id: string) => call<PickupProgress>('GET', `/api/pickups/${encodeURIComponent(id)}/progress`),
 };
 
-// 계약상 쓰는 상태는 REQUESTED뿐. 도착·직원 확인·인도 완료를 뜻하지 않는다.
+// 예약 상태와 관제 진행은 분리한다. CLOSED는 서비스 수령 완료 뒤에 저장된다.
 export function statusLabel(status: string): string {
-  return status === 'REQUESTED' ? '예약 접수됨 – 현장 배정 전' : `알 수 없는 상태 (${status})`;
+  if (status === 'CLOSED') return '수령 완료';
+  return status === 'REQUESTED' ? '예약 접수됨' : `알 수 없는 상태 (${status})`;
 }
 
 const BAD_RESPONSE_TEXT = '서버 응답 형식이 올바르지 않습니다. 서버 주소·프록시 설정을 확인해 주세요.';

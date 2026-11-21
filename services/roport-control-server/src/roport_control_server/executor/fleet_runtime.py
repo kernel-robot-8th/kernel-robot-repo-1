@@ -1,9 +1,13 @@
 """One MQTT owner for request-driven fleet work; real and virtual endpoints use v2."""
 
 import argparse
+import asyncio
 import json
 import logging
+import os
 import signal
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
@@ -15,6 +19,7 @@ from roport_control_server.adapters.mqtt import field_wire as wire
 from roport_control_server.adapters.mqtt.journal import Journal
 from roport_control_server.adapters.mqtt.mqtt import MqttTransport
 from roport_control_server.adapters.mqtt.trial_wire import mqtt_config
+from roport_control_server.contracts.service_policy import dispatch_at
 
 from .fleet import ROLES, TARGETS, FleetControl
 from .fleet_recovery import new_stop, stop_current
@@ -218,10 +223,101 @@ class FleetRuntime:
                 c.hold("command publish outcome unknown")
 
 
+def service_tick(control, store, *, now=None):
+    now = now or datetime.now(UTC)
+    for task in store.pending_tasks():
+        payload = task["request"]
+        if task["state"] == "WAITING_MANIFEST":
+            continue
+        children = []
+        try:
+            if (
+                payload["operation"] != "prepare_order"
+                and payload["pickup_point_id"] not in control.config["goals"]
+            ):
+                raise ValueError("unknown calibrated destination")
+            requests = [
+                {
+                    "request_id": task["task_id"] + ":" + package["package_id"],
+                    "operation": "inbound"
+                    if payload["operation"] == "prepare_order"
+                    else "outbound",
+                    "package_id": package["package_id"],
+                    **(
+                        {"marker": package["marker"]}
+                        if package.get("marker") is not None
+                        else {}
+                    ),
+                    "goal": None
+                    if payload["operation"] == "prepare_order"
+                    else payload["pickup_point_id"],
+                }
+                for package in payload["packages"]
+            ]
+            # Reject an invalid manifest before creating any robot work.
+            for request in requests:
+                if control.config["mode"] == "hardware" and "marker" not in request:
+                    raise ValueError(
+                        "physical package marker missing from service manifest"
+                    )
+                control.validate_request(request)
+            if (
+                payload["operation"] == "customer_service"
+                and not task["dispatch_locked"]
+                and now < dispatch_at(payload, control.config.get("service_policy", {}))
+            ):
+                continue
+            if store.claim(task["task_id"], payload["order_revision"]) is None:
+                continue
+            for request in requests:
+                children.append(control.submit(request))
+            if children:
+                settled = all(t["status"] in {"COMPLETE", "CANCELED"} for t in children)
+                state = (
+                    "FAILED"
+                    if settled and any(t["status"] == "CANCELED" for t in children)
+                    else "COMPLETED"
+                    if settled
+                    else "HOLD"
+                    if any(t["status"] == "HOLD" for t in children)
+                    else "QUEUED"
+                    if all(t["status"] == "QUEUED" for t in children)
+                    else "RUNNING"
+                )
+                store.update(
+                    task["task_id"],
+                    state,
+                    {
+                        "stages": [t["stage"] for t in children],
+                        "packages": [
+                            {
+                                "package_id": t["request"]["package_id"],
+                                "robot": t.get("robot"),
+                                "stage": t["stage"],
+                            }
+                            for t in children
+                        ],
+                    },
+                )
+        except ValueError as exc:
+            store.update(task["task_id"], "HOLD", {"reason": str(exc)})
+    for receipt in store.receipts():
+        for request_id, child in list(control.data["tasks"].items()):
+            if (
+                request_id.startswith(receipt["task_id"] + ":")
+                and child["request"]["package_id"]
+                in receipt["message"]["payload"]["package_ids"]
+                and child["stage"] == "await_receipt"
+            ):
+                control.receipt(request_id)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
-    parser.add_argument("--journal", required=True)
+    parser.add_argument(
+        "--journal", help="simulation file journal; omit for PostgreSQL"
+    )
     parser.add_argument("--socket", required=True)
     args = parser.parse_args()
     with open(args.config) as file:
@@ -235,8 +331,29 @@ def main():
         "::1",
     }:
         parser.error("simulation requires isolated loopback broker")
+    database = os.environ.get("ROPORT_DATABASE_URL")
+    service_url = os.environ.get("ROPORT_SERVICE_WSS_URL")
+    if bool(args.journal) == bool(database):
+        parser.error("choose --journal or ROPORT_DATABASE_URL")
+    if service_url and (
+        not database
+        or not os.environ.get("ROPORT_SERVICE_TOKEN")
+        or not os.environ.get("ROPORT_SERVICE_SITE")
+    ):
+        parser.error(
+            "WSS requires PostgreSQL, ROPORT_SERVICE_TOKEN and ROPORT_SERVICE_SITE"
+        )
     with ExitStack() as stack:
-        store = Journal(args.journal)
+        service_store = link = None
+        if database:
+            from roport_control_server.adapters.db.service_tasks import (
+                OperationalStore,
+                ServiceTaskStore,
+            )
+
+            store = OperationalStore(database)
+        else:
+            store = Journal(args.journal)
         stack.callback(store.close)
         control = FleetControl(config, store)
         transport = MqttTransport(
@@ -249,6 +366,20 @@ def main():
         web = FleetSocket(args.socket, control)
         stack.callback(web.close)
         runtime = FleetRuntime(control, transport)
+        if service_url:
+            from roport_control_server.adapters.wss.service import ServiceLink
+
+            service_store = ServiceTaskStore(database)
+            link = ServiceLink(
+                service_url,
+                os.environ["ROPORT_SERVICE_TOKEN"],
+                os.environ["ROPORT_SERVICE_SITE"],
+                service_store,
+            )
+            worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
+            stop = threading.Event()
+            future = worker.submit(asyncio.run, link.run(stop))
+            stack.callback(stop.set)
 
         def terminate(*_):
             raise KeyboardInterrupt
@@ -256,10 +387,17 @@ def main():
         previous = signal.signal(signal.SIGTERM, terminate)
         stack.callback(signal.signal, signal.SIGTERM, previous)
         print("Fleet owner ready; send enable through the local socket.", flush=True)
+        last_service_poll = -float("inf")
         try:
             while True:
                 runtime.poll()
                 web.poll()
+                if link and future.done():
+                    future.result()  # Propagate storage/worker errors instead of silently losing WSS.
+                    raise RuntimeError("service link owner ended")
+                if service_store and monotonic() - last_service_poll >= 1:
+                    service_tick(control, service_store)
+                    last_service_poll = monotonic()
         except KeyboardInterrupt:
             pass
         finally:

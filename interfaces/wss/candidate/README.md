@@ -2,10 +2,10 @@
 
 현재 로컬에서 개발한 예약·수령 흐름을 서비스 담당자가 비교 검토하기 위한 계약이다.
 **상위 폴더의 S1 제안을 대체하거나 구현 완료했다고 선언하는 문서가 아니다.**
-두 규약은 호환되지 않는다. 이 PR의 어댑터는 API/Fleet 시작 경로에 연결하지 않는다.
-양측 합의와 Java 상호운용 검증 전에는 운영 서비스에 연결하지 않는다.
+두 규약은 호환되지 않는다. Fleet 실행부·서비스 Java·고객 웹을 명시적 로컬 시험 설정에서 연결한다.
+운영 배포는 양측 계약 합의와 현장 검증 후 진행한다.
 
-- 공용 입력/출력: [examples.json](examples.json). 실제 Python 저장소·WebSocket 시험이 이 파일을 읽는다.
+- 공용 입력/출력: [examples.json](examples.json). Python 저장소·WebSocket 시험과 Java 계약 시험이 이 파일을 읽는다.
 - 관제 구현/검증 방법: [관제 README](../../../services/roport-control-server/README.md#서비스-wss-관제-기반-합의-전-후보).
 - 담당 협의: FFT1-183. 관제 분리 구현: FFT1-164.
 
@@ -20,13 +20,13 @@
 | 전달 확인 | `status=STORED/REJECTED`와 오류 코드 | ACK는 저장 성공만 확인. 오류는 ACK하지 않음 |
 | 재전송 | 저장한 프레임 text 그대로 | JSONB 객체를 재직렬화. ID·시각·내용 유지, 공백/키 순서는 보장하지 않음 |
 | 만료·복구 | `expires_at`, UNKNOWN, cursor/snapshot | 아직 없음. timeout을 실패로 바꾸지 않고 미확인 이벤트 재전송 |
-| 연결 소유권 | 새 연결이 기존 연결을 4001로 교체 | 관제는 4001 수신 시 종료. 서비스의 교체/신규 거부 정책은 다음 PR에서 정합화 |
-| 서버 인증 저장 | 토큰 SHA-256 해시 | 이번 PR은 Bearer를 보내는 클라이언트만 포함. 서버 저장 방식은 합의 필요 |
+| 연결 소유권 | 새 연결이 기존 연결을 4001로 교체 | 서비스는 기존 연결을 4001로 교체, 관제는 재접속 종료 |
+| 서버 인증 저장 | 토큰 SHA-256 해시 | 서비스는 환경 주입 토큰을 상수 시간 비교. 운영 해시 저장은 합의 필요 |
 | DB 배포 | 버전 migration runner | 명시적 반복 설치 SQL. 운영 버전 migration은 미포함 |
 
 두 계약의 `schema_version`이 모두 `1.0`이어도 같은 계약이라는 뜻이 아니다.
 합의 시 하나로 맞춘 예시와 검증 코드를 양쪽에 적용한다. 자동 감지/혼용하지 않는다.
-서비스의 신규 Java 구현은 같은 예시를 읽어야 하며 아직 이 PR에 포함하지 않았다.
+서비스 Java와 Python이 같은 예시를 검증하며 각 DB 저장 뒤 ACK한다.
 
 ## 연결과 처리
 
@@ -88,7 +88,7 @@ JSON 예시는 공용 파일에 모든 필드를 펼쳐 두었다.
 | `packages[].package_id` | 업무 포장품 ID. 목록에서 중복 불가 |
 | `packages[].quantity` | 물리 포장품 하나이므로 정수 `1` |
 | `packages[].marker` | 선택 물리 마커 문자열. `15,16,17,19,20,21,22` 중 하나, 목록에서 중복 불가. `18`은 TRAY 예약 |
-| `pickup_point_id` | 목적지 키, 예: `G1`. 좌표·경로 검증은 후속 Fleet 연결에서 수행 |
+| `pickup_point_id` | 목적지 키, 예: `G1`. Fleet의 보정된 목표점 키와 대조 |
 | `pickup_at` | 고객 도착 희망 시각. timezone 필요. 현재 저장소는 만료/배차 시각을 판단하지 않음 |
 | `order_revision` | 서비스가 증가시키는 정수, 0 이상 |
 
@@ -96,7 +96,7 @@ JSON 예시는 공용 파일에 모든 필드를 펼쳐 두었다.
 포장 목록만 높은 revision으로 변경 가능하며, 배차 claim 뒤에는 거부 결과를 저장·회신한다.
 목적지·예약 시각·operation 변경은 이 경로에서 지원하지 않는다.
 `claim(task_id, order_revision)`은 자식 로봇 작업 생성 전에 DB에 명세 잠금을 기록한다.
-현재 PR의 저장소 자체는 로봇 명령을 생성하지 않는다.
+Fleet service_tick은 claim 뒤 포장품별 입출고 작업을 생성한다.
 
 ### 상태 이벤트 본문 (accepted/progress/completed/failed/rejected 공통)
 
@@ -105,13 +105,13 @@ JSON 예시는 공용 파일에 모든 필드를 펼쳐 두었다.
 | `order_id`, `reservation_id` | 원 요청의 주문·예약 |
 | `task_revision` | 관제가 증가시키는 진행 revision. 최초 접수 0, 변경마다 +1 |
 | `state` | `QUEUED`, `WAITING_MANIFEST`, `RUNNING`, `HOLD`, `COMPLETED`, `FAILED`, `REJECTED` |
-| `progress` | 진행 객체. 이번 독립 저장소는 객체를 보존하며 로봇별 단계 구조는 Fleet 연결 PR에서 검증 |
+| `progress` | 진행 객체. Fleet은 stages 목록과 packages[{package_id,robot,stage}]로 진행을 전달 |
 | `progress.manifest_change` | 갱신한 `order_revision`, 적용 여부 `accepted`, 미적용 `reason` |
 
 명세 미적용 이유는 `order_revision_not_newer`, `dispatch_already_locked`다.
 예약 기본 필드 변경은 저장하지 않고 오류로 처리한다.
 종료 상태에서 RUNNING으로 되돌릴 수 없다. 같은 상태·진행 재저장은 이벤트를 늘리지 않는다.
-서비스는 높은 task_revision만 반영해야 한다(다음 서비스 PR의 검증 범위).
+서비스는 높은 task_revision만 반영하며 종료 상태를 RUNNING으로 되돌리지 않는다.
 
 ### 수령 본문
 
@@ -128,4 +128,4 @@ ACK는 기록 저장이며 출발 허가가 아니다. 서비스는 조기 수�
 
 - S1 또는 후보 중 사용할 계약과 식별자·오류/만료·복구 정책을 정하고 두 서버 예시를 일치시킨다.
 - 서비스 인증 저장·연결 교체·운영 migration·외부 TLS/프록시 조건을 검증한다.
-- 이후 서비스 Java → Fleet 연결 → 고객 UI 순으로 통합한다. 현재 PR에는 자동 시작·실예약·MQTT 호출이 없다.
+- 서비스 Java → Fleet → MQTT 가상 로봇 → 고객 수령을 통합 시험한다. 자동 시작·실예약·실물 구동은 포함하지 않는다.

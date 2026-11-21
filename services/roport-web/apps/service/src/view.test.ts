@@ -75,3 +75,14 @@ test('mmss: 분:초 두 자리', () => {
   assert.equal(mmss(5), '0:05');
   assert.equal(mmss(-3), '0:00');
 });
+
+test('관제 단계와 부분 수령을 구분하고 실패를 완료로 표시하지 않는다', async () => {
+  const { controlProgress } = await import('./view.ts');
+  const base = { state: 'RUNNING', stages: ['await_receipt'], updatedAt: null, receivedPackages: 0, orderComplete: false };
+  assert.equal(controlProgress(base).index, 3);
+  assert.equal(controlProgress({ ...base, stages: ['await_receipt', 'navigate'] }).index, 2);
+  assert.equal(controlProgress({ ...base, receivedPackages: 1, stages: ['shelf_route'] }).index, 1);
+  assert.equal(controlProgress({ ...base, state: 'HOLD' }).index, -1);
+  assert.equal(controlProgress({ ...base, state: 'COMPLETED', stages: ['done'] }).index, 3);
+  assert.equal(controlProgress({ ...base, orderComplete: true }).index, 4);
+});

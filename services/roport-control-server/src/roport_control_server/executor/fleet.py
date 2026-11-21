@@ -102,9 +102,12 @@ class FleetControl:
         self.save(data)
 
     def validate_request(self, request):
-        if set(request) != {"request_id", "operation", "package_id", "goal"} or request[
-            "operation"
-        ] not in {"inbound", "outbound"}:
+        if set(request) - {"marker"} != {
+            "request_id",
+            "operation",
+            "package_id",
+            "goal",
+        } or request["operation"] not in {"inbound", "outbound"}:
             raise ValueError("request_id, operation, package_id, goal required")
         if any(
             not isinstance(request[k], str) or not request[k].strip()
@@ -123,6 +126,22 @@ class FleetControl:
             if previous["request"] != request:
                 raise ValueError("request ID reused with different contents")
             return deepcopy(previous)
+        if "marker" in request and request["marker"] not in (
+            "15",
+            "16",
+            "17",
+            "19",
+            "20",
+            "21",
+            "22",
+        ):
+            raise ValueError("invalid physical package marker")
+        if request["operation"] == "outbound":
+            for slot in self.data["slots"].values():
+                if slot["package_id"] == request["package_id"] and slot.get(
+                    "marker"
+                ) != request.get("marker"):
+                    raise ValueError("shelf package marker differs from request")
         if any(
             t["request"]["package_id"] == request["package_id"]
             and t["status"] not in {"COMPLETE", "CANCELED"}
@@ -651,7 +670,7 @@ class FleetControl:
             raise ValueError("Pinky arrival does not match this transfer")
         p = {
             "expected_boot_version": self.observed[target]["boot_version"],
-            "package_id": task["request"]["package_id"],
+            "package_id": task["request"].get("marker", task["request"]["package_id"]),
             "arrival_command_id": task["arrival"],
             "expected_pinky_boot_version": boot,
             "model_version": self.config["omx"][target]["model_version"],
@@ -893,7 +912,7 @@ class FleetControl:
                 raise ValueError("navigation goal tolerance mismatch")
         else:
             if (
-                result.get("package_id") != task["request"]["package_id"]
+                result.get("package_id") != p["package_id"]
                 or result.get("pinky_id") != task["robot"]
                 or result.get("arrival_command_id") != task["arrival"]
                 or result.get("placement_confirmed") is not True
@@ -947,6 +966,11 @@ class FleetControl:
             data["slots"][task["slot"]] = {
                 "state": "occupied" if inbound else "empty",
                 "package_id": task["request"]["package_id"] if inbound else None,
+                **(
+                    {"marker": task["request"]["marker"]}
+                    if inbound and "marker" in task["request"]
+                    else {}
+                ),
             }
             task["stage"] = "return_route" if inbound else "switch_route"
         else:
