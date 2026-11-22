@@ -2,7 +2,7 @@
 # SLAM 지도가 아님. 직접 고치지 말고 python3 -m roport_gz_world.generate_map 으로 만든다.
 image: airport_map.pgm
 mode: trinary
-resolution: 0.050
+resolution: 0.020
 origin: [-1.654, -2.094, 0]
 negate: 0
 occupied_thresh: 0.65

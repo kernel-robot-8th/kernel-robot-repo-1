@@ -210,7 +210,7 @@ python3 scripts/check_hardware.py --namespace / --output /tmp/pinky-check.json
 
 | 파일 | 내용 |
 |---|---|
-| `airport_map.pgm`, `airport_map.yaml` | Nav2용 지도. 실측 배치 v16(2026-11-02 실측, 02 인도장 2026-11-06·가로선 2026-11-16·본선 쪽 벽 2026-11-19 갱신)을 그린 지도이며 SLAM 지도가 아닙니다. 벽과 라이다(12.5 cm)보다 높은 물체만 점유로 그립니다. 92×53칸, 0.05 m/칸, origin (−1.654, −2.094) m, `map_server` 형식 |
+| `airport_map.pgm`, `airport_map.yaml` | Nav2용 지도. 실측 배치 v16(2026-11-02 실측, 02 인도장 2026-11-06·가로선 2026-11-16·본선 쪽 벽 2026-11-19 갱신)을 그린 지도이며 SLAM 지도가 아닙니다. 칸 크기 2 cm(230×133칸, 원점·넓이는 SLAM 지도와 같음). 벽과 라이다(12.5 cm)보다 높은 물체만 점유로 그립니다. 92×53칸, 0.05 m/칸, origin (−1.654, −2.094) m, `map_server` 형식 |
 | `airport_map.png` | `airport_map.pgm`과 같은 픽셀(0 점유, 205 미지, 254 빈 곳)의 PNG. 브라우저 등 pgm을 못 읽는 곳에서 사용. 행 0이 지도의 위쪽(+y 끝)입니다 |
 | `airport_map_slam_20261027.*` | 2026-10-27 실로봇(Pinky Pro)으로 slam_toolbox를 돌려 만든 지도. 실측 벽 위치 검증용(03 구역 T자 구조물은 지금 없음) |
 | `map_measured_v16.png`, `_02.png` | 실측 도면과 라인 노드 그래프(노드 좌표·연결 표 포함). 단위 cm, 원점 = 콘센트 벽·통로 쪽 모서리 |

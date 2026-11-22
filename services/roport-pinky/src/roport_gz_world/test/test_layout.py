@@ -356,13 +356,19 @@ V16_TRUNK_WALLS = {'outer_aisle_east', 'zone03_bottom_n24', 'zone03_bottom_n09',
                    'zone03_bottom_n08', 'zone03_bottom_n12'}
 
 
-def test_map_has_same_grid_as_slam_map(layout):
+def test_map_covers_same_area_as_slam_map_with_2cm_cells(layout):
+    """원점·넓이는 SLAM 지도와 같게(기존 좌표 유지), 칸은 2 cm.
+
+    5 cm 칸에서는 벽에 조금만 걸친 칸도 전부 벽이 되어 벽이 두꺼워지고 AMCL 이 4~6 cm 치우쳤다(2026-11-21 d660).
+    """
     import yaml
     meta = yaml.safe_load(open(SLAM_YAML))
     w, h, _ = _read_pgm(SLAM_PGM)
     m = layout.map
-    assert (m.width, m.height) == (w, h)
-    assert m.resolution == pytest.approx(float(meta['resolution']))
+    slam_res = float(meta['resolution'])
+    assert m.resolution == pytest.approx(0.02)
+    assert m.width * m.resolution == pytest.approx(w * slam_res)
+    assert abs(m.height * m.resolution - h * slam_res) < m.resolution      # 2.65 m → 133칸(2.66 m)
     assert m.origin == (pytest.approx(meta['origin'][0]), pytest.approx(meta['origin'][1]))
 
 
@@ -389,7 +395,7 @@ def test_map_pixels(layout):
     assert at(64, 15) == generate_map.OCCUPIED      # OMX3 받침(벽 높이로 둠)
     assert at(280, 25) == generate_map.OCCUPIED     # 인도장 오른쪽 칸막이 T
     assert at(250, 73.2) == generate_map.FREE       # 테이프는 안 그림
-    assert at(200, -10) == generate_map.UNKNOWN     # 벽 바깥
+    assert at(200, -5) == generate_map.UNKNOWN      # 벽 바깥(지도 아래 끝은 통로 벽 밖 약 7 cm)
 
 
 def test_png_round_trip():
