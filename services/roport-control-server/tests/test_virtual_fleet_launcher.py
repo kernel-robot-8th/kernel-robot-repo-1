@@ -237,9 +237,14 @@ def test_timeout_stops_isolated_child_session(tmp_path):
         with pytest.raises(subprocess.TimeoutExpired):
             wait_for_shutdown(owner, timeout=0.01)
         stat = Path(f"/proc/{child}/stat")
-        wait_until(
-            lambda: not stat.exists() or stat.read_text().split()[2] == "Z", timeout=3
-        )
+
+        def child_has_exited():
+            try:
+                return stat.read_text().split()[2] == "Z"
+            except (FileNotFoundError, ProcessLookupError):
+                return True
+
+        wait_until(child_has_exited, timeout=3)
     finally:
         owner.kill()
         owner.wait()
