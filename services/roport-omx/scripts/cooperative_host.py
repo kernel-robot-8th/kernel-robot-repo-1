@@ -486,15 +486,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--box-marker",
         type=int,
-        help="ignored (kept for old start commands): each command's package_id names the box",
-    )
-    parser.add_argument(
-        "--report-placement",
-        action=argparse.BooleanOptionalAction,
-        default=False,  # off until the control tower handles two reports (#134 review)
-        help="panel: loading in two reports (COMPLETE when the box is in its slot, then the "
-        "alignment result); the control tower must accept evidence shelf_placed. Default off: "
-        "one report after the alignment (control v1 holds on shelf_placed)",
+        help="legacy v1 panel trial box marker",
     )
     parser.add_argument(
         "--end-on-place",
@@ -503,12 +495,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="panel 3.18+: end the loading evaluation once the box is placed and the hands are "
         "clear, and let the aligner take the arms there (hand-over). Default on; "
         "--no-end-on-place returns home first and aligns from there",
-    )
-    parser.add_argument(
-        "--place-shadow",
-        action="store_true",
-        help="panel 3.18+: judge the placement during loading and only record it (no hand-over); "
-        "only with --no-end-on-place",
     )
     parser.add_argument("--mock-run-s", type=float, default=3.0)
     parser.add_argument("--mock-disarmed", action="store_true")
@@ -534,8 +520,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "--no-require-pinky/--no-require-docking need --executor mock "
             "(v2 runs the real arms only with the Pinky and docking checks)"
         )
-    if args.report_placement or args.place_shadow:
-        parser.error("the shelf host reports once, after alignment")
     if str(args.journal.resolve()).startswith("/tmp/"):
         parser.error("journal must survive a restart; do not use /tmp")
     if args.executor == "panel" and args.routes is None:
@@ -612,10 +596,8 @@ def main() -> None:
             for key, route in executor.routes.items()
         )
         log.info(
-            "loading hand-over (end_on_place)=%s; early COMPLETE on placement "
-            "(report_placement)=%s; episode limit [%s]",
-            "on" if args.end_on_place else "off",
-            "on" if args.report_placement else "off",
+            "loading hand-over (end_on_place)=%s; episode limit [%s]",
+            "on" if args.protocol == "v2" and args.end_on_place else "off",
             episodes,
         )
     else:

@@ -196,7 +196,7 @@ OMX1·2 COOPERATIVE 작업 명령(`roport-omx-task-v1`, `roport/v1/{site}/workce
 
 ```bash
 # Host (journal은 재시작 후에도 남는 경로, /tmp 금지)
-uv run python scripts/cooperative_host.py --journal ~/.local/state/roport/test-shelf-01.json
+uv run python scripts/cooperative_host.py --protocol v1 --journal ~/.local/state/roport/test-shelf-01.json
 # 시험용 관제 송신기: status → shelf_inbound → event.ack
 uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 ```
