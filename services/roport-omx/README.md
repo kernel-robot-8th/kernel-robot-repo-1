@@ -104,7 +104,7 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 | `mission_result` | 조건 | 이벤트 | HOLD |
 | --- | --- | --- | --- |
 | `MISSION_COMPLETE` | 정렬 성공(명령한 칸), 양팔 홈·그리퍼 놓음 | `completed`, `evidence: "shelf_align"` | 없음 |
-| `MISSION_COMPLETE_NOT_ALIGNED` | 상자가 선반 위(`on_shelf: true`), 정렬은 시간 초과·실패·건너뜀, 양팔 홈·그리퍼 놓음. 정렬기가 선반을 읽지 못해도(`on_shelf: null`: 카메라 틀어짐·영상 없음) 같은 미션의 놓음 판정(넘겨받기)이 명령 칸에 **명령 상자**(`package_id`)가 놓이고 두 손이 빠진 것을 봤으면 여기에 넣고 `align_error: PANEL_SHELF_UNREADABLE`(2026-11-22). 판정 기록의 칸·상자 번호가 명령과 다르거나 없으면 HOLD입니다. 제어판 3.21은 `placement.first`에 칸·상자를 남기지 않으므로 그 경로는 기록될 때까지 HOLD입니다(#134 리뷰) | `completed`, `evidence: "shelf_load_not_aligned"`, `align_error` | 없음 |
+| `MISSION_COMPLETE_NOT_ALIGNED` | 상자가 선반 위(`on_shelf: true`), 정렬은 시간 초과·실패·건너뜀, 양팔 홈·그리퍼 놓음. 정렬기가 선반을 읽지 못해도(`on_shelf: null`: 카메라 틀어짐·영상 없음) 같은 미션의 놓음 판정(넘겨받기, 2B만)이 **명령 상자의 마커를 직접 읽고**(`last_result.handover.judge.box.id` = `package_id`, 기울지 않음 `flat: true`) 두 손이 빠진 것을 봤으면 여기에 넣고 `align_error: PANEL_SHELF_UNREADABLE`(2026-11-22). `placement.box`는 평가 시작 때 지정한 번호라 근거로 쓰지 않습니다. 판정기가 읽은 마커가 없거나 다르거나, 칸이 2B가 아니거나(판정기는 2B 영역만 봄), 넘겨받기가 `placed`로 끝나지 않았으면 HOLD입니다(#134 리뷰) | `completed`, `evidence: "shelf_load_not_aligned"`, `align_error` | 없음 |
 | `MISSION_FAILED` | 평가 오류, 상자가 선반 위에 없음(`PANEL_BOX_NOT_ON_SHELF`), 다른 칸 정렬(`PANEL_ALIGN_WRONG_SLOT`), 팔 미복귀·그리퍼 쥠(`ARM_NOT_RETURNED`), 작업자 중지·즉시 중단 | `failed` | 없음: 제어판 `/api/home/return`으로 양팔을 평가 시작 자세로 보낸 뒤 `/api/arms`로 홈·그리퍼 놓음을 확인하고 보고 |
 | `MISSION_HOLD` | 선반 판독 불가(`on_shelf: null` → `PANEL_SHELF_UNREADABLE`, 정렬·판독 모두 없음 → `PANEL_ALIGN_SKIPPED`·`PANEL_ALIGN_NOT_RUN`), 비상 정지·강제 종료·내려놓기 실패, 결과 불명, 홈 복귀 거절·시간 초과·복귀 후에도 미복귀 | `failed` | 있음: 현장 확인 후 `--clear-hold` |
 

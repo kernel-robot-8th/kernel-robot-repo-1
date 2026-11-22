@@ -1513,28 +1513,42 @@ class PanelExecutorTest(unittest.TestCase):
             "source": "align",
             "first": {"source": "eval_judge", "on_shelf": True},
         }
-        first_named = moved_on | {
-            "first": {"source": "eval_judge", "on_shelf": True, "slot": "2B", "box": 16}
+        # the judge's own reading of the marker (field 2026-11-22 17:33, episode_end.json)
+        seen = {"id": 16, "side_px": 42.3, "flat": True, "y": 0.2896, "front_y": 0.2259}
+        placed = {
+            "mode": "handover",
+            "state": "taken",
+            "end_reason": "placed",
+            "judge": {"box": seen, "version": "1117e"},
         }
-        placed = {"mode": "handover", "state": "taken", "end_reason": "placed"}
+
+        def saw(**marker):
+            return placed | {"judge": {"box": seen | marker, "version": "1117e"}}
+
         cases = [
             ("judge on top", judge, placed, "completed"),
+            ("judge kept under first", moved_on, placed, "completed"),
+            # #134 review: placement.box is only the number the evaluation was started with; the
+            # judge's own marker reading must be this box, or nothing proves which box is there
+            ("judge read another marker", judge, saw(id=17), "held"),
             (
-                "judge kept under first, box and slot named",
-                first_named,
-                placed,
-                "completed",
-            ),
-            ("judge kept under first without box/slot", moved_on, placed, "held"),
-            (
-                "first names another box",
-                first_named | {"first": first_named["first"] | {"box": 17}},
-                placed,
+                "judge reading missing",
+                judge,
+                placed | {"judge": {"version": "1117e"}},
                 "held",
             ),
+            (
+                "no judge record",
+                judge,
+                {k: v for k, v in placed.items() if k != "judge"},
+                "held",
+            ),
+            ("marker tilted", judge, saw(flat=False), "held"),
+            ("marker rejected", judge, saw(rejected="tilted"), "held"),
+            ("marker id not a number", judge, saw(id="16"), "held"),
+            ("shadow judge only", judge, placed | {"mode": "shadow"}, "held"),
             ("hands not clear", judge | {"tips_clear": False}, placed, "held"),
             ("another slot", judge | {"slot": "2C"}, placed, "held"),
-            # #134 review: the command is package 16; a judge record for box 17 never completes it
             ("another box", judge | {"box": 17}, placed, "held"),
             (
                 "box not recorded",
@@ -1602,6 +1616,29 @@ class PanelExecutorTest(unittest.TestCase):
             events[-1]["payload"].get("error_code"), "PANEL_BOX_NOT_ON_SHELF"
         )
         self.assertNotEqual(events[-1]["type"], "shelf_inbound.completed")
+
+    def test_placement_judge_counts_only_in_the_slot_it_watches(self):
+        # the judge's camera area and shelf edge are those of 2B (panel handover_fk.json): a
+        # "placed" for a 1B or 3B mission says nothing about that slot
+        result = {
+            "placement": {
+                "on_shelf": True,
+                "slot": "1B",
+                "box": 16,
+                "source": "eval_judge",
+                "tips_clear": True,
+            },
+            "handover": {
+                "mode": "handover",
+                "end_reason": "placed",
+                "judge": {"box": {"id": 16, "flat": True}},
+            },
+        }
+        self.assertFalse(panel_executor._judge_placed(result, "1B", 16))
+        two_b = result | {"placement": result["placement"] | {"slot": "2B"}}
+        self.assertTrue(panel_executor._judge_placed(two_b, "2B", 16))
+        self.assertTrue(panel_executor._judge_placed(two_b, "2b", 16))
+        self.assertFalse(panel_executor._judge_placed(two_b, "2B", 17))
 
     def test_two_reports_handover_not_taken_reports_not_aligned(self):
         self.use_two_reports("3.20.0")
