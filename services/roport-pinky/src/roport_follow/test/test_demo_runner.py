@@ -75,6 +75,10 @@ def test_switch_and_follow_carry_map_identity():
     p = d.calls[-1][2]
     assert d.calls[-1][1] == 'follow.requested' and p['card_id'] == 35 and p['max_duration_s'] == 120.0
     assert p['map_version'] == 'abc123'
+    assert 'lost_after_s' not in p                      # 안 주면 드라이버 기본(1 s, SR-22)
+    r.active = None
+    r.handle({'op': 'follow', 'card_id': 35, 'lost_after_s': 4})
+    assert d.calls[-1][2]['lost_after_s'] == 4.0
 
 
 def test_rejections_are_reported_not_dispatched():
@@ -132,3 +136,48 @@ def test_start_mode_nav2_skips_line_route_for_tests_only():
     import pytest
     with pytest.raises(ValueError):
         apply_start_mode(d, 'dock')
+
+
+def test_navigate_command_shape():
+    d, c, r = make()
+    r.handle({'op': 'navigate', 'goal_id': 'demo_G3', 'x': 0.11, 'y': -0.02, 'yaw': 3.5})
+    kind, typ, p = d.calls[-1]
+    assert (kind, typ) == ('dispatch', 'navigate.requested')
+    assert p['goal_id'] == 'demo_G3' and p['frame_id'] == 'map' and p['map_version'] == 'abc123'
+    assert p['pose']['x'] == 0.11 and p['pose']['yaw'] == pytest.approx(3.5 - 2 * math.pi)
+    assert p['position_tolerance_m'] > 0 and p['yaw_tolerance_rad'] > 0
+    r.active = None
+    r.handle({'op': 'navigate', 'goal_id': 'demo_G3', 'x': float('nan'), 'y': 0, 'yaw': 0})
+    assert r.state()['events'][-1]['kind'] == 'rejected' and r.active is None
+
+
+def test_route_from_loading_uses_observed_heading():
+    """상차 대기(N21 에서 반시계 90°)에서 출발: 경로 방향이 아니라 지금 자세를 출발 방향으로 보낸다."""
+    from types import SimpleNamespace
+    d, c, r = make()
+    d.logic = SimpleNamespace(st={'state': 'loading', 'route': ['N09', 'N08']})
+    d.observe = lambda: {'mode': 'line', 'node_id': 'N08', 'stopped': True, 'fault': None, 'heading_rad': 1.234}
+    r.handle({'op': 'route', 'route': ['N08', 'N12']})
+    assert d.calls[-1][2]['start_heading_rad'] == pytest.approx(1.234)
+    r.active = None
+    d.logic.st = {'state': 'loading', 'route': ['N08', 'N09']}          # 다른 노드에서 상차 중이면 경로 방향
+    r.handle({'op': 'route', 'route': ['N08', 'N12']})
+    assert d.calls[-1][2]['start_heading_rad'] == pytest.approx(math.radians(0.1))
+
+
+def test_lift_nav_recovery_cap_keeps_explicit_arguments():
+    from types import SimpleNamespace
+    from roport_follow.demo_runner import lift_nav_recovery_cap
+    seen = []
+    d = SimpleNamespace(nav=SimpleNamespace(start=lambda payload, *, behavior_tree='', stamp=None, max_recoveries=2:
+                                            seen.append((payload, behavior_tree, max_recoveries))))
+    lift_nav_recovery_cap(d)
+    d.nav.start({'goal_id': 'g'})
+    d.nav.start({'goal_id': 'f'}, behavior_tree='follow.xml', max_recoveries=None)
+    assert seen[0][0] == {'goal_id': 'g'} and seen[0][1].endswith('navigate_patient.xml') and seen[0][2] is None
+    assert seen[1] == ({'goal_id': 'f'}, 'follow.xml', None)             # 추종은 자기 트리 그대로
+    import xml.etree.ElementTree as ET
+    tree = ET.parse(seen[0][1]).getroot()
+    names = [n.tag for n in tree.iter()]
+    assert 'ClearEntireCostmap' not in names and 'Spin' not in names and 'BackUp' not in names
+    assert names.count('Wait') == 1 and 'FollowPath' in names

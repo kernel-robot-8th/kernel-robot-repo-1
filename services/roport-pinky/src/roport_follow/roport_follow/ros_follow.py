@@ -48,9 +48,12 @@ class FollowSink:
         return st
 
     def exclude_point(self):
-        """따라가는 중인 고객 위치(인형 장애물에서 뺄 곳). 놓쳤거나 아직 못 찾았으면 None."""
+        """따라가는 중인 고객 위치(인형 장애물에서 뺄 곳). 이번 영상에서 고객을 확인했을 때만 준다.
+
+        놓쳤거나 아직 못 찾았거나, 가려져서 이번 영상에 안 보이면(tracking, seen=false) None: 예전 차체 기준 좌표는
+        로봇이 움직이면 지금 고객 자리와 다르고, 그 자리에 새로 온 다른 인형을 장애물에서 빼 버린다."""
         st = self.last
-        if not st or st.get('state') != 'tracking' or 'x_m' not in st:
+        if not st or st.get('state') != 'tracking' or not st.get('seen') or 'x_m' not in st:
             return None
         return st['x_m'], st['y_m']
 

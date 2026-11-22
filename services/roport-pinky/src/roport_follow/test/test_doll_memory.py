@@ -97,15 +97,61 @@ def test_customer_area_and_far_dolls_are_dropped():
     assert m.update(2.0, (3.0, 0.0, math.pi), []) == []           # 로봇이 keep_range 넘게 멀어짐
 
 
-def test_missing_pose_uses_last_pose_and_reports_it():
+def test_missing_pose_keeps_memory_untouched_and_recovers_at_the_right_place():
+    """odom 이 없는 영상: 마지막 자세를 다시 쓰지 않는다(18 cm 앞 인형으로 10 cm 다가가도 18 cm 로 남는 문제).
+    기억은 그대로 두고 보이는 것만 보내며, odom 이 돌아오면 맞는 자리(8 cm)로 다시 보낸다."""
     m = DollMemory()
     for t in (0.0, 0.2):
         m.update(t, (0.5, 0.0, 0.0), [doll(0.18, 0.0)])
-    out = m.update(1.0, None, [])                                 # odom 이 잠깐 안 옴: 마지막 자세로
-    assert centers(out) == [(0.18, 0.0)] and m.info()['pose_ok'] is False
+    assert m.update(1.0, None, []) == [] and m.info()['pose_ok'] is False     # 자세 모름: 기억한 것을 보내지 않음
+    assert len(m.entries) == 1                                                 # 지우지도 않음
+    out = m.update(1.2, (0.6, 0.0, 0.0), [])                                   # odom 복구(그동안 10 cm 전진)
+    assert centers(out) == [(0.08, 0.0)] and m.info()['pose_ok'] is True
     fresh = DollMemory()
     assert len(fresh.update(0.0, None, [doll(0.3, 0.0)])) == 1    # 자세를 한 번도 못 받음: 보이는 것만
-    assert fresh.update(0.2, None, []) == []
+    assert fresh.update(0.2, None, []) == [] and fresh.entries == []
+
+
+def test_sink_does_not_clear_around_the_robot_without_pose():
+    """자세를 모르는 영상에서는 둘레(시야 밖) 지움 점을 보내지 않는다: 전에 맞게 찍은 칸을 지우지 않게."""
+    cam, cfg, sent = _cam(), ObstacleConfig(), []
+    poses = {'on': True}
+    sink = ObstacleSink(cam, cfg, lambda pts, stamp: sent.append(len(pts)), require_robot_time=True,
+                        memory=DollMemory(), pose_lookup=lambda t: (0.0, 0.0, 0.0) if poses['on'] else None)
+    sink.handle(_frame(100.0), [])
+    with_ring = sent[-1]
+    poses['on'] = False
+    sink.handle(_frame(100.2), [])
+    assert sent[-1] == with_ring - len(sink._ring) and len(sink._ring) > 0
+    poses['on'] = True
+    sink.handle(_frame(100.4), [])
+    assert sent[-1] == with_ring
+
+
+def test_only_the_customer_detection_is_excluded_not_a_doll_standing_next_to_it():
+    """리뷰 #130: 카드 옆 10 cm 에 따로 선 어린이 인형이 고객과 함께 장애물에서 빠졌음 → 고객으로 확인한 검출 하나만 뺀다."""
+    cam, cfg, sent = _cam(), ObstacleConfig(), []
+    sink = ObstacleSink(cam, cfg, lambda pts, stamp: sent.append(pts))
+    customer = (0.60 + cfg.cam_x_m, 0.0)
+    child = _det('child', _box_at(cam, 0.60, 0.10, width=0.04))        # 카드 옆 10 cm, 혼자 검출
+    assert [o.name for o in sink.handle(_frame(100.0), [child], exclude=customer)] == []      # 어른이 없으면 가장 가까운 하나
+    adult = _det('adult', _box_at(cam, 0.45, 0.02, width=0.08))        # 고객 인형(카드에서 약 15 cm)
+    out = sink.handle(_frame(100.2), [adult, child], exclude=customer)
+    assert [o.name for o in out] == ['child'] and sink.excluded == 1   # 고객만 빠지고 옆 인형은 장애물
+    child2 = _det('child', _box_at(cam, 0.55, -0.08, width=0.04))
+    out = sink.handle(_frame(100.4), [adult, child, child2], exclude=customer)
+    assert sorted(o.name for o in out) == ['child', 'child'] and sink.excluded == 1
+    out = sink.handle(_frame(100.6), [adult, child], exclude=None)     # 카드가 가려진 영상: 아무것도 빼지 않음
+    assert sorted(o.name for o in out) == ['adult', 'child'] and sink.excluded == 0
+
+
+def test_memory_removes_only_the_customer_doll_not_a_remembered_neighbour():
+    m = DollMemory()
+    for t in (0.0, 0.2):
+        m.update(t, (0, 0, 0), [doll(0.45, 0.02, 'adult'), doll(0.50, 0.10, 'child')])
+    back = (0.0, 0.0, math.pi)                                          # 뒤돌아 둘 다 시야 밖(기억만 남음)
+    out = m.update(1.0, back, [], exclude=(-0.45, -0.02), exclude_radius_m=m.cfg.match_m, exclude_name='adult')
+    assert [o['name'] for o in out] == ['child']
 
 
 def test_time_going_backwards_drops_memory():

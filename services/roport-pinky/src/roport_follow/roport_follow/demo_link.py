@@ -13,6 +13,9 @@ import threading
 import time
 
 NODE = re.compile(r'^[A-Z][0-9A-Z]{1,3}$')
+GOAL_ID = re.compile(r'^[A-Za-z0-9_]{1,24}$')
+# Nav2 목표 범위: 시연 공간 지도(원점 -1.654, -2.094, 넓이 4.60 x 2.66 m) 안
+MAP_X, MAP_Y = (-1.654, 2.946), (-2.094, 0.566)
 CARD_IDS = range(35, 50)
 
 
@@ -32,16 +35,24 @@ def demo_command(body):
                 isinstance(n, str) and NODE.match(n) for n in route):
             raise ValueError('route must be 2..12 node ids like N08')
         return {'op': 'route', 'route': route, 'speed_limit_mps': _num(body, 'speed_limit_mps', 0.06, 0.01, 0.2)}
-    if op == 'switch_nav2' or op == 'stop':
+    if op in ('switch_nav2', 'switch_line', 'stop'):
         return {'op': op}
+    if op == 'navigate':
+        goal_id = body.get('goal_id')
+        if not isinstance(goal_id, str) or not GOAL_ID.match(goal_id):
+            raise ValueError('goal_id must be 1..24 letters, digits or _')
+        return {'op': 'navigate', 'goal_id': goal_id, 'x': _num(body, 'x', None, *MAP_X),
+                'y': _num(body, 'y', None, *MAP_Y), 'yaw': _num(body, 'yaw', None, -math.pi, math.pi)}
     if op == 'follow':
         card = body.get('card_id')
         if isinstance(card, bool) or not isinstance(card, int) or card not in CARD_IDS:
             raise ValueError('card_id must be 35..49')
         return {'op': 'follow', 'card_id': card, 'standoff_m': _num(body, 'standoff_m', 0.5, 0.2, 1.2),
                 # 관제 기본 명령 마감 300 s 와 맞춤
-                'max_duration_s': _num(body, 'max_duration_s', 120, 1, 300)}
-    raise ValueError('op must be route, switch_nav2, follow or stop')
+                'max_duration_s': _num(body, 'max_duration_s', 120, 1, 300),
+                # 놓침 기준: 기본 1 s(SR-22), 4 s 까지는 명시했을 때만(시연값). 노트북 --follow-lost-s 와 같은 값으로
+                'lost_after_s': _num(body, 'lost_after_s', 1.0, 1.0, 4.0)}
+    raise ValueError('op must be route, switch_nav2, switch_line, navigate, follow or stop')
 
 
 class DemoLink:

@@ -3,7 +3,7 @@
 - 따라갈 카드는 고객 확인 때 정한 ID 하나(SR: 다른 마커로 바꾸지 않음). 다른 ID 카드는 무시하고 목록만 남긴다.
 - 위치: 카메라 좌표(solvePnP 의 카드 중심) → 바닥 좌표(렌즈 아래 바닥 원점, CameraModel.rotation) → base_footprint
   (렌즈 위치 cam_x_m·cam_y_m 만큼 옮김). 카드 높이와 상관없이 카드 바로 아래 바닥 점을 쓴다.
-- 놓침: 마지막으로 본 뒤 lost_after_s(기본 4 s, 11-20 시험값. SR-22 예외 흐름은 1 s) 넘게 못 보면 lost.
+- 놓침: 마지막으로 본 뒤 lost_after_s(기본 1 s = SR-22. 4 s 는 --follow-lost-s 로 명시하는 시연값) 넘게 못 보면 lost.
 - 튐 거름: 직전 위치에서 (0.15 m + 고객 최대 속도 × 경과 시간)보다 멀리 뛴 검출은 버린다(오검출·다른 카드 오인).
 - 시각: 로봇 영상 시각(robot_time). 고객 뒤 몇 cm 에 설지는 로봇 쪽 Nav2(TruncatePath)가 정한다.
 - 인형으로 잇기(doll_fallback, 임시·기본 끔, 11-21): 카드는 인형 등에 낮게 붙어 있어 고객이 방향을 틀거나(옆면)
@@ -26,7 +26,7 @@ class FollowConfig:
     card_id: int = 35
     cam_x_m: float = 0.035          # base_footprint → 렌즈(obstacles.ObstacleConfig 와 같은 값)
     cam_y_m: float = 0.0
-    lost_after_s: float = 4.0      # 11-20 사용자 결정: SR-22 1 s → 2 s(번짐·가림) → 밤 4 s(피해 가는 동안 시야 밖·가림)
+    lost_after_s: float = 1.0      # SR-22. 11-20~21 실로봇 시연은 4 s(피해 가는 동안 시야 밖·가림), 요구사항 변경 합의 전
     max_range_m: float = 1.5        # 이보다 먼 카드는 안 씀(30 mm 카드: 합성 영상 1.5 m 에서 이미 약 8 cm 오차)
     min_side_px: float = 6.0        # 화면에서 한 변이 이보다 작으면 안 씀
     max_speed_mps: float = 1.5      # 튐 거름에 쓰는 고객 최대 속도

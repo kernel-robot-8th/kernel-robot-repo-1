@@ -10,7 +10,7 @@ def test_demo_command_defaults_and_ranges():
     assert demo_command({'op': 'route', 'route': ['N08', 'N12']}) == {
         'op': 'route', 'route': ['N08', 'N12'], 'speed_limit_mps': 0.06}
     assert demo_command({'op': 'follow', 'card_id': 36, 'standoff_m': 0.7}) == {
-        'op': 'follow', 'card_id': 36, 'standoff_m': 0.7, 'max_duration_s': 120.0}
+        'op': 'follow', 'card_id': 36, 'standoff_m': 0.7, 'max_duration_s': 120.0, 'lost_after_s': 1.0}
     assert demo_command({'op': 'stop'}) == {'op': 'stop'}
     for bad in ({'op': 'follow', 'card_id': True}, {'op': 'follow', 'card_id': 35, 'standoff_m': 0.1},
                 {'op': 'route', 'route': ['N08']}, {'op': 'route', 'route': 'N08,N12'},
@@ -40,3 +40,22 @@ def test_info_reports_robot_state_age():
     link._on_state(Msg())
     info = link.info()
     assert info['robot']['observed']['mode'] == 'nav2' and info['robot_age_s'] < 1
+
+
+def test_navigate_command_is_checked_against_map_bounds():
+    from roport_follow.demo_link import demo_command
+    m = demo_command({'op': 'navigate', 'goal_id': 'demo_ARR', 'x': 2.62, 'y': -0.02, 'yaw': 0.0})
+    assert m == {'op': 'navigate', 'goal_id': 'demo_ARR', 'x': 2.62, 'y': -0.02, 'yaw': 0.0}
+    for bad in ({'goal_id': 'bad id', 'x': 0, 'y': 0, 'yaw': 0}, {'goal_id': 'g', 'x': 5.0, 'y': 0, 'yaw': 0},
+                {'goal_id': 'g', 'x': 0, 'y': 0}, {'goal_id': 'g', 'x': 0, 'y': 0, 'yaw': 4.0},
+                {'goal_id': 'g', 'x': True, 'y': 0, 'yaw': 0}):
+        with pytest.raises(ValueError):
+            demo_command({'op': 'navigate', **bad})
+
+
+def test_follow_lost_after_is_explicit_and_bounded():
+    from roport_follow.demo_link import demo_command
+    assert demo_command({'op': 'follow', 'card_id': 35, 'lost_after_s': 4})['lost_after_s'] == 4.0
+    for bad in (0.5, 8, True):
+        with pytest.raises(ValueError):
+            demo_command({'op': 'follow', 'card_id': 35, 'lost_after_s': bad})
