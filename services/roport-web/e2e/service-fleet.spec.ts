@@ -5,6 +5,7 @@ import { expect, test } from '@playwright/test';
 test('customer browser → service WSS → MQTT robots → pad receipt → return (small and large)', async ({ browser, request }, testInfo) => {
   test.skip(!process.env.ROPORT_SERVICE_RUN, 'ROPORT_SERVICE_RUN must point to the local launcher run.json');
   const run = JSON.parse(readFileSync(process.env.ROPORT_SERVICE_RUN!, 'utf8'));
+  expect(run.simulation, '자동 운행은 로컬 가상 Fleet에서만 실행합니다.').toBe(true);
   const snapshot = async () => (await (await request.get(run.control_url + '/api/snapshot?mode=fleet')).json()).fleet;
   // Launching, opening the UI and entering its key must not dispatch robot work.
   await expect.poll(async () => Object.keys((await snapshot()).tasks).length).toBe(2);

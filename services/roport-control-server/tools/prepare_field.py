@@ -20,7 +20,7 @@ def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
 
-def prepare_field(output, *, map_path=MAP, layout_path=LAYOUT):
+def prepare_field(output, *, map_path=MAP, layout_path=LAYOUT, two_cart_trial=False):
     output = Path(output).resolve()
     map_path, layout_path = Path(map_path).resolve(), Path(layout_path).resolve()
     if map_path.name == "layout.yaml":
@@ -28,6 +28,18 @@ def prepare_field(output, *, map_path=MAP, layout_path=LAYOUT):
     fleet, robots = profiles(
         map_path=map_path, layout_path=layout_path, simulation=False
     )
+    if two_cart_trial:
+        fleet["initial_roles"] = {
+            "pinky1": "smartcart",
+            "pinky2": "logistics",
+            "pinky3": None,
+        }
+        # Use the N17 logistics route and H1 smartcart route in both profiles.
+        profile = robots["pinky2"][1]
+        profile["robots"]["smartcart"]["robot_id"] = "pinky1"
+        fleet["robots"] = profile["robots"]
+        fleet["routes"] = profile["routes"]
+        robots = {"pinky1": ("smartcart", profile), "pinky2": ("logistics", profile)}
     # Keep the exact YAML bytes: map_version hashes YAML + image together.
     image = Path(yaml.safe_load(map_path.read_text())["image"])
     if image.is_absolute() or ".." in image.parts:
@@ -160,11 +172,17 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--map", type=Path, default=MAP)
     parser.add_argument("--layout", type=Path, default=LAYOUT)
+    parser.add_argument(
+        "--two-cart-trial",
+        action="store_true",
+        help="pinky2 logistics / pinky1 smartcart",
+    )
     args = parser.parse_args()
     prepare_field(
         args.output,
         map_path=args.map,
         layout_path=args.layout,
+        two_cart_trial=args.two_cart_trial,
     )
     print(
         f"Prepared {args.output.resolve()}; field_verified=false, OMX versions unset."

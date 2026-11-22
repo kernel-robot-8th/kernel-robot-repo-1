@@ -186,10 +186,15 @@ def test_three_pinkies_all_shelf_columns_and_nav2_return_over_mqtt(fleet_mqtt):
     for package in ("left-first", "left-second", "right", "large"):
         key = submit(package, "inbound")
         pump_until(lambda key=key: control.data["tasks"][key]["status"] == "COMPLETE")
-        if package == "left-first":
-            control.assign("pinky1", None)
-        elif package == "left-second":
-            control.assign("pinky1", "logistics")
+        if package in {"left-first", "left-second"}:
+            # Task completion and the parked robot's confirming MQTT state arrive separately.
+            pump_until(
+                lambda: (
+                    "pinky1" not in control.data["pending_arrivals"]
+                    and "pinky1" not in control.awaiting_state
+                )
+            )
+            control.assign("pinky1", None if package == "left-first" else "logistics")
     small = {
         control.data["tasks"]["inbound-" + p]["slot"][-1]: p
         for p in ("left-first", "left-second", "right")

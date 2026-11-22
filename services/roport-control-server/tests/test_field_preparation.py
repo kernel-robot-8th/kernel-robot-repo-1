@@ -343,3 +343,56 @@ def test_n12_reference_tracks_rotated_approach():
 
     ref = n12_reference({"N08": (1, 1), "N12": (1, 2)})["pose"]
     assert ref == pytest.approx({"x": 1, "y": 2.03, "yaw": -math.pi / 2})
+
+
+def test_two_cart_shelf_trial_uses_verified_profiles_and_only_mocks_warehouse(tmp_path):
+    from run_service_fleet import field_settings
+
+    root = tmp_path / "pair"
+    fleet = prepare_field(root, two_cart_trial=True)
+    assert not (root / "pinky3").exists()
+    with pytest.raises(ValueError, match="field_verified"):
+        field_settings(root, False, shelf_slot="2b")
+    fleet["field_verified"] = True
+    fleet["n12_goal"] = profiles()[0]["n12_goal"]
+    shelf_versions = {"model_version": "test-model", "calibration_version": "test-cal"}
+    for target in ("omx1", "omx2", "shelf-01"):
+        fleet["omx"][target] = shelf_versions
+    (root / "fleet.json").write_text(json.dumps(fleet))
+    for robot in ("pinky1", "pinky2"):
+        path = root / robot / "trial.json"
+        path.write_text(
+            json.dumps(json.loads(path.read_text()) | {"field_verified": True})
+        )
+    mixed = field_settings(root, False, shelf_slot="2b")
+    assert mixed["expected_starts"] == {"pinky1": "H1", "pinky2": "N17"}
+    assert mixed["trial_shelf_slots"] == ["2b"]
+    assert mixed["omx"]["omx3"]["model_version"] == "sim-model"
+    assert all(mixed["omx"][t] == shelf_versions for t in ("omx1", "omx2", "shelf-01"))
+    with pytest.raises(ValueError, match="omx3: actual model_version"):
+        field_settings(root, False)
+
+
+def test_field_launcher_rejects_existing_mock_target_before_start(
+    tmp_path, monkeypatch
+):
+    import check_field
+    from run_service_fleet import start_field
+
+    def occupied(config, targets, connection, duration):
+        assert targets == ["omx3"]
+        assert connection.host == "127.0.0.1" and connection.port == 18883
+        return {"targets": {"omx3": {"samples": 1}}, "rejected_states": 0}
+
+    monkeypatch.setattr(check_field, "listen", occupied)
+    with pytest.raises(ValueError, match="already publishing.*omx3"):
+        start_field(
+            lambda *args: pytest.fail("unexpected child"),
+            tmp_path,
+            tmp_path,
+            {"trial_shelf_slots": ["2b"]},
+            8000,
+            18883,
+            False,
+            {},
+        )

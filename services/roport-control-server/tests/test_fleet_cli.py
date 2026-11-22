@@ -164,3 +164,29 @@ def test_arrival_cli_binds_current_session_and_reports_failure(
         "boot_version": "boot-2",
         "note": "checked stopped robot",
     }
+
+
+@pytest.mark.parametrize(
+    "verified,authorized", [(False, True), (True, False), (True, True)]
+)
+def test_standalone_owner_rejects_unvalidated_hardware_even_with_confirmations(
+    tmp_path, monkeypatch, capsys, verified, authorized
+):
+    config = tmp_path / "fleet.json"
+    config.write_text(json.dumps({"mode": "hardware", "field_verified": verified}))
+    argv = ["owner", "--config", str(config), "--socket", "unused"]
+    if authorized:
+        argv.append("--hardware-authorized")
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit):
+        fleet_runtime.main()
+    assert "validated field launcher" in capsys.readouterr().err
+
+
+def test_field_assignment_requires_a_verified_profile(fleet):
+    fleet.config.update(
+        mode="hardware", expected_starts={"pinky1": "H1", "pinky2": "N17"}
+    )
+    with pytest.raises(ValueError, match="outside verified"):
+        fleet.assign("pinky3", "smartcart")
+    fleet.assign("pinky2", "logistics")

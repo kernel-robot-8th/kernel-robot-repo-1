@@ -36,10 +36,17 @@ class FleetControl:
         self.observed, self.poses, self.heard = {}, {}, {}
         self.observed_since = {}
         self.awaiting_state = set()
+        roles = config.get("initial_roles", ROLES)
+        if (
+            not isinstance(roles, dict)
+            or roles.keys() != ROLES.keys()
+            or any(role not in (*PARKING, None) for role in roles.values())
+        ):
+            raise ValueError("invalid initial fleet roles")
         if not store.data:
             store.save(
                 {
-                    "roles": ROLES,
+                    "roles": roles,
                     "last_nodes": {},
                     "field_versions": {
                         k: config[k] for k in ("graph_version", "map_version")
@@ -86,6 +93,10 @@ class FleetControl:
     def assign(self, robot, role):
         if robot not in ROLES or role not in {*PARKING, None}:
             raise ValueError("unknown robot/role")
+        if self.config.get("mode") == "hardware" and robot not in self.config.get(
+            "expected_starts", {}
+        ):
+            raise ValueError("robot outside verified field configuration")
         if any(
             t.get("robot") == robot and t["status"] not in {"COMPLETE", "CANCELED"}
             for t in self.data["tasks"].values()
@@ -476,7 +487,8 @@ class FleetControl:
         candidates = []
         for slot, definition in SLOTS.items():
             if (
-                definition["size"] != task["size"]
+                slot not in self.config.get("trial_shelf_slots", SLOTS)
+                or definition["size"] != task["size"]
                 or data["slots"][slot]["state"] != "empty"
             ):
                 continue

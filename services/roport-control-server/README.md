@@ -108,7 +108,7 @@ uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --por
 - 복구: **중단·복구 확인**에서 대상과 현장 확인 기록을 입력합니다. 저장된 완료 반영·거절 작업 재배정·물품 제거 후 취소는 기존 실행부의 증거 검사를 그대로 통과해야 합니다. STOP 재요청과 재부팅 후 도착 재확인은 별도 버튼이며, 화면이 보고 있던 명령·기동 ID를 전달합니다. 대상/처리 변경이나 연결 단절 시 확인 체크를 다시 해야 합니다.
 - 재개: 미완료 명령과 도착 재확인을 처리한 뒤 **보류 해제**, 별도 **요청 처리 시작** 순서입니다. 조회나 복구 성공을 자동 재출발로 취급하지 않습니다.
 
-이번 실행기는 루프백 simulation Fleet용입니다. 서비스 WSS와 PostgreSQL 연결을 포함하며 실물 Fleet 실행·운영 인증은 후속입니다. 웹 화면/가상 실행기 시험은 실제 센서·팔·주행 검증을 대신하지 않습니다. 전체 가상 실행은 `tools/start_virtual_ui.sh`, 고객 서비스 통합은 [실행 안내](docs/service-web-local-test.md)를 따릅니다. UI 회귀는 `npm run test:web -- tests/browser/fleet.spec.mjs`, HTTP→MQTT 입출고 회귀는 `REQUIRE_MQTT_TESTS=1 uv run pytest tests/test_fleet_web_mqtt.py`로 실행합니다.
+이번 실행기는 루프백 simulation Fleet용입니다. 서비스 연결과 PostgreSQL을 포함합니다. 두 대의 현장 Fleet에 연결하는 시험은 [서비스 실행 절차](docs/service-web-local-test.md#서비스-요청을-두-대의-현장-fleet에-연결하기)를 따릅니다. 운영 인증은 후속입니다. 웹 화면/가상 실행기 시험은 실제 센서·팔·주행 검증을 대신하지 않습니다. 전체 가상 실행은 `tools/start_virtual_ui.sh`, 고객 서비스 통합은 [실행 안내](docs/service-web-local-test.md)를 따릅니다. UI 회귀는 `npm run test:web -- tests/browser/fleet.spec.mjs`, HTTP→MQTT 입출고 회귀는 `REQUIRE_MQTT_TESTS=1 uv run pytest tests/test_fleet_web_mqtt.py`로 실행합니다.
 
 ### Fleet 회귀시험과 가상 물품 선택
 
