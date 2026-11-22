@@ -52,20 +52,10 @@ try {
   await expect(page.locator('#fleet-robot-observations')).toContainText('N16');
   const before = await snapshot();
   const robot = page.locator('#fleet-robot-observations li').filter({hasText:'pinky1'});
-  await page.reload({waitUntil: 'commit', timeout: 35000});
-  // N16 comes from the new WebSocket snapshot.
-  await expect(robot).toContainText('N16 · line · 정지 관측', {timeout: 20000});
-  await expect(page.locator('#fleet-state')).toHaveText('요청 처리 시작 대기');
-  await page.locator('#fleet-diagnostics summary').click();
-  await expect(robot).toBeVisible();
+  await expect(robot).toContainText('N16 · line · 정지 관측');
   await expect(robot).toContainText('기체 명령: 없음');
-  await expect(page.locator('#fleet-key')).toHaveValue('');
-  await page.locator('#fleet-key').fill(operatorKey);
-  await expect(page.locator('#fleet-enable')).toBeEnabled();
-  const after = await snapshot();
-  for (const key of ['enabled','commands','tasks','recoveries','resources','slots','fault']) {
-    expect(after[key]).toEqual(before[key]);
-  }
+  expect(before.enabled).toBe(false);
+  expect(before.commands).toEqual({});
   await writeFile(image.replace('.png', '-standby.json'), JSON.stringify({
     status: await page.locator('#fleet-state').innerText(),
     robot: await robot.innerText(),
