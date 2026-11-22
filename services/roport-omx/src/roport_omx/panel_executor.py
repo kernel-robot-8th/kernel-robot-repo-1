@@ -178,8 +178,9 @@ def _hold_code(result: dict) -> str:
 # Shelf loading mission (agreed 2026-11-16); the box alignment is part of it:
 #   loaded and aligned                            → MISSION_COMPLETE (evidence "shelf_align")
 #   on the shelf, not aligned in time, arms home   → MISSION_COMPLETE_NOT_ALIGNED
-#     (also when the aligner could not read the shelf but the evaluation's placement judge saw
-#      the box placed with the hands clear: align_error PANEL_SHELF_UNREADABLE, 2026-11-22)
+#     (also when the aligner could not read the shelf but the evaluation's placement judge read
+#      this box's own marker in 2B with the hands clear: align_error PANEL_SHELF_UNREADABLE,
+#      2026-11-22)
 #   not loaded, evaluation failed, arms not home  → MISSION_FAILED: arms sent back to the start pose,
 #                                                   reported without HOLD once they are home
 #   shelf unreadable, emergency stop, unknown, …  → MISSION_HOLD: a person checks first
@@ -331,48 +332,66 @@ def _align_error(align: dict, slot: str | None) -> str | None:
     return None
 
 
+# The evaluation's placement judge (panel handover_judge.py, 1117e) watches only shelf 2B: its top
+# camera area and shelf edge are those of 2B (handover_fk.json "top_roi", "front_y_2b").
+JUDGE_SLOTS = frozenset({"2B"})
+
+
+def _judge_saw_box(result: dict, box: int) -> bool:
+    """The judge itself saw this mission's box marker sitting still in 2B when it said "placed".
+
+    The panel (3.18+) gives the judge only the commanded marker (place_judge.json box_ids
+    [box]); the judge's "box" is that marker as the top camera read it (id, flat top, shelf-height
+    size inside the 2B area, still for 0.5 s) and is copied unchanged into
+    last_result.handover.judge.box. Unlike placement.box (the number the evaluation was started
+    with), this is an observation (#134 review, 2026-11-22).
+    """
+    handover = result.get("handover")
+    if not isinstance(handover, dict):
+        return False
+    if handover.get("mode") != "handover" or handover.get("end_reason") != "placed":
+        return False
+    judge = handover.get("judge")
+    seen = judge.get("box") if isinstance(judge, dict) else None
+    return (
+        isinstance(seen, dict)
+        and type(seen.get("id")) is int
+        and seen["id"] == box
+        and seen.get("flat") is True
+        and not seen.get("rejected")
+    )
+
+
 def _judge_placed(result: dict, slot: str | None, box: int | None) -> bool:
-    """The evaluation's own placement judge (panel 3.18+, hand-over) saw the box in the commanded
-    slot with both hands clear of it.
+    """The evaluation's own placement judge (panel 3.18+, hand-over) saw this mission's box in the
+    commanded slot with both hands clear of it.
 
     Evidence of loading when the aligner could not read the shelf afterwards (camera moved, no
-    frame; TK 2026-11-22). The panel keeps the judge's report at the top of last_result.placement
-    (tips_clear) or, once the aligner wrote its own shelf read, under placement["first"]; then the
-    hand-over ending on "placed" says the hands were clear (the panel ends only then).
-
-    The judged box and slot must be this mission's (#134 review): a record for another box or slot
-    never completes it. Under "first" they must be recorded in that judge record itself; the panel
-    (3.21) keeps only source/on_shelf/times there, so that path holds until it records them.
+    frame; TK 2026-11-22). Required (#134 review): the slot is one the judge watches (2B), the
+    judge's own marker reading is this mission's box (_judge_saw_box), and the hand-over ended on
+    "placed" (the judge says so only with the fingertips behind the box front and the shelf edge).
+    The panel keeps the judge's report at the top of last_result.placement (tips_clear) or, once
+    the aligner wrote its own shelf read, under placement["first"] (source/on_shelf/times only).
     """
-
-    def same(record: dict) -> bool:
-        judged_box = record.get("box")
-        return (
-            str(record.get("slot") or "").lower() == slot.lower()
-            and isinstance(judged_box, int)
-            and not isinstance(judged_box, bool)
-            and judged_box == box
-        )
-
     placement = result.get("placement")
     if not isinstance(placement, dict) or slot is None or box is None:
         return False
+    if slot.upper() not in JUDGE_SLOTS or not _judge_saw_box(result, box):
+        return False
     if placement.get("source") == "eval_judge":
+        judged_box = placement.get("box")
         return (
-            same(placement)
+            str(placement.get("slot") or "").upper() == slot.upper()
+            and type(judged_box) is int
+            and judged_box == box
             and placement.get("on_shelf") is True
             and placement.get("tips_clear") is True
         )
     first = placement.get("first")
-    handover = (
-        result.get("handover") if isinstance(result.get("handover"), dict) else {}
-    )
     return (
         isinstance(first, dict)
-        and same(first)
         and first.get("source") == "eval_judge"
         and first.get("on_shelf") is True
-        and handover.get("end_reason") == "placed"
     )
 
 
@@ -429,7 +448,7 @@ def load_routes(path: Path) -> dict[tuple[str, str, str], Route]:
         if not EPISODE_MIN_S <= episode_s <= EPISODE_MAX_S:
             raise ValueError(
                 f"route {key} episode_s must be {EPISODE_MIN_S:g}-{EPISODE_MAX_S:g} s "
-                "(leave it out for no time limit)"
+                f"(leave it out for {EPISODE_DEFAULT_S:g} s)"
             )
         route = Route(
             str(item["model_path"]),
@@ -925,8 +944,8 @@ class PanelExecutor:
                     error = "PANEL_SHELF_UNREADABLE"
                 if align.get("on_shelf") is None and _judge_placed(result, slot, box):
                     # TK 2026-11-22: the aligner could not read the shelf (camera moved, no
-                    # frame), but this mission's placement judge saw the box in its slot with the
-                    # hands clear: loaded, not aligned. Completed (Pinky may leave) only if the
+                    # frame), but this mission's placement judge read the box's own marker in 2B
+                    # with the hands clear: loaded, not aligned. Completed (Pinky may leave) only if the
                     # arms are home with grippers released (observe checks); "not on the shelf"
                     # (on_shelf false) still fails.
                     return {
