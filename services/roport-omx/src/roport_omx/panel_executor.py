@@ -178,6 +178,8 @@ def _hold_code(result: dict) -> str:
 # Shelf loading mission (agreed 2026-11-16); the box alignment is part of it:
 #   loaded and aligned                            → MISSION_COMPLETE (evidence "shelf_align")
 #   on the shelf, not aligned in time, arms home   → MISSION_COMPLETE_NOT_ALIGNED
+#     (also when the aligner could not read the shelf but the evaluation's placement judge saw
+#      the box placed with the hands clear: align_error PANEL_SHELF_UNREADABLE, 2026-11-22)
 #   not loaded, evaluation failed, arms not home  → MISSION_FAILED: arms sent back to the start pose,
 #                                                   reported without HOLD once they are home
 #   shelf unreadable, emergency stop, unknown, …  → MISSION_HOLD: a person checks first
@@ -324,6 +326,34 @@ def _align_error(align: dict, slot: str | None) -> str | None:
     ):  # time limit, pushing blocked, hand height not calibrated, …
         return "PANEL_ALIGN_FAILED"
     return None
+
+
+def _judge_placed(result: dict, slot: str | None) -> bool:
+    """The evaluation's own placement judge (panel 3.18+, hand-over) saw the box in the commanded
+    slot with both hands clear of it.
+
+    Evidence of loading when the aligner could not read the shelf afterwards (camera moved, no
+    frame; TK 2026-11-22). The panel keeps the judge's report at the top of last_result.placement
+    (tips_clear) or, once the aligner wrote its own shelf read, under placement["first"]; then the
+    hand-over ending on "placed" says the hands were clear (the panel ends only then).
+    """
+    placement = result.get("placement")
+    if not isinstance(placement, dict) or slot is None:
+        return False
+    if str(placement.get("slot") or "").lower() != slot.lower():
+        return False
+    if placement.get("source") == "eval_judge":
+        return placement.get("on_shelf") is True and placement.get("tips_clear") is True
+    first = placement.get("first")
+    handover = (
+        result.get("handover") if isinstance(result.get("handover"), dict) else {}
+    )
+    return (
+        isinstance(first, dict)
+        and first.get("source") == "eval_judge"
+        and first.get("on_shelf") is True
+        and handover.get("end_reason") == "placed"
+    )
 
 
 @dataclass(frozen=True)
@@ -862,6 +892,19 @@ class PanelExecutor:
                     error == "PANEL_ALIGN_FAILED"
                 ):  # the cameras could not tell where the box is
                     error = "PANEL_SHELF_UNREADABLE"
+                if align.get("on_shelf") is None and _judge_placed(result, slot):
+                    # TK 2026-11-22: the aligner could not read the shelf (camera moved, no
+                    # frame), but this mission's placement judge saw the box in its slot with the
+                    # hands clear: loaded, not aligned. Completed (Pinky may leave) only if the
+                    # arms are home with grippers released (observe checks); "not on the shelf"
+                    # (on_shelf false) still fails.
+                    return {
+                        "state": "finished",
+                        "step": "rest",
+                        "arms": arms,
+                        "evidence": NOT_ALIGNED,
+                        "align_error": error,
+                    }
             stopped = align.get("stopped_by") in OPERATOR_STOPS
             return {
                 "state": "failed",

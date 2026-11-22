@@ -1489,6 +1489,94 @@ class PanelExecutorTest(unittest.TestCase):
                         (p["mission_result"], p["error_code"]), (result, code)
                     )
 
+    def test_shelf_unreadable_but_judge_saw_it_placed_is_loaded_not_aligned(self):
+        # TK 2026-11-22 (field 16:09): hand-over taken, the aligner then found front_2 moved
+        # (camera_moved, on_shelf null) and stopped; the placement judge had seen box 16 in 2B with
+        # the hands clear and the arms ended home → loaded, not aligned, the Pinky may leave
+        unread = align(
+            ok=False, on_shelf=None, shelf="camera_moved", align="camera_moved"
+        )
+        judge = {
+            "on_shelf": True,
+            "slot": "2B",
+            "box": 16,
+            "source": "eval_judge",
+            "tips_clear": True,
+        }
+        moved_on = {
+            "on_shelf": None,
+            "slot": "2B",
+            "box": 16,
+            "source": "align",
+            "first": {"source": "eval_judge", "on_shelf": True},
+        }
+        placed = {"mode": "handover", "state": "taken", "end_reason": "placed"}
+        cases = [
+            ("judge on top", judge, placed, "completed"),
+            ("judge kept under first", moved_on, placed, "completed"),
+            ("hands not clear", judge | {"tips_clear": False}, placed, "held"),
+            ("another slot", judge | {"slot": "2C"}, placed, "held"),
+            (
+                "no judge (no hand-over)",
+                {"on_shelf": None, "slot": "2B", "source": "align"},
+                None,
+                "held",
+            ),
+            (
+                "first without placed end",
+                moved_on,
+                placed | {"end_reason": "returned"},
+                "held",
+            ),
+        ]
+        for name, placement, handover, outcome in cases:
+            with self.subTest(case=name):
+                self.host.clear_hold()
+                self.panel.status["job"] = {"running": False}
+                self.host._data["active"] = None
+                self.send(self.inbound())
+                extra = {"handover": handover} if handover else {}
+                self.panel.finish(
+                    align=unread, placement=placement, stage="done", final=True, **extra
+                )
+                (event,) = self.host.poll()
+                p = event["payload"]
+                if outcome == "completed":
+                    self.assertEqual(event["type"], "shelf_inbound.completed")
+                    self.assertEqual(
+                        (p["mission_result"], p["evidence"], p["align_error"]),
+                        (
+                            "MISSION_COMPLETE_NOT_ALIGNED",
+                            "shelf_load_not_aligned",
+                            "PANEL_SHELF_UNREADABLE",
+                        ),
+                    )
+                    self.assertIs(p["departure_ready"], True)
+                    self.assertIsNone(self.host.hold)
+                else:
+                    self.assertEqual(
+                        (p["mission_result"], p["error_code"]),
+                        ("MISSION_HOLD", "PANEL_SHELF_UNREADABLE"),
+                    )
+                    self.assertIsNot(p.get("departure_ready"), True)
+        # the aligner saw the shelf without the box: still not loaded, whatever the judge said
+        self.host.clear_hold()
+        self.panel.status["job"] = {"running": False}
+        self.host._data["active"] = None
+        self.send(self.inbound())
+        self.panel.finish(
+            align=align(ok=False, on_shelf=False),
+            placement=judge,
+            handover=placed,
+            stage="done",
+            final=True,
+        )
+        events = self.host.poll()
+        self.assertEqual(
+            events[-1]["payload"].get("error_code"), "PANEL_BOX_NOT_ON_SHELF"
+        )
+        self.assertNotEqual(events[-1]["type"], "shelf_inbound.completed")
+
     def test_two_reports_handover_not_taken_reports_not_aligned(self):
         self.use_two_reports("3.20.0")
         self.executor.end_on_place = True
