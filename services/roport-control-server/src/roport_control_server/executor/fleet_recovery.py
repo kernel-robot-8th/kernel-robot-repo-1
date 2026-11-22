@@ -88,6 +88,50 @@ def recover_stop(control, command_id, stop_id, boot_version, note):
     control.save(data)
 
 
+def request_host_release(control, request_id, hold_command_id, operator, confirmed):
+    if not isinstance(request_id, str) or not request_id:
+        raise ValueError("release request ID required")
+    data = deepcopy(control.data)
+    records = data.setdefault("host_releases", {})
+    if request_id in records:
+        old = records[request_id]["command"]["payload"]
+        if (old["hold_command_id"], old["operator"], old["confirmed"]) != (
+            hold_command_id,
+            operator,
+            confirmed,
+        ):
+            raise ValueError("release request ID conflict")
+        return
+    observed = control.observed.get("shelf-01", {})
+    failed = data["commands"].get(hold_command_id, {}).get("message", {})
+    if (
+        not data["fault"]
+        or data["enabled"]
+        or not observed.get("state", {}).get("fault")
+        or control.state_age("shelf-01") > 3
+        or failed.get("target") != "shelf-01"
+        or confirmed != {"arms": True, "box": True, "pinky": True}
+    ):
+        raise ValueError("current shelf HOLD and all operator confirmations required")
+    if request_id in data["commands"] or request_id == hold_command_id:
+        raise ValueError("release requires a new command ID")
+    cmd = wire.build_message(
+        "hold_release_command",
+        control.config["control_id"],
+        "shelf-01",
+        {
+            "expected_boot_version": observed["boot_version"],
+            "hold_command_id": hold_command_id,
+            "operator": operator,
+            "confirmed": confirmed,
+        },
+        command_id=request_id,
+        expires_at=(datetime.now(UTC) + timedelta(seconds=5)).isoformat(),
+    )
+    records[request_id] = {"command": cmd, "status": "pending"}
+    control.save(data)
+
+
 def reconcile(control, command_id, outcome, note):
     if (
         not isinstance(command_id, str)

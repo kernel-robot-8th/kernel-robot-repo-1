@@ -1,4 +1,5 @@
 import json
+import os
 import socket
 import time
 from pathlib import Path
@@ -123,5 +124,49 @@ def test_restarted_arrival_confirmation_is_bound_to_incident_and_preserves_hold(
             assert after["payload"]["start_node"] == node
             assert after["payload"]["start_heading_rad"] == 1.2
             assert fleet.data["commands"][after["command_id"]]["task"] == queued
+        finally:
+            owner.close()
+
+
+def test_workcell_release_socket_keeps_history_out_of_snapshot(fleet):
+    from copy import deepcopy
+
+    data = deepcopy(fleet.data)
+    data["commands"]["held"] = {"message": {"target": "shelf-01"}}
+    data["host_releases"] = {
+        f"old-{n}": {"status": "rejected", "command": {"payload": "x" * 1024}}
+        for n in range(100)
+    }
+    data.update(enabled=False, fault="checked failed command")
+    fleet.save(data)
+    fleet.observed["shelf-01"]["state"]["fault"] = "host_hold"
+    fleet.heard["shelf-01"] = fleet.clock()
+    with TemporaryDirectory(prefix="rp-fleet-") as directory:
+        owner = FleetSocket(Path(directory) / "s", fleet)
+        try:
+            response = request(owner, action="snapshot")
+            assert response["ok"] and "host_releases" not in response["snapshot"]
+            release = request(
+                owner,
+                action="release_workcell",
+                session_id=owner.session_id,
+                expires_at=time.time() + 1,
+                request_id="release-1",
+                hold_command_id="held",
+                confirmed={"arms": True, "box": True, "pinky": True},
+            )
+            assert release == {"ok": True, "snapshot": {"status": "pending"}}
+            records = fleet.data["host_releases"]
+            assert len(records) == 101
+            assert (
+                records["release-1"]["command"]["payload"]["operator"]
+                == f"uid:{os.getuid()}"
+            )
+            assert request(
+                owner, action="host_release_status", request_id="old-99"
+            ) == {"ok": True, "snapshot": {"status": "rejected"}}
+            assert not request(
+                owner, action="host_release_status", request_id="missing"
+            )["ok"]
         finally:
             owner.close()

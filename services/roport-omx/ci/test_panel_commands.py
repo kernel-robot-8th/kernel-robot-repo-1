@@ -272,12 +272,15 @@ class PanelCommandsTest(unittest.TestCase):
             client.start(task)
             self.assertEqual(client.observe()["state"], "running")
             client.cancel()
-            self.assertFalse(client.cancellation_settled())
+            self.assertFalse(client.cancellation_status()["settled"])
             ledger.confirm_stopped(
                 "test-1",
                 {"observed_at": self.now.isoformat(), "stopped": True},
             )
-            self.assertTrue(client.cancellation_settled())
+            self.assertEqual(
+                client.cancellation_status(),
+                {"settled": True, "error": None, "local_release_only": True},
+            )
             # Delayed duplicate POST cannot resurrect the cancelled command.
             with self.assertRaisesRegex(ValueError, "panel_command_cancelled"):
                 client.start(task)

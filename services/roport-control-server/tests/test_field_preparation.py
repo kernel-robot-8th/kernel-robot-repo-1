@@ -309,3 +309,37 @@ def test_old_first_sample_expires_until_replaced():
     assert not check.report()["ok"]
     check.receive(delivery(sample(config, sequence=3)))
     assert check.report()["ok"]
+
+
+def test_settings_only_reports_integrity_and_dirty_snapshot(tmp_path, monkeypatch):
+    from check_field import main
+
+    root = tmp_path / "bundle"
+    prepare_field(root)
+    manifest = root / "manifest.json"
+    manifest.write_text(
+        json.dumps(json.loads(manifest.read_text()) | {"source_dirty": True})
+    )
+    output = tmp_path / "report.json"
+    monkeypatch.setattr(
+        sys, "argv", ["check_field", "--bundle", str(root), "--output", str(output)]
+    )
+    (root / "fleet.json").write_text((root / "fleet.json").read_text() + " ")
+    (root / "requirements.txt").write_text("changed")
+    assert main() == 1
+    report = json.loads(output.read_text())
+    assert report["scope"] == "settings_only" and not report["mqtt_checked"]
+    assert report["bundle"] == {
+        "source_dirty": True,
+        "modified_profiles": ["fleet.json"],
+        "damaged_files": ["requirements.txt"],
+    }
+
+
+def test_n12_reference_tracks_rotated_approach():
+    import math
+
+    from fleet_profiles import n12_reference
+
+    ref = n12_reference({"N08": (1, 1), "N12": (1, 2)})["pose"]
+    assert ref == pytest.approx({"x": 1, "y": 2.03, "yaw": -math.pi / 2})

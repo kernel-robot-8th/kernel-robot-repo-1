@@ -15,6 +15,14 @@ ARMS = ("omx1", "omx2", "omx3")
 SLOTS = {"omx1": {"1a", "2a"}, "omx2": {"1c", "2c"}, "shelf-01": {"1b", "2b"}}
 NODES = {"omx1": "N21", "omx2": "N22", "shelf-01": "N11", "omx3": "N01"}
 TERMINAL = {"completed", "failed", "rejected", "interrupted"}
+LOCAL_RELEASE_ERRORS = {
+    "PANEL_EMERGENCY_STOP",
+    "PANEL_KILLED",
+    "host_restarted_outcome_unknown",
+    "physical_stop_unavailable",
+    "physical_stop_failed",
+    "physical_stop_not_confirmed",
+}
 
 
 class ReadinessPending(ValueError):
@@ -128,10 +136,7 @@ class FieldOmxHost:
             self.data = deepcopy(self.journal.data)
             raise
 
-    def release_hold(self, note):
-        """Local device-owner confirmation; command history/outbox remain immutable."""
-        if not isinstance(note, str) or not note.strip():
-            raise ValueError("operator note required")
+    def _verify_release(self):
         if (
             self.failed
             or self.data["active"]
@@ -140,7 +145,15 @@ class FieldOmxHost:
         ):
             raise ValueError("confirm the pending device stop before reconciliation")
         for target, executor in self.executors.items():
-            ready = executor.readiness()
+            try:
+                ready = executor.readiness()
+                if not isinstance(ready, dict):
+                    raise TypeError("invalid readiness observation")
+            except Exception as exc:
+                log.warning(
+                    "Executor readiness unavailable during HOLD release: %s", target
+                )
+                raise ValueError("executor_unavailable") from exc
             arms = _target_arms(target)
             if ready.get("busy") or ready.get("error"):
                 raise ValueError(target + ": executor busy or fault")
@@ -150,11 +163,19 @@ class FieldOmxHost:
                 raise ReadinessPending(
                     target + ": stopped, returned and empty observation required"
                 )
+
+    def release_hold(self, note):
+        """Local device-owner confirmation; command history/outbox remain immutable."""
+        if not isinstance(note, str) or not note.strip():
+            raise ValueError("operator note required")
+        self._verify_release()
         if self.data["hold"]:
             self.data.setdefault("recoveries", []).append(
                 {"fault": self.data["hold"], "note": note, "at": _now()}
             )
             self.data["hold"] = None
+            self.data.pop("local_release_only", None)
+            self.data.pop("hold_command_id", None)
             self._save()
 
     def pending(self):
@@ -360,8 +381,11 @@ class FieldOmxHost:
         if target == "shelf-01":
             docking = None
             for record in reversed(list(self.data["commands"].values())):
-                if record["command"]["target"] == target:
-                    command = record["command"]
+                command = record["command"]
+                if (
+                    command["target"] == target
+                    and command["type"] == "shelf_transfer_command"
+                ):
                     try:
                         docking = self.alignment(
                             command, self._pinky_observation(command)
@@ -460,6 +484,32 @@ class FieldOmxHost:
                 return self._stop(message)
             if not _fresh(message["sent_at"], 3.0, future_s=0.5):
                 raise ValueError("stale_message")
+            if kind == "hold_release_command":
+                held = self.data.get("hold_command_id")
+                if (
+                    not self.data["hold"]
+                    or p["hold_command_id"] != held
+                    or self.data["commands"][held]["command"]["target"] != "shelf-01"
+                ):
+                    raise ValueError("hold_changed")
+                if self.data.get("local_release_only"):
+                    raise ValueError("local_emergency_release_required")
+                if not all(p["confirmed"].values()):
+                    raise ValueError("operator_checks_required")
+                self._verify_release()
+                if datetime.fromisoformat(message["expires_at"]) <= datetime.now(UTC):
+                    raise ValueError("expired_command")
+                self.data.setdefault("recoveries", []).append(
+                    {
+                        "fault": self.data["hold"],
+                        "hold_command_id": held,
+                        "request_id": command_id,
+                        "operator": p["operator"],
+                        "at": _now(),
+                    }
+                )
+                self.data.update(hold=None, hold_command_id=None)
+                return [self._event(message, "completed", {"released_hold": held})]
             if p.get("operation") == "return_home":
                 raise ValueError("unsupported_operation")
             if self.data["hold"] or self.data["active"]:
@@ -522,6 +572,9 @@ class FieldOmxHost:
 
     def _fail(self, command, reason):
         self.data["hold"] = str(reason)
+        self.data["hold_command_id"] = command["command_id"]
+        if self.data["hold"] in LOCAL_RELEASE_ERRORS:
+            self.data["local_release_only"] = True
         # A failed outcome does not prove that the device stopped; retain its stop target.
         self.data["recovery_command_id"] = command["command_id"]
         abort = getattr(self.executors[command["target"]], "abort", None)
@@ -563,6 +616,7 @@ class FieldOmxHost:
             ]
         self.data["active"] = original["command_id"]
         self.data["hold"] = "operator_stop_requires_reconciliation"
+        self.data["hold_command_id"] = original["command_id"]
         self.data["stop"] = deepcopy(stop)
         accepted = self._event(stop, "accepted")
         try:
@@ -586,6 +640,11 @@ class FieldOmxHost:
         executor = self.executors[command["target"]]
         try:
             observed = executor.observe()
+            if (
+                str(observed.get("error")) in LOCAL_RELEASE_ERRORS
+                or observed.get("local_release_only") is True
+            ):
+                self.data["local_release_only"] = True
             if self.data.get("stop"):
                 if (
                     observed.get("state") == "stopped"

@@ -1,6 +1,7 @@
 """Check field settings and optionally RECEIVE MQTT states; never publishes commands."""
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -19,6 +20,38 @@ from roport_control_server.adapters.mqtt.mqtt import MqttTransport
 from roport_control_server.adapters.mqtt.trial_runner import select_robot
 from roport_control_server.adapters.mqtt.trial_wire import mqtt_config
 from roport_control_server.executor.fleet import ROLES, TARGETS
+
+
+def bundle_integrity(root):
+    manifest = json.loads((root / "manifest.json").read_text())
+    expected = {entry["path"]: entry["sha256"] for entry in manifest["files"]}
+    sums = {}
+    for line in (root / "SHA256SUMS").read_text().splitlines():
+        digest, name = line.split("  ", 1)
+        if name in sums or not re.fullmatch("[0-9a-f]{64}", digest):
+            raise ValueError("invalid checksum entry")
+        sums[name] = digest
+    if not sums or sums != expected:
+        raise ValueError("checksum index differs from manifest")
+    modified_profiles, damaged = [], []
+    for name, digest in sums.items():
+        path = (root / name).resolve()
+        if not path.is_relative_to(root.resolve()):
+            raise ValueError("invalid bundle path")
+        if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest:
+            continue
+        if path.is_file() and name in {
+            "fleet.json",
+            *(f"{r}/trial.json" for r in ROLES),
+        }:
+            modified_profiles.append(name)
+        else:
+            damaged.append(name)
+    return {
+        "source_dirty": manifest["source_dirty"],
+        "modified_profiles": modified_profiles,
+        "damaged_files": damaged,
+    }
 
 
 def settings(root, targets):
@@ -50,7 +83,9 @@ def settings(root, targets):
     if "n12_goal" in fleet:
         goals["N12_RETURN"] = fleet["n12_goal"]
     else:
-        issues.append("fleet: measured n12_goal required")
+        issues.append(
+            "fleet: n12_goal required; compare with nominal layout, verify measurement on site"
+        )
     for name, goal in goals.items():
         if goal.get("map_version") != fleet["map_version"]:
             issues.append(f"fleet: goal {name} map_version mismatch")
@@ -72,8 +107,7 @@ def settings(root, targets):
             continue
         if name == "N12_RETURN":
             mapped = load_map(map_path, root / "maps/layout.yaml")["layout"]["nodes"]
-            x, y = next(node["position"] for node in mapped if node["id"] == "N12")
-            ref = n12_reference(x, y, math.radians(layout["frame"]["yaw_deg"]))
+            ref = n12_reference({node["id"]: node["position"] for node in mapped})
             pose, expected = goal["pose"], ref["pose"]
             distance = math.hypot(pose["x"] - expected["x"], pose["y"] - expected["y"])
             heading = abs(math.remainder(pose["yaw"] - expected["yaw"], math.tau))
@@ -85,7 +119,7 @@ def settings(root, targets):
                 or goal["yaw_tolerance_rad"] > ref["yaw_tolerance_rad"]
             ):
                 issues.append(
-                    "fleet: N12_RETURN identity, pose or tolerance differs from layout reference"
+                    "fleet: N12_RETURN identity, pose or tolerance exceeds nominal layout bounds or has wrong identity"
                 )
     expected_starts = {}
     for target in targets:
@@ -282,19 +316,24 @@ def main():
     if not set(args.nav2) <= set(args.targets):
         parser.error("--nav2 robots must be included in --targets")
     report = {
-        "scope": "settings_and_passive_mqtt",
+        "scope": "settings_and_passive_mqtt" if args.listen else "settings_only",
+        "mqtt_checked": False,
         "motion_commands_sent": 0,
         "motion_verified": False,
         "ok": False,
     }
     try:
+        integrity = report["bundle"] = bundle_integrity(args.bundle)
         config, issues = settings(args.bundle, args.targets)
+        if integrity["damaged_files"]:
+            issues.append("bundle files missing or modified")
         report.update(settings_ok=not issues, settings_issues=issues)
         if args.listen:
             connection = mqtt_config("field-check-" + uuid4().hex[:12])
             report["mqtt"] = listen(
                 config, args.targets, connection, args.seconds, nav2=args.nav2
             )
+            report["mqtt_checked"] = True
         report["ok"] = not issues and (not args.listen or report["mqtt"]["ok"])
     except (
         ValueError,

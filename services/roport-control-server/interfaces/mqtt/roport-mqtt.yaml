@@ -81,6 +81,8 @@ channels:
         $ref: '#/components/messages/robot_state_request'
       shelf_transfer_command:
         $ref: '#/components/messages/shelf_transfer_command'
+      hold_release_command:
+        $ref: '#/components/messages/hold_release_command'
       robot_stop_command:
         $ref: '#/components/messages/robot_stop_command'
   workcellEvent:
@@ -1419,4 +1421,77 @@ components:
             - mem_available_kb
             - cpu_temp_c
             additionalProperties: false
+        additionalProperties: false
+    hold_release_command:
+      name: hold_release_command
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        - command_id
+        - expires_at
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: hold_release_command
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              expected_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              hold_command_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              operator:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              confirmed:
+                type: object
+                properties:
+                  arms:
+                    type: boolean
+                  box:
+                    type: boolean
+                  pinky:
+                    type: boolean
+                required:
+                - arms
+                - box
+                - pinky
+                additionalProperties: false
+            required:
+            - expected_boot_version
+            - hold_command_id
+            - operator
+            - confirmed
+            additionalProperties: false
+          command_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          expires_at:
+            type: string
+            format: date-time
         additionalProperties: false

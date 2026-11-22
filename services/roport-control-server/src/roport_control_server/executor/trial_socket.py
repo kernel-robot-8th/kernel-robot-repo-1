@@ -284,6 +284,9 @@ class TrialSocket:
         self.clients.pop(client)
         client.close()
 
+    def _dispatch_client(self, request, _client):
+        return self.dispatch(request)
+
     def poll(self):
         for key, _ in self.selector.select(0):
             client = key.fileobj
@@ -304,7 +307,10 @@ class TrialSocket:
             try:
                 if not raw or len(raw) > 32768:
                     raise ValueError("invalid local request size")
-                result = {"ok": True, "snapshot": self.dispatch(json.loads(raw))}
+                result = {
+                    "ok": True,
+                    "snapshot": self._dispatch_client(json.loads(raw), client),
+                }
             except (ValueError, TypeError, RecursionError) as exc:
                 result = {"ok": False, "error": str(exc)}
             except OSError:

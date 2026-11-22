@@ -335,7 +335,7 @@ class AsyncPanelTest(unittest.TestCase):
                 self.adapter.stop_future.result(timeout=1)
         self.assertEqual(self.adapter.panel.cancel.call_count, 3)
         self.assertEqual(self.adapter.observe()["state"], "stopping")
-        self.assertFalse(self.adapter.panel.cancellation_settled())
+        self.assertFalse(self.adapter.panel.cancellation_status()["settled"])
         # The failure path was already checked; close without another test-only network failure.
         self.adapter.panel.cancel = lambda **kwargs: None
 

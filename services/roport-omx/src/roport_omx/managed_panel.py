@@ -70,11 +70,20 @@ class ManagedPanelExecutor(PanelExecutor):
             )
 
     def cancellation_settled(self):
-        return self.command_state(timeout=1)["state"] in {
-            "cancelled",
-            "expired",
-            "completed",
-            "failed",
+        return self.cancellation_status()["settled"]
+
+    def cancellation_status(self):
+        reply = self.command_state(timeout=1)
+        state = reply["state"]
+        observation = reply.get("observation")
+        return {
+            "settled": state in {"cancelled", "expired", "completed", "failed"},
+            "error": observation.get("error")
+            if isinstance(observation, dict)
+            else None,
+            # A bare cancellation can confirm stop but may omit an emergency stop's cause.
+            "local_release_only": state == "cancelled"
+            and not isinstance(observation, dict),
         }
 
     def observe(self):

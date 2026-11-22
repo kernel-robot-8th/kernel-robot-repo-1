@@ -583,6 +583,7 @@ class PanelExecutorTest(unittest.TestCase):
         stopped = {"ok": False, "returncode": 2, "released": None, "rest": None}
         cases = [
             ("PANEL_EMERGENCY_STOP", align(stopped_by="비상 정지", **stopped)),
+            ("PANEL_KILLED", align(stopped_by="강제 종료", **stopped)),
             (
                 "PANEL_ALIGN_RELEASE_FAILED",
                 align(stopped_by="즉시 중단", **stopped | {"released": False}),

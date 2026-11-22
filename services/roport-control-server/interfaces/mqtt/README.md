@@ -2,7 +2,7 @@
 
 현재 로컬 구현은 `schema_version=2.0`, `profile=roport-control-v2`다. PR #68의 AsyncAPI 초안에서 토픽의 `v1/{site}`와 `route.requested` 표현을 제거하고, 실행 중복 방지에 필요한 `command_id`와 기동 구분 `boot_version`을 유지했다. 아직 병합·실물 검증 완료를 뜻하지 않는다.
 
-- [AsyncAPI](roport-mqtt.yaml): 전체 13종의 토픽·JSON 구조.
+- [AsyncAPI](roport-mqtt.yaml): 전체 14종의 토픽·JSON 구조.
 - [JSON 예시](examples.json): 조회, 실행, 결과, 재시작 방어, 출발 승인, 양방향 N12 전환.
 - [실행 검증 코드](../../src/roport_control_server/adapters/mqtt/field_wire.py): 명령 대상, 상관관계, 필드 조합까지 검사하는 정본. 문서와 코드의 일치는 테스트로 확인한다.
 - [Pinky 이식·구동 경계](../../docs/mqtt-field.md).
@@ -12,7 +12,7 @@ Pinky와 OMX v2 Host에 같은 계약을 적용한다. OMX 단독·공동 작업
 | 토픽 | 메시지 | 방향 / QoS |
 | --- | --- | --- |
 | `roport/robot/{robot}/cmd` | `robot_state_request`, `line_route_command`, `set_drive_mode_command`, `nav_goal_command`, `arm_action_command`, `warehouse_load_command`, `robot_stop_command` | 관제 → 로봇 / 1 |
-| `roport/workcell/shelf-01/cmd` | `robot_state_request`, `shelf_transfer_command`, `robot_stop_command` | 관제 → 공동 작업셀 / 1 |
+| `roport/workcell/shelf-01/cmd` | `robot_state_request`, `shelf_transfer_command`, `hold_release_command`, `robot_stop_command` | 관제 → 공동 작업셀 / 1 |
 | `roport/robot/{robot}/event`, `roport/workcell/shelf-01/event` | `robot_state`, `command_status` | 로봇/작업셀 → 관제 / 1 |
 | `roport/robot/{robot}/ack`, `roport/workcell/shelf-01/ack` | `event_stored` | 관제 → 발행 주체 / 1 |
 | `roport/robot/{pinky}/motion` | `robot_pose` | Pinky → 표시 UI / 0 |
@@ -59,3 +59,7 @@ npx @asyncapi/cli@latest generate fromTemplate services/roport-control-server/in
 - `arm_action_command.operation=return_home`은 예약 필드이며 현재 OMX Host에서는 `unsupported_operation`입니다.
 - 공동 작업의 `active_command_id`는 shelf-01 및 참여 팔 omx1/omx2만 공유합니다. 다른 대상은 null + `host_busy`로 표시합니다.
 - 실물 패널의 동기 HTTP 지연·독립 정지 경로는 현장 적용 전 해결 조건입니다. [OMX 실행 범위](../../../roport-omx/README.md)를 함께 확인합니다.
+
+### 인도장 일반 HOLD 해제
+
+관제는 `roport/workcell/shelf-01/cmd` 채널로 `hold_release_command`를 보낸다. 현재 Host 기동과 보류된 공동 작업의 명령 ID, 운영자, 팔·물품·Pinky 확인이 필요하다. Host가 `command_status`로 보류 명령 ID를 반환하면 관제는 저장 후 `event_stored`를 보낸다. 동일 명령 재전달은 기존 결과를 반환한다. 해제는 Fleet 출발 승인과 별개다.
