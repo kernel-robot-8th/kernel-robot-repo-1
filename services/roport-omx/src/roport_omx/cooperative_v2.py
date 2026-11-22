@@ -95,6 +95,18 @@ def _reason(code) -> str:
     return text[:128] or "unknown"
 
 
+def _read_time(value) -> float | None:
+    """The panel's bus read time (/api/arms "at": ISO, local time when no zone; same PC) as epoch
+    seconds, or None when missing or unreadable."""
+    if not isinstance(value, str):
+        return None
+    try:
+        at = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return at.timestamp()  # a naive time is this PC's local time, as the panel wrote it
+
+
 def _fresh(value, max_age_s: float, future_s: float = OBSERVED_FUTURE_S) -> bool:
     try:
         age = (datetime.now(UTC) - field_wire.timestamp(value)).total_seconds()
@@ -177,9 +189,8 @@ class FieldHost:
         self._deadline: float | None = None  # keep-running watchdog of the active task
         self._renewals: set[str] = set()
         self._stop_wall: float | None = None  # wall time of the stop request
-        self._stop_reads: list[
-            tuple[str, dict]
-        ] = []  # (read at, joints) since the stop
+        # (bus read time, joints) of reads the panel finished after the stop request
+        self._stop_reads: list[tuple[float, dict]] = []
         identity = {"control": control, "workcell": WORKCELL, "profile": PROFILE}
         data = deepcopy(journal.data)
         if data and data.get("identity") != identity:
@@ -909,13 +920,22 @@ class FieldHost:
             return None
         read = ready.get("arms_read")
         joints = read.get("joints") if isinstance(read, dict) else None
-        if not isinstance(joints, dict) or not isinstance(read.get("at"), str):
+        read_at = _read_time(read.get("at")) if isinstance(read, dict) else None
+        # only a bus read the panel finished after the stop request counts (#135 review: a cached
+        # read from before the stop can arrive in a fresh readiness sample)
+        if (
+            not isinstance(joints, dict)
+            or read_at is None
+            or read_at <= self._stop_wall
+        ):
             return None
-        if not self._stop_reads or self._stop_reads[-1][0] != read["at"]:
-            self._stop_reads = [*self._stop_reads[-1:], (read["at"], deepcopy(joints))]
+        if not self._stop_reads or read_at > self._stop_reads[-1][0]:
+            self._stop_reads = [*self._stop_reads[-1:], (read_at, deepcopy(joints))]
         if len(self._stop_reads) < 2:
             return None
-        (_, before), (_, after) = self._stop_reads
+        (first_at, before), (second_at, after) = self._stop_reads
+        if not first_at < second_at:  # the second must be a later read
+            return None
         for name in ARMS:
             old, new = before.get(name), after.get(name)
             if not isinstance(old, dict) or not isinstance(new, dict) or not new:

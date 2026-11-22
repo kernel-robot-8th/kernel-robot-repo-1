@@ -502,37 +502,51 @@ class FieldHostTest(unittest.TestCase):
             (stop["status"], stop["result"]), ("completed", {"stopped": True})
         )
 
-    def test_one_bus_read_or_a_read_from_before_the_stop_is_not_enough(self):
-        self.host._stop_wall = time.time()
-        reads = iter(
-            [
-                {"at": "r1", "joints": {a: {"j": 1.0} for a in ("omx1", "omx2")}},
-                {"at": "r1", "joints": {a: {"j": 1.0} for a in ("omx1", "omx2")}},
-                {"at": "r2", "joints": {a: {"j": 1.4} for a in ("omx1", "omx2")}},
-            ]
-        )
+    def test_only_later_bus_reads_after_the_stop_count(self):
+        # #135 review: the panel's read time (arms_read.at), not when the Host collected the
+        # readiness sample, decides whether a bus read was taken after the stop request
+        stop = time.time()
+        self.host._stop_wall = stop
         arms = {
             a: {"connected": True, "safe": True, "returned": True, "grasping": False}
             for a in ("omx1", "omx2")
         }
-        self.host._sample = lambda: (
-            {"busy": False, "error": None, "arms": arms, "arms_read": next(reads)},
-            time.time(),
-        )
-        self.assertIsNone(self.host._stop_confirmed())  # first read
-        self.assertIsNone(self.host._stop_confirmed())  # the same cached read again
-        self.assertIsNotNone(self.host._stop_confirmed())  # a second read, within 1.0
-        self.host._stop_reads = []
-        self.host._sample = lambda: (
-            {
-                "busy": False,
-                "error": None,
-                "arms": arms,
-                "arms_read": {"at": "r3", "joints": {}},
-            },
-            self.host._stop_wall - 1,  # sampled before the stop request
-        )
-        self.assertIsNone(self.host._stop_confirmed())
+
+        def read(offset_s, value=1.0, at=None):
+            stamp = at or datetime.fromtimestamp(stop + offset_s).isoformat()
+            return {"at": stamp, "joints": {a: {"j": value} for a in ("omx1", "omx2")}}
+
+        def confirm(*reads):
+            self.host._stop_reads = []
+            seen = None
+            for r in reads:
+                self.host._sample = lambda r=r: (
+                    {"busy": False, "error": None, "arms": arms, "arms_read": r},
+                    time.time(),  # every readiness sample itself is fresh
+                )
+                seen = self.host._stop_confirmed()
+            return seen
+
+        cases = {
+            # two different cached reads from 2 minutes before the stop, in fresh samples
+            "two reads from before the stop": (read(-120), read(-110)),
+            "one before, one after": (read(-5), read(10)),
+            "a single read": (read(10),),
+            "the same read twice": (read(10), read(10)),
+            "a late, older read after a good one": (read(10), read(5)),
+            "unreadable read time": (read(10), read(0, at="later")),
+            "no read time": (read(10), {"joints": read(20)["joints"]}),
+            "joints moved between the reads": (read(10), read(20, value=2.5)),
+        }
+        for name, reads in cases.items():
+            with self.subTest(case=name):
+                self.assertIsNone(confirm(*reads))
+        self.assertIsNotNone(confirm(read(10), read(20, value=1.4)))
+        # a stale cached read arriving between two good ones is skipped, not compared
+        self.assertIsNotNone(confirm(read(10), read(-60), read(20)))
+        # the panel writes local time without a zone; a read with a zone is compared the same way
+        zoned = datetime.fromtimestamp(stop + 20).astimezone().isoformat()
+        self.assertIsNotNone(confirm(read(10), read(0, at=zoned)))
 
     def test_keep_running_renewals_keep_the_task_and_their_absence_stops_it(self):
         self.host.watchdog_s = 0.3
