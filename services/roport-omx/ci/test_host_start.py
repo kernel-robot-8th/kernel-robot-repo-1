@@ -89,6 +89,41 @@ class HostStartTest(unittest.TestCase):
         )
         self.assertIn("boot_id=", output)
 
+    def test_start_defaults(self):
+        # hand-over (end_on_place) on by default (TK 2026-11-22); one report after the alignment
+        # and an episode limit inside the control tower's 300 s task limit (#134 review)
+        routes = self.dir / "routes.json"
+        route = {
+            "slot_id": "2b",
+            "model_path": "/models/m/pretrained_model",
+            "task": "t {box}",
+            "reset_s": 15,
+        }
+        routes.write_text(
+            json.dumps(
+                {
+                    "routes": [
+                        route | {"operation": "INBOUND"},
+                        route | {"operation": "OUTBOUND", "episode_s": 70},
+                    ]
+                }
+            )
+        )
+        output = self.run_main("--executor", "panel", "--routes", str(routes))
+        self.assertIn("hand-over (end_on_place)=on", output)
+        self.assertIn("early COMPLETE on placement (report_placement)=off", output)
+        self.assertIn("episode limit [INBOUND:2b=180s, OUTBOUND:2b=70s]", output)
+        output = self.run_main(
+            "--executor",
+            "panel",
+            "--routes",
+            str(routes),
+            "--no-end-on-place",
+            "--report-placement",
+        )
+        self.assertIn("hand-over (end_on_place)=off", output)
+        self.assertIn("(report_placement)=on", output)
+
     def test_mock_executor_starts(self):
         self.assertIn("SIMULATED executor", self.run_main("--executor", "mock"))
 

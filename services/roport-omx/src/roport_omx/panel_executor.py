@@ -178,6 +178,9 @@ def _hold_code(result: dict) -> str:
 # Shelf loading mission (agreed 2026-11-16); the box alignment is part of it:
 #   loaded and aligned                            → MISSION_COMPLETE (evidence "shelf_align")
 #   on the shelf, not aligned in time, arms home   → MISSION_COMPLETE_NOT_ALIGNED
+#     (also when the aligner could not read the shelf but the evaluation's placement judge read
+#      this box's own marker in 2B with the hands clear: align_error PANEL_SHELF_UNREADABLE,
+#      2026-11-22)
 #   not loaded, evaluation failed, arms not home  → MISSION_FAILED: arms sent back to the start pose,
 #                                                   reported without HOLD once they are home
 #   shelf unreadable, emergency stop, unknown, …  → MISSION_HOLD: a person checks first
@@ -203,6 +206,14 @@ HOLD_ERRORS = {
     "RESULT_UNAVAILABLE",
 }
 HOME_RETURN_TIMEOUT_S = 90.0
+# The panel takes episodes of 3-600 s. A control-tower evaluation ends on its own (end_on_return:
+# the arms are back; end_on_place: the box is placed and the hands are clear); the limit only
+# bounds a run that does neither. The default must leave room inside the control tower's task
+# limit (command_timeout_s 300 s) for the alignment (up to 60 s) and the return home, or a late but
+# good result arrives after the control tower has already held (#134 review). A route may set
+# 3-600 s explicitly (longer only with a matching control limit).
+EPISODE_MIN_S, EPISODE_MAX_S = 3.0, 600.0
+EPISODE_DEFAULT_S = 180.0
 
 
 # Unloading mission (shelf → waiting Pinky; completion rule agreed 2026-11-17): judged only by the
@@ -321,6 +332,69 @@ def _align_error(align: dict, slot: str | None) -> str | None:
     return None
 
 
+# The evaluation's placement judge (panel handover_judge.py, 1117e) watches only shelf 2B: its top
+# camera area and shelf edge are those of 2B (handover_fk.json "top_roi", "front_y_2b").
+JUDGE_SLOTS = frozenset({"2B"})
+
+
+def _judge_saw_box(result: dict, box: int) -> bool:
+    """The judge itself saw this mission's box marker sitting still in 2B when it said "placed".
+
+    The panel (3.18+) gives the judge only the commanded marker (place_judge.json box_ids
+    [box]); the judge's "box" is that marker as the top camera read it (id, flat top, shelf-height
+    size inside the 2B area, still for 0.5 s) and is copied unchanged into
+    last_result.handover.judge.box. Unlike placement.box (the number the evaluation was started
+    with), this is an observation (#134 review, 2026-11-22).
+    """
+    handover = result.get("handover")
+    if not isinstance(handover, dict):
+        return False
+    if handover.get("mode") != "handover" or handover.get("end_reason") != "placed":
+        return False
+    judge = handover.get("judge")
+    seen = judge.get("box") if isinstance(judge, dict) else None
+    return (
+        isinstance(seen, dict)
+        and type(seen.get("id")) is int
+        and seen["id"] == box
+        and seen.get("flat") is True
+        and not seen.get("rejected")
+    )
+
+
+def _judge_placed(result: dict, slot: str | None, box: int | None) -> bool:
+    """The evaluation's own placement judge (panel 3.18+, hand-over) saw this mission's box in the
+    commanded slot with both hands clear of it.
+
+    Evidence of loading when the aligner could not read the shelf afterwards (camera moved, no
+    frame; TK 2026-11-22). Required (#134 review): the slot is one the judge watches (2B), the
+    judge's own marker reading is this mission's box (_judge_saw_box), and the hand-over ended on
+    "placed" (the judge says so only with the fingertips behind the box front and the shelf edge).
+    The panel keeps the judge's report at the top of last_result.placement (tips_clear) or, once
+    the aligner wrote its own shelf read, under placement["first"] (source/on_shelf/times only).
+    """
+    placement = result.get("placement")
+    if not isinstance(placement, dict) or slot is None or box is None:
+        return False
+    if slot.upper() not in JUDGE_SLOTS or not _judge_saw_box(result, box):
+        return False
+    if placement.get("source") == "eval_judge":
+        judged_box = placement.get("box")
+        return (
+            str(placement.get("slot") or "").upper() == slot.upper()
+            and type(judged_box) is int
+            and judged_box == box
+            and placement.get("on_shelf") is True
+            and placement.get("tips_clear") is True
+        )
+    first = placement.get("first")
+    return (
+        isinstance(first, dict)
+        and first.get("source") == "eval_judge"
+        and first.get("on_shelf") is True
+    )
+
+
 @dataclass(frozen=True)
 class Route:
     model_path: str  # as listed by the panel's model list (GPU laptop path)
@@ -342,9 +416,9 @@ def _route_key(task: dict) -> tuple[str, str, str]:
 
 
 def load_routes(path: Path) -> dict[tuple[str, str, str], Route]:
-    """{"routes": [{"operation", "slot_id", "model_path", "task", "episode_s", "reset_s"}]}
+    """{"routes": [{"operation", "slot_id", "model_path", "task", "reset_s"}]}
 
-    Optional per route: "manipulation_mode" (the slot's own, COOPERATIVE for column B and DEDICATED
+    Optional per route: "episode_s" (absent or null = EPISODE_DEFAULT_S, inside the control tower's task limit), "manipulation_mode" (the slot's own, COOPERATIVE for column B and DEDICATED
     for A/C), "markers" (box markers the model learned), output_filter, filter_gripper, eval_options.
     """
     routes = {}
@@ -369,10 +443,17 @@ def load_routes(path: Path) -> dict[tuple[str, str, str], Route]:
             )
         if key in routes:
             raise ValueError(f"duplicate route: {key}")
+        episode_s = item.get("episode_s")
+        episode_s = EPISODE_DEFAULT_S if episode_s is None else float(episode_s)
+        if not EPISODE_MIN_S <= episode_s <= EPISODE_MAX_S:
+            raise ValueError(
+                f"route {key} episode_s must be {EPISODE_MIN_S:g}-{EPISODE_MAX_S:g} s "
+                f"(leave it out for {EPISODE_DEFAULT_S:g} s)"
+            )
         route = Route(
             str(item["model_path"]),
             str(item["task"]),
-            float(item["episode_s"]),
+            episode_s,
             float(item["reset_s"]),
             item.get("output_filter") or None,
             bool(item.get("filter_gripper", False)),
@@ -689,7 +770,7 @@ class PanelExecutor:
                     "state": "running",
                     "step": step if isinstance(step, str) else None,
                 }
-            observation = self._result(result, self.slot, self.operation)
+            observation = self._result(result, self.slot, self.operation, self.box)
             if observation["state"] == "finished":
                 # Evaluation snapshots predate alignment; every completion (aligned or not)
                 # also needs the final motor pose: arms home with grippers released.
@@ -759,7 +840,10 @@ class PanelExecutor:
 
     @staticmethod
     def _result(
-        result: dict, slot: str | None = None, operation: str | None = None
+        result: dict,
+        slot: str | None = None,
+        operation: str | None = None,
+        box: int | None = None,
     ) -> dict:
         exit_ok = result.get("exit_ok") is True
         safe = True if exit_ok else (False if result.get("exit_ok") is False else None)
@@ -850,6 +934,19 @@ class PanelExecutor:
                     error == "PANEL_ALIGN_FAILED"
                 ):  # the cameras could not tell where the box is
                     error = "PANEL_SHELF_UNREADABLE"
+                if align.get("on_shelf") is None and _judge_placed(result, slot, box):
+                    # TK 2026-11-22: the aligner could not read the shelf (camera moved, no
+                    # frame), but this mission's placement judge read the box's own marker in 2B
+                    # with the hands clear: loaded, not aligned. Completed (Pinky may leave) only if the
+                    # arms are home with grippers released (observe checks); "not on the shelf"
+                    # (on_shelf false) still fails.
+                    return {
+                        "state": "finished",
+                        "step": "rest",
+                        "arms": arms,
+                        "evidence": NOT_ALIGNED,
+                        "align_error": error,
+                    }
             stopped = align.get("stopped_by") in OPERATOR_STOPS
             return {
                 "state": "failed",

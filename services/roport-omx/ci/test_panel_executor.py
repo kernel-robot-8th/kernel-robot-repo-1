@@ -1225,6 +1225,37 @@ class PanelExecutorTest(unittest.TestCase):
             len(self.panel.arms_models), before
         )  # no bus read while a run owns it
 
+    def test_route_without_episode_s_fits_the_control_task_limit(self):
+        # #134 review: the default leaves room in the control tower's 300 s task limit for the
+        # alignment and the return home; 3-600 s may still be set per route
+        path = Path(self.dir.name) / "routes.json"
+        route = {
+            "operation": "INBOUND",
+            "slot_id": "2b",
+            "model_path": MODEL,
+            "task": "t {box}",
+            "reset_s": 15,
+        }
+        key = ("INBOUND", "2b", "COOPERATIVE")
+        for change, expected in (
+            ({}, 180.0),
+            ({"episode_s": None}, 180.0),
+            ({"episode_s": 40}, 40.0),
+            ({"episode_s": 600}, 600.0),
+        ):
+            with self.subTest(change=change):
+                path.write_text(json.dumps({"routes": [route | change]}))
+                self.assertEqual(load_routes(path)[key].episode_s, expected)
+        for bad in (2, 601, "long"):
+            with self.subTest(bad=bad):
+                path.write_text(json.dumps({"routes": [route | {"episode_s": bad}]}))
+                with self.assertRaises(ValueError):
+                    load_routes(path)
+        path.write_text(json.dumps({"routes": [route]}))
+        self.executor.routes = load_routes(path)
+        self.send(self.inbound())
+        self.assertEqual(self.panel.starts[-1]["episode_s"], 180.0)
+
     def test_routes_file(self):
         path = Path(self.dir.name) / "routes.json"
         route = {
@@ -1459,6 +1490,155 @@ class PanelExecutorTest(unittest.TestCase):
                     self.assertEqual(
                         (p["mission_result"], p["error_code"]), (result, code)
                     )
+
+    def test_shelf_unreadable_but_judge_saw_it_placed_is_loaded_not_aligned(self):
+        # TK 2026-11-22 (field 16:09): hand-over taken, the aligner then found front_2 moved
+        # (camera_moved, on_shelf null) and stopped; the placement judge had seen box 16 in 2B with
+        # the hands clear and the arms ended home → loaded, not aligned, the Pinky may leave
+        unread = align(
+            ok=False, on_shelf=None, shelf="camera_moved", align="camera_moved"
+        )
+        judge = {
+            "on_shelf": True,
+            "slot": "2B",
+            "box": 16,
+            "source": "eval_judge",
+            "tips_clear": True,
+        }
+        # panel 3.21 keeps only source/on_shelf/times under "first": box and slot unknown
+        moved_on = {
+            "on_shelf": None,
+            "slot": "2B",
+            "box": 16,
+            "source": "align",
+            "first": {"source": "eval_judge", "on_shelf": True},
+        }
+        # the judge's own reading of the marker (field 2026-11-22 17:33, episode_end.json)
+        seen = {"id": 16, "side_px": 42.3, "flat": True, "y": 0.2896, "front_y": 0.2259}
+        placed = {
+            "mode": "handover",
+            "state": "taken",
+            "end_reason": "placed",
+            "judge": {"box": seen, "version": "1117e"},
+        }
+
+        def saw(**marker):
+            return placed | {"judge": {"box": seen | marker, "version": "1117e"}}
+
+        cases = [
+            ("judge on top", judge, placed, "completed"),
+            ("judge kept under first", moved_on, placed, "completed"),
+            # #134 review: placement.box is only the number the evaluation was started with; the
+            # judge's own marker reading must be this box, or nothing proves which box is there
+            ("judge read another marker", judge, saw(id=17), "held"),
+            (
+                "judge reading missing",
+                judge,
+                placed | {"judge": {"version": "1117e"}},
+                "held",
+            ),
+            (
+                "no judge record",
+                judge,
+                {k: v for k, v in placed.items() if k != "judge"},
+                "held",
+            ),
+            ("marker tilted", judge, saw(flat=False), "held"),
+            ("marker rejected", judge, saw(rejected="tilted"), "held"),
+            ("marker id not a number", judge, saw(id="16"), "held"),
+            ("shadow judge only", judge, placed | {"mode": "shadow"}, "held"),
+            ("hands not clear", judge | {"tips_clear": False}, placed, "held"),
+            ("another slot", judge | {"slot": "2C"}, placed, "held"),
+            ("another box", judge | {"box": 17}, placed, "held"),
+            (
+                "box not recorded",
+                {k: v for k, v in judge.items() if k != "box"},
+                placed,
+                "held",
+            ),
+            (
+                "no judge (no hand-over)",
+                {"on_shelf": None, "slot": "2B", "source": "align"},
+                None,
+                "held",
+            ),
+            (
+                "first without placed end",
+                moved_on,
+                placed | {"end_reason": "returned"},
+                "held",
+            ),
+        ]
+        for name, placement, handover, outcome in cases:
+            with self.subTest(case=name):
+                self.host.clear_hold()
+                self.panel.status["job"] = {"running": False}
+                self.host._data["active"] = None
+                self.send(self.inbound())
+                extra = {"handover": handover} if handover else {}
+                self.panel.finish(
+                    align=unread, placement=placement, stage="done", final=True, **extra
+                )
+                (event,) = self.host.poll()
+                p = event["payload"]
+                if outcome == "completed":
+                    self.assertEqual(event["type"], "shelf_inbound.completed")
+                    self.assertEqual(
+                        (p["mission_result"], p["evidence"], p["align_error"]),
+                        (
+                            "MISSION_COMPLETE_NOT_ALIGNED",
+                            "shelf_load_not_aligned",
+                            "PANEL_SHELF_UNREADABLE",
+                        ),
+                    )
+                    self.assertIs(p["departure_ready"], True)
+                    self.assertIsNone(self.host.hold)
+                else:
+                    self.assertEqual(
+                        (p["mission_result"], p["error_code"]),
+                        ("MISSION_HOLD", "PANEL_SHELF_UNREADABLE"),
+                    )
+                    self.assertIsNot(p.get("departure_ready"), True)
+        # the aligner saw the shelf without the box: still not loaded, whatever the judge said
+        self.host.clear_hold()
+        self.panel.status["job"] = {"running": False}
+        self.host._data["active"] = None
+        self.send(self.inbound())
+        self.panel.finish(
+            align=align(ok=False, on_shelf=False),
+            placement=judge,
+            handover=placed,
+            stage="done",
+            final=True,
+        )
+        events = self.host.poll()
+        self.assertEqual(
+            events[-1]["payload"].get("error_code"), "PANEL_BOX_NOT_ON_SHELF"
+        )
+        self.assertNotEqual(events[-1]["type"], "shelf_inbound.completed")
+
+    def test_placement_judge_counts_only_in_the_slot_it_watches(self):
+        # the judge's camera area and shelf edge are those of 2B (panel handover_fk.json): a
+        # "placed" for a 1B or 3B mission says nothing about that slot
+        result = {
+            "placement": {
+                "on_shelf": True,
+                "slot": "1B",
+                "box": 16,
+                "source": "eval_judge",
+                "tips_clear": True,
+            },
+            "handover": {
+                "mode": "handover",
+                "end_reason": "placed",
+                "judge": {"box": {"id": 16, "flat": True}},
+            },
+        }
+        self.assertFalse(panel_executor._judge_placed(result, "1B", 16))
+        two_b = result | {"placement": result["placement"] | {"slot": "2B"}}
+        self.assertTrue(panel_executor._judge_placed(two_b, "2B", 16))
+        self.assertTrue(panel_executor._judge_placed(two_b, "2b", 16))
+        self.assertFalse(panel_executor._judge_placed(two_b, "2B", 17))
 
     def test_two_reports_handover_not_taken_reports_not_aligned(self):
         self.use_two_reports("3.20.0")
