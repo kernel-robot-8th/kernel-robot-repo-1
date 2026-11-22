@@ -125,8 +125,9 @@ class SelectedProposals:
                 if b >= 0 and b+2*bh <= h and right-left >= .85*(2*bw):
                     colors = self.histogram(frame[b:b+2*bh, left:right])
                     if cv2.compareHist(self.colors, colors, cv2.HISTCMP_BHATTACHARYYA) < .55:
-                        items.append(([left,b,right-left,2*bh], score))
+                        items.append(([left,b,right-left,2*bh], score, [a,b,a+2*bw,b+2*bh]))
                 scores[max(0,v-bh//2):v+bh//2+1,max(0,u-bw//2):u+bw//2+1] = -1.
         ids = cv2.dnn.NMSBoxes([i[0] for i in items],[i[1] for i in items],min_correlation,.35)
-        return [dict(box=[a,b,a+bw,b+bh], score=score) for index in np.asarray(ids).reshape(-1)[:6]
-                for (a,b,bw,bh),score in [items[index]]]
+        return [dict(box=[a,b,a+bw,b+bh], score=score, foot_box=foot_box)
+                for index in np.asarray(ids).reshape(-1)[:6]
+                for (a,b,bw,bh),score,foot_box in [items[index]]]

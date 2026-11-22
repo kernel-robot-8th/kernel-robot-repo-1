@@ -29,6 +29,23 @@ from .shopping_nav import (MIN_FOLLOW_GAP_M, ShoppingNav, costmap_stamp_ns,
 from .shopping_track import ProximityNotice, Track, bypass_waypoint, foot_pixel, foot_position, waypoint_cost
 
 
+def projection_box(item, width):
+    """Return full, supported foot geometry, never a truncated crop centre."""
+    left, top, right, bottom = item['box']
+    if 'foot_box' not in item:
+        # YOLO crops give no evidence of the missing side at the frame boundary.
+        return item['box'] if 0 < left and right < width-1 else None
+    box = item['foot_box']
+    if (not isinstance(box, (tuple, list)) or len(box) != 4
+            or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in box)):
+        return None
+    a, b, c, d = box
+    if (a >= c or b != top or d != bottom or max(0, a) != left or min(width, c) != right
+            or right-left < .85*(c-a)):
+        return None
+    return box
+
+
 class OnboardDinoEncoder:
     def __init__(self, path):
         import onnxruntime as ort
@@ -429,8 +446,23 @@ class Shopping:
                             u,v = pixel
                             half_width = (c-a)*w/2
                             expected = (u-half_width, v-(d-b)*h, u+half_width, v)
+                    # SessionTracker validates/rounds crop boxes; geometry stays separate.
+                    crop_keys = [tuple(_box(box, (h, w))) for box in boxes]
+                    ground_boxes = {}
+                    for key, item in zip(crop_keys, items):
+                        ground_box = projection_box(item, w)
+                        if key not in ground_boxes:
+                            ground_boxes[key] = ground_box
+                        elif ground_boxes[key] != ground_box:
+                            ground_boxes[key] = None
+
+                    def location_of(box):
+                        ground_box = ground_boxes.get(tuple(box))
+                        if ground_box is not None:
+                            return foot_position(ground_box, info, camera, self.floor_z)
+
                     def near_anchor(box):
-                        location = foot_position(box, info, camera, self.floor_z)
+                        location = location_of(box)
                         return anchor and location and math.dist(anchor, location) < .18
                     _, scores, match = tracker.step(frame, near_anchor=near_anchor, expected_box=expected)
                     if match['state'] == 'MATCH':
@@ -438,7 +470,7 @@ class Shopping:
                         if pick >= template_count and 0 < boxes[pick][0] and boxes[pick][2] < w-1:
                             # Refresh the fast proposal crop; identity still uses the original portrait.
                             templates = SelectedProposals(frame, normalized[pick]['box'])
-                        point = foot_position(boxes[pick], info, camera, self.floor_z)
+                        point = location_of(crop_keys[pick])
                         uncertain = point is None
                     else:
                         uncertain = match['state']=='AMBIGUOUS' or match.get('reason')=='processing_error'

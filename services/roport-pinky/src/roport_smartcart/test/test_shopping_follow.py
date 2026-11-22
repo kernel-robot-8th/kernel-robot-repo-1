@@ -105,8 +105,10 @@ def test_selected_figure_partly_clipped_on_either_side(left):
     edge = np.zeros_like(frame)
     a, c = max(0, left), min(480, left+112)
     edge[60:228, a:c] = crop[:, a-left:c-left]
-    assert any(abs(x['box'][0]-a) <= 2 and abs(x['box'][2]-c) <= 2
-               and abs(x['box'][1]-60) <= 2 for x in finder.detect(edge))
+    candidate, = [x for x in finder.detect(edge)
+                  if abs(x['box'][0]-a) <= 2 and abs(x['box'][2]-c) <= 2
+                  and abs(x['box'][1]-60) <= 2]
+    assert candidate['foot_box'] == pytest.approx([left, 60, left+112, 228], abs=2)
 
 
 def test_proximity_notice_waits_for_sustained_loss_or_distance_and_clears_on_confirmation():
@@ -815,3 +817,58 @@ def test_rotation_prediction_requires_both_appearance_and_map_agreement():
     assert tracker.step(frame, near_anchor=lambda _:True, expected_box=box)[2]['state'] == 'MATCH'
     encoder.embedding = [0.,1.]
     assert tracker.step(frame, near_anchor=lambda _:True, expected_box=box)[2]['state'] == 'LOST'
+
+
+@pytest.mark.parametrize('side', [-1, 1])
+@pytest.mark.parametrize('geometry', ['template', 'unreliable_yolo'])
+def test_vision_edge_uses_full_foot_for_anchor_and_motion(side, geometry, monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from roport_smartcart import shopping_follow
+    from roport_smartcart.shopping_nav import following_distances
+
+    now = 10.
+    shop = make_shop(now)
+    frame = np.zeros((480, 640, 3), np.uint8)
+    info = NS(k=[500.,0,320,0,500.,240,0,0,1.], height=480, d=[])
+    camera = NS(rotation=NS(x=-.5,y=.5,z=-.5,w=.5),
+                translation=NS(x=-.36,y=side*.2655,z=.12))
+    raw = [544, 200, 656, 340] if side == 1 else [-16, 200, 96, 340]
+    crop = [max(0, raw[0]), raw[1], min(640, raw[2]), raw[3]]
+    original = foot_position(raw, info, camera)
+    clipped = foot_position(crop, info, camera)
+    _, forward = following_distances(.22)
+    assert math.hypot(*clipped) < forward < math.hypot(*original)
+    # True foot is within the existing .18 m map-anchor limit, clipped foot is not.
+    anchor = original[0], original[1] - side*.175
+    assert math.dist(anchor, original) < .18 < math.dist(anchor, clipped)
+    shop.track = Track()
+    for stamp in (now-.5, now-.4, now-.3):
+        shop.track.update(stamp, anchor)
+    shop.packet, shop.floor_z = (now, frame, info, camera), 0.
+    shop.seed, shop.encoder = (frame, (.2,.2,.5,.7)), object()
+    shop.closed = NS(wait=lambda _: next(steps))
+    steps = iter((False, True))
+    projected_anchor = []
+    item = dict(box=crop, foot_box=raw) if geometry == 'template' else dict(box=crop)
+    monkeypatch.setattr(shopping_follow, 'SelectedProposals', lambda *_: NS(
+        detect=lambda _: [item] if geometry == 'template' else []))
+    shop.detector = NS(full_frame=lambda _: [] if geometry == 'template' else [item])
+
+    def tracker(_encoder, detector, *_seed):
+        def step(image, *, near_anchor, expected_box):
+            box, = detector(image)
+            assert box == crop  # Appearance receives only the visible crop.
+            projected_anchor.append(bool(near_anchor(list(box))))
+            return [box], [{'score': .9}], {'state': 'MATCH', 'index': 0}
+        return NS(step=step)
+
+    monkeypatch.setattr(shopping_follow, 'SessionTracker', tracker)
+    shop.vision()
+    if geometry == 'template':
+        assert projected_anchor == [True]
+        assert shop.track.target() == pytest.approx(original)
+        assert math.hypot(*shop.track.target()) > forward
+    else:
+        assert projected_anchor == [False]
+        assert shop.track.state == 'AMBIGUOUS'
+        assert shop.track.target() is None
