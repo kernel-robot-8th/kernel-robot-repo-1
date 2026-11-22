@@ -8,35 +8,52 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
   const [status, setStatus] = useState<ShoppingStatus | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [image, setImage] = useState('');
   const [offline, setOffline] = useState(false);
-  const hasImage = Boolean(image);
-  const [loaded, setLoaded] = useState('');
+  const frame = status?.frame;
+  const image = status?.ownsCamera && !offline
+    ? (frame ? '/shopping/image?frame=' + encodeURIComponent(frame) : '/shopping/image') : '';
   const [picture, setPicture] = useState<{url: string; path: string} | null>(null);
-  const pictureUrl = useRef('');
   useEffect(() => {
-    if (!image || offline) return;
-    const controller = new AbortController();
-    void shoppingImage(session, image, AbortSignal.any([controller.signal, AbortSignal.timeout(1200)])).then(blob => {
-      if (!blob || controller.signal.aborted) return;
-      const url = URL.createObjectURL(blob);
-      if (pictureUrl.current) URL.revokeObjectURL(pictureUrl.current);
-      pictureUrl.current = url;
-      setPicture({url, path: image});
-    }).catch(() => {});
-    return () => controller.abort();
-  }, [session, image, offline]);
-  useEffect(() => {
-    if (hasImage && !offline) return;
-    if (pictureUrl.current) URL.revokeObjectURL(pictureUrl.current);
-    pictureUrl.current = '';
     setPicture(null);
-    setLoaded('');
-  }, [hasImage, offline]);
-  useEffect(() => () => {
-    if (pictureUrl.current) URL.revokeObjectURL(pictureUrl.current);
-    pictureUrl.current = '';
-  }, []);
+    if (!image) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    let currentUrl = '';
+    async function refresh() {
+      let nextUrl = '';
+      try {
+        const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(1200)]);
+        const blob = await shoppingImage(session, image, signal);
+        if (controller.signal.aborted) return;
+        if (blob) {
+          nextUrl = URL.createObjectURL(blob);
+          const preview = new Image();
+          preview.src = nextUrl;
+          await preview.decode();
+          if (controller.signal.aborted) return;
+          if (currentUrl) URL.revokeObjectURL(currentUrl);
+          currentUrl = nextUrl;
+          nextUrl = '';
+          setPicture({url: currentUrl, path: image});
+          if (frame) return;
+        } else {
+          setPicture(null);
+        }
+      } catch {
+        if (!controller.signal.aborted) setPicture(null);
+      } finally {
+        if (nextUrl) URL.revokeObjectURL(nextUrl);
+      }
+      if (!controller.signal.aborted) timer = setTimeout(refresh, 240);
+    }
+    void refresh();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+    };
+  }, [session, image, frame]);
+  const loaded = !!image && picture?.path === image;
   const [portrait, setPortrait] = useState('');
   const [started, setStarted] = useState(false);
   const [manual, setManual] = useState(false);
@@ -90,7 +107,6 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
             setPortrait(''); setStarted(false); setRect(null); drag.current = null;
           }
           setStatus(s); setOffline(false);
-          setImage(s.ownsCamera ? '/shopping/image?' + (s.frame ? 'frame='+s.frame : 't='+Date.now()) : '');
         }
       } catch {
         if (!closed && before === revision.current) setOffline(true);
@@ -134,7 +150,6 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
       if (action === 'capture') { setPortrait(''); setStarted(false); setManual(false); }
       if (action === 'start') setStarted(true);
       setStatus(s); setOffline(false);
-      setImage(s.ownsCamera ? '/shopping/image?' + (s.frame ? 'frame='+s.frame : 't='+Date.now()) : '');
       then?.();
     } catch (err) {
       if (mounted.current && revision.current === rev) setError(err instanceof Error ? err.message : '연결을 확인해 주세요.');
@@ -150,7 +165,7 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
     else go();
   }
   const s = status;
-  const frozen = !!s?.frame && !offline && loaded.endsWith('frame='+s.frame);
+  const frozen = !!s?.frame && loaded;
   const autoSelected = useRef<string | null>(null);
   useEffect(() => {
     if (!s?.frame || !frozen || manual || busy || pending.current || document.hidden ||
@@ -195,7 +210,7 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
       <span className={picking ? 'still' : ''}>{picking ? '선택용 사진' : offline || !loaded ? '연결 대기' : '실시간'}</span></div>
     <div className="shopping-video" ref={video}>
       {(!loaded || offline) && <span className="camera-empty"><Icon name="follow" />{!offline && s && !s.ownsCamera ? '카메라를 켜 주세요' : '카메라를 기다리는 중'}</span>}
-      {image && !offline && picture && <img src={picture.url} alt="카트 앞 카메라" onLoad={() => setLoaded(picture.path)} draggable={false} />}
+      {loaded && <img src={picture.url} alt="카트 앞 카메라" draggable={false} />}
       {s?.frame && frozen && !manual && s.boxes.map(([a,b,c,d], index) =>
         <button key={`${s.frame}-${index}`} className="shop-box" disabled={busy} aria-label={'대상 '+(index+1)+' 선택'}
           style={{left:a*100+'%', top:b*100+'%', width:(c-a)*100+'%', height:(d-b)*100+'%'}}
