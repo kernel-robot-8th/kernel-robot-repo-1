@@ -416,18 +416,33 @@ class Shopping:
             try:
                 if generation != version:
                     templates = SelectedProposals(*seed)
-                items = templates.detect(frame)
+                invalid_crop = False
+
+                def crop_key(item):
+                    nonlocal invalid_crop
+                    try:
+                        return tuple(_box(item['box'], (h, w)))
+                    except ValueError:
+                        invalid_crop = True
+                        return None
+
+                items = []
+                for item in templates.detect(frame):
+                    key = crop_key(item)
+                    if key is not None:
+                        items.append((item, key))
                 template_count = len(items)
                 scan_interval = 3. if len(items)==1 and self.track.state=='FOLLOWING' else .7
                 if not items or time.monotonic()-last_yolo >= scan_interval:
                     # After selection, one full-frame YOLO pass sees people entering from either side.
-                    detected = self.detector.full_frame(frame)
-                    for item in detected:
-                        if not any(SessionTracker._overlaps(item['box'], other['box']) for other in items):
-                            items.append(item)
+                    for item in self.detector.full_frame(frame):
+                        key = crop_key(item)
+                        if key is not None and not any(
+                                SessionTracker._overlaps(item['box'], other['box']) for other, _ in items):
+                            items.append((item, key))
                     last_yolo = time.monotonic()
                 after_detection = time.monotonic()
-                boxes = [i['box'] for i in items]
+                boxes = [item['box'] for item, _ in items]
                 normalized = [dict(box=[a/w,b/h,c/w,d/h]) for a,b,c,d in boxes]
                 if version != generation:
                     tracker = SessionTracker(self.encoder, lambda _: boxes, *seed)
@@ -447,15 +462,8 @@ class Shopping:
                             half_width = (c-a)*w/2
                             expected = (u-half_width, v-(d-b)*h, u+half_width, v)
                     # SessionTracker validates/rounds crop boxes; geometry stays separate.
-                    crop_keys, ground_boxes = [], {}
-                    for item in items:
-                        try:
-                            key = tuple(_box(item['box'], (h, w)))
-                        except ValueError:
-                            # Preserve the tracker's processing_error rather than disarming here.
-                            crop_keys.append(None)
-                            continue
-                        crop_keys.append(key)
+                    ground_boxes = {}
+                    for item, key in items:
                         ground_box = projection_box(item, w)
                         near_box = key if ground_box == item['box'] else ground_box
                         geometry = ground_box, near_box
@@ -474,12 +482,15 @@ class Shopping:
                         location = location_of(tuple(box), near=True)
                         return anchor and location and math.dist(anchor, location) < .18
                     _, scores, match = tracker.step(frame, near_anchor=near_anchor, expected_box=expected)
+                    if invalid_crop and not items and match.get('reason') == 'no_detection':
+                        # Malformed detections are not clean loss evidence for a bypass turn.
+                        match = {**match, 'reason': 'processing_error'}
                     if match['state'] == 'MATCH':
                         pick = match['index']
                         if pick >= template_count and 0 < boxes[pick][0] and boxes[pick][2] < w-1:
                             # Refresh the fast proposal crop; identity still uses the original portrait.
                             templates = SelectedProposals(frame, normalized[pick]['box'])
-                        point = location_of(crop_keys[pick])
+                        point = location_of(items[pick][1])
                         uncertain = point is None
                     else:
                         uncertain = match['state']=='AMBIGUOUS' or match.get('reason')=='processing_error'

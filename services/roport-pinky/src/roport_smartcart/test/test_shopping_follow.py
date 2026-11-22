@@ -874,13 +874,19 @@ def test_vision_edge_uses_full_foot_for_anchor_and_motion(side, geometry, monkey
         assert shop.track.target() is None
 
 
-def test_vision_preserves_tracker_processing_error_without_disarming(monkeypatch):
+@pytest.mark.parametrize('invalid', [True, False])
+def test_vision_distinguishes_all_invalid_from_empty_for_bypass(invalid, monkeypatch):
     pytest.importorskip('nav2_msgs')
     from roport_smartcart import shopping_follow
 
     shop = make_shop(10.)
     frame = np.zeros((480, 640, 3), np.uint8)
-    shop.packet, shop.floor_z = (10., frame, None, None), 0.
+    info = NS(width=640, height=480, k=[575.,0.,320.,0.,575.,240.,0.,0.,1.], d=[])
+    yaw = .55
+    c, s = math.cos(yaw/2), math.sin(yaw/2)
+    camera = NS(translation=NS(x=0., y=0., z=.1),
+                rotation=NS(x=(-c-s)/2,y=(c-s)/2,z=(-c+s)/2,w=(c+s)/2))
+    shop.packet, shop.floor_z = (10., frame, info, camera), 0.
     shop.seed = frame, (.2, .2, .5, .7)
     shop.encoder = NS(encode=lambda crops: np.tile([1., 0.], (len(crops), 1)))
     steps = iter((False, True))
@@ -888,13 +894,73 @@ def test_vision_preserves_tracker_processing_error_without_disarming(monkeypatch
     # 28 of 32 px (87.5%) is a valid template crop, too narrow for the DINO tracker.
     proposal = dict(box=[0, 200, 28, 340], foot_box=[-4, 200, 28, 340])
     monkeypatch.setattr(shopping_follow, 'SelectedProposals', lambda *_: NS(
-        detect=lambda _: [proposal]))
-    shop.detector = NS(full_frame=lambda _: [])
+        detect=lambda _: [proposal] if invalid else []))
+    yolo_calls = []
+    shop.detector = NS(full_frame=lambda _: yolo_calls.append(True) or [])
+    shop.nav.last_reached = None
+    shop.bypass = shop.nav.destination, (0., 0., 0.), 8.
 
     shop.vision()
-    assert shop.armed
-    assert shop.miss_reason == 'processing_error'
-    assert shop.track.state == 'AMBIGUOUS' and shop.track.target() is None
+    assert yolo_calls == [True]
+    assert shop.armed and shop.track.target() is None
+    assert (shop.miss_reason, shop.track.state) == (
+        ('processing_error', 'AMBIGUOUS') if invalid else ('no_detection', 'SEARCHING'))
+    target, via, look = shop.bypass_command(10., (0., 0., yaw), None, make_grid(), True)
+    if invalid:
+        assert (target, via, look) == (None, None, None) and shop.bypass is None
+    else:
+        assert (target, via, look) == (shop.nav.anchor, shop.nav.destination, None)
+
+
+@pytest.mark.parametrize('mode', ['template_bad_first', 'template_bad_last',
+                                  'overlap_yolo', 'bad_yolo'])
+def test_vision_valid_sibling_keeps_match_and_candidate_provenance(mode, monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from roport_smartcart import shopping_follow
+
+    now = 10.
+    shop = make_shop(now)
+    frame = np.zeros((480, 640, 3), np.uint8)
+    info = NS(k=[500.,0,320,0,500.,240,0,0,1.], height=480, d=[])
+    camera = NS(rotation=NS(x=-.5,y=.5,z=-.5,w=.5),
+                translation=NS(x=-.36,y=0.,z=.12))
+    crop = [1, 200, 34, 340] if mode == 'overlap_yolo' else [128, 200, 320, 340]
+    visible = [crop[0]/640, crop[1]/480, crop[2]/640, crop[3]/480]
+    valid = dict(box=crop)
+    small = dict(box=[0, 200, 28, 340], foot_box=[-4, 200, 28, 340])
+    tem, yolo = {
+        'template_bad_first': ([small, valid], []),
+        'template_bad_last': ([valid, small], []),
+        'overlap_yolo': ([small], [valid]),
+        'bad_yolo': ([valid], [small]),
+    }[mode]
+    point = foot_position(crop, info, camera)
+    shop.track = Track()
+    for stamp in (now-.5, now-.4, now-.3):
+        shop.track.update(stamp, point)
+    shop.packet, shop.floor_z = (now, frame, info, camera), 0.
+    shop.seed = frame, visible
+    crop_counts, seeds, yolo_calls = [], [], []
+    def encode(crops):
+        crop_counts.append([image.shape[1] for image in crops])
+        return np.tile([1., 0.], (len(crops), 1))
+    def templates(_frame, selected):
+        seeds.append(selected)
+        return NS(detect=lambda _: tem.copy())
+    shop.encoder = NS(encode=encode)
+    shop.detector = NS(full_frame=lambda _: yolo_calls.append(True) or yolo.copy())
+    steps = iter((False, True))
+    shop.closed = NS(wait=lambda _: next(steps))
+    monkeypatch.setattr(shopping_follow, 'SelectedProposals', templates)
+
+    shop.vision()
+    assert yolo_calls == [True]
+    assert crop_counts == [[crop[2]-crop[0]], [crop[2]-crop[0]]]
+    assert shop.armed and shop.track.state == 'FOLLOWING'
+    assert shop.track.target() == pytest.approx(point)
+    assert shop.frame_box == pytest.approx(visible)
+    # Refresh the crop on native YOLO only, even if a template was filtered.
+    assert seeds == [visible] * (2 if mode == 'overlap_yolo' else 1)
 
 
 def test_vision_preserves_interior_fractional_yolo_projection(monkeypatch):
