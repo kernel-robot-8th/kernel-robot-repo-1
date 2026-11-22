@@ -56,12 +56,29 @@ ECHO_FIELDS = (
 # shelf-01 is 2 rows x 3 columns: row 1 = lower, 2 = upper; a/b/c = left to right seen from the
 # arms. Values are the slot's ArUco marker IDs (docs/aruco/markers.yaml v1.4, S1A..S2C).
 SLOTS = {"1a": 28, "1b": 29, "1c": 30, "2a": 31, "2b": 32, "2c": 33}
+SLOT_ARMS = {
+    "a": ("DEDICATED", "omx1"),
+    "b": ("COOPERATIVE", None),
+    "c": ("DEDICATED", "omx2"),
+}
+RELEASE_CHECKS = ("arms_safe", "package_checked", "pinky_checked")
 _ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _IDS = ("type", "task_id", "step_id", "command_id", "execution_id")
 
 
 class Rejected(ValueError):
     """Request refused before anything started; args[0] is the error code."""
+
+
+class StartRefused(RuntimeError):
+    """The executor refused to start before moving anything; args[0] is the error code.
+
+    hold=False reports MISSION_FAILED without HOLD (the scene needs a look, the arms never moved).
+    """
+
+    def __init__(self, code: str, detail: str = "", *, hold: bool = True):
+        super().__init__(code, detail)
+        self.code, self.detail, self.hold = code, detail, hold
 
 
 class StorageError(RuntimeError):

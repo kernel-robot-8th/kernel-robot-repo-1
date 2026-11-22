@@ -294,3 +294,16 @@ GPU 추론 서버 하나를 여러 Host PC(예: OMX1·2 Host, OMX3 Host)가 함�
 `omx3/adapters/udp_infer.py`의 `UdpInferClient`는 OMX3 `ChunkPolicy`에 주입할 추론 구현입니다. `load()` 후 정면 RGB 영상 1장과 관절 상태 6개를 보내며, 이미지 크기·JPEG 품질·동작 순서는 위 규약을 따릅니다. 시간 초과는 기존 `ChunkPolicy`의 새 관측 재요청으로 처리합니다. 공통 `infer_link`는 표준 라이브러리만 사용하고, 이 어댑터는 장비용 OpenCV 환경에서 사용합니다.
 
 이 동기화는 #109·#113·#115의 모듈과 검사를 포함합니다. 실물 Host 시작점에 어댑터를 주입하는 작업, N01 도킹 보정과 상자 안착 확인, 실제 모델·캘리브레이션 버전 값은 별도 확인이 필요합니다. N01 별도 정렬 센서는 요구하지 않습니다. 모듈 추가만으로 GPU 연결이나 팔 구동이 자동 시작되지는 않습니다.
+
+### 선반 B열의 Fleet 연동
+
+`scripts/cooperative_host.py`의 기본 실행은 `roport-control-v2`다. 선반 작업셀과 양팔의 MQTT 응답은 이 프로세스에서 발행한다. 같은 엔드포인트를 발행하는 다른 Host를 함께 실행하지 않는다.
+
+가상 Fleet과 연결할 때 모의 팔을 사용하고 경로에 기대하는 모델·보정 버전을 맞춘다.
+
+```bash
+uv run python scripts/cooperative_host.py --executor mock --no-require-docking \
+  --mock-versions sim-model sim-cal --journal ~/.local/state/roport/shelf-v2.json
+```
+
+실물 제어판 설정은 `config/shelf_routes.example.json`을 기준으로 한다. 실물 이송은 해당 Pinky 방문의 신선한 도킹 관측이 들어올 때만 허용한다. 도킹 센서 연결과 실물 정지 표본 확인은 현장 적용 단계다. 기존 OmxTrial 시험 실행기는 `--protocol v1`을 지정한다.

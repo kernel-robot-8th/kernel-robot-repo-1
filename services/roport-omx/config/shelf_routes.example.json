@@ -1,0 +1,23 @@
+{
+  "model_version": "model-demo-v1",
+  "calibration_version": "calibration-demo-v1",
+  "routes": [
+    {
+      "operation": "INBOUND",
+      "slot_id": "2b",
+      "model_path": "REPLACE_WITH_MODEL_PATH_FROM_PANEL_MODEL_LIST",
+      "task": "INBOUND tray->shelf 2B | marker {box}",
+      "reset_s": 15,
+      "output_filter": "중",
+      "filter_gripper": false,
+      "markers": [
+        15,
+        16,
+        17,
+        20,
+        21,
+        22
+      ]
+    }
+  ]
+}
