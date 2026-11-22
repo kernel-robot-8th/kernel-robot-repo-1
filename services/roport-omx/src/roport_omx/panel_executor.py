@@ -50,6 +50,18 @@ PANEL_MIN_VERSION = (3, 14, 0)
 # right before it (3.20: tray_reference_state, pre_mission_match). Without that photo a changed
 # tray proves nothing (2026-11-21 review: tray_changed alone let the Pinky leave).
 PANEL_MIN_VERSION_UNLOAD = (3, 20, 0)
+# 3.17.0: the start takes the commanded "slot" ("2B") and "pinky_id", and reports
+# last_result.placement (the box seen in its slot) right after the evaluation, before the alignment.
+PANEL_COMMAND_SLOT = (3, 17, 0)
+# 3.18.0: "end_on_place" ends the loading evaluation once the box sits in its slot and both hands are
+# clear of it; the aligner then takes the arms where they are (hand-over). Older panels ignore it.
+PANEL_END_ON_PLACE = (3, 18, 0)
+# 3.20.0: the placement carries the evidence for an early COMPLETE (control agreement 2026-11-18):
+# the hands' state at that moment and the camera's own capture time (not the panel's read time),
+# marked observed_clock "capture" (a "control_step" time or no mark never counts).
+PANEL_PLACEMENT_EVIDENCE = (3, 20, 0)
+# An early COMPLETE uses a capture at most this old (seconds, same PC clock).
+PLACEMENT_FRESH_S = 3.0
 # The panel PINGs the AI server about every 5 s (up to ~15 s on a slow GPU tunnel) and stamps
 # gpu_link.infer.udp.at with its clock (time.time(); same PC as the Host). Older than this → stale.
 AI_LINK_FRESH_S = 20.0
@@ -126,11 +138,21 @@ def _ai_link_error(status: dict, now: float) -> str | None:
     return None
 
 
+def _handover_hold(result: dict) -> bool:
+    """The aligner took the arms over (hand-over) and then found no safe way home: it left them
+    where they are with the torque on (real_runner result handover_align "hold", exit 2). Panel
+    3.21.0 still closes that as an ordinary alignment, so nobody may send the arms home now."""
+    align = result.get("align")
+    return isinstance(align, dict) and align.get("handover_align") == "hold"
+
+
 def _hold_code(result: dict) -> str:
     """stage "hold" stays until a person acts: emergency stop, or release found no path back."""
     align = result.get("align") if isinstance(result.get("align"), dict) else {}
     if "비상 정지" in (align.get("stopped_by"), result.get("stopped_by")):
         return "PANEL_EMERGENCY_STOP"
+    if _handover_hold(result):
+        return "PANEL_HANDOVER_HOLD"
     if align.get("released") is False:
         return "PANEL_ALIGN_RELEASE_FAILED"
     return "PANEL_HOLD"
@@ -158,6 +180,9 @@ HOLD_ERRORS = {
     "PANEL_PINKY_CHECK_NOT_RUN",
     "PANEL_PINKY_CHECK_CONFLICT",
     "PANEL_NOT_ARMED_FOR_HOME",
+    "PANEL_HANDOVER_FAILED",
+    "PANEL_HANDOVER_STOPPED",
+    "PANEL_HANDOVER_HOLD",
     "RESULT_UNAVAILABLE",
 }
 HOME_RETURN_TIMEOUT_S = 90.0
@@ -176,6 +201,25 @@ HOME_RETURN_TIMEOUT_S = 90.0
 # tray unchanged (dropped) → MISSION_FAILED, arms sent home. Anything unread or not confirmed
 # (another slot, no pre-mission photo) → MISSION_HOLD.
 PINKY_LOAD = "pinky_load"
+
+
+def _released_at_placement(placement: dict) -> bool:
+    """Both hands let the box go when it was seen in its slot (control agreement 2026-11-18).
+
+    Hand-over judge (source "eval_judge"): both fingertips behind the box front and the shelf
+    edge by 3 cm (panel tips_clear, from the joints). Otherwise the evaluation ended on its
+    return: both arms at the model's home with grippers at or below GRIP_RELEASED_MAX.
+    """
+    if placement.get("source") == "eval_judge":
+        return placement.get("tips_clear") is True
+    end = placement.get("eval_end")
+    if not isinstance(end, dict) or end.get("all_at_home") is not True:
+        return False
+    arms = end.get("arms") if isinstance(end.get("arms"), dict) else {}
+    grips = [(arm or {}).get("gripper") for arm in arms.values()]
+    return len(grips) == len(ARMS) and all(
+        isinstance(g, (int, float)) and g <= GRIP_RELEASED_MAX for g in grips
+    )
 
 
 class PanelRefused(RuntimeError):
@@ -315,8 +359,19 @@ class PanelExecutor:
         base_url: str = "http://127.0.0.1:8865",
         timeout: float = 5.0,
         start_timeout: float = 300.0,
+        report_placement: bool = False,
+        end_on_place: bool = False,
+        place_shadow: bool = False,
     ):
         self.routes, self.box_marker = routes, box_marker
+        # Loading in two reports: COMPLETE once the box is in its slot (Pinky may leave), then the
+        # alignment result as a progress event. Needs a control tower that accepts "shelf_placed".
+        self.report_placement = report_placement
+        self.end_on_place = end_on_place
+        # panel 3.18: run the placement judge during loading and only record it (no hand-over)
+        self.place_shadow = place_shadow
+        self._version: tuple[int, ...] | None = None  # from the last readiness check
+        self._placed = False
         self.base_url = base_url.rstrip("/")
         self.timeout, self.start_timeout = timeout, start_timeout
         self.repo_id: str | None = None
@@ -351,6 +406,7 @@ class PanelExecutor:
         armed = status.get("armed")  # absent before panel 3.8 → None → not armed
         busy = bool((status.get("job") or {}).get("running"))
         version = _version(status.get("version"))
+        self._version = version
         unload = any(op == "OUTBOUND" for op, _ in self.routes)
         minimum = PANEL_MIN_VERSION_UNLOAD if unload else PANEL_MIN_VERSION
         if version is None or version < minimum:
@@ -432,8 +488,6 @@ class PanelExecutor:
             # Unloading ends with the cameras checking the box on the Pinky tray, never with a
             # shelf alignment (the panel refuses both at once).
             body |= {"shelf_align": False, "pinky_check": True}
-            # panel 3.17+: read the commanded slot, and take this Pinky's tray photo (3.20)
-            body |= {"slot": task["slot_id"].upper(), "pinky_id": task.get("pinky_id")}
             # The box number is for the Pinky check only: the unloading model was trained without the
             # target circle the panel would otherwise draw on the top camera (panel option, 3.17+).
             body["draw_target"] = False
@@ -446,6 +500,16 @@ class PanelExecutor:
             # release torque, because the aligner takes the arms right after. Any other end stays
             # a full stop. Unloading has no aligner after it, so it keeps the full safe stop.
             body["fast_release"] = True
+        version = self._version or ()
+        if version >= PANEL_COMMAND_SLOT or task["operation"] == "OUTBOUND":
+            # the panel aligns and checks at the commanded slot and that Pinky's tray reference
+            # (unloading always: it needs panel 3.20 for the pre-mission tray photo)
+            body |= {"slot": task["slot_id"].upper(), "pinky_id": task.get("pinky_id")}
+        if task["operation"] == "INBOUND" and version >= PANEL_END_ON_PLACE:
+            if self.end_on_place:
+                body["end_on_place"] = True
+            elif self.place_shadow:
+                body["place_shadow"] = True
         body |= route.eval_options or {}
         if route.output_filter:
             body |= {
@@ -476,6 +540,62 @@ class PanelExecutor:
         self.repo_id, self._missing_since = reply["repo_id"], None
         self.slot, self._recovery = task["slot_id"], None
         self.operation = task["operation"]
+        self._placed = False
+
+    def _placement(self, result) -> dict | None:
+        """The box seen in the commanded slot while the alignment still runs (panel 3.17+)."""
+        if (
+            not self.report_placement
+            or self.operation != "INBOUND"
+            or self._placed
+            or not isinstance(result, dict)
+            or result.get("repo_id") != self.repo_id
+            or result.get("final")
+            is not False  # finished at once: one report as before
+            or result.get("stage") == "hold"
+            or _handover_hold(result)
+        ):
+            return None
+        placement = result.get("placement")
+        if not isinstance(placement, dict) or placement.get("on_shelf") is not True:
+            return None
+        if str(placement.get("slot") or "").lower() != str(self.slot or "").lower():
+            return None  # seen at another slot: the final result decides
+        if (self._version or ()) < PANEL_PLACEMENT_EVIDENCE:
+            return None  # no gripper evidence or capture time yet: one report as before
+        if not _released_at_placement(placement):
+            return None  # the hands may still hold the box; a later reading may show it
+        captured = placement.get("observed_ts")
+        if (
+            not isinstance(captured, (int, float))
+            or not 0 <= time.time() - captured <= PLACEMENT_FRESH_S
+        ):
+            return None  # too old (or unknown) to let the Pinky leave on it
+        if placement.get("observed_clock") != "capture":
+            # panel 3.20 falls back to the control step's time ("control_step") when the camera
+            # stamp is unknown, and older readers do not say: only a real capture time counts
+            # (2026-11-21 review)
+            return None
+        self._placed = True
+        keys = (
+            "slot",
+            "box",
+            "source",
+            "observed_at",
+            "observed_ts",
+            "observed_clock",
+            "reported_at",
+            "tips_clear",
+            "tip_y",
+            "y_out",
+            "gripper",
+            "eval_end",
+        )
+        return {
+            "state": "placed",
+            "grasp_released": True,
+            "placement": {k: placement.get(k) for k in keys if k in placement},
+        }
 
     def observe(self) -> dict:
         if self.repo_id is None:
@@ -483,6 +603,9 @@ class PanelExecutor:
         status = self._call("GET", "/api/status")
         if self._recovery is not None:
             return self._recovering(status)
+        placed = self._placement(status.get("last_result"))
+        if placed is not None:
+            return placed
         job = status.get("job") or {}
         info = job.get("info") or {}
         if job.get("running") and info.get("repo_id") == self.repo_id:
@@ -495,7 +618,8 @@ class PanelExecutor:
         result = status.get("last_result")
         if isinstance(result, dict) and result.get("repo_id") == self.repo_id:
             self._missing_since = None
-            if result.get("stage") == "hold":  # waits for a person; report it now
+            # waits for a person; report it now and never send the arms home from here
+            if result.get("stage") == "hold" or _handover_hold(result):
                 return {"state": "failed", "error": _hold_code(result), "arms": {}}
             if result.get("final", True) is not True:  # absent before panel 3.9
                 running = (
@@ -624,6 +748,29 @@ class PanelExecutor:
                     "arms": arms,
                     "evidence": "shelf_align",
                 }
+            handover = result.get("handover")
+            handover = handover if isinstance(handover, dict) else {}
+            if (
+                error == "PANEL_ALIGN_SKIPPED"
+                and handover.get("state") in {"failed", "stopped"}
+                and handover.get("fallback") == "home"
+            ):
+                # panel 3.18 hand-over: the aligner never took the arms, the panel brought them
+                # home instead; the box was seen placed at the judge moment (no shelf read later)
+                error = "PANEL_HANDOVER_" + handover["state"].upper()
+                placement = result.get("placement")
+                placed = (
+                    isinstance(placement, dict) and placement.get("on_shelf") is True
+                )
+                if handover.get("fallback_ok") is True and placed:
+                    return {
+                        "state": "finished",
+                        "step": "rest",
+                        "arms": arms,
+                        "evidence": NOT_ALIGNED,
+                        "align_error": error,
+                    }
+                return {"state": "failed", "error": error, "arms": arms}
             if error in {"PANEL_ALIGN_SKIPPED", "PANEL_ALIGN_FAILED"}:
                 if align.get("on_shelf") is True:
                     # Completed only if the arms are home with grippers released (observe checks).

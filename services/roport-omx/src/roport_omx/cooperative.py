@@ -98,6 +98,9 @@ class Executor(Protocol):
         when the box was loaded but not aligned, the "align_error" that stopped the alignment.
         A failed one may set "operator_stop": True when a person stopped the run and the executor
         completed that stop; the Host then reports the failure without holding.
+        "placed" (shelf loading in two reports): the box sits in its slot while the arms still align;
+        the Host reports COMPLETE then (evidence "shelf_placed") and the later alignment result as a
+        progress event, keeping the task active until it.
         """
 
 
@@ -369,6 +372,10 @@ class CooperativeHost:
         except Exception:  # noqa: BLE001 - keep waiting; the device keeps its own safety
             return []
         state = seen.get("state")
+        if state == "placed":
+            return self._placed(record, seen)
+        if record.get("placed") and state in {"finished", "failed"}:
+            return self._aligned(record, seen)
         if state == "running":
             step = seen.get("step") if isinstance(seen.get("step"), str) else None
             if step == record["last_step"]:
@@ -422,6 +429,60 @@ class CooperativeHost:
         return self._finish(
             record, code or "EXECUTION_FAILED", arms, detail, hold=not settled
         )
+
+    def _placed(self, record: dict, seen: dict) -> list[dict]:
+        """Box in its slot: Mission Complete, the Pinky may leave; the arms are still aligning."""
+        if record.get("placed"):
+            return []
+        record["placed"] = True
+        placement = (
+            seen.get("placement") if isinstance(seen.get("placement"), dict) else {}
+        )
+        payload = {
+            **self._echo(record["task"]),
+            "quantity_confirmed": None,
+            "package_location": None,
+            "placement_confirmed": True,
+            # the executor sends "placed" only with both hands seen off the box
+            "grasp_released": True if seen.get("grasp_released") is True else None,
+            "arms": _arms(seen.get("arms")),
+            "departure_ready": True,
+            "evidence": "shelf_placed",
+            "mission_result": "MISSION_COMPLETE",
+            "align_state": "PENDING",
+            "placement": placement,
+        }
+        return self._push(record, self._event(record, "completed", "COMPLETE", payload))
+
+    def _aligned(self, record: dict, seen: dict) -> list[dict]:
+        """The alignment after an early COMPLETE ended: report it as a progress event."""
+        self._data["active"] = None
+        arms = _arms(seen.get("arms"))
+        payload = {**self._echo(record["task"]), "step": "align", "arms": arms}
+        if seen.get("state") == "finished" and _returned(arms):
+            evidence = seen.get("evidence")
+            aligned = evidence == "shelf_align"
+            phase = "ALIGNED" if aligned else "NOT_ALIGNED"
+            payload["align_result"] = phase
+            payload["mission_result"] = (
+                "MISSION_COMPLETE" if aligned else "MISSION_COMPLETE_NOT_ALIGNED"
+            )
+            if isinstance(seen.get("align_error"), str):
+                payload["align_error"] = seen["align_error"]
+        else:
+            code = seen.get("error") if seen.get("state") == "failed" else None
+            settled = seen.get("state") == "failed" and (
+                seen.get("operator_stop") is True or seen.get("recovered") is True
+            )
+            # the box stays placed; the arms after the alignment need a person unless settled
+            self._data["hold"] = None if settled else record["ids"]["command_id"]
+            phase = "ALIGN_FAILED" if settled else "ALIGN_HOLD"
+            payload["align_result"] = phase
+            payload["error_code"] = code or "ARM_NOT_RETURNED"
+            payload["mission_result"] = "MISSION_COMPLETE_NOT_ALIGNED"
+            if isinstance(seen.get("detail"), str):
+                payload["detail"] = seen["detail"][:200]
+        return self._push(record, self._event(record, "progress", phase, payload))
 
     def _finish(
         self,

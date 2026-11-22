@@ -292,6 +292,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--box-marker", type=int, help="panel test: box ArUco ID used for every task"
     )
+    parser.add_argument(
+        "--report-placement",
+        action="store_true",
+        help="panel: loading in two reports (COMPLETE when the box is in its slot, then the "
+        "alignment result); the control tower must accept evidence shelf_placed",
+    )
+    parser.add_argument(
+        "--end-on-place",
+        action="store_true",
+        help="panel 3.18+: end the loading evaluation once the box is placed and the hands are "
+        "clear, and let the aligner take the arms there (hand-over)",
+    )
+    parser.add_argument(
+        "--place-shadow",
+        action="store_true",
+        help="panel 3.18+: judge the placement during loading and only record it (no hand-over); "
+        "ignored with --end-on-place",
+    )
     parser.add_argument("--mock-run-s", type=float, default=3.0)
     parser.add_argument("--mock-disarmed", action="store_true")
     parser.add_argument(
@@ -322,6 +340,9 @@ def main() -> None:
             load_routes(args.routes),
             box_marker=args.box_marker,
             base_url=args.panel_url,
+            report_placement=args.report_placement,
+            end_on_place=args.end_on_place,
+            place_shadow=args.place_shadow,
         )
     else:
         executor = MockExecutor(
