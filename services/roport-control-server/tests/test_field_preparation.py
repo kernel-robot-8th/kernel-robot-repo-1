@@ -371,3 +371,28 @@ def test_two_cart_shelf_trial_uses_verified_profiles_and_only_mocks_warehouse(tm
     assert all(mixed["omx"][t] == shelf_versions for t in ("omx1", "omx2", "shelf-01"))
     with pytest.raises(ValueError, match="omx3: actual model_version"):
         field_settings(root, False)
+
+
+def test_field_launcher_rejects_existing_mock_target_before_start(
+    tmp_path, monkeypatch
+):
+    import check_field
+    from run_service_fleet import start_field
+
+    def occupied(config, targets, connection, duration):
+        assert targets == ["omx3"]
+        assert connection.host == "127.0.0.1" and connection.port == 18883
+        return {"targets": {"omx3": {"samples": 1}}, "rejected_states": 0}
+
+    monkeypatch.setattr(check_field, "listen", occupied)
+    with pytest.raises(ValueError, match="already publishing.*omx3"):
+        start_field(
+            lambda *args: pytest.fail("unexpected child"),
+            tmp_path,
+            tmp_path,
+            {"trial_shelf_slots": ["2b"]},
+            8000,
+            18883,
+            False,
+            {},
+        )

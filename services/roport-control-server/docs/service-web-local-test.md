@@ -59,7 +59,7 @@ ROPORT_SERVICE_RUN="$HOME/roport-trial/service/<실행시각>/run.json" \
 관제 PC에서 기존 시험용 브로커와 외부 Pinky 두 대, 선반 Host를 준비한 뒤 아래처럼 실행한다. 이 모드에서는 실행기가 창고 OMX3를 모의하므로 같은 브로커의 실제 OMX3 Host는 종료해 둔다.
 
 ```bash
-uv run python tools/run_service_fleet.py --field-bundle "$FIELD_BUNDLE" --broker-port "$BROKER_PORT" --hardware-authorized --real-shelf 2b
+uv run python tools/run_service_fleet.py --field-bundle "$FIELD_BUNDLE" --broker-port "$BROKER_PORT" --hardware-authorized --shelf-clear-confirmed --real-shelf 2b
 ```
 
-위 명령에서 슬롯을 생략하고 `--real-shelf`만 지정해도 `2b`를 사용한다. 현장 기준은 **2층 B열(`2b`), 상자 마커 16**이다. `1b`는 1층 B열이다. 서비스 계정은 `large-login`을 사용한다. 입고는 대기 상태로 생성된다. 관제자가 시작하면 N11에서 양팔이 지정 칸에 보관하고, 고객 예약으로 같은 칸에서 출고한다. 카트 도착 후 패드에서 수령을 확인하면 복귀한다. 각 실행의 서비스·관제 DB는 새로 생성된다.
+위 명령에서 슬롯을 생략하고 `--real-shelf`만 지정해도 `2b`를 사용한다. 현장 기준은 **2층 B열(`2b`), 상자 마커 16**이다. `1b`는 1층 B열이다. 서비스 계정은 `large-login`을 사용한다. 입고는 대기 상태로 생성된다. 관제자가 시작하면 N11에서 양팔이 지정 칸에 보관하고, 고객 예약으로 같은 칸에서 출고한다. 카트 도착 후 패드에서 수령을 확인하면 복귀한다. 각 실행은 빈 재고로 시작하므로 재실행할 때마다 대상 칸과 양팔이 비었는지 현장에서 확인한 뒤 위 확인 옵션을 지정한다.

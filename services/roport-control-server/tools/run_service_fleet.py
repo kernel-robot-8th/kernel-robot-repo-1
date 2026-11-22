@@ -73,6 +73,24 @@ def start_field(start, root, bundle, config, port, broker_port, mock_omx, servic
     mqtt.update(ROPORT_MQTT_HOST="127.0.0.1", ROPORT_MQTT_PORT=str(broker_port))
     shelf_trial = bool(config.get("trial_shelf_slots"))
     if mock_omx or shelf_trial:
+        from dataclasses import replace
+
+        from check_field import listen
+
+        from roport_control_server.adapters.mqtt.trial_wire import mqtt_config
+
+        targets = ["omx3"] if shelf_trial else list(config["omx"])
+        connection = replace(
+            mqtt_config("probe-" + secrets.token_hex(6)),
+            host="127.0.0.1",
+            port=broker_port,
+        )
+        report = listen(config, targets, connection, 2)
+        occupied = [t for t, state in report["targets"].items() if state.get("samples")]
+        if occupied or report["rejected_states"]:
+            raise ValueError(
+                f"mock OMX target already publishing or unexpected state: {occupied}"
+            )
         omx = SERVICE.parent / "roport-omx"
         start(
             "mock-omx",
@@ -96,13 +114,15 @@ def start_field(start, root, bundle, config, port, broker_port, mock_omx, servic
         "owner",
         [
             sys.executable,
-            "-m",
-            "roport_control_server.executor.fleet_runtime",
+            "tools/run_field_owner.py",
             "--config",
-            str(folder / "fleet.json"),
+            str(bundle),
             "--socket",
             sock,
             "--hardware-authorized",
+            "--shelf-clear-confirmed",
+            *(["--real-shelf", config["trial_shelf_slots"][0]] if shelf_trial else []),
+            *(["--mock-omx"] if mock_omx else []),
         ],
         SERVICE,
         {**mqtt, **service_env},
@@ -143,6 +163,11 @@ def main():
         help="verified two-cart field bundle",
     )
     parser.add_argument("--hardware-authorized", action="store_true")
+    parser.add_argument(
+        "--shelf-clear-confirmed",
+        action="store_true",
+        help="operator confirmed the trial shelf slots and arms are empty",
+    )
     field_mode = parser.add_mutually_exclusive_group()
     field_mode.add_argument(
         "--real-shelf",
@@ -169,6 +194,10 @@ def main():
             "field mode requires --field-bundle, --hardware-authorized and --broker-port together"
         )
     if field:
+        if not args.shelf_clear_confirmed:
+            parser.error(
+                "check that trial slots and arms are empty, then pass --shelf-clear-confirmed"
+            )
         if not args.broker_port or not 1 <= args.broker_port <= 65535:
             parser.error("specify the dedicated field broker port")
         args.field_bundle = args.field_bundle.resolve()
@@ -375,8 +404,16 @@ def main():
             flush=True,
         )
         while True:
-            for name, p in processes:
+            for name, p in processes.copy():
                 if p.poll() is not None:
+                    if field and name in {"service-web", "pad-web"}:
+                        print(
+                            f"{name} stopped; Fleet owner remains active",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        processes.remove((name, p))
+                        continue
                     raise RuntimeError(f"{name} stopped: see {root / (name + '.log')}")
             time.sleep(1)
 

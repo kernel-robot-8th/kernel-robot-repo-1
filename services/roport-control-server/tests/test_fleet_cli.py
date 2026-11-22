@@ -166,8 +166,10 @@ def test_arrival_cli_binds_current_session_and_reports_failure(
     }
 
 
-@pytest.mark.parametrize("verified,authorized", [(False, True), (True, False)])
-def test_field_owner_requires_both_confirmations(
+@pytest.mark.parametrize(
+    "verified,authorized", [(False, True), (True, False), (True, True)]
+)
+def test_standalone_owner_rejects_unvalidated_hardware_even_with_confirmations(
     tmp_path, monkeypatch, capsys, verified, authorized
 ):
     config = tmp_path / "fleet.json"
@@ -178,4 +180,13 @@ def test_field_owner_requires_both_confirmations(
     monkeypatch.setattr(sys, "argv", argv)
     with pytest.raises(SystemExit):
         fleet_runtime.main()
-    assert "field verification and explicit authorization" in capsys.readouterr().err
+    assert "validated field launcher" in capsys.readouterr().err
+
+
+def test_field_assignment_requires_a_verified_profile(fleet):
+    fleet.config.update(
+        mode="hardware", expected_starts={"pinky1": "H1", "pinky2": "N17"}
+    )
+    with pytest.raises(ValueError, match="outside verified"):
+        fleet.assign("pinky3", "smartcart")
+    fleet.assign("pinky2", "logistics")

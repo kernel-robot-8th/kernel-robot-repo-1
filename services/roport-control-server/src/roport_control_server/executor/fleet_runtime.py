@@ -147,32 +147,8 @@ class FleetRuntime:
             return True
         return c.result(event)
 
-    def poll(self, timeout=0.02):
-        try:
-            self._poll(timeout)
-        except (ConnectionError, TimeoutError):
-            if self.control.data["commands"]:
-                self.control.hold("mqtt_delivery_outcome_unknown")
-
-    def _poll(self, timeout):
+    def publish_stops(self):
         c = self.control
-        if not self.transport.ready:
-            if c.data["commands"]:
-                c.hold("mqtt_disconnected")
-            return
-        c.check_active()
-        try:
-            delivery = self.transport.receive(timeout)
-        except Empty:
-            delivery = None
-        if delivery:
-            try:
-                self.handle(delivery)
-            except ValueError as exc:
-                c.hold(str(exc))
-            self.transport.ack(delivery)
-            # Apply new positions before renewing permission for the active route.
-            c.check_active()
         for cid, command in list(c.data["commands"].items()):
             if (
                 not c.data["fault"]
@@ -208,6 +184,34 @@ class FleetRuntime:
             data = deepcopy(c.data)
             data["commands"][cid]["stop_published"] = True
             c.save(data)
+
+    def poll(self, timeout=0.02):
+        try:
+            self._poll(timeout)
+        except (ConnectionError, TimeoutError):
+            if self.control.data["commands"]:
+                self.control.hold("mqtt_delivery_outcome_unknown")
+
+    def _poll(self, timeout):
+        c = self.control
+        if not self.transport.ready:
+            if c.data["commands"]:
+                c.hold("mqtt_disconnected")
+            return
+        c.check_active()
+        try:
+            delivery = self.transport.receive(timeout)
+        except Empty:
+            delivery = None
+        if delivery:
+            try:
+                self.handle(delivery)
+            except ValueError as exc:
+                c.hold(str(exc))
+            self.transport.ack(delivery)
+            # Apply new positions before renewing permission for the active route.
+            c.check_active()
+        self.publish_stops()
         now = monotonic()
         if now - self.last_poll >= 1:
             for request_id, release in c.data.get("host_releases", {}).items():
@@ -347,7 +351,7 @@ def service_tick(control, store, *, now=None):
                 control.receipt(request_id)
 
 
-def main():
+def main(*, field_loader=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument(
@@ -355,20 +359,29 @@ def main():
     )
     parser.add_argument("--socket", required=True)
     parser.add_argument("--hardware-authorized", action="store_true")
+    if field_loader:
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument("--mock-omx", action="store_true")
+        group.add_argument("--real-shelf", choices=("1b", "2b"))
+        parser.add_argument(
+            "--shelf-clear-confirmed", action="store_true", required=True
+        )
     args = parser.parse_args()
-    with open(args.config) as file:
-        config = json.load(file)
-    if config.get("mode") == "hardware":
-        if args.journal:
+    if field_loader:
+        if not args.hardware_authorized or args.journal:
+            parser.error("field owner requires hardware authorization and PostgreSQL")
+        from pathlib import Path
+
+        config = field_loader(
+            Path(args.config), args.mock_omx, shelf_slot=args.real_shelf
+        )
+    else:
+        with open(args.config) as file:
+            config = json.load(file)
+        if config.get("mode") != "simulation":
             parser.error(
-                "file journal requires simulation; use PostgreSQL for hardware"
+                "standalone owner requires simulation; use the validated field launcher"
             )
-        if not args.hardware_authorized or config.get("field_verified") is not True:
-            parser.error(
-                "hardware requires field verification and explicit authorization"
-            )
-    elif config.get("mode") != "simulation":
-        parser.error("mode must be simulation or hardware")
     connection = mqtt_config(config["control_id"])
     if connection.host not in {
         "localhost",
@@ -447,6 +460,8 @@ def main():
             pass
         finally:
             control.hold("owner_stopped")
+            if config["mode"] == "hardware" and control.data["commands"]:
+                runtime.publish_stops()
 
 
 if __name__ == "__main__":
