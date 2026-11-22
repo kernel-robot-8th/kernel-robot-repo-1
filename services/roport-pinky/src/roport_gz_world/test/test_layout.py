@@ -40,11 +40,18 @@ def test_outer_walls_444_5_by_221(layout):
     aisle = _by_name(layout.walls, 'outer_aisle')
     window = _by_name(layout.walls, 'outer_window')
     # 선분 길이 + 두께(모서리를 닫으려고 양 끝을 0.25 cm씩 늘림). G 138 + H 306.5
-    assert aisle.sx == pytest.approx(4.445 + 0.005)
+    # v16: 통로 벽은 x 280(02 오른쪽 칸막이)에서 나뉘고 동쪽은 2026-11-19 B 로 기울임
+    raw = {w['name']: w for w in layout.raw['walls']}
+    assert raw['outer_aisle']['from'][0] == 0
+    assert raw['outer_aisle']['to'][0] == raw['outer_aisle_east']['from'][0] == 280
+    assert raw['outer_aisle_east']['to'][0] == 444.5
+    assert raw['outer_aisle_east']['to'] == raw['outer_right']['from']
+    assert raw['partition_delivery']['from'] == raw['outer_aisle_east']['from']   # 틈 없음
+    assert aisle.sx == pytest.approx(2.80 + 0.005)
     assert _by_name(layout.walls, 'outer_left').sx == pytest.approx(2.21 + 0.005)
     assert layout.frame.to_measured(aisle.cx, aisle.cy)[1] == pytest.approx(0.0, abs=1e-6)
     assert layout.frame.to_measured(window.cx, window.cy)[1] == pytest.approx(221.0, abs=1e-6)
-    assert layout.room() == (0, 0, 444.5, 221)
+    assert layout.room() == (0, -4.38, 444.5, 221)
 
 
 def test_wall_thickness_height_and_tape_width(layout):
@@ -63,16 +70,71 @@ def test_objects_inside_room(layout):
         assert y0 + o.sy / 2 * 100 - eps <= my <= y1 - o.sy / 2 * 100 + eps, o.name
 
 
+def _zone03_bottom(layout):
+    """03 아래 벽 꺾은선(v16): 서쪽부터 이어진 선분 [(from, to), ...]."""
+    segs = [(w['from'], w['to']) for w in layout.raw['walls']
+            if w['name'] == 'zone03_bottom' or w['name'].startswith('zone03_bottom_')]
+    return sorted(segs, key=lambda s: s[0][0])
+
+
+def _wall_y(segs, x):
+    """꺾은선 위 x 에서의 벽 중심 y."""
+    for (x0, y0), (x1, y1) in segs:
+        if x0 <= x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    raise AssertionError(f'x {x} outside wall')
+
+
 def test_zone03_and_entrance(layout):
-    # 03 아래 벽: 통로 벽 → 03 아래 벽 ㅂ 94.5(두 벽 두께 포함) → 벽 중심 y 94
-    w = _by_name(layout.walls, 'zone03_bottom')
-    assert layout.frame.to_measured(w.cx, w.cy)[1] == pytest.approx(94.0, abs=1e-6)
+    segs = _zone03_bottom(layout)
+    # 꺾은선은 끊김 없이 이어지고, 왼쪽 벽(게이트 벽)에서 시작한다
+    for (_, end), (start, _) in zip(segs, segs[1:]):
+        assert end == start
+    raw = {w['name']: w for w in layout.raw['walls']}
+    assert segs[0][0] == raw['zone03_left']['from'] and segs[0][0][0] == 138
     # I = H 306.5 - 입구 65 = 241.5 → 아래 벽 끝 x = 379.5
-    end_x = layout.frame.to_measured(w.cx, w.cy)[0] + (w.sx * 100 - 0.5) / 2
+    end_x = segs[-1][1][0]
     assert end_x == pytest.approx(379.5, abs=1e-6)
     assert 444.5 - end_x == pytest.approx(65.0)
+    # 생성한 벽 상자도 꺾은선 끝까지(양 끝 0.25 cm 늘림)
+    last = _by_name(layout.walls, 'zone03_bottom_n12')
+    mx, _ = layout.frame.to_measured(last.cx, last.cy)
+    assert mx + (last.sx * 100 - 0.5) / 2 * math.cos(last.yaw - math.radians(
+        layout.frame.yaw_deg)) == pytest.approx(379.5, abs=1e-6)
     box = _by_name(layout.objects, 'box_03')
     assert (box.sx, box.sy) == (pytest.approx(0.674), pytest.approx(0.21))
+
+
+def test_trunk_to_walls_2026_11_19(layout):
+    """2026-11-19 줄자 실측(사용자): 본선 테이프 가장자리 → 벽 면. 본선이 강의실 벽과 평행하지 않아
+    노드는 그대로 두고 벽을 맞췄다(사용자 결정)."""
+    half_t = layout.raw['defaults']['wall_thickness'] / 2
+    half = layout.line_width / 2
+    trunk = _node(layout, 'N12').y
+    segs = _zone03_bottom(layout)
+    # A: 본선 03 쪽 가장자리 → 03 아래 벽 면
+    for nid, a in (('N19', 16.2), ('N24', 16.2), ('N09', 15.5), ('N08', 15.2), ('N12', 14.8)):
+        n = _node(layout, nid)
+        assert n.y == trunk                                             # 본선 노드 y 그대로
+        face = _wall_y(segs, n.x) - half_t
+        assert face - (n.y + half) == pytest.approx(a, abs=1e-6), nid
+    # x 138~N19 는 실측 없음: N19 값으로 평평
+    assert _wall_y(segs, 138) == pytest.approx(_wall_y(segs, _node(layout, 'N19').x))
+    # B: 통로 벽 면(벽 선) → 본선 통로 쪽 가장자리. 서쪽 b 72 와 같은 기준(벽 선 = 면)
+    east = next(w for w in layout.raw['walls'] if w['name'] == 'outer_aisle_east')
+    (x0, y0), (x1, y1) = east['from'], east['to']
+    for nid, b in (('N08', 75.0), ('N12', 75.4)):
+        n = _node(layout, nid)
+        aisle = y0 + (y1 - y0) * (n.x - x0) / (x1 - x0)
+        assert (n.y - half) - aisle == pytest.approx(b, abs=0.1), nid
+    # 통로 벽에 붙인 P1·P2 마커와 03 아래 벽에 붙은 삼각대는 벽을 따라 옮김
+    for m in layout.raw['markers']['items']:
+        if m['name'] in ('P1', 'P2'):
+            aisle = y0 + (y1 - y0) * (m['center'][0] - x0) / (x1 - x0)
+            assert m['center'][1] - aisle == pytest.approx(0.5, abs=0.01), m['name']
+    cam = {o['name']: o for o in layout.raw['objects']}['camera_tripod']
+    assert cam['min'][1] == pytest.approx(_wall_y(segs, cam['min'][0]))
+    assert cam['max'][1] - cam['min'][1] == pytest.approx(25.5)        # ㄹ
 
 
 def test_line_dimensions_from_measurement(layout):
@@ -153,9 +215,12 @@ def test_delivery_and_warehouse_dimensions(layout):
 
 def test_omx12_from_walls(layout):
     # 2026-11-03 저녁 재측정 기록지: 벽-선반(통로 벽) 면 기준, 벽-03 면 기준은 0.5 cm 안에서 확인
-    raw = {w['name']: w for w in layout.raw['walls']}
     half_t = layout.raw['defaults']['wall_thickness'] / 2
-    face03 = raw['zone03_bottom']['from'][1] - half_t
+    # [11]·[12]·Ⓓ 는 2026-11-03 벽-03 면 기준이다. v16 은 03 아래 벽을 2026-11-19 A(본선 기준)로
+    # 3.15 cm 옮겼으므로(02 구간), 이 값들은 v15 벽 면 93.75 에 대고 받침 위치만 확인한다.
+    face03 = 93.75
+    v16_face03 = _wall_y(_zone03_bottom(layout), 209.4) - half_t
+    assert face03 - v16_face03 == pytest.approx(3.15)
     aisle_face = half_t
     objs = {o['name']: o for o in layout.raw['objects']}
     n11 = _node(layout, 'N11')
@@ -270,25 +335,40 @@ def test_walls_match_slam_map(layout):
     w, h, px = _read_pgm(SLAM_PGM)
     occ = [(ox + (c + 0.5) * res, oy + (h - 1 - r + 0.5) * res)
            for r in range(h) for c in range(w) if px[r * w + c] < 50]
-    dists = []
+    dists, moved = [], []
     for b in layout.walls:
         n = max(2, int(b.sx / 0.05))
         for i in range(n):
             t = (i / (n - 1) - 0.5) * (b.sx - 0.005)
             x, y = b.cx + t * math.cos(b.yaw), b.cy + t * math.sin(b.yaw)
-            dists.append(min(math.hypot(x - a, y - c) for a, c in occ))
-    mean = sum(dists) / len(dists)
-    assert mean < 0.03, mean
+            d = min(math.hypot(x - a, y - c) for a, c in occ)
+            (moved if b.name in V16_TRUNK_WALLS else dists).append(d)
+    everything = dists + moved
+    assert sum(everything) / len(everything) < 0.03
     assert max(dists) < 0.07, max(dists)
+    # v16: 본선 쪽 벽은 2026-11-19 본선 ↔ 벽 실측으로 옮겼다(본선 테이프가 벽과 평행하지 않음).
+    # SLAM 지도는 실제 벽 위치라서 여기서는 옮긴 만큼(최대 4.55 cm) + 칸 크기만큼 더 멀다(실측 7.4 cm).
+    assert max(moved) < 0.08, max(moved)
 
 
-def test_map_has_same_grid_as_slam_map(layout):
+# 2026-11-19 실측으로 옮기거나 기울인 벽(SLAM 지도와 거리가 커지는 쪽)
+V16_TRUNK_WALLS = {'outer_aisle_east', 'zone03_bottom_n24', 'zone03_bottom_n09',
+                   'zone03_bottom_n08', 'zone03_bottom_n12'}
+
+
+def test_map_covers_same_area_as_slam_map_with_2cm_cells(layout):
+    """원점·넓이는 SLAM 지도와 같게(기존 좌표 유지), 칸은 2 cm.
+
+    5 cm 칸에서는 벽에 조금만 걸친 칸도 전부 벽이 되어 벽이 두꺼워지고 AMCL 이 4~6 cm 치우쳤다(2026-11-21 d660).
+    """
     import yaml
     meta = yaml.safe_load(open(SLAM_YAML))
     w, h, _ = _read_pgm(SLAM_PGM)
     m = layout.map
-    assert (m.width, m.height) == (w, h)
-    assert m.resolution == pytest.approx(float(meta['resolution']))
+    slam_res = float(meta['resolution'])
+    assert m.resolution == pytest.approx(0.02)
+    assert m.width * m.resolution == pytest.approx(w * slam_res)
+    assert abs(m.height * m.resolution - h * slam_res) < m.resolution      # 2.65 m → 133칸(2.66 m)
     assert m.origin == (pytest.approx(meta['origin'][0]), pytest.approx(meta['origin'][1]))
 
 
@@ -315,7 +395,7 @@ def test_map_pixels(layout):
     assert at(64, 15) == generate_map.OCCUPIED      # OMX3 받침(벽 높이로 둠)
     assert at(280, 25) == generate_map.OCCUPIED     # 인도장 오른쪽 칸막이 T
     assert at(250, 73.2) == generate_map.FREE       # 테이프는 안 그림
-    assert at(200, -10) == generate_map.UNKNOWN     # 벽 바깥
+    assert at(200, -5) == generate_map.UNKNOWN      # 벽 바깥(지도 아래 끝은 통로 벽 밖 약 7 cm)
 
 
 def test_png_round_trip():

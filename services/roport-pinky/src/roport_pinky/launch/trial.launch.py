@@ -64,6 +64,9 @@ def _nodes(context):
     goal_xy_tolerance = float(LaunchConfiguration('goal_xy_tolerance').perform(context))
     if not math.isfinite(goal_xy_tolerance) or not .01 <= goal_xy_tolerance <= .1:
         raise ValueError('goal_xy_tolerance must be finite and in [0.01, 0.1] m')
+    planner_tolerance = float(LaunchConfiguration('planner_tolerance').perform(context))
+    if not math.isfinite(planner_tolerance) or not .05 <= planner_tolerance <= .3:
+        raise ValueError('planner_tolerance must be finite and in [0.05, 0.3] m')
     config = LaunchConfiguration('params_file')
     nodes = [
         Node(package='roport_pinky', executable='trial_guard', output='screen'),
@@ -91,7 +94,8 @@ def _nodes(context):
             overrides['default_nav_to_pose_bt_xml'] = LaunchConfiguration('recovery_bt')
         if name == 'planner_server':
             # The public-space goal is near the map edge; a .5 m search crosses it.
-            overrides['GridBased.tolerance'] = 0.1  # meters
+            # 추종(11-20 실로봇): 고객 앞 목표가 사이에 선 인형 위에 떨어지면 0.1 로는 계획 실패 → 시험 때 0.3
+            overrides['GridBased.tolerance'] = planner_tolerance  # meters, default 0.1
             overrides['GridBased.plugin'] = LaunchConfiguration('planner_plugin')
         if name == 'controller_server':
             overrides.update(CONTROLLER_OVERRIDES)
@@ -136,6 +140,8 @@ def generate_launch_description():
                                   description='Nav2 rotation cap in rad/s; use field-verified value'),
             DeclareLaunchArgument('goal_xy_tolerance', default_value='0.08',
                                   description='Map pose XY tolerance in m; not measured wall clearance'),
+            DeclareLaunchArgument('planner_tolerance', default_value='0.1',
+                                  description='GridBased goal search tolerance in m, 0.05..0.3 (0.3 for follow tests)'),
             DeclareLaunchArgument('params_file', default_value=PathJoinSubstitution([
                 FindPackageShare('pinky_navigation'), 'params', 'nav2_params.yaml']))]
     return LaunchDescription(args + [OpaqueFunction(function=_nodes)])

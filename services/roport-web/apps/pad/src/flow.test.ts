@@ -1,7 +1,7 @@
 // 실행(CI와 동일): services/roport-web 에서 `node --test 'apps/*/src/**/*.test.ts'`
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bigButton, initialState, movingPhase, reduce, type Action, type MovingStep, type PadState } from './flow.ts';
+import { automaticShopper, bigButton, initialState, movingPhase, reduce, shoppingDemoEnabled, type Action, type MovingStep, type PadState } from './flow.ts';
 import type { VerifiedPickup } from './types';
 
 const pickup: VerifiedPickup = {
@@ -157,4 +157,33 @@ test('시도 제한 결과는 남은 초를 실패 화면까지 전달하고, �
     name: 'verifyFailed',
     reason: 'NOT_FOUND',
   });
+});
+
+test('쇼핑 선택은 한 후보나 가장자리가 잘린 사진의 가운데 후보를 제안한다', () => {
+  const barbie = [.40, 0, .75, .98], sleeve = [0, 0, .36, .62], other = [.08, .1, .32, .8];
+  assert.equal(automaticShopper([]), null);
+  assert.equal(automaticShopper([barbie]), 0);
+  assert.equal(automaticShopper([sleeve, barbie]), 1);
+  assert.equal(automaticShopper([barbie, [.70, 0, 1, .8]]), 0);
+  assert.equal(automaticShopper([other, barbie]), null);
+  assert.equal(automaticShopper([sleeve, other]), null);
+});
+
+test('외형 추종은 명시적인 단독 시험 빌드에서만 열리고, 서버 모드에서는 잠긴다', () => {
+  assert.equal(shoppingDemoEnabled(undefined, undefined), false);
+  assert.equal(shoppingDemoEnabled('false', undefined), false);
+  assert.equal(shoppingDemoEnabled('1', undefined), false);
+  assert.equal(shoppingDemoEnabled('true', 'server'), false);
+  assert.equal(shoppingDemoEnabled('true', undefined), true);
+});
+
+test('기존 카드 FOLLOW는 접수 후 상태 보고를 기다리는 서비스 흐름을 유지한다', () => {
+  const pending = run([
+    { type: 'go', step: { name: 'chooseService', pickup } },
+    { type: 'send', token: 1 },
+    { type: 'serviceAnswered', token: 1, pickup, mode: 'FOLLOW', res: { accepted: true } },
+  ]);
+  assert.equal(moving(pending).mode, 'FOLLOW');
+  assert.equal(movingPhase(moving(pending)), 'START_PENDING');
+  assert.equal(movingPhase(moving(reduce(pending, { type: 'robotState', motion: 'MOVING' }))), 'MOVING');
 });

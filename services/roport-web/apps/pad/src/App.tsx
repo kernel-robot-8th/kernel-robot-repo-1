@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
+import { Shopping } from './Shopping';
 import * as api from './api';
-import { bigButton, initialState, movingPhase, reduce, type MovingPhase, type Notice, type Step } from './flow';
+import { bigButton, initialState, movingPhase, reduce, shoppingDemoEnabled, type MovingPhase, type Notice, type Step } from './flow';
 import { Icon, PhoneQr, type IconName } from './icons';
 import { FAILURE_TEXT, failureText } from './messages';
 import type { ServiceMode, VerifiedPickup, VerifyResult } from './types';
@@ -11,6 +12,8 @@ const NOTICE_TEXT: Record<Exclude<Notice, null>, string> = {
   COMMAND_REJECTED: '요청이 거절되었습니다. 카트에서 떨어져 안내 직원에게 문의해 주세요.',
   RECEIPT_NOT_SAVED: '수령 확인이 저장되지 않았습니다. 다시 눌러 주세요.',
 };
+
+const SHOW_SHOPPING_DEMO = shoppingDemoEnabled(import.meta.env.VITE_PAD_SHOPPING_DEMO, import.meta.env.VITE_PAD_API);
 
 const MODE_LABEL: Record<ServiceMode, string> = { GATE_GUIDE: '게이트 안내', FOLLOW: '짐 운반·추종' };
 
@@ -28,9 +31,10 @@ function pickupOf(step: Step): VerifiedPickup | null {
 
 // 진행 표시줄: 입국장 수령만 서비스 단계가 있다.
 function progressOf(step: Step, arrival: boolean): { labels: string[]; current: number } {
-  const labels = arrival && api.IS_DEMO ? ['예약 확인', '물품 확인', '서비스 이용', '수령 완료'] : ['예약 확인', '물품 확인', '수령 완료'];
-  const order: Partial<Record<Step['name'], number>> = arrival && api.IS_DEMO
-    ? { items: 1, chooseService: 2, moving: 2, receipt: 3, returning: 4 }
+  const hasServiceStep = arrival && api.IS_DEMO;
+  const labels = hasServiceStep ? ['예약 확인', '물품 확인', '서비스 이용', '수령 완료'] : ['예약 확인', '물품 확인', '수령 완료'];
+  const order: Partial<Record<Step['name'], number>> = hasServiceStep
+    ? { items: 1, chooseService: 2, shopping: 2, moving: 2, receipt: 3, returning: 4 }
     : { items: 1, receipt: 2, returning: 3 };
   return { labels, current: order[step.name] ?? 0 };
 }
@@ -125,7 +129,8 @@ export function App() {
         <div className="brand">
           <span className="logo">RO<span className="logo-accent">:PORT</span></span>
           <span className="cart-id">{api.CART_LABEL}</span>
-          {api.IS_DEMO && <span className="badge-demo" title="데모 데이터로 동작하며 로봇 명령을 보내지 않습니다">데모</span>}
+          {api.IS_DEMO && step.name !== 'shopping' && <span className="badge-demo" title="데모 데이터로 동작하며 로봇 명령을 보내지 않습니다">데모</span>}
+          {step.name === 'shopping' && <span className="badge-demo" title="연결된 카트에서 동작하는 단독 시험입니다">외형 추종 시험</span>}
         </div>
         {pickup && (
           <dl className="flight" aria-label="탑승 정보">
@@ -216,7 +221,7 @@ export function App() {
           <div className="choose">
             <h1>이동 방법을 선택해 주세요</h1>
             <p className="lead">짐은 카트에 실은 채로 함께 이동합니다.</p>
-            <div className="choices">
+            <div className={SHOW_SHOPPING_DEMO ? "choices choices-with-demo" : "choices"}>
               <button className="choice" disabled={busy} onClick={() => startService(step.pickup, 'GATE_GUIDE')}>
                 <span className="choice-icon"><Icon name="gate" /></span>
                 <span className="choice-text">
@@ -233,8 +238,24 @@ export function App() {
                 </span>
                 <span className="choice-arrow"><Icon name="arrow" /></span>
               </button>
+              {SHOW_SHOPPING_DEMO && (
+                <button className="choice choice-demo" disabled={busy} onClick={() => go({ name: 'shopping', pickup: step.pickup })}>
+                  <span className="choice-icon"><Icon name="follow" /></span>
+                  <span className="choice-text">
+                    <b>외형 추종 단독 시험</b>
+                    <span>연결된 카트로 사진에서 고른 대상을 따라가는 기능을 시험합니다.</span>
+                  </span>
+                  <span className="choice-arrow"><Icon name="arrow" /></span>
+                </button>
+              )}
             </div>
           </div>
+        )}
+
+        {SHOW_SHOPPING_DEMO && step.name === 'shopping' && (
+          <Shopping onBack={() => go({ name: 'chooseService', pickup: step.pickup })}
+            onFinish={() => go({ name: 'receipt', pickup: step.pickup })}
+            onGate={() => startService(step.pickup, 'GATE_GUIDE')} />
         )}
 
         {step.name === 'moving' && (() => {
@@ -308,7 +329,7 @@ export function App() {
         {notice && <p className="notice" role="alert">{NOTICE_TEXT[notice]}</p>}
       </main>
 
-      {api.IS_DEMO && (
+      {api.IS_DEMO && step.name !== 'shopping' && (
         <footer className="demo-bar" aria-label="데모 조작">
           <span className="demo-label">데모 조작</span>
           {step.name === 'idle' && (
