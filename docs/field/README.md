@@ -24,7 +24,7 @@ uv run python tools/check_field.py --bundle /tmp/field-handoff --targets pinky1 
 
 ### 인도장 일반 HOLD 해제
 
-팔·물품·Pinky 상태 확인 후 관제 실행부 계정에서 `uv run python tools/release_workcell.py --socket "$FLEET_SOCKET" --hold-command-id "$HELD_COMMAND" --arms-confirmed --box-confirmed --pinky-confirmed`를 실행한다. 현재 Host 기동과 보류 명령이 일치하고 양팔 정지·홈·빈 그리퍼가 확인되면 해제 결과가 기록된다. 비상정지는 현장에서 처리한다. 관제 HOLD 해제와 운행 재개에는 별도 조작이 필요하다.
+팔·물품·Pinky 상태 확인 후 관제 실행부 계정에서 `uv run python tools/release_workcell.py --socket "$FLEET_SOCKET" --hold-command-id "$HELD_COMMAND" --arms-confirmed --box-confirmed --pinky-confirmed`를 실행한다. 현재 Host 기동과 보류 명령이 일치하고 양팔 정지·홈·빈 그리퍼가 확인되면 해제 결과가 기록된다. 소켓이 확인한 요청 프로세스의 UID와 요청 ID를 기록한다. 비상 정지·강제 종료, 재시작으로 기존 실행 결과를 알 수 없는 경우, 정지 여부나 취소 사유가 확인되지 않은 경우에는 Host에서 현장 확인 후 해제한다. 관제 HOLD 해제와 운행 재개에는 별도 조작이 필요하다.
 
 현장 작업 사본에 기체 배정을 기록한다. 역할 변경 시 같은 표와 대상 프로필을 함께 갱신한다.
 

@@ -89,6 +89,8 @@ def recover_stop(control, command_id, stop_id, boot_version, note):
 
 
 def request_host_release(control, request_id, hold_command_id, operator, confirmed):
+    if not isinstance(request_id, str) or not request_id:
+        raise ValueError("release request ID required")
     data = deepcopy(control.data)
     records = data.setdefault("host_releases", {})
     if request_id in records:

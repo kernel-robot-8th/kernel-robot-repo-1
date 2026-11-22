@@ -206,9 +206,9 @@ class PanelFieldExecutor:
             "model_version": model_version,
             "calibration_version": calibration_version,
         }
-        if not all(
+        if not callable(getattr(panel, "cancel", None)) or not any(
             callable(getattr(panel, name, None))
-            for name in ("cancel", "cancellation_settled")
+            for name in ("cancellation_status", "cancellation_settled")
         ):
             raise ValueError("managed_panel_required")
         self.panel, self.completion, self.stop = panel, completion, stop
@@ -340,16 +340,26 @@ class PanelFieldExecutor:
                 )
             raise
 
+    def _cancellation_status(self):
+        read = getattr(self.panel, "cancellation_status", None)
+        if callable(read):
+            return read()
+        return {
+            "settled": self.panel.cancellation_settled(),
+            "local_release_only": True,
+        }
+
     def observe(self):
         with self.lock:
             stopped = _stopped(self.stop_status, self.stop_requested_at)
             if self.stop_requested_at is not None:
+                cancellation = {}
                 if self.panel.command_id is not None:
                     try:
-                        self.start_unknown = (
-                            self._sample("cancel", self.panel.cancellation_settled)
-                            is not True
+                        cancellation = (
+                            self._sample("cancel", self._cancellation_status) or {}
                         )
+                        self.start_unknown = cancellation.get("settled") is not True
                     except Exception:  # noqa: BLE001 - a query failure cannot prove cancellation
                         self.start_unknown = True
                 stop_done = (
@@ -357,11 +367,16 @@ class PanelFieldExecutor:
                     and self.stop_future.done()
                     and self.stop_future.exception() is None
                 )
-                return (
+                result = (
                     {"state": "stopped", "stopped": True}
                     if stopped and stop_done and not self.start_unknown
                     else {"state": "stopping"}
                 )
+                if cancellation.get("error"):
+                    result["error"] = cancellation["error"]
+                if cancellation.get("local_release_only") is True:
+                    result["local_release_only"] = True
+                return result
         if self.start_future is None:
             return {"state": "idle"}
         if not self.start_future.done():

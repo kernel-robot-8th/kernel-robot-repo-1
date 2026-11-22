@@ -105,12 +105,14 @@ class FleetRuntime:
             if (
                 event["type"] != "command_status"
                 or event["source"] != cmd["target"]
-                or p["boot_version"] != cmd["payload"]["expected_boot_version"]
                 or p["status"] not in {"completed", "rejected"}
                 or (
                     p["status"] == "completed"
-                    and p.get("result", {}).get("released_hold")
-                    != cmd["payload"]["hold_command_id"]
+                    and (
+                        p["boot_version"] != cmd["payload"]["expected_boot_version"]
+                        or p.get("result", {}).get("released_hold")
+                        != cmd["payload"]["hold_command_id"]
+                    )
                 )
             ):
                 raise ValueError("host release result mismatch")

@@ -15,6 +15,14 @@ ARMS = ("omx1", "omx2", "omx3")
 SLOTS = {"omx1": {"1a", "2a"}, "omx2": {"1c", "2c"}, "shelf-01": {"1b", "2b"}}
 NODES = {"omx1": "N21", "omx2": "N22", "shelf-01": "N11", "omx3": "N01"}
 TERMINAL = {"completed", "failed", "rejected", "interrupted"}
+LOCAL_RELEASE_ERRORS = {
+    "PANEL_EMERGENCY_STOP",
+    "PANEL_KILLED",
+    "host_restarted_outcome_unknown",
+    "physical_stop_unavailable",
+    "physical_stop_failed",
+    "physical_stop_not_confirmed",
+}
 
 
 class ReadinessPending(ValueError):
@@ -137,7 +145,15 @@ class FieldOmxHost:
         ):
             raise ValueError("confirm the pending device stop before reconciliation")
         for target, executor in self.executors.items():
-            ready = executor.readiness()
+            try:
+                ready = executor.readiness()
+                if not isinstance(ready, dict):
+                    raise TypeError("invalid readiness observation")
+            except Exception as exc:
+                log.warning(
+                    "Executor readiness unavailable during HOLD release: %s", target
+                )
+                raise ValueError("executor_unavailable") from exc
             arms = _target_arms(target)
             if ready.get("busy") or ready.get("error"):
                 raise ValueError(target + ": executor busy or fault")
@@ -365,8 +381,11 @@ class FieldOmxHost:
         if target == "shelf-01":
             docking = None
             for record in reversed(list(self.data["commands"].values())):
-                if record["command"]["target"] == target:
-                    command = record["command"]
+                command = record["command"]
+                if (
+                    command["target"] == target
+                    and command["type"] == "shelf_transfer_command"
+                ):
                     try:
                         docking = self.alignment(
                             command, self._pinky_observation(command)
@@ -478,6 +497,8 @@ class FieldOmxHost:
                 if not all(p["confirmed"].values()):
                     raise ValueError("operator_checks_required")
                 self._verify_release()
+                if datetime.fromisoformat(message["expires_at"]) <= datetime.now(UTC):
+                    raise ValueError("expired_command")
                 self.data.setdefault("recoveries", []).append(
                     {
                         "fault": self.data["hold"],
@@ -552,7 +573,7 @@ class FieldOmxHost:
     def _fail(self, command, reason):
         self.data["hold"] = str(reason)
         self.data["hold_command_id"] = command["command_id"]
-        if reason == "PANEL_EMERGENCY_STOP":
+        if self.data["hold"] in LOCAL_RELEASE_ERRORS:
             self.data["local_release_only"] = True
         # A failed outcome does not prove that the device stopped; retain its stop target.
         self.data["recovery_command_id"] = command["command_id"]
@@ -619,6 +640,11 @@ class FieldOmxHost:
         executor = self.executors[command["target"]]
         try:
             observed = executor.observe()
+            if (
+                str(observed.get("error")) in LOCAL_RELEASE_ERRORS
+                or observed.get("local_release_only") is True
+            ):
+                self.data["local_release_only"] = True
             if self.data.get("stop"):
                 if (
                     observed.get("state") == "stopped"

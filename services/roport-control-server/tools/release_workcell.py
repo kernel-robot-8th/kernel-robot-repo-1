@@ -36,9 +36,9 @@ def main():
         print("요청 ID", request_id, flush=True)
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
-            status = rpc(args.socket, {"action": "snapshot"})["host_releases"][
-                request_id
-            ]["status"]
+            status = rpc(
+                args.socket, {"action": "host_release_status", "request_id": request_id}
+            )["status"]
             if status == "completed":
                 print("Host가 일반 HOLD를 해제했습니다. 운행은 별도로 승인하세요.")
                 return

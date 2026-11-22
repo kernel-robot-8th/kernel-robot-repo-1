@@ -1033,7 +1033,11 @@ class FleetControl:
 
     def snapshot(self):
         return {
-            **{k: deepcopy(v) for k, v in self.data.items() if k != "events"},
+            **{
+                k: deepcopy(v)
+                for k, v in self.data.items()
+                if k not in {"events", "host_releases"}
+            },
             "robots": deepcopy(self.observed),
             "poses": deepcopy(self.poses),
             "ages": {r: self.state_age(r) for r in self.heard},

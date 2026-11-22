@@ -740,66 +740,131 @@ class FieldHostTest(unittest.TestCase):
             self.host.release_hold("checked")
         self.assertNotIsInstance(active.exception, ReadinessPending)
 
+    def release_command(self, request_id="release-1", held="command-1", **checks):
+        return build_message(
+            "hold_release_command",
+            "control-01",
+            "shelf-01",
+            {
+                "expected_boot_version": self.host.boot_version,
+                "hold_command_id": held,
+                "operator": "uid:1000",
+                "confirmed": {"arms": True, "box": True, "pinky": True, **checks},
+            },
+            command_id=request_id,
+            expires_at=expiry(),
+        )
+
     def test_remote_release_checks_held_command_and_never_starts_motion(self):
         command = self.command()
         self.host.handle(command)
         self.host.handle(self.stop_command())
         self.host.poll()
-
-        def request(key, held, **checks):
-            return build_message(
-                "hold_release_command",
-                "control-01",
-                "shelf-01",
-                {
-                    "expected_boot_version": self.host.boot_version,
-                    "hold_command_id": held,
-                    "operator": "test-operator",
-                    "confirmed": {"arms": True, "box": True, "pinky": True, **checks},
-                },
-                command_id=key,
-                expires_at=expiry(),
-            )
+        docking = self.host.state("shelf-01")["payload"]["state"]["docking"]
+        self.assertIsNotNone(docking)
 
         for msg, reason in [
-            (request("old", "old-hold"), "hold_changed"),
+            (self.release_command("old", held="old-hold"), "hold_changed"),
             (
-                request("unchecked", "command-1", pinky=False),
+                self.release_command("unchecked", pinky=False),
                 "operator_checks_required",
             ),
         ]:
             self.assertEqual(self.host.handle(msg)[0]["payload"]["reason"], reason)
-        msg = request("release-1", "command-1")
+            state = self.host.state("shelf-01")["payload"]["state"]
+            self.assertEqual(state["docking"], docking)
+        msg = self.release_command()
         (event,) = self.host.handle(msg)
         self.assertEqual(event["payload"]["result"]["released_hold"], "command-1")
         self.assertEqual(self.host.handle(msg), [event])
         self.assertIsNone(self.host.data["hold"])
         self.assertEqual(len(self.executors["shelf-01"].tasks), 1)
 
-    def test_emergency_hold_stays_local_after_confirmed_stop(self):
-        command = self.command()
-        self.host.handle(command)
-        self.host._fail(command, "PANEL_EMERGENCY_STOP")
+    def test_unreachable_panel_rejection_is_durable_and_same_command_is_not_retried(
+        self,
+    ):
+        from urllib.error import URLError
+
+        self.host.handle(self.command())
         self.host.handle(self.stop_command())
         self.host.poll()
-        msg = build_message(
-            "hold_release_command",
-            "control-01",
-            "shelf-01",
-            {
-                "expected_boot_version": self.host.boot_version,
-                "hold_command_id": "command-1",
-                "operator": "test-operator",
-                "confirmed": {"arms": True, "box": True, "pinky": True},
-            },
-            command_id="release-1",
-            expires_at=expiry(),
-        )
+        msg = self.release_command()
+        with patch.object(
+            self.executors["shelf-01"], "readiness", side_effect=URLError("offline")
+        ) as readiness:
+            (event,) = self.host.handle(msg)
+            self.assertEqual(event["payload"]["status"], "rejected")
+            self.assertEqual(event["payload"]["reason"], "executor_unavailable")
+            self.assertEqual(self.host.handle(msg), [event])
+            readiness.assert_called_once_with()
+        self.assertIn(event, self.host.pending())
+        self.assertIsNotNone(self.host.data["hold"])
         self.assertEqual(
-            self.host.handle(msg)[0]["payload"]["reason"],
+            self.host.handle(self.release_command("new-attempt"))[0]["payload"][
+                "status"
+            ],
+            "completed",
+        )
+
+    def test_release_can_expire_during_readiness_check(self):
+        from roport_omx import field_host
+
+        self.host.handle(self.command())
+        self.host.handle(self.stop_command())
+        self.host.poll()
+        msg = self.release_command()
+        now = datetime.fromisoformat(msg["sent_at"])
+        executor = self.executors["shelf-01"]
+        ready = executor.readiness()
+
+        with patch.object(field_host, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+
+            def slow_read():
+                clock.now.return_value = datetime.fromisoformat(msg["expires_at"])
+                return ready
+
+            with patch.object(executor, "readiness", side_effect=slow_read):
+                (event,) = self.host.handle(msg)
+        self.assertEqual(event["payload"]["status"], "rejected")
+        self.assertEqual(event["payload"]["reason"], "expired_command")
+        self.assertIsNotNone(self.host.data["hold"])
+
+    def test_emergency_hold_stays_local_after_confirmed_stop(self):
+        self.host.handle(self.command())
+        with patch.object(
+            self.executors["shelf-01"],
+            "observe",
+            return_value={"state": "failed", "error": "PANEL_EMERGENCY_STOP"},
+        ):
+            self.host.poll()
+        self.host.handle(self.stop_command())
+        self.host.poll()
+        self.assertEqual(
+            self.host.handle(self.release_command())[0]["payload"]["reason"],
             "local_emergency_release_required",
         )
         self.assertIsNotNone(self.host.data["hold"])
+
+    def test_critical_fault_observed_during_stop_survives_stop_confirmation(self):
+        self.host.handle(self.command())
+        self.host.handle(self.stop_command())
+        executor = self.executors["shelf-01"]
+        with patch.object(
+            executor,
+            "observe",
+            return_value={
+                "state": "stopping",
+                "error": "PANEL_KILLED",
+            },
+        ):
+            self.assertEqual(self.host.poll(), [])
+        self.host.poll()
+        self.assertIsNone(self.host.data.get("recovery_command_id"))
+        self.assertEqual(
+            self.host.handle(self.release_command())[0]["payload"]["reason"],
+            "local_emergency_release_required",
+        )
 
     def test_local_reconciliation_preserves_history_and_never_resumes_motion(self):
         self.host.handle(self.command())
@@ -894,6 +959,10 @@ class FieldHostTest(unittest.TestCase):
         self.assertEqual([e["payload"]["status"] for e in result], ["completed"])
         self.assertIsNone(self.host.data.get("recovery_command_id"))
         self.assertTrue(self.host.data["hold"])
+        self.assertEqual(
+            self.host.handle(self.release_command())[0]["payload"]["reason"],
+            "local_emergency_release_required",
+        )
 
     def test_restarted_managed_panel_cancels_original_id_before_delayed_start(self):
         from test_panel_executor import ROUTES
@@ -1018,7 +1087,7 @@ class FieldHostTest(unittest.TestCase):
         panel.check = lambda task, **kwargs: None
         panel.prepare = panel.readiness
         panel.cancel = lambda **kwargs: panel.abort()
-        panel.cancellation_settled = lambda: True
+        panel.cancellation_status = lambda: {"settled": True}
         panel.command_id = None
         wrong = {
             "command_id": "command-1",
@@ -1070,7 +1139,7 @@ class FieldHostTest(unittest.TestCase):
         )
         panel = self.executors["shelf-01"]
         panel.cancel = lambda **kwargs: None
-        panel.cancellation_settled = lambda: True
+        panel.cancellation_status = lambda: {"settled": True}
         panel.command_id = None
         adapters = [
             WarehouseExecutor(runner, marker_ids={"package-17": 17}, **options),
@@ -1309,7 +1378,7 @@ class FieldHostTest(unittest.TestCase):
         panel.check = delayed_check
         panel.prepare = panel.readiness
         panel.cancel = lambda **kwargs: panel.abort()
-        panel.cancellation_settled = lambda: True
+        panel.cancellation_status = lambda: {"settled": True}
         panel.command_id = None
         adapter = PanelFieldExecutor(
             panel,

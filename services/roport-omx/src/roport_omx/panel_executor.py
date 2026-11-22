@@ -99,19 +99,22 @@ def _live_flags(arm: dict) -> dict:
 def _hold_code(result: dict) -> str:
     """stage "hold" stays until a person acts: emergency stop, or release found no path back."""
     align = result.get("align") if isinstance(result.get("align"), dict) else {}
-    if "비상 정지" in (align.get("stopped_by"), result.get("stopped_by")):
-        return "PANEL_EMERGENCY_STOP"
+    stopped_by = (align.get("stopped_by"), result.get("stopped_by"))
+    for cause in ("비상 정지", "강제 종료"):
+        if cause in stopped_by:
+            return STOPS[cause]
     if align.get("released") is False:
         return "PANEL_ALIGN_RELEASE_FAILED"
     return "PANEL_HOLD"
 
 
 def _align_error(align: dict) -> str | None:
+    stopped_by = align.get("stopped_by")
+    if stopped_by in ("비상 정지", "강제 종료"):
+        return STOPS[stopped_by]
     if align.get("ran") is not True:
         return "PANEL_ALIGN_SKIPPED"
-    if align.get("stopped_by"):
-        if align["stopped_by"] == "비상 정지":
-            return "PANEL_EMERGENCY_STOP"
+    if stopped_by:
         return "PANEL_ALIGN_STOPPED"
     if align.get("ok") is not True:
         return "PANEL_ALIGN_FAILED"
@@ -411,6 +414,8 @@ class PanelExecutor:
                 "operator_stop": stopped and align.get("released") is True,
             }
         stopped_by = result.get("stopped_by")
+        if stopped_by in ("비상 정지", "강제 종료"):
+            return {"state": "failed", "error": STOPS[stopped_by], "arms": arms}
         if stopped_by in OPERATOR_STOPS:
             # The stop is the cause; errors raised while shutting down are side effects.
             return {

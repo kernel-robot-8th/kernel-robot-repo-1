@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from test_fleet import complete, dispatch, finish, submit
@@ -285,6 +286,74 @@ def test_terminal_then_stop_rejection_requires_fresh_idle(fleet, issue):
         assert not fleet.data["commands"]
 
 
+def test_restarted_host_rejection_is_saved_and_acked_without_new_hold(fleet):
+    from roport_control_server.executor.fleet_runtime import FleetRuntime
+
+    cmd = wire.build_message(
+        "hold_release_command",
+        fleet.config["control_id"],
+        "shelf-01",
+        {
+            "expected_boot_version": "old-boot",
+            "hold_command_id": "held",
+            "operator": "uid:1000",
+            "confirmed": {"arms": True, "box": True, "pinky": True},
+        },
+        command_id="release-1",
+        expires_at="2099-01-01T00:00:00+00:00",
+    )
+    data = deepcopy(fleet.data)
+    data["host_releases"] = {"release-1": {"command": cmd, "status": "pending"}}
+    fleet.save(data)
+    published = []
+    runtime = FleetRuntime(
+        fleet, SimpleNamespace(publish=lambda topic, message: published.append(message))
+    )
+    payload = {
+        "boot_version": "new-boot",
+        "observed_at": cmd["sent_at"],
+        "sequence": 1,
+        "status": "completed",
+        "result": {"released_hold": "held"},
+    }
+    event = wire.build_message(
+        "command_status",
+        "shelf-01",
+        fleet.config["control_id"],
+        payload,
+        command_id=cmd["command_id"],
+    )
+    with pytest.raises(ValueError, match="host release result mismatch"):
+        runtime.stored_result(event)
+    assert (
+        not published
+        and fleet.data["host_releases"]["release-1"]["status"] == "pending"
+    )
+
+    event = wire.build_message(
+        "command_status",
+        "shelf-01",
+        fleet.config["control_id"],
+        payload
+        | {"status": "rejected", "result": {}, "reason": "boot_version_mismatch"},
+        command_id=cmd["command_id"],
+    )
+    delivery = SimpleNamespace(
+        payload=wire.encode(event),
+        topic=wire.topic("shelf-01", "event"),
+        qos=1,
+        retained=False,
+    )
+    runtime.handle(delivery)
+    runtime.handle(delivery)
+    assert fleet.data["events"][event["message_id"]] == event
+    assert fleet.data["host_releases"]["release-1"]["status"] == "rejected"
+    assert [m["payload"]["acked_message_id"] for m in published] == [
+        event["message_id"]
+    ] * 2
+    assert fleet.data["fault"] is None
+
+
 def test_workcell_operator_command_waits_for_host_result(monkeypatch, capsys):
     import sys
     from pathlib import Path
@@ -301,7 +370,8 @@ def test_workcell_operator_command_waits_for_host_result(monkeypatch, capsys):
             return {"session_id": "session"}
         if len(requests) == 2:
             return {}
-        return {"host_releases": {requests[1]["request_id"]: {"status": "completed"}}}
+        assert request["request_id"] == requests[1]["request_id"]
+        return {"status": "completed"}
 
     monkeypatch.setattr(tool, "rpc", rpc)
     monkeypatch.setattr(
@@ -327,6 +397,6 @@ def test_workcell_operator_command_waits_for_host_result(monkeypatch, capsys):
     assert [r["action"] for r in requests] == [
         "snapshot",
         "release_workcell",
-        "snapshot",
+        "host_release_status",
     ]
     assert "일반 HOLD를 해제" in capsys.readouterr().out
