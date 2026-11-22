@@ -204,8 +204,13 @@ def test_follow_sink_exclude_point_only_when_tracking():
     assert sink.exclude_point() is None
     sink.handle(_frame(robot_time=1.0), [card_at(0.8, 0.1)])
     assert sink.exclude_point() == pytest.approx((0.8, 0.1), abs=1e-3)
-    sink.handle(_frame(robot_time=5.5), [])                 # 4.5 s 못 봄 → lost(기준 4 s, 11-20 밤)
-    assert sink.exclude_point() is None
+    sink.handle(_frame(robot_time=1.4), [])                 # 가려짐(tracking, seen=false): 예전 좌표를 주지 않음
+    assert sink.last['state'] == 'tracking' and sink.last['seen'] is False and sink.exclude_point() is None
+    sink.handle(_frame(robot_time=1.6), [card_at(0.7, 0.0)])
+    assert sink.exclude_point() == pytest.approx((0.75, 0.05), abs=1e-3)      # 다시 보임(위치는 직전 값과 평균)
+    sink.handle(_frame(robot_time=5.5), [])                 # 놓침(기본 1 s = SR-22)
+    assert sink.last['state'] == 'lost' and sink.exclude_point() is None
+    assert FollowConfig().lost_after_s == 1.0
 
 
 # ------------------------------------------------------------------ 인형으로 잇기(임시, 11-21)

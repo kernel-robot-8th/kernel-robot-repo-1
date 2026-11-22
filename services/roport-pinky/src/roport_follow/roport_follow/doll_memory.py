@@ -68,7 +68,7 @@ class DollMemory:
         self.right = math.radians(max(1.0, fov_right_deg - self.cfg.vis_margin_deg))
         self.cam = (float(cam_x_m), float(cam_y_m))
         self.entries: list[_Entry] = []
-        self.pose = None            # 마지막으로 쓴 자세(자세가 잠깐 없을 때 대신 씀: 서 있으면 그대로 맞음)
+        self.pose = None            # 마지막으로 쓴 자세(표시용)
         self.pose_ok = False
         self.last_out = []
 
@@ -79,16 +79,16 @@ class DollMemory:
         a = math.atan2(by - self.cam[1], bx - self.cam[0])      # 왼쪽 +
         return -self.right <= a <= self.left
 
-    def update(self, t, pose, obs, exclude=None, exclude_radius_m=0.15):
+    def update(self, t, pose, obs, exclude=None, exclude_radius_m=0.15, exclude_name=None):
         """t: 영상 시각(s). pose: 그 시각 odom 자세 (x, y, yaw) 또는 None. obs: 이번 영상의 DollObstacle 목록
         (고객은 이미 뺀 것). exclude: 고객 위치 (x, y) base_footprint 또는 None. exclude_radius_m: 반경(m) 또는
-        종류 이름 → 반경 함수(고객과 같은 종류 adult 는 넓게).
+        종류 이름 → 반경 함수(고객과 같은 종류 adult 는 넓게). exclude_name: 주면 그 종류의 기억만 지운다.
+        pose 가 None(그 영상 시각의 odom 없음)이면 기억을 건드리지 않고 지금 보이는 것만 돌려준다: 마지막 자세를
+        다시 쓰면 로봇이 움직인 만큼 기억한 인형 자리가 틀어진다(18 cm 앞 인형으로 10 cm 다가가도 18 cm 로 남음).
         → [{'name', 'points'(base_footprint), 'x_m', 'y_m', 'seen', 'age_s'}, ...] 보낼 인형 전체."""
         cfg = self.cfg
         self.pose_ok = pose is not None
-        if pose is None:
-            pose = self.pose
-        if pose is None:                      # 자세를 한 번도 못 받음: 기억 불가 → 지금 보이는 것만
+        if pose is None:                      # 자세를 모름: 기억은 그대로 두고(갱신·삭제 없음) 지금 보이는 것만
             self.last_out = [{'name': o.name, 'points': tuple(o.points), 'x_m': o.x_m, 'y_m': o.y_m,
                               'seen': True, 'age_s': 0.0} for o in obs]
             return self.last_out
@@ -127,7 +127,8 @@ class DollMemory:
             if math.hypot(bx, by) > cfg.keep_range_m:
                 continue
             r = exclude_radius_m(e.name) if callable(exclude_radius_m) else exclude_radius_m
-            if exclude is not None and math.hypot(bx - exclude[0], by - exclude[1]) <= r:
+            if (exclude is not None and (exclude_name is None or e.name == exclude_name)
+                    and math.hypot(bx - exclude[0], by - exclude[1]) <= r):
                 continue
             if self._visible(bx, by):
                 e.misses += 1

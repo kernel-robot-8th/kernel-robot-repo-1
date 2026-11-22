@@ -39,6 +39,7 @@ class ObstacleSink:
         # → 종류별: 고객과 같은 종류(adult)는 0.30, 그 밖(child)은 0.15
         self.exclude_radius_m, self.excluded = 0.15, 0
         self.exclude_radius_by_class = {'adult': 0.30}
+        self.customer_classes = ('adult',)   # 고객 카드는 어른 인형 등에 붙인다
         self.moving_info, self.predicted = [], 0
         self.cam, self.cfg, self.publish, self.max_age_s = cam, cfg, publish, float(max_age_s)
         self.require_robot_time = bool(require_robot_time)
@@ -51,6 +52,21 @@ class ObstacleSink:
         self.last_sent_at = None
         self._sent_times = collections.deque(maxlen=50)
         self.meta = {}
+
+    def customer_obstacle(self, obs, exclude):
+        """이번 영상의 인형 가운데 고객(카드를 단 인형) 하나. 없으면 None.
+
+        카드 바닥 점에서 그 종류의 반경 안에 있는 검출 중 customer_classes(카드를 붙이는 어른 인형)를 먼저,
+        그중 가장 가까운 하나만 고객으로 본다. 고객 옆에 따로 서 있는 인형은 장애물로 남긴다(리뷰 #130:
+        카드 옆 10 cm 어린이 인형이 함께 빠졌음)."""
+        if exclude is None:
+            return None
+        near = [(math.hypot(o.x_m - exclude[0], o.y_m - exclude[1]), o) for o in obs]
+        near = [(d, o) for d, o in near if d <= self.exclude_radius(o.name)]
+        if not near:
+            return None
+        first = [c for c in near if c[1].name in self.customer_classes] or near
+        return min(first, key=lambda c: c[0])[1]
 
     def exclude_radius(self, name):
         """고객 둘레에서 이 종류의 인형을 장애물에서 빼는 반경(m)."""
@@ -99,17 +115,20 @@ class ObstacleSink:
                 return None
         obs = doll_obstacles(self.cam, dets, self.cfg)
         self.excluded = 0
-        if exclude is not None:
-            keep = [o for o in obs
-                    if math.hypot(o.x_m - exclude[0], o.y_m - exclude[1]) > self.exclude_radius(o.name)]
-            self.excluded = len(obs) - len(keep)
-            obs = keep
+        customer = self.customer_obstacle(obs, exclude)
+        if customer is not None:
+            obs = [o for o in obs if o is not customer]
+            self.excluded = 1
         stamp = frame.robot_time if has_robot_time else None
         if self.memory is not None:
             pose = self.pose_lookup(stamp) if (self.pose_lookup is not None and stamp is not None) else None
-            kept = self.memory.update(stamp if stamp is not None else frame.recv_time, pose, obs, exclude,
-                                      self.exclude_radius)
-            pts = [q for o in kept for q in o['points']] + clear_points(self.cam, self.cfg) + self._ring
+            # 기억에서는 방금 고객으로 확인한 그 검출과 같은 인형(같은 종류·같은 자리)만 지운다
+            kept = self.memory.update(stamp if stamp is not None else frame.recv_time, pose, obs,
+                                      None if customer is None else (customer.x_m, customer.y_m),
+                                      self.memory.cfg.match_m, None if customer is None else customer.name)
+            pts = [q for o in kept for q in o['points']] + clear_points(self.cam, self.cfg)
+            if self.memory.pose_ok:      # 자세를 모르는 영상에서는 둘레(시야 밖)를 지우지 않는다: 맞게 찍힌 칸을 지킴
+                pts = pts + self._ring
         else:
             pts = [q for o in obs for q in o.points] + clear_points(self.cam, self.cfg)
         if self.motion is not None:

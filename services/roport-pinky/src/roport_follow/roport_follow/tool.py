@@ -215,8 +215,9 @@ VIEW_ARGS = [
     # 고객 카드 추종 대상(FFT1-188). 0 = 끔. ROS 환경을 source 한 터미널에서만 켤 수 있음
     _arg('--follow-card', type=int, default=0,
          help='따라갈 고객 카드 ID(35~49). 주면 /follow/target·/follow/status 를 보냄(모터·Nav2 목표는 안 보냄)'),
-    _arg('--follow-lost-s', type=float, default=4.0,
-         help='이 시간 넘게 카드를 못 보면 놓침(lost). 11-20 결정 2 s → 밤 4 s(피해 가는 동안, SR-22 의 1 s 에서 바꿈, 문서 갱신 필요)'),
+    _arg('--follow-lost-s', type=float, default=1.0,
+         help='이 시간 넘게 카드를 못 보면 놓침(lost). 기본 1 s = SR-22. 실로봇 시연은 4(인형을 피해 가는 동안 버팀, '
+              '로봇 follow.requested 의 lost_after_s 와 같은 값으로)'),
     _arg('--follow-max-range-cm', type=float, default=150.0, help='이보다 먼 카드는 안 씀'),
     _arg('--follow-doll-fallback', action='store_true',
          help='(임시) 카드가 안 보이는 동안 마지막 고객 자리 근처의 어른 인형으로 이어 추적(최대 8 s, --publish-obstacles 필요)'),
