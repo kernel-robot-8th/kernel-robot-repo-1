@@ -3,6 +3,7 @@
 Imports only the standard library so ci/ tests can load it with the system Python.
 """
 
+from datetime import datetime
 from time import monotonic
 
 ARMS = ("omx1", "omx2")
@@ -26,6 +27,8 @@ class MockExecutor:
         # simulated completion evidence by operation, e.g. {"INBOUND": "shelf_align"} (v2)
         self.evidence = dict(evidence or {})
         self.started_at: float | None = None
+        # simulated bus reads; drift > 0: the arms still move between reads
+        self.reads, self.drift = 0, 0.0
         self.stopped = False
         self.tasks: list[dict] = []
 
@@ -46,11 +49,21 @@ class MockExecutor:
         }
 
     def readiness(self) -> dict:
+        running = self._running()
+        self.reads += 1
+        # a bus read like the panel's /api/arms (each call a new read); drift moves the joints
+        joints = {
+            arm: {"shoulder_pan": 10.0 + self.drift * self.reads, "gripper": 50.0}
+            for arm in ("omx1", "omx2")
+        }
         return {
             "armed": self.armed,
-            "busy": self._running(),
+            "busy": running,
             "error": None,
-            "arms": self._arms(moving=self._running()),
+            "arms": self._arms(moving=running),
+            "arms_read": None
+            if running
+            else {"at": datetime.now().isoformat(), "joints": joints},
         }
 
     def start(self, task: dict) -> None:

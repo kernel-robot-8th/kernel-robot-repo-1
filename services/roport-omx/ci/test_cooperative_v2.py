@@ -407,32 +407,19 @@ class FieldHostTest(unittest.TestCase):
             ("rejected", "target_command_not_active"),
         )
 
-    def test_stop_without_a_fresh_idle_sample_is_not_confirmed(self):
-        # #135 review: the panel's stop request timed out, observe() reports failed with no arm
-        # reading. That is no proof the arms stopped: the stop fails and a person must check.
-        class Unconfirmed(mock.MockExecutor):
-            def observe(self):
-                if self.stopped:
-                    return {
-                        "state": "failed",
-                        "error": "RESULT_UNAVAILABLE",
-                        "arms": {},
-                    }
-                return super().observe()
-
-            def readiness(self):
-                ready = super().readiness()
-                return ready | {"error": "panel unreachable"} if self.stopped else ready
-
-        self.executor = Unconfirmed(30, evidence=EVIDENCE, versions=VERSIONS)
-        self.host.executor = self.executor
-        self.host.stop_timeout_s = 0.3
-        task = self.transfer()
-        self.send(task)
+    def run_stop(self, executor, timeout_s=0.3):
+        """Start a long task on `executor`, stop it from control, poll until the stop ends."""
+        self.executor = executor
+        self.host.executor = executor
+        self.host.stop_timeout_s = timeout_s
+        self.visit = getattr(self, "visit", 0) + 1  # one transfer per Pinky arrival
+        arrival = f"cmd-route-stop-{self.visit}"
+        self.host.observe_pinky(pinky_state(arrival=arrival, seq=100 + self.visit))
+        task = self.transfer(payload={"arrival_command_id": arrival})
+        self.assertEqual(self.statuses(self.send(task)), ["accepted"])
         stop = self.stop_command(task["command_id"])
         self.send(stop)
-        events = []
-        deadline = time.monotonic() + 2
+        events, deadline = [], time.monotonic() + 3
         while time.monotonic() < deadline and not any(
             e["command_id"] == stop["command_id"]
             and e["payload"]["status"] != "accepted"
@@ -440,22 +427,112 @@ class FieldHostTest(unittest.TestCase):
         ):
             events += self.host.poll()
             time.sleep(0.02)
+        for event in events:
+            field_wire.validate(event)
         ended = {
             e["command_id"]: e["payload"]
             for e in events
             if e["payload"]["status"] != "in_progress"
         }
-        self.assertEqual(ended[task["command_id"]]["status"], "interrupted")
-        self.assertIs(ended[task["command_id"]]["result"]["stopped"], False)
-        self.assertEqual(
-            (ended[stop["command_id"]]["status"], ended[stop["command_id"]]["reason"]),
-            ("failed", "physical_stop_not_confirmed"),
+        return ended[task["command_id"]], ended[stop["command_id"]]
+
+    def test_stop_is_confirmed_only_by_arms_seen_standing_still(self):
+        # #135 review (twice): the run having ended (busy false) with connected arms is no proof
+        # the arms stopped; they may still slow down or move to a safe pose
+        def sample(**override):
+            class Executor(mock.MockExecutor):
+                def readiness(self):
+                    ready = super().readiness()
+                    if not self.stopped:
+                        return ready
+                    if "safe" in override:
+                        for arm in ready["arms"].values():
+                            arm["safe"] = override["safe"]
+                    return ready | {
+                        k: v for k, v in override.items() if k in {"arms_read", "error"}
+                    }
+
+                def observe(self):
+                    if self.stopped and "observe" in override:
+                        return override["observe"]
+                    return super().observe()
+
+            return Executor(30, evidence=EVIDENCE, versions=VERSIONS)
+
+        unconfirmed = {
+            # the reviewer's sample: not busy, connected, safe false, no stop observation
+            "safe false, no stop observation": sample(safe=False, arms_read=None),
+            "connected and safe, no bus read": sample(arms_read=None),
+            "panel unreachable after RESULT_UNAVAILABLE": sample(
+                error="panel unreachable",
+                observe={"state": "failed", "error": "RESULT_UNAVAILABLE", "arms": {}},
+            ),
+        }
+        moving = mock.MockExecutor(30, evidence=EVIDENCE, versions=VERSIONS)
+        moving.drift = 2.0  # each bus read finds the joints 2 units further
+        unconfirmed["arms still moving between reads"] = moving
+        for name, executor in unconfirmed.items():
+            with self.subTest(case=name):
+                self.host.clear_hold()
+                original, stop = self.run_stop(executor)
+                self.assertEqual(
+                    (original["status"], original["reason"]),
+                    ("failed", "physical_stop_not_confirmed"),
+                )
+                self.assertEqual(
+                    (stop["status"], stop["reason"]),
+                    ("failed", "physical_stop_not_confirmed"),
+                )
+                info = self.host.hold_info()
+                self.assertEqual(info["error_code"], "physical_stop_not_confirmed")
+                self.assertTrue(info["local_release_only"])
+                (event,) = self.send(self.release(self.host.hold))
+                self.assertEqual(
+                    event["payload"]["reason"], "local_emergency_release_required"
+                )
+        # two bus reads after the stop with the joints unchanged: stopped
+        self.host.clear_hold()
+        original, stop = self.run_stop(
+            mock.MockExecutor(30, evidence=EVIDENCE, versions=VERSIONS), timeout_s=5
         )
-        info = self.host.hold_info()
-        self.assertEqual(info["error_code"], "physical_stop_not_confirmed")
-        self.assertTrue(info["local_release_only"])
-        (event,) = self.send(self.release(self.host.hold))
-        self.assertEqual(event["payload"]["reason"], "local_emergency_release_required")
+        self.assertEqual(
+            (original["status"], original["result"]["stopped"]), ("interrupted", True)
+        )
+        self.assertEqual(
+            (stop["status"], stop["result"]), ("completed", {"stopped": True})
+        )
+
+    def test_one_bus_read_or_a_read_from_before_the_stop_is_not_enough(self):
+        self.host._stop_wall = time.time()
+        reads = iter(
+            [
+                {"at": "r1", "joints": {a: {"j": 1.0} for a in ("omx1", "omx2")}},
+                {"at": "r1", "joints": {a: {"j": 1.0} for a in ("omx1", "omx2")}},
+                {"at": "r2", "joints": {a: {"j": 1.4} for a in ("omx1", "omx2")}},
+            ]
+        )
+        arms = {
+            a: {"connected": True, "safe": True, "returned": True, "grasping": False}
+            for a in ("omx1", "omx2")
+        }
+        self.host._sample = lambda: (
+            {"busy": False, "error": None, "arms": arms, "arms_read": next(reads)},
+            time.time(),
+        )
+        self.assertIsNone(self.host._stop_confirmed())  # first read
+        self.assertIsNone(self.host._stop_confirmed())  # the same cached read again
+        self.assertIsNotNone(self.host._stop_confirmed())  # a second read, within 1.0
+        self.host._stop_reads = []
+        self.host._sample = lambda: (
+            {
+                "busy": False,
+                "error": None,
+                "arms": arms,
+                "arms_read": {"at": "r3", "joints": {}},
+            },
+            self.host._stop_wall - 1,  # sampled before the stop request
+        )
+        self.assertIsNone(self.host._stop_confirmed())
 
     def test_keep_running_renewals_keep_the_task_and_their_absence_stops_it(self):
         self.host.watchdog_s = 0.3

@@ -500,6 +500,7 @@ class PanelExecutor:
         end_on_place: bool = False,
         place_shadow: bool = False,
     ):
+        self._arms_read: dict | None = None  # bus read behind the last arm flags
         self.routes, self.box_marker = routes, box_marker
         self.box: int | None = None  # the running task's box marker
         # Loading in two reports: COMPLETE once the box is in its slot (Pinky may leave), then the
@@ -552,11 +553,16 @@ class PanelExecutor:
             error = f"PANEL_VERSION: {status.get('version')} (needs {need}+)"
         else:
             error = _ai_link_error(status, time.time())
+        self._arms_read = None
+        arms = {} if busy else self._arms_now()
         return {
             "armed": armed if isinstance(armed, bool) else None,
             "busy": busy,
             "error": error,
-            "arms": {} if busy else self._arms_now(),
+            "arms": arms,
+            # the bus read behind those flags (panel "at" + joints per arm); v2 compares two of
+            # them to see the arms standing still after a stop
+            "arms_read": self._arms_read,
         }
 
     def _arms_now(self) -> dict:
@@ -567,6 +573,7 @@ class PanelExecutor:
         Any doubt (older panel, read error, unknown home) leaves the flag None: never ready by guess.
         """
         merged: dict[str, dict] = {}
+        read = None
         for model in sorted({r.model_path for r in self.routes.values()}):
             try:
                 seen = self._call(
@@ -576,6 +583,20 @@ class PanelExecutor:
                 )
             except Exception:  # noqa: BLE001 - panel before 3.11 or unreachable: unknown
                 return {}
+            if seen.get("source") == "bus" and isinstance(seen.get("at"), str):
+                joints = {
+                    name: dict(arm["joints"])
+                    for name, arm in _by_side(seen.get("arms")).items()
+                    if isinstance(arm.get("joints"), dict)
+                }
+                # one cached bus read serves every model; a different "at" is a different read
+                read = (
+                    {"at": seen["at"], "joints": joints}
+                    if read is None or read["at"] == seen["at"]
+                    else None
+                )
+            else:
+                read = None
             for name, arm in _by_side(seen.get("arms")).items():
                 flags = _live_flags(arm)
                 prev = merged.get(name)
@@ -584,6 +605,7 @@ class PanelExecutor:
                     both = (prev["returned"], flags["returned"])
                     flags["returned"] = False if False in both else None
                 merged[name] = flags
+        self._arms_read = read
         return merged
 
     def check(self, task: dict) -> None:

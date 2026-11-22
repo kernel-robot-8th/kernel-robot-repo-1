@@ -1,17 +1,20 @@
-"""Run the shelf-01 COOPERATIVE Host: broker ↔ CooperativeHost ↔ executor.
+"""Run the shelf-01 COOPERATIVE Host: broker ↔ Host ↔ executor.
+
+The field contract roport-control-v2 (Fleet control, topics roport/workcell/shelf-01/* and
+roport/robot/omx1|omx2/*; src/roport_omx/cooperative_v2.py) is the default. --protocol v1 runs the
+earlier roport-omx-task-v1 test link (OmxTrial) instead; each protocol needs its own journal (the
+other's is refused).
 
 --executor mock (default) simulates the arms. --executor panel runs each task through the local OMX
 control panel (v3.14+, armed switch on the panel screen) with the model routed for its slot; the
 arms move, so a person stays by them. Broker settings come from ROPORT_MQTT_* like the control
 server; secrets stay in the env.
 
-  uv run python scripts/cooperative_host.py --journal ~/.local/state/roport/shelf-01.json
+  uv run python scripts/cooperative_host.py --executor mock --no-require-docking \
+      --mock-versions model-demo-v1 calibration-demo-v1 --journal ~/.local/state/roport/shelf-01-v2.json
   uv run python scripts/cooperative_host.py --executor panel --routes ~/.config/roport/shelf-01-routes.json \
-      --box-marker 16 --journal ~/.local/state/roport/shelf-01.json
-
---protocol v2 speaks the field contract roport-control-v2 (Fleet control, topics roport/workcell/
-shelf-01/* and roport/robot/omx1|omx2/*; see src/roport_omx/cooperative_v2.py). It needs its own
-journal: a v1 journal is refused.
+      --journal ~/.local/state/roport/shelf-01-v2.json
+  uv run python scripts/cooperative_host.py --protocol v1 --journal ~/.local/state/roport/shelf-01.json
 """
 
 import argparse
@@ -437,8 +440,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--protocol",
         choices=["v1", "v2"],
-        default="v1",
-        help="v1: roport-omx-task-v1 test link (OmxTrial); v2: roport-control-v2 (Fleet)",
+        default="v2",
+        help="v2 (default): roport-control-v2, the field contract (Fleet control); "
+        "v1: the earlier roport-omx-task-v1 test link (OmxTrial), only when asked for",
     )
     parser.add_argument(
         "--control", default=None, help="control id (v1 control-test, v2 control-01)"

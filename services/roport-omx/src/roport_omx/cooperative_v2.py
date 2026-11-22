@@ -63,6 +63,9 @@ OBSERVATION_MAX_AGE_S = (
     3.0  # Pinky state / readiness sample older than this proves nothing
 )
 STOP_TIMEOUT_S = 30.0  # the panel's safe stop lands the arms within a few seconds
+# Stop observed: two separate bus reads of both arms after the stop request, every joint within
+# STILL_TOL (panel joint units) of the previous read (the panel reads the bus about every 10 s).
+STILL_TOL = 1.0
 WATCHDOG_S = 3.0  # keep-running renewals (contract: stop/HOLD after 3 s without one)
 KEEP_RUNNING_SENT_S = 1.0  # a renewal's sent_at age (field_host.py alike)
 OBSERVED_FUTURE_S = (
@@ -173,9 +176,10 @@ class FieldHost:
         self.retired_boots: dict[str, set[str]] = {}
         self._deadline: float | None = None  # keep-running watchdog of the active task
         self._renewals: set[str] = set()
-        self._stop_wall: float | None = (
-            None  # wall time of the stop request (sample age)
-        )
+        self._stop_wall: float | None = None  # wall time of the stop request
+        self._stop_reads: list[
+            tuple[str, dict]
+        ] = []  # (read at, joints) since the stop
         identity = {"control": control, "workcell": WORKCELL, "profile": PROFILE}
         data = deepcopy(journal.data)
         if data and data.get("identity") != identity:
@@ -441,6 +445,10 @@ class FieldHost:
         if self._data["active"] is None:
             return events
         record = self._data["commands"][command_id]
+        if record.get(
+            "run_ended"
+        ):  # stopped run over: only the stop observation is missing
+            return events + self._settle_stop()
         try:
             seen = self.executor.observe()
         except Exception:  # noqa: BLE001 - keep waiting; the device keeps its own safety
@@ -757,21 +765,14 @@ class FieldHost:
         stop = self._data["stop"]
         detail = seen.get("detail") if isinstance(seen.get("detail"), str) else None
         if stop is not None and stop["target"] == record["command"]["command_id"]:
-            # Stopped by control: interrupted whatever the run reached; the workcell holds
-            # (contract). stopped is true only with a fresh idle sample after the stop.
-            confirmed = self._stop_confirmed()
-            events = self._end(
-                record,
-                "interrupted",
-                stop["reason"],
-                result={
-                    "stopped": confirmed,
-                    "holding_state": _held(arms) if confirmed else "unknown",
-                    "holding_package_id": None,
-                },
-                detail=detail,
-            )
-            return events + self._settle_stop()
+            # Stopped by control: the run is over, but the arms may still slow down or move to a
+            # safe pose. The original command stays active until the stop is observed
+            # (_settle_stop: interrupted + stop completed) or the stop times out (failed).
+            record["run_ended"] = True
+            if detail:
+                record["detail"] = detail[:200]
+            self._save()
+            return self._settle_stop()
         if seen["state"] == "finished" and all(_home(a) for a in arms.values()):
             evidence = seen.get("evidence")
             if evidence in PLACED[task["operation"]]:
@@ -879,47 +880,90 @@ class FieldHost:
     def _request_stop(self) -> None:
         if self._stop_since is None:
             self._stop_since, self._stop_wall = time.monotonic(), time.time()
+            self._stop_reads = []
             try:
                 self.executor.stop()
             except Exception as exc:  # noqa: BLE001 - the timeout reports the unconfirmed stop
                 log.warning("executor stop failed: %s", exc)
 
-    def _stop_confirmed(self) -> bool:
-        """A readiness sample taken after the stop request shows the run over and both arms read.
+    def _stop_confirmed(self) -> dict | None:
+        """The arms seen standing still after the stop request (their latest flags), or None.
 
-        A failed or empty observation, a sample from before the stop or an executor still busy
-        proves nothing (#135 review).
+        Needs a fresh sample taken after the request with the run over (not busy, no error), both
+        arms connected and safe, and two separate bus reads of both arms (`arms_read`) since the
+        request whose joints all stay within STILL_TOL. busy=false with connected arms alone is
+        no proof: they may still slow down or move to a safe pose (#135 review).
         """
         if self._stop_wall is None:
-            return False
+            return None
         try:
             ready, observed = self._sample()
         except Exception:  # noqa: BLE001 - no sample, no proof
-            return False
+            return None
         if observed < self._stop_wall or time.time() - observed > OBSERVATION_MAX_AGE_S:
-            return False
+            return None
         if ready.get("busy") is not False or ready.get("error"):
-            return False
+            return None
         arms = _arms(ready.get("arms"))
-        return all(a["connected"] is True for a in arms.values())
+        if not all(a["connected"] is True and a["safe"] is True for a in arms.values()):
+            return None
+        read = ready.get("arms_read")
+        joints = read.get("joints") if isinstance(read, dict) else None
+        if not isinstance(joints, dict) or not isinstance(read.get("at"), str):
+            return None
+        if not self._stop_reads or self._stop_reads[-1][0] != read["at"]:
+            self._stop_reads = [*self._stop_reads[-1:], (read["at"], deepcopy(joints))]
+        if len(self._stop_reads) < 2:
+            return None
+        (_, before), (_, after) = self._stop_reads
+        for name in ARMS:
+            old, new = before.get(name), after.get(name)
+            if not isinstance(old, dict) or not isinstance(new, dict) or not new:
+                return None
+            if set(old) != set(new):
+                return None
+            for joint, value in new.items():
+                prior = old[joint]
+                if not all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool)
+                    for v in (value, prior)
+                ):
+                    return None
+                if abs(value - prior) > STILL_TOL:
+                    return None
+        return arms
 
     def _settle_stop(self) -> list[dict]:
-        """Complete a pending stop once confirmed; past stop_timeout_s it failed and holds."""
+        """Complete a pending stop once the arms were seen still after the run ended; past
+        stop_timeout_s the stop failed and the workcell holds (person at the shelf only)."""
         stop = self._data["stop"]
         if stop is None:
             return []
-        if self._data["active"] is None and self._stop_confirmed():
-            return self._finish_stop(stopped=True)
+        active = self._data["active"]
+        record = self._data["commands"][active] if active else None
+        if record is None or record.get("run_ended"):
+            arms = self._stop_confirmed()
+            if arms is not None:
+                events = []
+                if record is not None:
+                    events = self._end(
+                        record,
+                        "interrupted",
+                        stop["reason"],
+                        result={
+                            "stopped": True,
+                            "holding_state": _held(arms),
+                            "holding_package_id": None,
+                        },
+                    )
+                return events + self._finish_stop(stopped=True)
         since = self._stop_since if self._stop_since is not None else time.monotonic()
         self._stop_since = since
         if time.monotonic() - since < self.stop_timeout_s:
             return []
         events = []
-        active = self._data["active"]
-        if active is not None:  # the run never ended: its arms may still move
-            events = self._end(
-                self._data["commands"][active], "failed", "physical_stop_not_confirmed"
-            )
+        if record is not None:  # never seen standing still: the arms may still move
+            events = self._end(record, "failed", "physical_stop_not_confirmed")
         self._data.update(
             hold=active or stop["target"],
             hold_reason="physical_stop_not_confirmed",
@@ -933,6 +977,7 @@ class FieldHost:
             return []
         self._data["stop"] = None
         self._stop_since = self._stop_wall = None
+        self._stop_reads = []
         record = self._data["commands"][stop["command_id"]]
         if stopped:
             return self._end(
@@ -1034,6 +1079,7 @@ class FieldHost:
             "busy": ready.get("busy") is not False,
             "error": ready.get("error"),
             "arms": ready.get("arms"),
+            "arms_read": ready.get("arms_read"),
         }
 
     def _usable(self) -> None:

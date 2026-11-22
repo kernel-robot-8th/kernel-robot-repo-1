@@ -83,7 +83,9 @@ class HostStartTest(unittest.TestCase):
             )
         )
         flags = ("--report-placement", "--place-shadow", "--box-marker", "16")
-        output = self.run_main("--executor", "panel", "--routes", str(routes), *flags)
+        output = self.run_main(
+            "--protocol", "v1", "--executor", "panel", "--routes", str(routes), *flags
+        )
         self.assertIn(
             "routes=[INBOUND:2b:COOPERATIVE, OUTBOUND:2b:COOPERATIVE]", output
         )
@@ -109,11 +111,15 @@ class HostStartTest(unittest.TestCase):
                 }
             )
         )
-        output = self.run_main("--executor", "panel", "--routes", str(routes))
+        output = self.run_main(
+            "--protocol", "v1", "--executor", "panel", "--routes", str(routes)
+        )
         self.assertIn("hand-over (end_on_place)=on", output)
         self.assertIn("early COMPLETE on placement (report_placement)=off", output)
         self.assertIn("episode limit [INBOUND:2b=180s, OUTBOUND:2b=70s]", output)
         output = self.run_main(
+            "--protocol",
+            "v1",
             "--executor",
             "panel",
             "--routes",
@@ -126,6 +132,43 @@ class HostStartTest(unittest.TestCase):
 
     def test_mock_executor_starts(self):
         self.assertIn("SIMULATED executor", self.run_main("--executor", "mock"))
+
+    def test_field_contract_v2_is_the_default(self):
+        # #135 review: the shelf links to control over roport-control-v2 without an option
+        routes = self.dir / "routes.json"
+        routes.write_text(
+            json.dumps(
+                {
+                    "model_version": "model-demo-v1",
+                    "calibration_version": "calibration-demo-v1",
+                    "routes": [
+                        {
+                            "operation": "INBOUND",
+                            "slot_id": "2b",
+                            "model_path": "/models/m/pretrained_model",
+                            "task": "t {box}",
+                            "reset_s": 15,
+                        }
+                    ],
+                }
+            )
+        )
+        output = self.run_main("--executor", "panel", "--routes", str(routes))
+        self.assertIn("protocol v2 (roport-control-v2) control=control-01", output)
+        self.assertIn("require_pinky=on require_docking=on", output)
+        self.assertNotIn("boot_id=", output)  # the v1 start line
+        self.assertIn("protocol v2", self.run_main("--executor", "mock"))
+        # v1 only when asked for; its own journal (a v2 journal is refused)
+        v1 = self.run_main("--protocol", "v1", "--journal", str(self.dir / "v1.json"))
+        self.assertIn("boot_id=", v1)
+        self.assertNotIn("protocol v2", v1)
+
+    def test_v1_only_options_need_protocol_v1(self):
+        argv = ["--journal", str(self.dir / "j.json"), "--report-placement"]
+        with self.assertRaises(SystemExit) as stop, patch("sys.stderr"):
+            ch.parse_args(argv)
+        self.assertEqual(stop.exception.code, 2)
+        self.assertTrue(ch.parse_args(["--protocol", "v1", *argv]).report_placement)
 
 
 if __name__ == "__main__":
