@@ -1,4 +1,4 @@
-# Copied unchanged from services/roport-control-server/.../adapters/mqtt (616ddf5); update both together.
+# Copied unchanged from services/roport-control-server/.../adapters/mqtt; update both together.
 """Bounded MQTT 5 transport. PUBACK is not execution or durable application ACK."""
 
 import logging
@@ -208,8 +208,6 @@ class MqttTransport:
 
     def publish_motion(self, destination, message):
         """Best-effort latest display sample; never wait for PUBACK or replay it."""
-        from .motion import encode_motion
-
         if message.get("type") == "robot_pose":
             from . import field_wire
 
@@ -217,6 +215,8 @@ class MqttTransport:
             if destination != field_wire.topic(message["source"], "motion"):
                 raise ValueError("motion topic mismatch")
         else:
+            from .motion import encode_motion
+
             raw = encode_motion(destination, message)
         self._publish_sample(destination, raw, 1)
 

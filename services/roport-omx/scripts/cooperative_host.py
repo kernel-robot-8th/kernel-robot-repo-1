@@ -294,12 +294,21 @@ class ReadinessSampler(threading.Thread):
 
 
 V2_RESEND_S, V2_STATE_S = 2.0, 1.0
+# v2 PUBACK wait per message: short, so a slow broker never holds the keep-running watchdog
+# (3 s) back for long; an unconfirmed event stays in the outbox and is resent.
+V2_PUBLISH_TIMEOUT_S = 1.0
 
 
-def publish_v2(transport: MqttTransport, events) -> None:
-    for event in events:
+def publish_v2(transport: MqttTransport, events, host: FieldHost | None = None) -> None:
+    queue = list(events)
+    while queue:
+        event = queue.pop(0)
         try:
-            transport.publish(field_wire.topic(event["source"], "event"), event)
+            transport.publish(
+                field_wire.topic(event["source"], "event"),
+                event,
+                timeout=V2_PUBLISH_TIMEOUT_S,
+            )
             if event["type"] == "command_status":
                 log.info(
                     "%s %s %s seq=%s",
@@ -310,6 +319,39 @@ def publish_v2(transport: MqttTransport, events) -> None:
                 )
         except TimeoutError as exc:
             log.warning("%s not confirmed (%s); kept for resend", event["type"], exc)
+        if host is not None:  # between slow publishes too
+            queue += host.local_safety()
+
+
+def wait_offline_v2(
+    host: FieldHost, holds: HoldChannel | None, seconds: float, until=None
+) -> None:
+    """No broker: keep the local stop rules (watchdog, Pinky visit, stop timeout) and the panel's
+    [HOLD 해제] running; their events wait in the outbox for the reconnect."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and not (until and until()):
+        host.poll()
+        if holds is not None:
+            holds.tick(host)
+        time.sleep(0.1)
+
+
+def start_v2(transport: MqttTransport, host: FieldHost, holds) -> None:
+    """transport.start() waits up to 5 s for the broker; poll the Host meanwhile."""
+    failure: list[BaseException] = []
+
+    def connect() -> None:
+        try:
+            transport.start()
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the caller
+            failure.append(exc)
+
+    thread = threading.Thread(target=connect, name="mqtt-connect", daemon=True)
+    thread.start()
+    wait_offline_v2(host, holds, math.inf, until=lambda: not thread.is_alive())
+    thread.join()
+    if failure:
+        raise failure[0]
 
 
 def serve_v2(
@@ -322,7 +364,7 @@ def serve_v2(
         field_wire.topic(e, c): (e, c) for e in ENDPOINTS for c in ("cmd", "ack")
     }
     pinkies = {field_wire.topic(p, "event"): p for p in PINKIES}
-    publish_v2(transport, host.pending())
+    publish_v2(transport, host.pending(), host)
     next_resend = time.monotonic() + V2_RESEND_S
     next_state = 0.0
     while True:
@@ -358,14 +400,14 @@ def serve_v2(
                 log.warning("dropped message on %s: %s", delivery.topic, exc)
             # Reached only when the journal holds the result (StorageError propagates).
             transport.ack(delivery)
-            publish_v2(transport, events)
-        publish_v2(transport, host.poll())
+            publish_v2(transport, events, host)
+        publish_v2(transport, host.poll(), host)
         now = time.monotonic()
         if now >= next_state:
-            publish_v2(transport, [host.state(e) for e in ENDPOINTS])
+            publish_v2(transport, [host.state(e) for e in ENDPOINTS], host)
             next_state = now + V2_STATE_S
         if now >= next_resend:
-            publish_v2(transport, host.pending())
+            publish_v2(transport, host.pending(), host)
             next_resend = now + V2_RESEND_S
         if metrics is not None:
             metrics.tick(transport)
@@ -406,7 +448,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="v2: accept a transfer only while the Pinky's own state shows it stopped at N11 "
-        "with the named arrival; --no-require-pinky for bench tests without a Pinky",
+        "with the named arrival; --no-require-pinky for bench tests without a Pinky "
+        "(simulated executor only)",
+    )
+    parser.add_argument(
+        "--require-docking",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="v2: a transfer also needs a docking sensor's fresh confirmation of the visit; "
+        "none is connected yet, so the panel executor refuses every transfer "
+        "(docking_alignment_unconfirmed). --no-require-docking: simulated executor only",
+    )
+    parser.add_argument(
+        "--mock-versions",
+        nargs=2,
+        metavar=("MODEL_VERSION", "CALIBRATION_VERSION"),
+        help="v2 simulated executor: the model/calibration pair it accepts (none without)",
     )
     parser.add_argument("--binding", default="test-binding")
     parser.add_argument(
@@ -463,6 +520,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.control is None:
         args.control = "control-01" if args.protocol == "v2" else "control-test"
+    if (
+        args.protocol == "v2"
+        and args.executor == "panel"
+        and not (args.require_pinky and args.require_docking)
+    ):
+        # #135 review: the arms move only with a confirmed visit; bench runs use the mock
+        parser.error(
+            "--no-require-pinky/--no-require-docking need --executor mock "
+            "(v2 runs the real arms only with the Pinky and docking checks)"
+        )
     if args.protocol == "v2" and args.report_placement:
         parser.error(
             "--report-placement is v1 only: v2 reports once, after the alignment"
@@ -498,6 +565,11 @@ def main() -> None:
             evidence={"INBOUND": "shelf_align", "OUTBOUND": "pinky_load"}
             if args.protocol == "v2"
             else None,
+            versions=dict(
+                zip(("model_version", "calibration_version"), args.mock_versions)
+            )
+            if args.mock_versions
+            else None,
         )
     journal = Journal(args.journal)
     sampler = None
@@ -509,6 +581,7 @@ def main() -> None:
                 executor,
                 control=args.control,
                 require_pinky=args.require_pinky,
+                require_docking=args.require_docking,
                 readiness=sampler,
             )
         else:
@@ -547,11 +620,13 @@ def main() -> None:
         log.info("SIMULATED executor")
     if args.protocol == "v2":
         log.info(
-            "protocol v2 (%s) control=%s boot_version=%s require_pinky=%s",
+            "protocol v2 (%s) control=%s boot_version=%s require_pinky=%s "
+            "require_docking=%s",
             field_wire.PROFILE,
             args.control,
             host.boot_id,
             "on" if args.require_pinky else "off",
+            "on" if args.require_docking else "off",
         )
         sampler.start()
     else:
@@ -573,7 +648,10 @@ def main() -> None:
         while True:
             transport = MqttTransport(mqtt_config(args), subscriptions)
             try:
-                transport.start()
+                if args.protocol == "v2":
+                    start_v2(transport, host, holds)
+                else:
+                    transport.start()
                 log.info("subscribed %s:%s", args.host, args.port)
                 if args.protocol == "v2":
                     serve_v2(host, transport, metrics, holds)
@@ -583,10 +661,13 @@ def main() -> None:
                 log.warning("broker link lost (%s); reconnecting", exc)
                 transport.stop()
                 # The panel's [HOLD 해제] does not need the broker: keep answering it while
-                # waiting to reconnect.
-                for _ in range(10):
-                    holds.tick(host)
-                    time.sleep(0.2)
+                # waiting to reconnect (v2 also keeps its local stop rules running).
+                if args.protocol == "v2":
+                    wait_offline_v2(host, holds, 2.0)
+                else:
+                    for _ in range(10):
+                        holds.tick(host)
+                        time.sleep(0.2)
     except KeyboardInterrupt:
         pass
     except StorageError as exc:

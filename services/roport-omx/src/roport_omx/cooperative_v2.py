@@ -8,14 +8,24 @@ event_stored. Only the MQTT side differs (Confluence "메세지 규약 정리", 
 - shelf_transfer_command (store = Pinky → shelf, retrieve = shelf → Pinky) for the B column with
   both arms; arm_action_command (one arm, columns A/C) is refused: two-arm missions only for now;
 - robot_stop_command stops the running task: the original command ends interrupted and the stop
-  completed once the executor saw the run end;
+  completed only once the run ended AND a readiness sample taken after the stop shows the arms
+  idle and read (else physical_stop_not_confirmed); the workcell then holds (contract);
+- keep-running: a running task needs control's robot_state_request with keep_running_command_id
+  (same boot, fresh, new message) at least every WATCHDOG_S, or the arms are stopped and the task
+  fails control_watchdog_expired with a HOLD; local_safety() runs it, also without a broker;
+- hold_release_command releases a HOLD with the operator's checks, except a HOLD only a person
+  at the shelf may release (emergency stop, unknown result, unconfirmed stop);
 - robot_state for shelf-01, omx1 and omx2 answers every robot_state_request (and a 1 Hz tick).
 
 What the Host can observe is reported, nothing else (unknown stays unknown):
-- Pinky docking: the Pinky's own robot_state (stopped at N11 with the arrival command named in
-  the transfer). No workcell sensor confirms the alignment, so docking.alignment is "unknown".
+- Pinky docking: the Pinky's own robot_state (fresh observed_at, current boot, stopped at N11
+  with the arrival named in the transfer) and a workcell docking sensor (`alignment`, same
+  contract as field_host.py). Without a sensor docking.alignment is "unknown" and a transfer is
+  refused docking_alignment_unconfirmed unless require_docking is off (simulated executor only).
 - placement/release: the executor's completion evidence (aligner or placement judge for store,
   the tray check for retrieve) with both arms home and grippers released.
+- model/calibration: a transfer runs only when the executor's route declares exactly the
+  command's model_version and calibration_version.
 No MQTT, HTTP or motor access here; the executor owns the device.
 """
 
@@ -53,6 +63,20 @@ OBSERVATION_MAX_AGE_S = (
     3.0  # Pinky state / readiness sample older than this proves nothing
 )
 STOP_TIMEOUT_S = 30.0  # the panel's safe stop lands the arms within a few seconds
+WATCHDOG_S = 3.0  # keep-running renewals (contract: stop/HOLD after 3 s without one)
+KEEP_RUNNING_SENT_S = 1.0  # a renewal's sent_at age (field_host.py alike)
+OBSERVED_FUTURE_S = (
+    1.0  # a Pinky observed_at this far ahead of this PC's clock still counts
+)
+# A HOLD only a person at the shelf releases (panel [HOLD 해제]), never hold_release_command.
+LOCAL_RELEASE = {
+    "panel_emergency_stop",
+    "panel_killed",
+    "result_unavailable",
+    "host_restarted_outcome_unknown",
+    "physical_stop_failed",
+    "physical_stop_not_confirmed",
+}
 TERMINAL = {"completed", "rejected", "failed", "interrupted"}
 _REASON = re.compile(r"[^A-Za-z0-9_.:-]+")
 
@@ -66,6 +90,14 @@ def _iso(at: float | None = None) -> str:
 def _reason(code) -> str:
     text = _REASON.sub("_", str(code or "unknown")).strip("_").lower()
     return text[:128] or "unknown"
+
+
+def _fresh(value, max_age_s: float, future_s: float = OBSERVED_FUTURE_S) -> bool:
+    try:
+        age = (datetime.now(UTC) - field_wire.timestamp(value)).total_seconds()
+    except (TypeError, ValueError):
+        return False
+    return -future_s <= age <= max_age_s
 
 
 def _fingerprint(message: dict) -> str:
@@ -110,6 +142,9 @@ class FieldHost:
 
     readiness: optional callable returning (sample, observed_unix_s) from a sampler thread, so a
     slow panel read never delays the MQTT loop; default reads the executor directly.
+    alignment(command, pinky_observation): optional workcell docking sensor (field_host.py's
+    contract) returning {pinky_id, pinky_boot_version, arrival_command_id, observed_at,
+    alignment}; a transfer needs alignment "confirmed" unless require_docking is False.
     """
 
     def __init__(
@@ -120,16 +155,27 @@ class FieldHost:
         control: str,
         require_armed: bool = True,
         require_pinky: bool = True,
+        require_docking: bool = True,
+        alignment=None,
         readiness=None,
+        watchdog_s: float = WATCHDOG_S,
     ):
         self.journal, self.executor = journal, executor
         self.control = control
         self.require_armed, self.require_pinky = require_armed, require_pinky
+        self.require_docking, self.alignment = require_docking, alignment
+        self.watchdog_s, self.stop_timeout_s = watchdog_s, STOP_TIMEOUT_S
         self._sample = readiness or (lambda: (self._read(), time.time()))
         self.boot_version = "boot-" + str(uuid4())
         self.failed = False
         self.state_sequence = 0
         self.pinkies: dict[str, dict] = {}
+        self.retired_boots: dict[str, set[str]] = {}
+        self._deadline: float | None = None  # keep-running watchdog of the active task
+        self._renewals: set[str] = set()
+        self._stop_wall: float | None = (
+            None  # wall time of the stop request (sample age)
+        )
         identity = {"control": control, "workcell": WORKCELL, "profile": PROFILE}
         data = deepcopy(journal.data)
         if data and data.get("identity") != identity:
@@ -142,14 +188,30 @@ class FieldHost:
             "outbox": data.get("outbox", []),
             "active": data.get("active"),
             "hold": data.get("hold"),
+            "hold_reason": data.get("hold_reason"),
+            "local_release_only": data.get("local_release_only", False),
             "stop": None,  # a stop never survives a restart: the new boot re-checks
         }
         self._stop_since: float | None = None
-        if self._data["active"] is not None:
+        stop, active = data.get("stop"), self._data["active"]
+        if active is not None:
             # A previous process left a task running: its physical result is unknown.
-            self._data["hold"], self._data["active"] = self._data["active"], None
-            self._save()
-        elif not data or data.get("stop"):
+            self._end(
+                self._data["commands"][active],
+                "failed",
+                "host_restarted_outcome_unknown",
+            )
+        if stop and stop["command_id"] in self._data["commands"]:
+            record = self._data["commands"][stop["command_id"]]
+            if record.get("status") not in TERMINAL:
+                self._end(
+                    record,
+                    "failed",
+                    "host_restarted_outcome_unknown",
+                    hold=False,
+                    keep_active=True,
+                )
+        if not data or stop or active is not None:
             self._save()
 
     # --- operator side (panel [HOLD 해제], same files as v1) ---------------------------------
@@ -167,7 +229,7 @@ class FieldHost:
 
     def clear_hold(self) -> None:
         self._usable()
-        self._data["hold"] = None
+        self._data.update(hold=None, hold_reason=None, local_release_only=False)
         self._save()
 
     def hold_info(self) -> dict | None:
@@ -185,8 +247,10 @@ class FieldHost:
         )
         return {
             "command_id": command_id,
-            "error_code": (last or {}).get("payload", {}).get("reason")
+            "error_code": self._data.get("hold_reason")
+            or (last or {}).get("payload", {}).get("reason")
             or "result_unknown",
+            "local_release_only": self._data.get("local_release_only") is True,
             "detail": record.get("detail"),
             "mission_result": "MISSION_HOLD",
             "last_step": record.get("last_step"),
@@ -228,17 +292,30 @@ class FieldHost:
         return list(self._data["outbox"])
 
     def observe_pinky(self, message: dict) -> None:
-        """A Pinky's robot_state (its own topic, QoS1, not retained: checked by the caller)."""
-        if message["type"] != "robot_state" or message["source"] not in PINKIES:
-            raise ValueError("not a Pinky state")
+        """A Pinky's robot_state (its own topic, QoS1, not retained: checked by the caller).
+
+        Only states addressed to this control; a boot the Pinky already replaced never comes back.
+        """
+        field_wire.validate(message)
+        if (
+            message["type"] != "robot_state"
+            or message["source"] not in PINKIES
+            or message["target"] != self.control
+        ):
+            raise ValueError("not a Pinky state for this control")
         p = message["payload"]
         old = self.pinkies.get(message["source"])
+        retired = self.retired_boots.setdefault(message["source"], set())
+        if p["boot_version"] in retired:
+            return
         if (
             old
             and old["boot_version"] == p["boot_version"]
             and p["sequence"] <= old["sequence"]
         ):
             return
+        if old and old["boot_version"] != p["boot_version"]:
+            retired.add(old["boot_version"])
         self.pinkies[message["source"]] = {
             "boot_version": p["boot_version"],
             "sequence": p["sequence"],
@@ -281,6 +358,7 @@ class FieldHost:
         if channel != "cmd":
             raise ValueError("invalid channel")
         if kind == "robot_state_request":
+            self._keep_running(message, endpoint)
             return [self.state(endpoint)]
         if "command_id" not in message:
             raise ValueError(f"{kind} is not a command")
@@ -307,17 +385,24 @@ class FieldHost:
                 raise Rejected("expired_command")
             if message["payload"]["expected_boot_version"] != self.boot_version:
                 raise Rejected("boot_version_mismatch")
-            if kind == "robot_stop_command":
+            if (
+                kind == "robot_stop_command"
+            ):  # a late stop still stops (no sent_at check)
                 return self._stop_request(record)
             if kind == "arm_action_command":
                 raise Rejected("unsupported_one_arm_command")  # two-arm missions only
-            if kind != "shelf_transfer_command" or endpoint != WORKCELL:
+            if (
+                kind not in {"shelf_transfer_command", "hold_release_command"}
+                or endpoint != WORKCELL
+            ):
                 raise Rejected("unsupported_command")
             age = (
                 datetime.now(UTC) - field_wire.timestamp(message["sent_at"])
             ).total_seconds()
             if not SENT_AGE_S[0] <= age <= SENT_AGE_S[1]:
                 raise Rejected("stale_message")
+            if kind == "hold_release_command":
+                return self._hold_release(record)
             task = self._check_transfer(message)
         except Rejected as exc:
             return self._status(record, "rejected", reason=_reason(exc.args[0]))
@@ -326,7 +411,11 @@ class FieldHost:
             return self._status(record, "rejected", reason="invalid_command")
 
         record["task"] = task
+        record["arrival_consumed"] = True  # one transfer per Pinky arrival (contract)
         self._data["active"] = message["command_id"]
+        self._deadline = time.monotonic() + self.watchdog_s
+        self._renewals.clear()
+        self._stop_since = self._stop_wall = None
         events = self._status(record, "accepted")  # saved before the executor is called
         try:
             if datetime.now(UTC) >= field_wire.timestamp(message["expires_at"]):
@@ -346,24 +435,25 @@ class FieldHost:
         """Executor observations of the active task → in_progress / completed / failed."""
         self._usable()
         command_id = self._data["active"]
-        stop = self._data["stop"]
         if command_id is None:
-            return self._settle_stop_without_task() if stop else []
+            return self._settle_stop()
+        events = self.local_safety()
+        if self._data["active"] is None:
+            return events
         record = self._data["commands"][command_id]
-        events = self._watch_pinky(record)
         try:
             seen = self.executor.observe()
         except Exception:  # noqa: BLE001 - keep waiting; the device keeps its own safety
-            return events + self._stop_timeout()
+            return events + self._settle_stop()
         state = seen.get("state")
         if state in {"running", "placed"}:  # v2 reports once, after the alignment
             step = seen.get("step") if isinstance(seen.get("step"), str) else state
             if step != record["last_step"]:
                 record["last_step"] = step
                 events += self._status(record, "in_progress")
-            return events + self._stop_timeout()
+            return events + self._settle_stop()
         if state not in {"finished", "failed"}:
-            return events + self._stop_timeout()
+            return events + self._settle_stop()
         return events + self._terminal(record, seen)
 
     def state(self, endpoint: str) -> dict:
@@ -445,6 +535,50 @@ class FieldHost:
             },
         )
 
+    # --- keep-running and local safety ---------------------------------------------------
+    def _keep_running(self, message: dict, endpoint: str) -> None:
+        """A renewal counts only for this boot's active task, fresh and seen once (contract)."""
+        p = message["payload"]
+        if not p:
+            return  # a plain state query never keeps the arms moving
+        active = self._data["active"]
+        if (
+            active is None
+            or self._data["stop"] is not None
+            or endpoint != WORKCELL
+            or p["expected_boot_version"] != self.boot_version
+            or p["keep_running_command_id"] != active
+            or not _fresh(message["sent_at"], KEEP_RUNNING_SENT_S)
+            or field_wire.timestamp(message["expires_at"]) <= datetime.now(UTC)
+            or message["message_id"] in self._renewals
+        ):
+            return
+        self._renewals.add(message["message_id"])
+        self._deadline = time.monotonic() + self.watchdog_s
+
+    def local_safety(self) -> list[dict]:
+        """Stop the arms of the active task without control's renewal or a confirmed Pinky visit.
+
+        Needs no broker (the caller runs it while reconnecting too); the failure waits in the
+        outbox. The task ends at once with a HOLD; the stop itself is the executor's.
+        """
+        self._usable()
+        command_id = self._data["active"]
+        if command_id is None or self._data["stop"] is not None:
+            return []
+        record = self._data["commands"][command_id]
+        if self._deadline is None or time.monotonic() > self._deadline:
+            reason = "control_watchdog_expired"
+        elif self.require_pinky:
+            reason = self._visit_lost(record["command"])
+        else:
+            reason = None
+        if reason is None:
+            return []
+        log.warning("%s: %s; stopping the arms", command_id, reason)
+        self._request_stop()
+        return self._end(record, "failed", reason)
+
     # --- transfer -------------------------------------------------------------------------
     def _check_transfer(self, message: dict) -> dict:
         p = message["payload"]
@@ -456,6 +590,14 @@ class FieldHost:
             raise Rejected("host_hold")
         if self._data["active"] is not None or self._data["stop"] is not None:
             raise Rejected("resource_busy")
+        for other in self._data["commands"].values():
+            q = other["command"]["payload"]
+            if (
+                other.get("arrival_consumed")
+                and q.get("pinky_id") == p["pinky_id"]
+                and q.get("arrival_command_id") == p["arrival_command_id"]
+            ):
+                raise Rejected("arrival_already_used")
         ready = self._read()
         if ready["error"]:
             raise Rejected("executor_error")
@@ -466,7 +608,7 @@ class FieldHost:
         if not all(_home(a) for a in _arms(ready.get("arms")).values()):
             raise Rejected("arm_not_safely_home")
         if self.require_pinky:
-            self._check_pinky(p)
+            self._check_pinky(message)
         task = {
             "operation": OPERATIONS[p["operation"]],
             "workcell_id": WORKCELL,
@@ -490,15 +632,29 @@ class FieldHost:
             check(
                 task
             )  # executor refusal (no route/model for this box), Rejected(code)
+        # Only the exact model/calibration pair the route was set up with (#135 review).
+        versions = getattr(self.executor, "versions", None)
+        expected = versions(task) if callable(versions) else None
+        if not isinstance(expected, dict) or any(
+            not expected.get(k) or p[k] != expected[k]
+            for k in ("model_version", "calibration_version")
+        ):
+            raise Rejected("executor_version_mismatch")
         return task
 
     def _pinky_seen(self, pinky: str) -> dict | None:
+        """The Pinky's latest state, if received and observed (its own clock) within 3 s."""
         seen = self.pinkies.get(pinky)
-        if not seen or time.monotonic() - seen["received"] > OBSERVATION_MAX_AGE_S:
+        if (
+            not seen
+            or time.monotonic() - seen["received"] > OBSERVATION_MAX_AGE_S
+            or not _fresh(seen["observed_at"], OBSERVATION_MAX_AGE_S)
+        ):
             return None
         return seen
 
-    def _check_pinky(self, p: dict) -> None:
+    def _check_pinky(self, message: dict) -> None:
+        p = message["payload"]
         seen = self._pinky_seen(p["pinky_id"])
         if seen is None:
             raise Rejected("pinky_observation_stale")
@@ -506,12 +662,29 @@ class FieldHost:
             raise Rejected("pinky_boot_mismatch")
         if not self._parked(seen, p["arrival_command_id"]):
             raise Rejected("pinky_visit_not_confirmed")
+        if self.require_docking and self._docked(message, seen) is None:
+            raise Rejected("docking_alignment_unconfirmed")
+
+    def _visit_lost(self, command: dict) -> str | None:
+        """Why the Pinky visit of a running transfer no longer holds, or None."""
+        p = command["payload"]
+        seen = self._pinky_seen(p["pinky_id"])
+        if seen is None:
+            return "pinky_observation_stale"  # a lost state cannot show the Pinky still there
+        if seen["boot_version"] != p["expected_pinky_boot_version"] or not self._parked(
+            seen, p["arrival_command_id"]
+        ):
+            return "pinky_left"
+        if self.require_docking and self._docked(command, seen) is None:
+            return "docking_alignment_lost"
+        return None
 
     @staticmethod
     def _parked(seen: dict, arrival: str | None) -> bool:
         s = seen["state"]
         return (
             s.get("node") == NODE
+            and s.get("mode") == "line"
             and s.get("stopped") is True
             and s.get("line_enabled") is False
             and s.get("drive_owner") == "none"
@@ -520,10 +693,53 @@ class FieldHost:
             and (arrival is None or s.get("arrival_command_id") == arrival)
         )
 
+    def _docked(self, command: dict, seen: dict) -> dict | None:
+        """The docking sensor's fresh confirmation of this visit (field_host.py contract)."""
+        if self.alignment is None:
+            return None
+        p = command["payload"]
+        observation = {
+            "boot_version": seen["boot_version"],
+            "sequence": seen["sequence"],
+            "observed_at": seen["observed_at"],
+            "active_command_id": seen["active_command_id"],
+            "state": deepcopy(seen["state"]),
+            "pinky_id": p["pinky_id"],
+        }
+        try:
+            observed = self.alignment(deepcopy(command), observation)
+        except Exception:  # an unreadable sensor confirms nothing
+            log.exception("docking sensor unavailable")
+            return None
+        if (
+            isinstance(observed, dict)
+            and observed.get("alignment") == "confirmed"
+            and _fresh(observed.get("observed_at"), OBSERVATION_MAX_AGE_S)
+            and observed.get("pinky_id") == p["pinky_id"]
+            and observed.get("pinky_boot_version") == p["expected_pinky_boot_version"]
+            and observed.get("arrival_command_id") == p["arrival_command_id"]
+        ):
+            return observed
+        return None
+
     def _docking(self) -> dict | None:
         active = self._data["active"]
-        task = self._data["commands"][active]["task"] if active else None
-        for pinky in [task["pinky_id"]] if task else PINKIES:
+        record = self._data["commands"][active] if active else None
+        if record is not None:
+            seen = self._pinky_seen(record["task"]["pinky_id"])
+            docked = seen and self._docked(record["command"], seen)
+            if docked:
+                return {
+                    k: docked[k]
+                    for k in (
+                        "pinky_id",
+                        "pinky_boot_version",
+                        "arrival_command_id",
+                        "observed_at",
+                        "alignment",
+                    )
+                }
+        for pinky in [record["task"]["pinky_id"]] if record else PINKIES:
             seen = self._pinky_seen(pinky)
             if seen and self._parked(seen, None):
                 return {
@@ -531,41 +747,35 @@ class FieldHost:
                     "pinky_boot_version": seen["boot_version"],
                     "arrival_command_id": seen["state"].get("arrival_command_id"),
                     "observed_at": seen["observed_at"],
-                    "alignment": "unknown",  # no workcell sensor confirms the alignment
+                    "alignment": "unknown",  # no docking sensor confirmed this visit
                 }
         return None
-
-    def _watch_pinky(self, record: dict) -> list[dict]:
-        """A Pinky seen leaving during the task stops the arms (a lost state proves nothing)."""
-        task = record["task"]
-        if not self.require_pinky or record.get("abort") or task is None:
-            return []
-        seen = self._pinky_seen(task["pinky_id"])
-        if seen is None:
-            return []
-        if seen["boot_version"] == task["expected_pinky_boot_version"] and self._parked(
-            seen, task["arrival_command_id"]
-        ):
-            return []
-        record["abort"] = "pinky_left"
-        log.warning(
-            "Pinky %s left %s during the task; stopping the arms",
-            task["pinky_id"],
-            NODE,
-        )
-        self._request_stop()
-        self._save()
-        return []
 
     def _terminal(self, record: dict, seen: dict) -> list[dict]:
         arms = _arms(seen.get("arms"))
         task = record["task"]
         stop = self._data["stop"]
         detail = seen.get("detail") if isinstance(seen.get("detail"), str) else None
+        if stop is not None and stop["target"] == record["command"]["command_id"]:
+            # Stopped by control: interrupted whatever the run reached; the workcell holds
+            # (contract). stopped is true only with a fresh idle sample after the stop.
+            confirmed = self._stop_confirmed()
+            events = self._end(
+                record,
+                "interrupted",
+                stop["reason"],
+                result={
+                    "stopped": confirmed,
+                    "holding_state": _held(arms) if confirmed else "unknown",
+                    "holding_package_id": None,
+                },
+                detail=detail,
+            )
+            return events + self._settle_stop()
         if seen["state"] == "finished" and all(_home(a) for a in arms.values()):
             evidence = seen.get("evidence")
-            if evidence in PLACED[task["operation"]] and not record.get("abort"):
-                events = self._end(
+            if evidence in PLACED[task["operation"]]:
+                return self._end(
                     record,
                     "completed",
                     result={
@@ -591,42 +801,58 @@ class FieldHost:
                     evidence=evidence,
                     align_error=seen.get("align_error"),
                 )
-            else:
-                reason = record.get("abort") or "placement_or_release_unconfirmed"
-                events = self._end(
-                    record, "failed", reason, detail=f"evidence {evidence}"
-                )
-            return events + self._finish_stop(stopped=True)
+            return self._end(
+                record,
+                "failed",
+                "placement_or_release_unconfirmed",
+                detail=f"evidence {evidence}",
+            )
         settled = seen["state"] == "failed" and (
             seen.get("operator_stop") is True or seen.get("recovered") is True
         )
-        if (
-            stop is not None
-            and stop["target"] == record["command"]["command_id"]
-            and seen.get("operator_stop") is True
-        ):
-            events = self._end(
-                record,
-                "interrupted",
-                stop["reason"],
-                result={
-                    "stopped": True,
-                    "holding_state": _held(arms),
-                    "holding_package_id": None,
-                },
-                hold=bool(record.get("abort")) or not settled,
-                detail=detail,
-            )
-            return events + self._finish_stop(stopped=True)
         code = seen.get("error") if seen["state"] == "failed" else "arm_not_returned"
-        events = self._end(
+        return self._end(
             record,
             "failed",
-            record.get("abort") or _reason(code or "execution_failed"),
-            hold=bool(record.get("abort")) or not settled,
+            _reason(code or "execution_failed"),
+            hold=not settled,
             detail=detail,
         )
-        return events + self._finish_stop(stopped=True)
+
+    # --- HOLD release by control (hold_release_command, #133) ----------------------------
+    def _hold_release(self, record: dict) -> list[dict]:
+        p = record["command"]["payload"]
+        held = self._data["hold"]
+        if held is None or p["hold_command_id"] != held:
+            raise Rejected("hold_changed")
+        if self._data.get("local_release_only"):
+            raise Rejected("local_emergency_release_required")
+        if not all(p["confirmed"].get(k) is True for k in ("arms", "box", "pinky")):
+            raise Rejected("operator_checks_required")
+        if self._data["active"] is not None or self._data["stop"] is not None:
+            raise Rejected("resource_busy")
+        ready = self._read()  # measured now, after the operator's checks
+        if ready["error"] or ready["busy"]:
+            raise Rejected("executor_busy_or_fault")
+        if self.require_armed and ready["armed"] is not True:
+            raise Rejected("not_armed")
+        if not all(_home(a) for a in _arms(ready.get("arms")).values()):
+            raise Rejected("arm_not_safely_home")
+        if datetime.now(UTC) >= field_wire.timestamp(record["command"]["expires_at"]):
+            raise Rejected("expired_command")
+        self._data.setdefault("recoveries", []).append(
+            {
+                "hold_command_id": held,
+                "fault": self._data.get("hold_reason"),
+                "request_id": record["command"]["command_id"],
+                "operator": p["operator"],
+                "at": _iso(),
+            }
+        )
+        self._data.update(hold=None, hold_reason=None, local_release_only=False)
+        return self._end(
+            record, "completed", result={"released_hold": held}, hold=False
+        )
 
     # --- stop -----------------------------------------------------------------------------
     def _stop_request(self, record: dict) -> list[dict]:
@@ -636,49 +862,77 @@ class FieldHost:
         target = p["target_command_id"]
         if target == record["command"]["command_id"]:
             raise Rejected("invalid_stop_target")
-        known = self._data["commands"].get(target)
-        if known is None:
-            raise Rejected("unknown_target_command")
-        if self._data["active"] not in {None, target}:
-            raise Rejected(
-                "target_not_active"
-            )  # another task runs; never stop it by mistake
+        if target != self._data["active"]:
+            raise Rejected("target_command_not_active")
+        if not callable(getattr(self.executor, "stop", None)):
+            raise Rejected("physical_stop_adapter_unavailable")
         self._data["stop"] = {
             "command_id": record["command"]["command_id"],
             "target": target,
             "reason": _reason(p["reason"]),
         }
         events = self._status(record, "accepted")
-        if target == self._data["active"]:
-            if not callable(getattr(self.executor, "stop", None)):
-                self._data["stop"] = None
-                return events + self._end(
-                    record, "failed", "physical_stop_adapter_unavailable", hold=False
-                )
-            self._request_stop()
-            self._save()
-        return events  # an ended target settles on the next poll
+        self._request_stop()
+        self._save()
+        return events
 
     def _request_stop(self) -> None:
         if self._stop_since is None:
-            self._stop_since = time.monotonic()
+            self._stop_since, self._stop_wall = time.monotonic(), time.time()
             try:
                 self.executor.stop()
             except Exception as exc:  # noqa: BLE001 - the timeout reports the unconfirmed stop
                 log.warning("executor stop failed: %s", exc)
 
-    def _settle_stop_without_task(self) -> list[dict]:
-        """Stop for a command that already ended (or a previous boot's): idle arms are stopped."""
-        ready = self._read()
-        if ready["busy"]:
-            return self._stop_timeout()
-        return self._finish_stop(stopped=True)
+    def _stop_confirmed(self) -> bool:
+        """A readiness sample taken after the stop request shows the run over and both arms read.
+
+        A failed or empty observation, a sample from before the stop or an executor still busy
+        proves nothing (#135 review).
+        """
+        if self._stop_wall is None:
+            return False
+        try:
+            ready, observed = self._sample()
+        except Exception:  # noqa: BLE001 - no sample, no proof
+            return False
+        if observed < self._stop_wall or time.time() - observed > OBSERVATION_MAX_AGE_S:
+            return False
+        if ready.get("busy") is not False or ready.get("error"):
+            return False
+        arms = _arms(ready.get("arms"))
+        return all(a["connected"] is True for a in arms.values())
+
+    def _settle_stop(self) -> list[dict]:
+        """Complete a pending stop once confirmed; past stop_timeout_s it failed and holds."""
+        stop = self._data["stop"]
+        if stop is None:
+            return []
+        if self._data["active"] is None and self._stop_confirmed():
+            return self._finish_stop(stopped=True)
+        since = self._stop_since if self._stop_since is not None else time.monotonic()
+        self._stop_since = since
+        if time.monotonic() - since < self.stop_timeout_s:
+            return []
+        events = []
+        active = self._data["active"]
+        if active is not None:  # the run never ended: its arms may still move
+            events = self._end(
+                self._data["commands"][active], "failed", "physical_stop_not_confirmed"
+            )
+        self._data.update(
+            hold=active or stop["target"],
+            hold_reason="physical_stop_not_confirmed",
+            local_release_only=True,
+        )
+        return events + self._finish_stop(stopped=False)
 
     def _finish_stop(self, *, stopped: bool) -> list[dict]:
         stop = self._data["stop"]
         if stop is None:
             return []
-        self._data["stop"], self._stop_since = None, None
+        self._data["stop"] = None
+        self._stop_since = self._stop_wall = None
         record = self._data["commands"][stop["command_id"]]
         if stopped:
             return self._end(
@@ -696,17 +950,6 @@ class FieldHost:
             keep_active=True,
         )
 
-    def _stop_timeout(self) -> list[dict]:
-        if self._data["stop"] is None:
-            return []
-        since = self._stop_since if self._stop_since is not None else time.monotonic()
-        self._stop_since = since
-        if time.monotonic() - since < STOP_TIMEOUT_S:
-            return []
-        # The arms may still move: the running task stays active and the workcell holds.
-        self._data["hold"] = self._data["active"] or self._data["stop"]["target"]
-        return self._finish_stop(stopped=False)
-
     # --- events and journal ---------------------------------------------------------------
     def _end(
         self,
@@ -723,7 +966,16 @@ class FieldHost:
         if not keep_active and self._data["active"] == record["command"]["command_id"]:
             self._data["active"] = None
         if status != "completed" and hold:
-            self._data["hold"] = record["command"]["command_id"]
+            # a person-only HOLD stays so when another one replaces it
+            local = reason in LOCAL_RELEASE or (
+                self._data["hold"] is not None
+                and self._data.get("local_release_only") is True
+            )
+            self._data.update(
+                hold=record["command"]["command_id"],
+                hold_reason=reason or "result_unknown",
+                local_release_only=local,
+            )
         if detail:
             record["detail"] = detail[:200]
         record.update(

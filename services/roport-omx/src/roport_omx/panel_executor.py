@@ -409,6 +409,10 @@ class Route:
     eval_options: dict | None = None
     # box markers the model learned; None = any package marker
     markers: frozenset[int] | None = None
+    # the field profile's names for this model and the arms' calibration (v2 commands carry
+    # model_version / calibration_version); None = not declared, v2 refuses the route
+    model_version: str | None = None
+    calibration_version: str | None = None
 
 
 def _route_key(task: dict) -> tuple[str, str, str]:
@@ -419,10 +423,13 @@ def load_routes(path: Path) -> dict[tuple[str, str, str], Route]:
     """{"routes": [{"operation", "slot_id", "model_path", "task", "reset_s"}]}
 
     Optional per route: "episode_s" (absent or null = EPISODE_DEFAULT_S, inside the control tower's task limit), "manipulation_mode" (the slot's own, COOPERATIVE for column B and DEDICATED
-    for A/C), "markers" (box markers the model learned), output_filter, filter_gripper, eval_options.
+    for A/C), "markers" (box markers the model learned), output_filter, filter_gripper, eval_options,
+    "model_version" and "calibration_version" (v2: the exact pair control may command; a top-level
+    value is every route's default).
     """
     routes = {}
-    for item in json.loads(Path(path).read_text())["routes"]:
+    doc = json.loads(Path(path).read_text())
+    for item in doc["routes"]:
         operation, slot = item["operation"], item["slot_id"]
         if operation not in OPERATIONS.values() or slot not in SLOTS:
             raise ValueError(f"unknown operation/slot in routes: {(operation, slot)}")
@@ -459,7 +466,13 @@ def load_routes(path: Path) -> dict[tuple[str, str, str], Route]:
             bool(item.get("filter_gripper", False)),
             dict(item.get("eval_options") or {}) or None,
             frozenset(markers) if markers is not None else None,
+            item.get("model_version", doc.get("model_version")),
+            item.get("calibration_version", doc.get("calibration_version")),
         )
+        for name in ("model_version", "calibration_version"):
+            value = getattr(route, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"route {key} {name} must be a non-empty string")
         if not route.model_path or not route.task:
             raise ValueError(f"route {key} needs model_path and task")
         if route.output_filter not in OUTPUT_FILTERS:
@@ -594,6 +607,17 @@ class PanelExecutor:
             raise Rejected("EXECUTOR_ERROR") from exc
         if route.model_path not in models:
             raise Rejected("MODEL_NOT_READY")
+
+    def versions(self, task: dict) -> dict | None:
+        """The model/calibration pair this task's route was set up with (v2 compares it with the
+        command's); None when the route declares none."""
+        route = self.routes.get(_route_key(task))
+        if route is None or not route.model_version or not route.calibration_version:
+            return None
+        return {
+            "model_version": route.model_version,
+            "calibration_version": route.calibration_version,
+        }
 
     def _model_paths(self) -> set[str]:
         fetched, paths = self._models

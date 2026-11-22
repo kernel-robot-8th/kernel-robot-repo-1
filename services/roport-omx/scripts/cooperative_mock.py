@@ -18,8 +18,11 @@ class MockExecutor:
         armed: bool = True,
         unreturned: set[str] = frozenset(),
         evidence: dict[str, str] | None = None,
+        versions: dict[str, str] | None = None,
     ):
         self.run_s, self.armed, self.unreturned = run_s, armed, set(unreturned)
+        # the model/calibration pair the simulated routes accept (v2); None accepts none
+        self.model_versions = dict(versions) if versions else None
         # simulated completion evidence by operation, e.g. {"INBOUND": "shelf_align"} (v2)
         self.evidence = dict(evidence or {})
         self.started_at: float | None = None
@@ -55,6 +58,9 @@ class MockExecutor:
             raise RuntimeError("mock already running")
         self.tasks.append(task)
         self.started_at, self.stopped = monotonic(), False
+
+    def versions(self, task: dict) -> dict | None:
+        return self.model_versions
 
     def stop(self) -> None:
         """Simulated safe stop: the run ends at once with the arms set down."""
