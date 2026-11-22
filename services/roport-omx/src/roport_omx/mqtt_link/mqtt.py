@@ -277,7 +277,17 @@ class MqttTransport:
 
     def _publish_raw(self, destination, raw, message, timeout):
         properties = None
-        if destination.endswith("/cmd"):
+        if destination.endswith("/permit"):
+            if message["type"] != "workcell.permit":
+                raise ValueError("permit topic requires workcell.permit")
+            remaining = (
+                timestamp(message.get("expires_at")) - datetime.now(UTC)
+            ).total_seconds()
+            if remaining <= 0:
+                raise ValueError("expired_command")
+            properties = Properties(PacketTypes.PUBLISH)
+            properties.MessageExpiryInterval = min(math.ceil(remaining), 2**32 - 1)
+        elif destination.endswith("/cmd"):
             if "expires_at" in message:
                 remaining = (
                     timestamp(message.get("expires_at")) - datetime.now(UTC)
@@ -292,7 +302,9 @@ class MqttTransport:
             if message["type"] not in {"event.ack", "event_stored"}:
                 raise ValueError("ack channel requires event.ack")
         elif not destination.endswith("/event"):
-            raise ValueError("only task cmd/event/ack publishing is implemented")
+            raise ValueError(
+                "only task cmd/event/ack and workcell permit publishing are implemented"
+            )
         info = self._client.publish(
             destination, raw, qos=1, retain=False, properties=properties
         )
