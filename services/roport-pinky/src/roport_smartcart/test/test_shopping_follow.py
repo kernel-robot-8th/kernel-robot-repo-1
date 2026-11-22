@@ -675,6 +675,101 @@ def test_bypass_requires_same_accepted_leg_and_turn_explaining_loss(case, expect
         assert drive_target is None and look is None
 
 
+
+@pytest.mark.parametrize('hold_reason', [
+    None, 'stale_camera', 'stale_sonar', 'stale_scan', 'stale_grid',
+    'expired', 'ambiguous', 'guard', 'center', 'old_sighting', 'blocked_point',
+])
+def test_successful_bypass_researches_without_new_travel_only_when_safe(
+        hold_reason, monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from concurrent.futures import Future
+    from unittest.mock import Mock
+    from action_msgs.msg import GoalStatus
+    from roport_smartcart import shopping_follow
+
+    now = 10.
+    shop = make_shop(now)
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: now)
+    nav = shop.nav
+    nav.path_failures, nav.goal_yaw, nav.last_reached = 0, .55, None
+    nav.follow_client, nav.spin_client = Mock(), Mock()
+    nav.spin_client.send_goal_async.return_value = Future()
+    original_handle = nav.handle
+    via = nav.destination = (.05, 0.)
+    shop.bypass = via, (0., 0., 0.), 8.
+    shop.grid = (make_grid(), 9.9)
+    shop.track.update(9.95, None)
+    shop.observed, shop.miss_reason = 9.95, 'no_detection'
+    info = NS(width=640, k=[575.,0.,320.,0.,575.,240.,0.,0.,1.], d=[])
+
+    def orient(yaw):
+        c, s = math.cos(yaw/2), math.sin(yaw/2)
+        camera = NS(translation=NS(x=via[0], y=via[1], z=.1),
+                    rotation=NS(x=(-c-s)/2,y=(c-s)/2,z=(-c+s)/2,w=(c+s)/2))
+        shop.packet, shop.floor_z = (now, None, info, camera), 0.
+        transform = shop.tf.lookup_transform.return_value.transform
+        transform.translation.x = via[0]
+        transform.rotation.z, transform.rotation.w = s, c
+
+    orient(.55)
+    nav.result = Future()
+    nav.result.set_result(NS(status=GoalStatus.STATUS_SUCCEEDED))
+    shop.tick()
+    assert nav.last_reached[0] == via and nav.handle is None
+    original_handle.cancel_goal_async.assert_not_called()
+    nav.spin_client.send_goal_async.assert_not_called()
+    nav.heartbeat.assert_called_with(False, now)
+
+    now = 10.05
+    if hold_reason in {'stale_camera', 'stale_sonar', 'stale_scan'}:
+        if hold_reason == 'stale_camera':
+            shop.packet = (now-.51, *shop.packet[1:])
+        else:
+            setattr(shop, hold_reason.removeprefix('stale_')+'_at', now-.51)
+    elif hold_reason == 'stale_grid':
+        shop.grid = (make_grid(8, 0), now)
+    elif hold_reason == 'blocked_point':
+        shop.grid[0].data = [100] * len(shop.grid[0].data)
+    elif hold_reason == 'expired':
+        shop.bypass = via, shop.bypass[1], now-24.01
+    elif hold_reason == 'ambiguous':
+        shop.track.state = 'AMBIGUOUS'
+    elif hold_reason == 'guard':
+        nav.ready = lambda _: False
+    elif hold_reason == 'center':
+        orient(0.)
+    elif hold_reason == 'old_sighting':
+        shop.track.confirmed = now-14.01, shop.track.confirmed[1]
+    shop.tick()
+    nav.client.send_goal_async.assert_not_called()
+    nav.follow_client.send_goal_async.assert_not_called()
+    nav.heartbeat.assert_called_with(False, now)  # Spin remains unaccepted.
+    if hold_reason is not None:
+        nav.spin_client.send_goal_async.assert_not_called()
+        assert shop.drive == 'HOLD'
+    else:
+        nav.spin_client.send_goal_async.assert_called_once()
+        goal = nav.spin_client.send_goal_async.call_args.args[0]
+        assert goal.target_yaw == pytest.approx(-.55)
+        assert goal.time_allowance.sec == 5
+        result = Future()
+        nav.pending.set_result(Mock(accepted=True, get_result_async=lambda: result))
+        now = 10.1
+        shop.tick()
+        assert shop.drive == 'APPROACH'
+        nav.heartbeat.assert_called_with(True, now)
+        result.set_result(NS(status=GoalStatus.STATUS_SUCCEEDED))
+        now = 10.15
+        orient(0.)
+        shop.tick()
+        assert shop.drive == 'HOLD'
+        nav.spin_client.send_goal_async.assert_called_once()
+        nav.client.send_goal_async.assert_not_called()
+        nav.follow_client.send_goal_async.assert_not_called()
+        nav.heartbeat.assert_called_with(False, now)
+
+
 def test_look_cancels_old_action_and_turns_only_once_per_sighting():
     pytest.importorskip('nav2_msgs')
     from concurrent.futures import Future

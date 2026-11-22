@@ -475,9 +475,11 @@ class Shopping:
         if not live or grid is None:
             # A stale input revokes motion immediately. Geometry alone grants no lease.
             return (target if live and self.bypass is None else None), None, None
+        reached = False
         if self.bypass is not None:
             via, origin, began = self.bypass
-            if nav.last_reached and nav.last_reached[0] == via:
+            reached = nav.last_reached is not None and nav.last_reached[0] == via
+            if reached and target is not None:
                 self.bypass = None
                 return target, None, None
             if (now - began > 24. or math.dist(pose[:2], origin[:2]) > .65
@@ -493,6 +495,8 @@ class Shopping:
         if self.bypass is None:
             return target, None, None
         via, origin, _ = self.bypass
+        # After success the retained context can authorize a guarded turn, never another leg.
+        via = None if reached else via
         if (target is not None or self.track.state != 'SEARCHING' or not self.track.confirmed
                 or self.miss_reason not in ('no_detection', 'appearance_mismatch', 'position_mismatch')):
             return target, via, None
@@ -513,7 +517,7 @@ class Shopping:
                     (turned < 0 and pixel[0] <= .14*info.width)))
         if not 0 <= sight_age < 14. or not (at_edge or nav.looking):
             return None, via, None
-        if (at_edge and sight_age < 8. and nav.detouring and nav.destination == via
+        if (not reached and at_edge and sight_age < 8. and nav.detouring and nav.destination == via
                 and not nav.cancelled and nav.handle and nav.handle.accepted and nav.anchor):
             return nav.anchor, via, None
         return None, via, (bearing, stamp)
