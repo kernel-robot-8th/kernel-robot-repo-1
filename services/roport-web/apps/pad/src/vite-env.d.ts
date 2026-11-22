@@ -4,4 +4,5 @@
 interface ImportMetaEnv {
   readonly VITE_PAD_API?: 'server';
   readonly VITE_PAD_CART_ID?: string;
+  readonly VITE_PAD_SHOPPING_DEMO?: 'true';
 }

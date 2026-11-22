@@ -90,11 +90,12 @@ def test_list_logs(tmp_path):
 
 def test_layout_for_full_map():
     g = graph_view(LAYOUT)
-    assert g['room'] == [0.0, 0.0, 444.5, 221.0]
+    # v16: 통로 벽 동쪽이 기울어(2026-11-19 실측) 오른쪽 끝 y -4.38 이 바운딩 박스 아래 끝
+    assert g['room'] == [0.0, -4.38, 444.5, 221.0]
     assert {w['name'] for w in g['walls']} >= {'zone03_bottom', 'partition_warehouse'}
     assert any(o['name'] == 'box_03' for o in g['objects'])
     assert {'G1', 'G2', 'G3', 'ARR'} <= {m['name'] for m in g['markers']}
-    assert g['zones'][0]['y0'] == 94.0 and g['frame']['yaw_deg'] == 0.10
+    assert g['zones'][0]['y0'] == 90.85 and g['frame']['yaw_deg'] == 0.10
 
 
 def test_parse_speed():

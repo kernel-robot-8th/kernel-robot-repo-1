@@ -257,7 +257,7 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
                 'line_index': runner.line.index, 'route': runner.line.route,
                 'marker': marker_samples[-1] if marker_verified and marker_samples else None,
                 'marker_verified': marker_verified, 'arrival_warning': arrival_warning,
-                'error': failure, 'sent_at': time.time()}
+                'error': failure, 'path_blocked': getattr(runner, 'path_blocked', False), 'sent_at': time.time()}
             progress.publish(String(data=json.dumps(packet)))
             rows.append({**packet, 'ir': runner.reading.as_dict() if runner.reading else None})
             last_status = now
@@ -412,6 +412,7 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
         path = result.result.path
         if (result.status != GoalStatus.STATUS_SUCCEEDED or result.result.error_code != 0
                 or not follows_upper_corridor(layout.frame, path, waypoints, box_edges)):
+            runner.path_blocked = result.result.error_code in (205, 206, 208)
             raise RuntimeError(f'No confirmed upper return path (Nav2 code {result.result.error_code})')
         begin, end = (path.poses[i].pose.position for i in (0, -1))
         if (math.hypot(begin.x-start['x'], begin.y-start['y']) > .08

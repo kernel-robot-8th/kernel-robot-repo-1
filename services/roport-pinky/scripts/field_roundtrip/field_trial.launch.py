@@ -48,6 +48,12 @@ def _nodes(context):
     if not math.isfinite(goal_xy_tolerance) or not .01 <= goal_xy_tolerance <= .1:
         raise ValueError('goal_xy_tolerance must be finite and in [0.01, 0.1] m')
     config = LaunchConfiguration('params_file')
+    params_files = [config]
+    if LaunchConfiguration('shopping_follow').perform(context).lower() == 'true':
+        # Short following steps must extend beyond Nav2's arrival tolerance.
+        goal_xy_tolerance = min(goal_xy_tolerance, .015)
+        params_files.append(str(Path(get_package_share_directory('roport_smartcart')) /
+                                'config' / 'shopping_costmaps.yaml'))
     nodes = [
         Node(package='roport_pinky', executable='trial_guard', output='screen'),
         Node(package='roport_line_nav', executable='line_nav', output='screen',
@@ -91,7 +97,7 @@ def _nodes(context):
             overrides['min_velocity'] = [-max_linear, 0.0, -max_angular]
             remaps.append(('cmd_vel_smoothed', 'trial/nav2_cmd_vel'))
         nodes.append(Node(package=package, executable=name, name=name, output='screen',
-                          parameters=[config, overrides], remappings=remaps))
+                          parameters=[*params_files, overrides], remappings=remaps))
     nodes.append(Node(package='nav2_lifecycle_manager', executable='lifecycle_manager',
                       name='trial_lifecycle_manager', output='screen', parameters=[{
                           'autostart': True, 'node_names': [name for _, name in servers]}]))
@@ -112,6 +118,7 @@ def generate_launch_description():
                                   description='Nav2 rotation cap in rad/s; use field-verified value'),
             DeclareLaunchArgument('goal_xy_tolerance', default_value='0.08',
                                   description='Map pose XY tolerance in m; not measured wall clearance'),
+            DeclareLaunchArgument('shopping_follow', default_value='false', choices=['true','false']),
             DeclareLaunchArgument('params_file', default_value=PathJoinSubstitution([
                 FindPackageShare('pinky_navigation'), 'params', 'nav2_params.yaml']))]
     return LaunchDescription(args + [OpaqueFunction(function=_nodes)])
