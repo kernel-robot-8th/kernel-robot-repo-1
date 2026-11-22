@@ -872,3 +872,66 @@ def test_vision_edge_uses_full_foot_for_anchor_and_motion(side, geometry, monkey
         assert projected_anchor == [False]
         assert shop.track.state == 'AMBIGUOUS'
         assert shop.track.target() is None
+
+
+def test_vision_preserves_tracker_processing_error_without_disarming(monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from roport_smartcart import shopping_follow
+
+    shop = make_shop(10.)
+    frame = np.zeros((480, 640, 3), np.uint8)
+    shop.packet, shop.floor_z = (10., frame, None, None), 0.
+    shop.seed = frame, (.2, .2, .5, .7)
+    shop.encoder = NS(encode=lambda crops: np.tile([1., 0.], (len(crops), 1)))
+    steps = iter((False, True))
+    shop.closed = NS(wait=lambda _: next(steps))
+    # 28 of 32 px (87.5%) is a valid template crop, too narrow for the DINO tracker.
+    proposal = dict(box=[0, 200, 28, 340], foot_box=[-4, 200, 28, 340])
+    monkeypatch.setattr(shopping_follow, 'SelectedProposals', lambda *_: NS(
+        detect=lambda _: [proposal]))
+    shop.detector = NS(full_frame=lambda _: [])
+
+    shop.vision()
+    assert shop.armed
+    assert shop.miss_reason == 'processing_error'
+    assert shop.track.state == 'AMBIGUOUS' and shop.track.target() is None
+
+
+def test_vision_preserves_interior_fractional_yolo_projection(monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from roport_smartcart import shopping_follow
+
+    now = 10.
+    shop = make_shop(now)
+    frame = np.zeros((480, 640, 3), np.uint8)
+    info = NS(k=[500.,0,320,0,500.,240,0,0,1.], height=480, d=[])
+    camera = NS(rotation=NS(x=-.5,y=.5,z=-.5,w=.5), translation=NS(x=-.36,y=0.,z=.12))
+    raw = [250.2, 200.2, 362.2, 340.2]
+    rounded = [250, 200, 363, 341]
+    point = foot_position(raw, info, camera)
+    rounded_point = foot_position(rounded, info, camera)
+    anchor = rounded_point[0] - .177, rounded_point[1]
+    assert math.dist(anchor, rounded_point) < .18 < math.dist(anchor, point)
+    shop.track = Track()
+    for stamp in (now-.5, now-.4, now-.3):
+        shop.track.update(stamp, anchor)
+    shop.packet, shop.floor_z = (now, frame, info, camera), 0.
+    shop.seed, shop.encoder = (frame, (.2,.2,.5,.7)), object()
+    steps = iter((False, True))
+    shop.closed = NS(wait=lambda _: next(steps))
+    calls = []
+    monkeypatch.setattr(shopping_follow, 'SelectedProposals',
+                        lambda *_: NS(detect=lambda _: []))
+    shop.detector = NS(full_frame=lambda _: [dict(box=raw)])
+
+    def tracker(_encoder, detector, *_seed):
+        def step(image, *, near_anchor, expected_box):
+            assert detector(image) == [raw]
+            calls.append(bool(near_anchor(rounded)))
+            return [rounded], [{'score': .9}], {'state': 'MATCH', 'index': 0}
+        return NS(step=step)
+
+    monkeypatch.setattr(shopping_follow, 'SessionTracker', tracker)
+    shop.vision()
+    assert calls == [True]
+    assert shop.track.target() == pytest.approx(point)

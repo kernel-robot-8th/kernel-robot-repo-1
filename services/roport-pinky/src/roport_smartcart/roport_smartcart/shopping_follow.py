@@ -447,22 +447,31 @@ class Shopping:
                             half_width = (c-a)*w/2
                             expected = (u-half_width, v-(d-b)*h, u+half_width, v)
                     # SessionTracker validates/rounds crop boxes; geometry stays separate.
-                    crop_keys = [tuple(_box(box, (h, w))) for box in boxes]
-                    ground_boxes = {}
-                    for key, item in zip(crop_keys, items):
+                    crop_keys, ground_boxes = [], {}
+                    for item in items:
+                        try:
+                            key = tuple(_box(item['box'], (h, w)))
+                        except ValueError:
+                            # Preserve the tracker's processing_error rather than disarming here.
+                            crop_keys.append(None)
+                            continue
+                        crop_keys.append(key)
                         ground_box = projection_box(item, w)
+                        near_box = key if ground_box == item['box'] else ground_box
+                        geometry = ground_box, near_box
                         if key not in ground_boxes:
-                            ground_boxes[key] = ground_box
-                        elif ground_boxes[key] != ground_box:
-                            ground_boxes[key] = None
+                            ground_boxes[key] = geometry
+                        elif ground_boxes[key] != geometry:
+                            ground_boxes[key] = None, None
 
-                    def location_of(box):
-                        ground_box = ground_boxes.get(tuple(box))
+                    def location_of(key, near=False):
+                        ground_box, near_box = ground_boxes.get(key, (None, None))
+                        ground_box = near_box if near else ground_box
                         if ground_box is not None:
                             return foot_position(ground_box, info, camera, self.floor_z)
 
                     def near_anchor(box):
-                        location = location_of(box)
+                        location = location_of(tuple(box), near=True)
                         return anchor and location and math.dist(anchor, location) < .18
                     _, scores, match = tracker.step(frame, near_anchor=near_anchor, expected_box=expected)
                     if match['state'] == 'MATCH':
