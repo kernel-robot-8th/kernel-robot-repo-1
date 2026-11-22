@@ -2,7 +2,7 @@
 
 관제와 실물·가상 Pinky 모두 `field_wire.py` / `FieldPinkyClient`를 사용한다. 물리 동작은 팀원의 `roport_pinky.trial_driver:TrialDriver`가 맡는다. `trial_wire.py`는 기존 시험 설정·실행부 내부 표현이며 새 MQTT 스키마가 아니다.
 
-토픽은 `roport/robot/{pinky1|pinky2|pinky3}/{cmd|event|ack|motion}`이다. 명령은 cmd, 상태·결과는 event, 저장 확인은 ack, 표시 좌표는 motion이다. motion만 QoS0이고 나머지는 QoS1이며 모두 retain=false다. `message.schema.json`과 `examples.json`은 v2 실제 JSON이며 예시의 ID·시각은 재생용 명령이 아니다.
+토픽은 `roport/robot/{pinky1|pinky2|pinky3}/{cmd|event|ack|motion|host}`이다. 명령은 cmd, 상태·결과는 event, 저장 확인은 ack, 표시 좌표는 motion, 호스트 지표는 host다. motion·host만 QoS0이고 나머지는 QoS1이며 모두 retain=false다. `message.schema.json`과 `examples.json`은 v2 실제 JSON이며 예시의 ID·시각은 재생용 명령이 아니다.
 
 ## 연결 정보
 
@@ -16,6 +16,8 @@
 2. Pinky에 `paho-mqtt==2.1.0`을 준비하고 ROS 환경을 source한다. 설정 JSON을 복사하고 초기 기체 위치를 `ROPORT_PINKY_START_NODE`로 지정한다. 이 값은 실제 위치를 자동 측정한 결과가 아니다.
 3. 기존 준비된 `line_nav`, Nav2, 독립 drive guard를 사용한다. ROS driver·`line_nav_node`도 이번 버전으로 갱신해야 N12 역전환이 가능하다. 이 문서는 bringup이나 모터를 자동 실행하지 않는다.
 4. `python -m pinky_mqtt.trial_runner --config /path/trial.json --role logistics --journal /path/new-journal.json --driver roport_pinky.trial_driver:create_driver --hardware-authorized`로 연결한다. 스마트카트 역할은 `--role smartcart`다. 먼저 같은 인자에 `--check`를 추가하면 장비·브로커에 접속하지 않고 설정만 검사한다. `field_verified=true`는 현장 확인 후 설정한다.
+
+호스트 지표는 기본 꺼짐이다. `--host-metrics-period-s 5`처럼 주기를 명시하면 `roport/robot/{pinky}/host`로 `host_metrics`(CPU 수·loadavg·메모리 kB·CPU 온도 °C)를 QoS0·retain=false로 보낸다. 읽지 못한 값은 null이며 0으로 바꾸지 않는다. 표시 전용이라 발행 실패는 로그만 남기고 정지·HOLD·출발 판정에 쓰지 않는다. 온도는 thermal zone type `cpu-thermal`/`x86_pkg_temp`에서 읽으며, 현장 기체의 zone 이름이 다르면 `--host-metrics-temp-path <밀리°C 값이 든 파일>`로 덮어쓴다(주기와 함께 지정). 관제는 시험 설정 `host_metrics: {"hosts": [...], "stale_after_s": 15}`가 있을 때만 별도 client(`<client_id>-host`)로 구독하고 `GET /api/hosts/metrics`로 보여 준다.
 
 기존 v1 journal을 v2 endpoint에 재사용하지 않는다. 이전 파일은 보관하고 새 파일로 시작한다. 미완료 실행이 있는 v2 journal을 다시 열면 자동 재주행하지 않고 복구 확인을 요구한다. 프로세스가 재시작되면 `boot_version`이 바뀌므로 관제도 새 상태를 확인해야 한다.
 
@@ -48,6 +50,17 @@ v2의 기본 보고는 fault/reason과 별도 robot_pose이며, 자세한 naviga
 Nav2로 N12 복귀 골에 이동 → 정지 → `nav2 → line` 전환 → 라인 경로 전송 순서다. 복귀 골은 layout N12에서 바디 중심을 동쪽으로 3cm 옮긴 위치, 서쪽 방향에 frame 변환을 적용한 값이다. 로봇 센서 바가 바디 앞 3cm인 현재 설정을 기준으로 한다.
 
 드라이버는 실제 localization 준비, 정지, 목표 오차 5cm/0.1rad 이내, 0.3초 이내 IR 센터 선 검출·오차 0.25 이내를 확인하고 0.5초 연속 확인 후 라인으로 바꾼다. 다음 시작은 N12와 sensor offset=0을 검증한 `confirmed_start`로 전달한다. 실제 IR/위치 정합·캘리브레이션이 맞지 않으면 전환하지 않는다.
+
+`confirmed_start`에도 `roport_line_nav`의 옆선 켜짐 확인(`side_rise_only`, 기본 켬)이 적용된다. 출발할 때부터 옆 IR이 본선 가장자리를 계속 밟고 그 run이 N08 옆선까지 이어지면 N08을 노드로 보지 않고 `node_missed`로 정지한다(안전 정지, 관제는 HOLD). 조건은 [roport_line_nav README](../../roport-pinky/src/roport_line_nav/README.md) 「옆선 켜짐 확인」 절에 있다. 실로봇에서 N12 출발 때 이 경우가 얼마나 자주 생기는지는 아직 재지 않았다.
+
+## 알려진 제한 (2026-11-17 연동 검토)
+
+main 96e05fa 기준 코드와 `VirtualPinky` 재현으로 확인했다. 실로봇·실브로커에서는 확인하지 않았다.
+
+- **운영자 정지·HOLD는 정지 명령이 아니다.** 관제 시험 실행부(`field_trial_transport.py`)는 `robot_stop_command`를 보내지 않고, 정지·HOLD 때 `keep_running_command_id` 상태 요청만 멈춘다. Pinky는 마지막 유효 요청을 받은 뒤 3초가 넘은 것을 다음 `poll()`에서 확인하고 `control_link_lost`로 `safe_stop()`을 요청한다. 이 watchdog 대기 시간 동안 0.06 m/s 정속으로 주행한다고 가정한 이동 거리가 약 18 cm다(0.06 m/s × 3 s). 여기에는 폴링 주기, 정지 명령 반영, 실제 감속 시간이 들어 있지 않으므로 정지거리 상한이 아니며, 실제 정지거리 상한은 실측 전이라 미확정이다. 그동안 `trial_guard`는 로봇 안의 lease로 열려 있다.
+- **Pinky endpoint가 일부 stop을 거절한다.** `field_pinky.py`는 `robot_stop_command`도 일반 명령과 같은 순서로 `sent_at` 신선도(−0.5~3초), boot, 기록 1024개 한도를 먼저 검사한다. 늦게 도착한 stop은 `stale_message`, 기록이 찬 뒤의 stop은 `command_history_full`, 이미 끝난 명령을 가리키는 stop은 `stop_target_mismatch`로 거절되고, 주행 중이었다면 그대로 간다.
+- **수정 제안(미구현, 관제 담당 결정).** Pinky endpoint는 OMX 쪽(`task/control-integration-test` 91c0a84)처럼 stop을 신선도·기록 한도 검사보다 먼저 처리하고, 이미 끝난 명령을 가리키는 stop에는, 다른 활성 명령이 없고 최신 상태에서 실제 정지가 확인된 경우에만 「이미 정지」로 completed를 보낸다. 다른 명령이 실행 중이면(이전 주행 A가 끝난 뒤 주행 B가 시작된 상태에서 A를 가리키는 지연 stop이 도착한 경우) 대상 불일치(`stop_target_mismatch`)를 유지한다. 관제는 HOLD·운영자 정지 때 keep-running을 끊으면서 `robot_stop_command`도 한 번 보낸다. fleet runtime에서 stop을 보내게 되면 endpoint도 함께 고쳐야 한다.
+- **host 토픽 ACL.** `--host-metrics-period-s`를 켜면 현장 브로커 ACL에 `roport/robot/{pinky}/host` 발행 권한이 있어야 한다. 없으면 QoS0이라 조용히 버려지고 관제 화면에는 `unknown`·`stale`만 보인다. 정지·HOLD·출발 판정에는 영향이 없다.
 
 ## 가상 시험 범위
 

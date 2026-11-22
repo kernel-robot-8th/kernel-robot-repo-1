@@ -106,13 +106,14 @@ export async function verifyReservationNo(reservationNo: string): Promise<Verify
     return verify(value);
   }
   const body = JSON.stringify({ verificationRequestId: newVerificationRequestId(), method: 'RESERVATION_NO', value });
-  const result = toVerifyResult(...(await postVerification(body)));
+  const [status, json, retryAfter] = await postVerification(body);
+  const result = toVerifyResult(status, json, retryAfter);
   if (!result) throw new Error('예약 확인 실패');
   return result;
 }
 
 // 응답을 못 받았을 때(연결 실패·8초 초과)만 같은 요청 ID로 한 번 더 보낸다. 서버는 같은 ID를 한 번만 기록한다.
-async function postVerification(body: string): Promise<[number, unknown]> {
+async function postVerification(body: string): Promise<[number, unknown, string | null]> {
   const send = () =>
     fetch('/cart-api/verifications', {
       method: 'POST',
@@ -132,7 +133,7 @@ async function postVerification(body: string): Promise<[number, unknown]> {
   } catch {
     // JSON이 아닌 응답(예: 프록시 미설정으로 index.html) — toVerifyResult가 오류로 처리한다.
   }
-  return [res.status, json];
+  return [res.status, json, res.headers.get('Retry-After')];
 }
 
 // 고객의 수령 확인. 서비스 서버가 수령 완료를 기록한다(SR-18-2).
@@ -165,4 +166,39 @@ export function resetDemo(): void {
   DEMO_PICKUPS.forEach((p) => {
     p.received = p.pickupId === 'demo-pickup-3';
   });
+}
+
+export interface ShoppingStatus {
+  ownsCamera: boolean;
+  stopped: boolean;
+  simulation: boolean;
+  canStart: boolean;
+  notice: 'INACTIVE' | 'SHOPPING' | 'COME_CLOSER' | 'BLOCKED' | 'UNAVAILABLE' | 'PAUSED';
+  selected: boolean;
+  armed: boolean;
+  state: string;
+  drive: 'HOLD' | 'APPROACH';
+  reason: string;
+  frame: string | null;
+  detecting: boolean;
+  boxes: number[][];
+  box: number[] | null;
+}
+
+export async function shopping(session: string, action = 'status', args: Record<string, unknown> = {}): Promise<ShoppingStatus> {
+  const res = await fetch('/shopping/' + action, action === 'status'
+    ? {headers: {'X-Shopping-Session': session}, cache: 'no-store', signal: AbortSignal.timeout(1500)}
+    : {method: 'POST', headers: {'Content-Type':'application/json'}, signal: AbortSignal.timeout(2000),
+       body: JSON.stringify({session, ...args})});
+  // A restarted cart has forgotten this session. Read the camera status again.
+  if (action === 'heartbeat' && res.status === 409) return shopping(session);
+  if (!res.headers.get('content-type')?.includes('application/json')) throw new Error('카트 카메라 연결을 기다리고 있어요.');
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '카트 연결을 확인해 주세요.');
+  return data;
+}
+
+export async function shoppingImage(session: string, path: string, signal: AbortSignal): Promise<Blob | null> {
+  const res = await fetch(path, {headers: {'X-Shopping-Session': session}, cache: 'no-store', signal});
+  return res.ok && res.headers.get('content-type') === 'image/jpeg' ? res.blob() : null;
 }

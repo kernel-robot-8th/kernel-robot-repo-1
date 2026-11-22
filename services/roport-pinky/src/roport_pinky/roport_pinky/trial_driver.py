@@ -4,7 +4,7 @@
 create_driver(profile, role) 로 만들고 observe·validate_action·dispatch·safe_stop·drain_results 를 부른다.
 MQTT·스키마·이력·재전송은 키트 모듈이 맡고, 여기서는 line_nav 상태를 관측값으로 바꾸고 명령을 넘긴다.
 
-지원: route(start_maneuver=none), N12 mode_switch, Nav2 navigate, status.
+지원: route(start_maneuver=none), N12 mode_switch, Nav2 navigate, follow(고객 카드 추종, trial_follow.py), status.
 출발 노드: 처음에는 ROPORT_PINKY_START_NODE(예: N16, 운영자가 놓은 칸). 그 뒤로는 line_nav 가
   마지막으로 확인한 노드. 정지·오류 뒤에는 모름(null) → 다음 route 는 관제 쪽에서 거부된다.
 방향: 칸 노드(이웃 1개)는 칸 바깥 방향, 주행 뒤에는 line_nav 화면용 추정(pose_est). map = layout + frame.yaw.
@@ -268,6 +268,9 @@ class TrialLogic:
 NAV_RETRY_FAULTS = frozenset(('nav2_goal_failed', 'nav2_recovery_limit',
     'nav2_recovery_timeout', 'gate_dock_marker_missing', 'gate_dock_marker_lost',
     'gate_dock_timeout'))
+NAV2_COMMANDS = ('navigate.requested', 'follow.requested')
+FOLLOW_BT = 'follow_target.xml'
+FOLLOW_PERIOD = 0.1     # s, 추종 판정·goal_update 주기(ROS spin 스레드)
 
 class TrialDriver:
     """rclpy 연결부. 별도 스레드에서 spin, 키트의 MQTT 스레드는 hook 만 부른다."""
@@ -308,12 +311,98 @@ class TrialDriver:
                                 start_node=start_node)
         self.node.create_subscription(String, 'line_nav/state', self._on_state, 10)
         self.node.create_subscription(Odometry, 'odom', self._on_odom, 10)
+        self._init_follow()
         self._ex = SingleThreadedExecutor()
         self._ex.add_node(self.node)
         self.thread = threading.Thread(target=self._ex.spin, daemon=True)
         self.thread.start()
         self.node.get_logger().info(
             f'trial driver for {role}: start node {start_node}, graph {graph.version}')
+
+    def _init_follow(self):
+        """고객 카드 추종 입력·출력. 노트북 roport_follow 와 같은 ROS_DOMAIN_ID 가 필요하다."""
+        from ament_index_python.packages import get_package_share_directory
+        from geometry_msgs.msg import PointStamped, PoseStamped
+        from std_msgs.msg import String
+
+        from .trial_follow import FollowInput
+        self._PoseStamped = PoseStamped
+        self.follow_bt = os.path.join(get_package_share_directory('roport_pinky'),
+                                      'behavior_trees', FOLLOW_BT)
+        self.follow_input, self.follow, self.follow_results = FollowInput(), None, []
+        # 노트북 발행자 QoS = reliable, volatile, depth 5. 여기서도 reliable depth 5.
+        self.node.create_subscription(String, 'follow/status', self._on_follow_status, 5)
+        self.node.create_subscription(PointStamped, 'follow/target', self._on_follow_target, 5)
+        # Nav2 GoalUpdater(BT) 입력: bt_navigator 의 goal_updater_topic 기본값 goal_update.
+        self.goal_update_pub = self.node.create_publisher(PoseStamped, 'goal_update', 1)
+        self.follow_timer = self.node.create_timer(FOLLOW_PERIOD, self._follow_tick)
+
+    def _on_follow_status(self, msg):
+        from .trial_follow import parse_status
+        status = parse_status(msg.data)
+        with self.lock:
+            self.follow_input.on_status(status, time.monotonic())
+
+    def _on_follow_target(self, msg):
+        s = msg.header.stamp
+        with self.lock:
+            self.follow_input.on_target(s.sec + s.nanosec * 1e-9, msg.header.frame_id,
+                                        msg.point.x, msg.point.y)
+
+    def _ros_now(self):
+        return self.node.get_clock().now().nanoseconds * 1e-9
+
+    def _follow_transform(self, stamp, x, y):
+        """base_footprint 점(그 stamp 의 자세) → map (x, y). TF 가 없으면 LookupError."""
+        from rclpy.time import Time
+        from tf2_ros import TransformException
+
+        from .trial_nav2 import yaw
+        try:
+            tf = self.nav.tf.lookup_transform(
+                'map', 'base_footprint', Time(nanoseconds=int(round(stamp * 1e9))))
+        except TransformException as exc:
+            raise LookupError(str(exc)) from None
+        t = tf.transform
+        a = yaw(t.rotation)
+        return (t.translation.x + math.cos(a) * x - math.sin(a) * y,
+                t.translation.y + math.sin(a) * x + math.cos(a) * y)
+
+    def _publish_goal_update(self, goal):
+        x, y, heading, stamp = goal
+        msg = self._PoseStamped()
+        msg.header.frame_id = 'map'
+        msg.header.stamp.sec = int(math.floor(stamp))
+        msg.header.stamp.nanosec = min(int(round((stamp % 1) * 1e9)), 999_999_999)
+        msg.pose.position.x, msg.pose.position.y = float(x), float(y)
+        msg.pose.orientation.z, msg.pose.orientation.w = math.sin(heading / 2), math.cos(heading / 2)
+        self.goal_update_pub.publish(msg)
+
+    def _follow_tick(self):
+        """ROS 스레드 10 Hz: 정지 조건이면 즉시 Nav2 취소·lease none, 아니면 새 목표를 GoalUpdater 로."""
+        with self.lock:
+            if (self.follow is None or not self.nav_command
+                    or self.nav_command['type'] != 'follow.requested'):
+                return
+            if self.nav.result:
+                code = self.nav.result[0]
+                self._end_follow(code if code == 'nav2_not_ready' else 'follow_nav2_failed')
+                return
+            step = self.follow.step(self.follow_input, self._ros_now(), time.monotonic(),
+                                    self._follow_transform, self.nav.snapshot().get('pose'))
+            if step is None:
+                return
+            if step[0] == 'stop':
+                self._end_follow(step[1])
+            else:
+                self._publish_goal_update(step[1])
+
+    def _end_follow(self, code):
+        cmd = self.nav_command
+        if self.nav.navigation is not None:
+            self.nav.navigation.update(phase='failed', error_code=code)
+        self.safe_stop(code)      # Nav2 취소 + lease none(guard 가 0 속도) + 코드별 잠금
+        self.follow_results.append((cmd, 'failed', {'error_code': code}))
 
     def _on_state(self, msg):
         try:
@@ -377,7 +466,7 @@ class TrialDriver:
                 self._lease('none')
                 return
             owner = 'line' if self.logic.active else 'none'
-            if self.nav_command and self.nav_command['type'] == 'navigate.requested' and not self.nav.result:
+            if self.nav_command and self.nav_command['type'] in NAV2_COMMANDS and not self.nav.result:
                 owner = 'nav2'
             self._lease(owner)
 
@@ -464,7 +553,7 @@ class TrialDriver:
                     raise ValueError('not_in_line_mode')
                 return self.logic.validate_action(command)
             p = command['payload']
-            if any(p[k] != state[k] for k in ('map_id', 'map_version')):
+            if any(p.get(k) != state[k] for k in ('map_id', 'map_version')):
                 raise ValueError('map_mismatch')
             if not state['nav2_ready'] or not state['localization_ready']:
                 raise ValueError('nav2_not_ready')
@@ -474,8 +563,43 @@ class TrialDriver:
                         raise ValueError('N12_physical_alignment_required')
                 elif self.mode != 'line' or state['node_id'] != 'N12' or self.logic.st['state'] != 'handoff':
                     raise ValueError('not_at_switch_node')
+            elif command['type'] == 'follow.requested':
+                self._admit_follow(p)
             elif command['type'] != 'navigate.requested' or self.mode != 'nav2' or p['frame_id'] != 'map':
                 raise ValueError('unsupported_operation')
+
+    def _admit_follow(self, payload):
+        """읽기 전용 출발 검사. 첫 목표 (x, y, yaw, stamp) 를 돌려준다."""
+        from .trial_follow import admit
+        if self.mode != 'nav2':
+            raise ValueError('not_in_nav2_mode')
+        if not self.nav.quiescent():
+            raise ValueError('drive_busy')
+        if not os.path.isfile(self.follow_bt):
+            raise ValueError('follow_bt_missing')
+        return admit(payload, self.follow_input, self._ros_now(), time.monotonic(),
+                     self._follow_transform, self.nav.snapshot().get('pose'))
+
+    def _start_follow(self, command):
+        from .trial_follow import FollowSession
+        self.nav_command = command
+        self.logic.node = None
+        try:
+            first = self._admit_follow(command['payload'])
+        except ValueError as exc:      # 수락 뒤 입력이 끊김: 움직이지 않고 실패 보고
+            self.nav_command = None
+            self.follow_results.append((command, 'failed', {'error_code': str(exc)}))
+            return
+        self.follow = FollowSession(command['payload'], time.monotonic())
+        self.follow.published, self.follow.published_at = first[3], time.monotonic()
+        x, y, heading, stamp = first
+        self.nav.start({'frame_id': 'map', 'goal_id': 'follow',
+                        'pose': {'x': x, 'y': y, 'yaw': _wrap(heading)}},
+                       behavior_tree=self.follow_bt, stamp=stamp,
+                       # 추종은 몇 분씩 이어지고 Nav2 는 비우기·대기를 따로 누적해 센다(복구 1번 = 2) →
+                       # 누적 상한 대신 BT 의 연속 재시도(3번)와 RECOVERY_TIMEOUT_S 로 막는다(11-20 실로봇).
+                       max_recoveries=None)
+        self._lease('nav2')
 
     def dispatch(self, command):
         with self.lock:
@@ -487,6 +611,8 @@ class TrialDriver:
             if command['type'] == 'route.requested':
                 self._lease('line')
                 return self.logic.dispatch(command)
+            if command['type'] == 'follow.requested':
+                return self._start_follow(command)
             self.nav_command = command
             if command['type'] == 'mode_switch.requested':
                 self._lease('none')
@@ -500,18 +626,28 @@ class TrialDriver:
                 self._lease('nav2')
 
     def safe_stop(self, reason):
+        from .trial_follow import SOFT_STOPS
         with self.lock:
+            following = bool(self.nav_command and self.nav_command['type'] == 'follow.requested')
+            self.follow = None
             if (reason in NAV_RETRY_FAULTS and self.nav_command
                     and self.nav_command['type'] == 'navigate.requested'):
                 self.failed_navigation = self.nav_command
             elif reason not in NAV_RETRY_FAULTS:
                 self.failed_navigation = None
-            self.halted = reason
+            # 고객 놓침·노트북 끊김·시간 종료·추종 중 운영자 정지는 정상 종료: 새 follow 를 다시 받는다.
+            if not (reason in SOFT_STOPS or (following and reason == 'operator_stop')):
+                self.halted = reason
             self.nav_command = None
             self.nav.cancel()
             self.logic.safe_stop(reason)
 
     def drain_results(self):
+        with self.lock:
+            follow, self.follow_results = getattr(self, 'follow_results', []), []
+            return follow + self._drain_results()
+
+    def _drain_results(self):
         with self.lock:
             active = self.nav_command or self.logic.active
             state = self.observe()
@@ -522,8 +658,8 @@ class TrialDriver:
                 return [(active, 'failed', {'error_code': state['fault']})]
             results = self.logic.drain_results()
             cmd = self.nav_command
-            if cmd is None:
-                return results
+            if cmd is None or cmd['type'] == 'follow.requested':
+                return results  # 추종 종료는 _follow_tick 이 follow_results 로 넣는다
             if cmd['type'] == 'mode_switch.requested':
                 if cmd['payload']['to_mode'] == 'line':
                     if not self._return_aligned() or self.guard['owner'] != 'none' or not state['stopped']:

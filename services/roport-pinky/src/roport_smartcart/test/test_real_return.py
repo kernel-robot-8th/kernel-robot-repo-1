@@ -98,6 +98,39 @@ def test_invalid_adc_does_not_refresh_valid_ir_watchdog():
     assert runner.reading is None and runner.ir_at == last and runner.ir_seq == 1
 
 
+@pytest.mark.parametrize('packet', [None, [], {}, '{invalid',
+    {'boot': 'boot', 'owner': 'none', 'blocked': False, 'sent_at': 99.},
+    {'boot': 'boot', 'owner': 'none', 'blocked': False, 'sent_at': 100.2},
+    {'boot': 'boot', 'owner': 'none', 'blocked': None, 'sent_at': 100.},
+    {'boot': 'boot', 'owner': 'unknown', 'blocked': False, 'sent_at': 100.}])
+def test_bad_guard_packet_revokes_previous_good_observation(monkeypatch, packet):
+    import json
+    from roport_smartcart.real_return import HardwareReturn
+    monkeypatch.setattr('roport_smartcart.real_return.time.time', lambda: 100.)
+    monkeypatch.setattr('roport_smartcart.real_return.time.monotonic', lambda: 10.)
+    runner = HardwareReturn.__new__(HardwareReturn)
+    runner.boot = 'boot'
+    runner.on_guard(SimpleNamespace(data=json.dumps(dict(
+        boot='boot', owner='none', blocked=False, sent_at=99.9))))
+    assert runner.guard_ok()
+    runner.on_guard(SimpleNamespace(data=packet if isinstance(packet, str) else json.dumps(packet)))
+    assert not runner.guard_ok()
+
+
+def test_guard_packet_age_includes_transport_delay(monkeypatch):
+    import json
+    from roport_smartcart.real_return import HardwareReturn
+    monkeypatch.setattr('roport_smartcart.real_return.time.time', lambda: 100.)
+    monkeypatch.setattr('roport_smartcart.real_return.time.monotonic', lambda: 10.)
+    runner = HardwareReturn.__new__(HardwareReturn)
+    runner.boot = 'boot'
+    runner.on_guard(SimpleNamespace(data=json.dumps(dict(
+        boot='boot', owner='none', blocked=False, sent_at=99.75))))
+    assert runner.guard_ok() and runner.guard_at == pytest.approx(9.75)
+    monkeypatch.setattr('roport_smartcart.real_return.time.monotonic', lambda: 10.06)
+    assert not runner.guard_ok()
+
+
 @pytest.mark.parametrize('blocked', [False, True])
 def test_spin_processes_queued_guard_before_renewing_owner(monkeypatch, blocked):
     from roport_smartcart.real_return import HardwareReturn

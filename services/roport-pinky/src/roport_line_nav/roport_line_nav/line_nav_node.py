@@ -165,8 +165,11 @@ class LineNavNode(Node):
             for name in ('base_speed', 'max_linear', 'max_angular', 'kp', 'kd', 'ir_ahead_cm',
                          'turn_advance_cm', 'rotate_speed', 'reverse_speed', 'reverse_max_cm',
                          'gate_min', 'gate_max', 'gate_early_cm', 'lost_timeout',
-                         'approach_speed', 'approach_lead_cm', 'pass_full_speed', 'tee_both',
-                         'tee_window_cm', 'kp_speed_scale', 'gain_ref_speed')})
+                         'approach_speed', 'approach_lead_cm', 'post_turn_slow_cm',
+                         'pass_full_speed', 'tee_both',
+                         'tee_window_cm', 'kp_speed_scale', 'gain_ref_speed',
+                         'side_rise_only', 'side_rise_off_samples',
+                         'side_rise_tee')})
 
         self.graph = Graph.load(layout_file)
         self.sensor = LineSensor(load_calibration(cal_file, robot))
@@ -199,7 +202,9 @@ class LineNavNode(Node):
             f'dock={self.ex.dock.as_dict() or "defaults"} '
             f'base={cfg.base_speed} m/s approach={cfg.approach_speed} m/s '
             f'(from {cfg.approach_lead_cm} cm before node, straight pass {"full" if cfg.pass_full_speed else "slow"}) ir_ahead={cfg.ir_ahead_cm} cm '
-            f'kp={cfg.kp} kd={cfg.kd} (x speed/{cfg.gain_ref_speed} above it: {cfg.kp_speed_scale})')
+            f'kp={cfg.kp} kd={cfg.kd} (x speed/{cfg.gain_ref_speed} above it: {cfg.kp_speed_scale}) '
+            f'post_turn_slow={cfg.post_turn_slow_cm} cm '
+            f'side_rise={cfg.side_rise_only}(off {cfg.side_rise_off_samples}, tee {cfg.side_rise_tee})')
 
     # ---------------- 입력 ----------------
     def _on_odom(self, msg):
