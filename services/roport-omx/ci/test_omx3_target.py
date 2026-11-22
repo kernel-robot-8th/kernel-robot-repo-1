@@ -18,13 +18,14 @@ MARKERS = (ROOT.parents[1] / "docs/aruco/markers.yaml").read_text()
 
 class ResolveMarkerId(unittest.TestCase):
     def test_package_markers_as_strings(self):
-        for value in ("15", "17", "22"):
+        for value in ("15", "16", "17", "21", "22"):
             with self.subTest(value=value):
                 self.assertEqual(resolve_marker_id({"package_id": value}), int(value))
 
     def test_rejects_non_package_markers(self):
-        # 경계 14·23, TRAY 18, P4 바닥 4, 예비 0·11~14·34~49, 다른 그룹 1~10·23~33
-        for marker in (0, 1, 4, 10, 11, 12, 14, 18, 23, 26, 27, 28, 33, 34, 40, 49, 50):
+        # 학습 안 한 포장물품 18~20(18은 v1.6부터 쟁반 기준), 경계 14·23, P4 바닥 4,
+        # 예비 0·11~14·34~49, 다른 그룹 1~10·23~33
+        for marker in (0, 1, 4, 10, 11, 12, 14, 18, 19, 20, 23, 26, 27, 28, 33, 34, 40, 49, 50):
             with self.subTest(marker=marker), self.assertRaises(InvalidTarget):
                 resolve_marker_id({"package_id": str(marker)})
 
@@ -42,11 +43,12 @@ class ResolveMarkerId(unittest.TestCase):
     def test_field_is_configurable(self):
         self.assertEqual(resolve_marker_id({"box": "21"}, field="box"), 21)
 
-    def test_package_ids_match_aruco_table_both_ways(self):
+    def test_package_ids_are_package_markers_in_aruco_table(self):
         rows = re.findall(r"\{id: (\d+), name: (\w+), group: (\w+)", MARKERS)
         self.assertTrue(rows)
         package = {int(i) for i, _, group in rows if group == "package"}
-        self.assertEqual(set(S.package_ids), package)
+        self.assertLessEqual(set(S.package_ids), package)
+        self.assertEqual(S.package_ids, {15, 16, 17, 21, 22})
 
     def test_settings_are_immutable(self):
         self.assertIsInstance(S.package_ids, frozenset)

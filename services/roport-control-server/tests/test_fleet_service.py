@@ -250,7 +250,8 @@ def test_cancelled_package_does_not_close_other_in_progress_deliveries(
     assert store.outbox()[-1]["type"] == "task.failed"
 
 
-def test_business_package_identity_maps_to_marker_and_survives_shelf(fleet):
+@pytest.mark.parametrize("marker", ["15", "16", "17", "21", "22"])
+def test_business_package_identity_maps_to_marker_and_survives_shelf(fleet, marker):
     from test_fleet import complete, dispatch
 
     request = {
@@ -258,7 +259,7 @@ def test_business_package_identity_maps_to_marker_and_survives_shelf(fleet):
         "operation": "inbound",
         "package_id": "business-package",
         "goal": None,
-        "marker": "15",
+        "marker": marker,
     }
     fleet.submit(request)
     sent = []
@@ -272,12 +273,12 @@ def test_business_package_identity_maps_to_marker_and_survives_shelf(fleet):
         if "package_id" in command["payload"]:
             sent.append(command["payload"]["package_id"])
         complete(fleet, command)
-    assert sent == ["15", "15"]
+    assert sent == [marker, marker]
     slot = fleet.data["tasks"]["marker-in"]["slot"]
     assert fleet.data["slots"][slot] == {
         "state": "occupied",
         "package_id": "business-package",
-        "marker": "15",
+        "marker": marker,
     }
     outbound = {
         **request,
@@ -286,11 +287,101 @@ def test_business_package_identity_maps_to_marker_and_survives_shelf(fleet):
         "goal": "gate",
     }
     with pytest.raises(ValueError, match="marker differs"):
-        fleet.submit({**outbound, "marker": "16"})
+        fleet.submit({**outbound, "marker": "19"})
     fleet.submit(outbound)
     finish(fleet)
     assert fleet.data["slots"][slot] == {"state": "empty", "package_id": None}
     assert fleet.data["tasks"]["marker-out"]["stage"] == "await_receipt"
+
+
+@pytest.mark.parametrize("marker", ["19", "20"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_untrained_warehouse_marker_is_rejected_before_queuing(fleet, marker, explicit):
+    before = deepcopy(fleet.data)
+    with pytest.raises(ValueError, match="OMX3 loading supports only"):
+        fleet.submit(
+            {
+                "request_id": "untrained",
+                "operation": "inbound",
+                "goal": None,
+                "package_id": "business-package" if explicit else marker,
+                **({"marker": marker} if explicit else {}),
+            }
+        )
+    assert fleet.data == before
+    assert fleet.next_action() is None
+
+
+@pytest.mark.parametrize("stage", ["queued", "warehouse_route", "warehouse_load"])
+def test_saved_untrained_inbound_does_not_dispatch_after_update(fleet, stage):
+    request = {
+        "request_id": "old-request",
+        "operation": "inbound",
+        "goal": None,
+        "package_id": "19",
+    }
+    data = deepcopy(fleet.data)
+    data["tasks"]["old-request"] = {
+        "request": request,
+        "stage": stage,
+        "status": "RUNNING",
+        "reason": None,
+    }
+    fleet.save(data)
+    assert fleet.submit(request) == data["tasks"]["old-request"]  # replay keeps history
+    assert fleet.next_action() is None
+    assert "OMX3 loading supports only" in fleet.data["tasks"]["old-request"]["reason"]
+    assert not fleet.data["commands"] and not fleet.data["resources"]
+
+
+@pytest.mark.parametrize("marker", ["19", "20"])
+def test_unsupported_prepare_order_holds_whole_manifest_before_dispatch(
+    fleet, dsn, marker
+):
+    store = ServiceTaskStore(dsn)
+    message = request()
+    message["payload"].update(
+        operation="prepare_order",
+        packages=[
+            {"package_id": "trained", "quantity": 1, "marker": "15"},
+            {"package_id": "untrained", "quantity": 1, "marker": marker},
+        ],
+    )
+    store.accept(message)
+    service_tick(fleet, store)
+    saved = store.pending_tasks()[0]
+    assert saved["state"] == "HOLD"
+    assert "OMX3 loading supports only" in saved["progress"]["reason"]
+    assert not fleet.data["tasks"]
+    assert fleet.next_action() is None
+
+
+@pytest.mark.parametrize("marker", ["19", "20"])
+def test_existing_untrained_stock_can_still_leave_the_shelf(fleet, dsn, marker):
+    data = deepcopy(fleet.data)
+    data["slots"]["1a"] = {
+        "state": "occupied",
+        "package_id": "stored",
+        "marker": marker,
+    }
+    fleet.save(data)
+    store = ServiceTaskStore(dsn)
+    message = request()
+    message["payload"].update(
+        operation="customer_service",
+        pickup_point_id="gate",
+        packages=[
+            {"package_id": "stored", "quantity": 1, "marker": marker},
+        ],
+    )
+    task = store.accept(message)
+    service_tick(fleet, store)
+    commands = finish(fleet)
+    assert all(c["type"] != "warehouse_load_command" for c in commands)
+    transfer = next(c for c in commands if c["type"] == "arm_action_command")
+    assert transfer["payload"]["package_id"] == marker
+    assert fleet.data["tasks"][task["task_id"] + ":stored"]["stage"] == "await_receipt"
+    assert fleet.data["slots"]["1a"] == {"state": "empty", "package_id": None}
 
 
 @pytest.mark.parametrize("failed", [False, True])

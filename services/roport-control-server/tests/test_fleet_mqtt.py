@@ -63,8 +63,12 @@ def fleet_mqtt(broker, tmp_path):
         omx_store = Journal(tmp_path / "omx.json")
         stack.callback(omx_store.close)
         executors = virtual_executors(0.01, package_sizes={"large": "large"})
-        host = FieldOmxHost(omx_store, executors, control=config["control_id"])
-        host.alignment = lambda cmd: virtual_alignment(host, cmd)
+        host = FieldOmxHost(
+            omx_store,
+            executors,
+            control=config["control_id"],
+            alignment=virtual_alignment,
+        )
         omx_transport = MqttTransport(
             MqttConfig("127.0.0.1", "fleet-e2e-omx", port=port),
             [wire.topic(r, c) for r in executors for c in ("cmd", "ack")]
@@ -236,6 +240,76 @@ def test_one_arm_failure_holds_before_departure_over_mqtt(fleet_mqtt):
     assert env.control.data["slots"][task["slot"]]["state"] != "occupied"
     assert env.executors["shelf-01"].aborted
     assert env.control.next_action() is None
+
+
+@pytest.mark.parametrize("verify_failed", [False, True])
+def test_warehouse_runner_result_controls_pinky_departure(
+    fleet_mqtt, monkeypatch, verify_failed
+):
+    from test_omx_device_mqtt import runner_executor
+
+    env = fleet_mqtt
+    device = runner_executor(
+        "omx3",
+        versions=env.executors["omx3"].versions,
+        package_sizes={"package-17": "small"},
+    )
+    monkeypatch.setitem(env.executors, "omx3", device.executor)
+    original_alignment = env.host.alignment
+
+    def shelf_alignment(command, observation):
+        assert command["type"] != "warehouse_load_command"
+        return original_alignment(command, observation)
+
+    monkeypatch.setattr(env.host, "alignment", shelf_alignment)
+    if verify_failed:
+        original_factory = device.runner.marker_factory
+
+        def marker_factory(marker_id):
+            marker = original_factory(marker_id)
+            find = marker.find
+            # The box leaves the tray at the final camera check, after the policy finishes.
+            marker.find = lambda frame: None if marker.marked else find(frame)
+            return marker
+
+        monkeypatch.setattr(device.runner, "marker_factory", marker_factory)
+
+    key = env.submit("package-17", "inbound")
+    env.pump(
+        lambda: (
+            bool(env.control.data["fault"])
+            if verify_failed
+            else env.control.data["tasks"][key]["status"] == "COMPLETE"
+        )
+    )
+    task = env.control.data["tasks"][key]
+    load = next(
+        r
+        for r in env.host.data["commands"].values()
+        if r["command"]["type"] == "warehouse_load_command"
+    )
+    event = load["last_event"]
+    assert event in env.control.data["events"].values()
+    assert device.robot.sent > 0 and device.policy.marker_id == 17
+    if verify_failed:
+        assert event["payload"]["status"] == "failed"
+        assert event["payload"]["reason"] == "VERIFY_FAILED"
+        assert task["status"] == "HOLD" and task["stage"] == "warehouse_load"
+        assert env.control.data["fault"] == "VERIFY_FAILED"
+        assert env.host.data["hold"]  # Fleet may already have requested a stop.
+        assert env.control.next_action() is None
+        client = next(c for c in env.clients if c.robot == task["robot"])
+        assert env.control.observed[task["robot"]]["state"]["node"] == "N01"
+        assert all(
+            r["command"]["payload"]["route"][0] != "N01"
+            for r in client.journal.data["records"].values()
+            if r["command"]["type"] == "line_route_command"
+        )
+        assert not any(env.executors[a].tasks for a in ("omx1", "omx2", "shelf-01"))
+    else:
+        assert event["payload"]["status"] == "completed"
+        assert event["payload"]["result"]["placement_confirmed"] is True
+        assert task["status"] == "COMPLETE"
 
 
 def test_duplicate_and_late_real_host_result_do_not_advance_over_mqtt(fleet_mqtt):

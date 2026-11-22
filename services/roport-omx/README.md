@@ -62,8 +62,8 @@ python scripts/check_hardware.py --port /dev/serial/by-id/YOUR_OMX_DEVICE --outp
 
 - `shelf_transfer_command`: OMX1+2 공동, N11, 가운데 열 `1b/2b`.
 - `arm_action_command`: OMX1 단독 N21 `1a/2a`, OMX2 단독 N22 `1c/2c`. 각 슬롯·입출고 방향의 Runner/정책/캘리브레이션을 따로 주입합니다.
-- `warehouse_load_command`: stock-omx(창고 OMX, MQTT 식별자 `omx3`) N01. 기존 `Omx3Host → Runner`를 실행하며 실제 결과의 안착·해제·복귀를 보고합니다. `package_size`는 임시 물품 카탈로그 값이며 추론으로 확인했다고 표시하지 않습니다.
-- Host는 Pinky의 최신 정차·boot·도착 명령과 별도 정렬 센서, 해당 executor의 `model_version/calibration_version` 일치, 팔 준비를 검사합니다. 한 프로세스가 작업을 하나씩 소유합니다. 준비 검사·접수 저장이 지연되면 실행 직전에 만료를 재확인하며, Runner 내부 준비 중 만료도 첫 모터 목표 전 취소합니다. MQTT ACK와 팔 복귀만으로 물품 안착을 확정하지 않습니다.
+- `warehouse_load_command`: stock-omx(창고 OMX, MQTT 식별자 `omx3`) N01. 기존 `Omx3Host → Runner`를 실행하며 실제 결과의 안착·해제·복귀를 보고합니다. 상차 대상은 모델이 학습한 마커 `15,16,17,21,22`만 받습니다. `19`·`20`은 물품 마커이지만 이 모델의 상차 대상은 아닙니다. `package_size`는 임시 물품 카탈로그 값이며 추론으로 확인했다고 표시하지 않습니다.
+- Host는 Pinky의 최신 정차·boot·도착 명령, 해당 executor의 `model_version/calibration_version` 일치, 팔 준비를 검사합니다. 한 프로세스가 작업을 하나씩 소유합니다. 준비 검사·접수 저장이 지연되면 실행 직전에 만료를 재확인하며, Runner 내부 준비 중 만료도 첫 모터 목표 전 취소합니다. MQTT ACK와 팔 복귀만으로 물품 안착을 확정하지 않습니다. OMX1·2의 개별/공동 이송은 별도 정렬 센서도 검사합니다.
 - `(pinky_id, arrival_command_id)`는 이송 접수와 함께 journal에 소모 기록을 저장합니다. 같은 명령 재전송은 저장 결과만 반환하며, 같은 도착을 새 명령으로 재사용하면 `arrival_already_used`입니다. 실패·ACK·Host 재시작 뒤에도 소모 기록을 유지합니다. 사전 거절은 소모하지 않지만 접수 이후 실패/만료는 소모합니다. 재시도는 현장 상태 조정 후 **새 이동으로 확인된 도착**이 필요하며 ID만 바꾸거나 journal을 지워서 재시도하지 않습니다.
 - 공동 명령은 `shelf-01`과 참여 팔 `omx1/omx2`에 같은 `active_command_id`를 표시하며 팔 관측도 공동 executor에서 읽습니다. 무관한 대상은 `active_command_id: null`, `ready: false`, `fault: host_busy`입니다.
 - 완료는 `command_status`로 보고하고 `event_stored`까지 journal/outbox에 유지합니다. 재시작·한쪽 팔 미복귀·관측 불명·watchdog 만료는 HOLD입니다. 정지 대상은 실패·재시작 후에도 보존하고 재시작 시 abort를 요청합니다. 새 boot를 조회한 뒤 기존 `target_command_id`로 정지를 재요청할 수 있습니다. 정지 중 다른 정지 명령은 `stop_already_pending`으로 거절하며 원래 요청을 덮어쓰지 않습니다. 정지 성공은 `stop_status`의 최신 관측으로만 확정하고 HOLD는 유지합니다.
@@ -80,6 +80,46 @@ uv run python scripts/field_host.py --mock --host 127.0.0.1 --port 1883 \
 하드웨어는 `--factory module:function --hardware-authorized`로 명시하며 factory가
 `(executors, alignment_sensor)`를 반환해야 합니다. 공용 모터 버스를 여러 드라이버가
 중복 소유하지 않도록 현장 장치 소유자를 재사용합니다.
+
+### Factory 정렬 센서
+
+**OMX3 N01 상차는 별도 정렬 센서를 사용하지 않습니다.** 쟁반에는 ID 18을 포함해 마커를
+붙이지 않습니다([마커 기준](../../docs/aruco/README.md)). `warehouse_load_command` 접수·실행 중에는
+Pinky의 최신 N01 정차·도착·boot·라인 비활성·주행 소유권 해제를 계속 확인합니다. Runner가
+완료 직전 **상자 마커의 쟁반 영역 안착·그리퍼 해제·팔 복귀**를 확인하며, `VERIFY_FAILED`는
+`command_status(status="failed", reason="VERIFY_FAILED")`로 관제에 전달됩니다. 관제는 작업을
+HOLD하고 Pinky의 다음 주행을 발행하지 않습니다. OMX3만 실행하는 factory는 `(executors, None)`을
+반환할 수 있습니다. 이 기준은 학습된 N01 도킹 위치·보정값이 현장에 적용된 것을 전제로 합니다.
+
+아래 정렬 센서 계약은 **OMX1·2 개별 이송과 `shelf-01` 공동 이송**에 적용합니다.
+
+센서 호출은 `alignment_sensor(command, pinky_observation)`입니다. 기존 한 인자 센서는
+두 인자로 수정해야 합니다. factory 자체는 계속 인자 없이 호출되고 `(executors, sensor)`를
+반환합니다. mock과 factory 모두 같은 Host 호출 경로를 사용하며 별도 MQTT 구독은 필요 없습니다.
+
+Host가 정차·도착·boot·최신성을 검증한 뒤, 해당 Pinky의 `robot_state.payload`에 `pinky_id`를
+붙여 깊은 복사본으로 전달합니다. 센서가 받은 dict를 바꿔도 Host의 원본 관측은 바뀌지 않습니다.
+
+| 센서가 읽는 값 | 반환 기록에 사용할 값 |
+| --- | --- |
+| `pinky_observation["pinky_id"]` | `pinky_id` |
+| `pinky_observation["boot_version"]` | `pinky_boot_version` |
+| `pinky_observation["state"]["arrival_command_id"]` | `arrival_command_id` |
+| `pinky_observation["state"]` | 검증된 `node`, `stopped`, `line_enabled`, `drive_owner` 등 |
+| `pinky_observation["observed_at"]` | **Pinky 상태 시각**. 정렬 센서 측정 시각으로 복사하지 않음 |
+
+센서는 `{pinky_id, pinky_boot_version, arrival_command_id, observed_at, alignment}` 기록을
+반환합니다. 앞의 세 값은 **측정 당시의 관측**으로 묶고, `alignment`와 `observed_at`은
+실제 정렬 센서의 판정과 측정 시각(timezone 포함 ISO 8601)으로 채웁니다. 오래된 측정에
+새 boot/도착 ID 또는 현재 시각만 덧붙여 재사용하지 않습니다. 정차만으로 정렬을 확정하는
+`virtual_alignment`는 mock 전용입니다.
+
+콜백은 명령 접수 전과 실행 중에도 호출되므로, 장시간 기다리지 말고 해당 도착에 속한 최신
+센서 기록을 반환합니다. 확인할 수 없으면 `None` 또는 `alignment: "unknown"/"unconfirmed"`로
+반환합니다. 장치 읽기 실패도 가능한 한 `None`으로 반환합니다. 상태 발행 중 센서 예외가
+발생하면 오류를 기록하고 `docking: null`로 발행하며 루프를 유지합니다. Host는 기본 3초
+최신성·식별자 일치를 계속 검사하며, 접수 전에는 거절하고
+작업 중 확인이 끊기면 정지 요청·HOLD로 처리합니다. MQTT 메시지나 Pinky 코드는 변경하지 않습니다.
 
 `WarehouseExecutor`와 `IndependentArmExecutor`에는 실제 Robot/Policy/Vision 포트와
 확정된 모델·캘리브레이션 버전이 필요합니다. 공동 `PanelFieldExecutor`는 실제 중지
@@ -171,3 +211,86 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 - 준비 조회·모델 검사 이후, 접수 journal 저장 이후와 `/api/eval/start` POST 직전에 각각 `expires_at`을 재검사합니다. 만료되면 새 평가를 시작하지 않습니다. HTTP 시작 응답이 끊기면 결과 불명·HOLD이므로 자동 재시작하지 않습니다.
 - 호스트 메트릭(표시 전용): `--host-metrics-period-s 5`처럼 주기를 줄 때만 `roport/workcell/shelf-01/host`에 v2 `host_metrics`(QoS0, retain=false, boot_version=boot_id)를 발행합니다. 생략하면 꺼지며 기본값은 없습니다. 작업·ACK·HOLD·정지 판단에 쓰지 않고 발행 실패는 로그만 남깁니다. 실장비·실브로커에서는 아직 검증하지 않았습니다.
 - 검사: `bash ci/test.sh` (`ci/test_cooperative.py`, `ci/test_panel_executor.py`, `ci/test_host_metrics.py`; 브로커·제어판·장비 불필요). 실제 브로커 왕복은 로컬 Mosquitto에서만 확인했고, 패널 연동·실물 팔은 미검증입니다.
+
+## AI 추론 UDP 클라이언트 (시험 단계, FFT1-154)
+
+`src/roport_omx/infer_link/`는 Host PC가 GPU AI 추론 서버(`services/roport-ai-server`의 `omx_udp`)와 UDP 규약 `RPI1`로 통신하는 클라이언트입니다. 규약 파일 `wire.py`는 AI 서버 쪽 원본을 그대로 복사하며 두 곳을 함께 갱신합니다.
+
+통신 구조: 관제 서버 ↔ Host PC는 MQTT, Host PC ↔ AI 추론 서버는 UDP, Host PC ↔ OMX 팔은 USB 시리얼(Dynamixel Protocol 2.0)입니다. Host PC 안에서 관제 Host(`cooperative_host.py`)는 로봇 루프를 가진 OMX 제어판을 로컬 HTTP로 호출하고, 제어판이 이 클라이언트로 추론을 요청합니다. 현장에서는 제어판(3.13.0 이상)이 같은 코드의 복사본을 사용하며 추론 통신은 UDP만 씁니다.
+
+- 관측 한 묶음(관절 값 + 카메라 JPEG + 작업 정보)을 한 메시지로 보내고, 모든 조각이 모여 CRC·HMAC을 통과한 메시지만 씁니다.
+- `infer()`는 요청마다 새 `observation_seq`와 `schema_version·boot_id·inference_id·captured_at·deadline`, 실행 중인 MQTT 명령의 `task_id·command_id·execution_id`를 붙입니다. 응답이 같은 시도·모델을 되돌려주지 않으면 `RESULT_MISMATCH`·`MODEL_MISMATCH`로 거절해 모터 목표로 쓰지 않습니다.
+- 응답이 시간 안에 없으면 `InferenceTimeout`이며 스스로 재시도하지 않습니다. 호출자는 최신 관측으로 다시 요청하고 그동안 팔을 안전하게 유지합니다.
+- 한 번에 요청 하나만 보냅니다. `InferenceClient`는 소켓 하나로 모든 응답을 받으므로 스레드 사이에 공유하면 안 됩니다. 두 호출이 겹치면 한쪽 응답을 다른 쪽이 `stale_reply`로 버리고 원래 호출은 `InferenceTimeout`이 됩니다. 겹칠 수 있는 호출자는 직접 직렬화하거나 스레드마다 클라이언트를 따로 만듭니다.
+- 서버 주소는 IP나 호스트 이름 모두 됩니다(`("192.0.2.10", 5600)`, `("gpu-host", 5600)`, JSON의 `["…", 5600]`). 생성할 때 IPv4로 한 번 바꿔 두고, 그 주소에서 온 응답만 받습니다.
+- 공유 키 파일(hex, `chmod 600`)은 저장소에 올리지 않습니다.
+
+### 새 Host PC를 GPU 추론 서버에 붙이기
+
+GPU 추론 서버 하나를 여러 Host PC(예: OMX1·2 Host, OMX3 Host)가 함께 씁니다. 새 Host PC는 아래 세 가지가 갖춰져야 응답을 받습니다. 하나라도 빠지면 서버가 요청을 조용히 버리므로 호출 쪽에는 `InferenceTimeout`만 보입니다.
+
+1. **같은 현장망**: GPU PC와 같은 공유기·같은 Wi-Fi(또는 유선)에 붙습니다. 게스트 Wi-Fi(기기 간 격리), 휴대폰 핫스팟, VPN 주소로는 닿지 않습니다. 서버는 허용 IP로 받으므로 공유기에서 이 PC의 IP를 고정(DHCP 예약)합니다. 가능하면 유선을 씁니다: 요청 하나가 datagram 수십 개로 나뉘고, 하나만 빠져도 그 요청 전체가 버려집니다.
+2. **공유 키**: GPU PC 서버와 같은 키 파일이 필요합니다. GPU PC 담당자에게서 직접 받아 `~/.config/roport/omx-udp.key`에 두고 `chmod 600` 합니다. 키 내용은 메신저·이슈·PR·저장소에 붙이지 않습니다. 키가 다르면 응답이 `bad_mac`으로 버려집니다(`client.stats`).
+3. **허용 IP 등록**: 고정한 IP를 GPU PC 담당자(GPU 제어판)에게 알려 서버 허용 목록에 넣습니다. 등록 전에는 요청이 `untrusted_peer`로 버려집니다.
+
+확인 순서: 이 PC에서 `ip -4 -br addr`로 현장망 주소인지 보고, `ping <GPU PC IP>`가 되면 `InferenceClient((<GPU PC IP>, 5600), key).ping()`이 `{"ok": true, ...}`를 돌려주는지 봅니다.
+
+여러 Host가 한 서버를 쓸 때 주의:
+- 서버는 요청을 하나씩 처리합니다. 한 Host가 `load()`로 모델을 올리는 동안(수 초~수십 초) 다른 Host의 `infer()`는 응답이 늦어 시간 초과가 날 수 있습니다. 모델은 주행 전에 미리 올리고, 다른 Host가 주행 중일 때는 새로 올리지 않습니다.
+- 서버가 동시에 올려 두는 모델 수에는 한도가 있습니다. 여러 Host가 서로 다른 모델을 번갈아 쓰면 매번 다시 올리게 되므로, 함께 쓸 모델 수를 GPU PC 담당자와 맞춥니다.
+- Host와 세션별로 따로 조립·처리하므로 한 Host의 밀린 요청이 다른 Host의 요청을 밀어내지는 않습니다.
+- 검사: `ci/test_infer_link.py`(loopback 가짜 서버, `wire.py` 복사본이 AI 서버 원본과 같은지도 확인). 제어판 연결, 실제 망 손실·지연, GPU 추론, 실물 팔은 이 검사에 포함하지 않습니다. 규약은 팀 AI UDP 설계안(Confluence MFS 10125435)의 원칙을 따르며 팀 합의 전 초안입니다.
+
+### INFER 요청·응답 형식 (`schema_version` `roport-omx-infer-v1`)
+
+서버는 OMX 제어판의 추론 형식을 그대로 받습니다. 제어판이 아닌 호출자(예: OMX3 `ChunkPolicy` 어댑터)는 아래대로 `infer(header, data)`의 두 인자를 만듭니다. `schema_version`, `inference_id`, `observation_seq` 같은 식별자는 `infer()`가 붙이므로 넣지 않습니다.
+
+요청 `header`:
+
+| 키 | 형식 | 뜻 |
+|---|---|---|
+| `model` | str | GPU PC의 체크포인트 폴더 경로(`pretrained_model`). 팀 checkpoints 아래만 허용되고, 아니면 `MODEL_NOT_ALLOWED`입니다. 먼저 `load()`로 올립니다. |
+| `overrides` | dict | `load()`에 준 값과 같게 둡니다. 다르면 서버가 모델을 따로 올립니다. 없으면 `{}`입니다. |
+| `task`, `robot_type` | str \| null | LeRobot 정책에 그대로 넘기는 작업 문장과 로봇 종류입니다(언어 조건 모델만 `task`를 씀). |
+| `obs` | list | 관측 묶음입니다. 오래된 것부터 넣고 마지막이 최신입니다. `LOADED`의 `n_obs`개를 보냅니다(diffusion은 마지막 2개, 나머지 정책은 마지막 1개만 씀). |
+| `chunk` | int | 돌려받을 동작 수의 상한입니다. 없으면 50입니다. |
+| `rtc` | dict \| null | `{"delay": int, "left": [[…], …] \| null}`. RTC를 켠 smolvla·pi0·pi05 모델만 씁니다. `delay`는 추론 지연(제어 step 수), `left`는 이전 chunk에서 아직 실행하지 않은 동작의 `original` 값입니다. 그 밖의 모델은 무시합니다. |
+
+`obs`의 원소 하나와 `data`:
+
+```json
+{"state": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+ "images": {"observation.images.front": [0, 18234], "observation.images.wrist": [18234, 17012]}}
+```
+
+- `state`: 한 시점의 `observation.state`(float). 순서·단위는 모델이 학습한 데이터셋과 같아야 합니다(데이터셋 `meta/info.json`의 `observation.state` `names`).
+- `images`: 카메라 키 → `[offset, length]`. 키는 모델 `config.json`의 `input_features` 이미지 키와 같아야 합니다(`observation.images.<카메라 이름>`). `offset`·`length`는 `data` 안의 바이트 위치입니다.
+- `data`: 모든 JPEG를 `obs` 순서, 그 안의 이미지 순서대로 이어 붙인 바이트입니다. 각 JPEG는 RGB 카메라 프레임을 OpenCV로 인코딩한 것입니다(BGR로 바꿔 `cv2.imencode`, 제어판 기본 품질 90). `LOADED`에 `image_size: [h, w]`가 있으면 그 크기로 `cv2.INTER_AREA` 축소 뒤 인코딩합니다(제어판 `omx_tools/omx_infer.py`의 `pack_observations`와 같음). 서버는 `cv2.imdecode` 뒤 RGB로 되돌립니다.
+
+응답(`infer()`의 반환값):
+
+| 키 | 뜻 |
+|---|---|
+| `actions` | `[[…], …]` 길이 ≤ `chunk`, 행마다 모델의 action 차원(학습 데이터 `action`과 같은 순서·단위, 정규화를 푼 값). 로봇 목표값으로 쓰는 값입니다. |
+| `original` | 같은 모양의 정책 원래 출력(정규화된 값)입니다. RTC의 `left`로만 다시 씁니다. |
+| `infer_ms`, `load_ms` | GPU 추론 시간, 이 요청 때문에 모델을 올린 시간(이미 올라가 있으면 0)입니다. |
+| `model_version`, `valid_until` | 요청 모델(또는 `model_version`), 요청의 `deadline`입니다. |
+| 식별자 | `inference_id·observation_seq·task_id·command_id·execution_id`를 되돌려주며, `infer()`가 요청과 비교합니다. |
+
+동작 값이 NaN·Infinity면 서버가 `INFER_FAILED`로 거절하고, 규약도 유한하지 않은 수를 싣지 않습니다.
+
+관절 값과 카메라는 모델이 학습한 데이터가 기준입니다(데이터셋 `meta/info.json`의 `names`, 모델 `config.json`의 `input_features`). 팀 데이터의 실제 예:
+
+| | 한 팔 (`omx_follower`, 예: OMX3) | 양팔 (`bi_omx_follower`, 예: OMX1·2) |
+|---|---|---|
+| `state`·`actions` 한 행 | 6개: `shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper` | 12개: `left_` 6개 다음 `right_` 6개(같은 관절 순서) |
+| 단위 | 몸통 관절 −100~100, 그리퍼 0~100 | 같음 |
+| `images` 키 | 모델에 따라 다름. 예: 정면만 쓰는 ACT는 `observation.images.front` 하나 | 예: `front`, `front_2`, `wrist_left`, `wrist_right` |
+
+- 단위는 LeRobot `omx_follower` 기본값(`use_degrees=False`)입니다. 각도가 아니라 **팔마다의 캘리브레이션 파일** 범위로 정규화한 값이므로, 같은 값도 팔이 다르면 실제 자세가 다를 수 있습니다. 모델은 그 데이터를 기록한 팔과 같은 `robot_id`·캘리브레이션으로 씁니다.
+- 모델이 받지 않는 카메라는 넣지 않아도 됩니다. 모델이 받는 카메라가 빠지면 서버가 `INFER_FAILED`로 답합니다.
+- `chunk`는 모델이 한 번에 만드는 수(`config.json`의 `chunk_size`, 예: 100)보다 크게 받을 수 없습니다. 빼면 50으로 잘리므로 필요한 값을 직접 넣습니다.
+
+`omx3/adapters/udp_infer.py`의 `UdpInferClient`는 OMX3 `ChunkPolicy`에 주입할 추론 구현입니다. `load()` 후 정면 RGB 영상 1장과 관절 상태 6개를 보내며, 이미지 크기·JPEG 품질·동작 순서는 위 규약을 따릅니다. 시간 초과는 기존 `ChunkPolicy`의 새 관측 재요청으로 처리합니다. 공통 `infer_link`는 표준 라이브러리만 사용하고, 이 어댑터는 장비용 OpenCV 환경에서 사용합니다.
+
+이 동기화는 #109·#113·#115의 모듈과 검사를 포함합니다. 실물 Host 시작점에 어댑터를 주입하는 작업, N01 도킹 보정과 상자 안착 확인, 실제 모델·캘리브레이션 버전 값은 별도 확인이 필요합니다. N01 별도 정렬 센서는 요구하지 않습니다. 모듈 추가만으로 GPU 연결이나 팔 구동이 자동 시작되지는 않습니다.

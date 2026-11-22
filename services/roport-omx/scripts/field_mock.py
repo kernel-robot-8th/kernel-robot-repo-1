@@ -94,14 +94,13 @@ def virtual_executors(run_s=0.15, package_size="small", package_sizes=None):
     }
 
 
-def virtual_alignment(host, command):
+def virtual_alignment(command, pinky_observation):
     """Explicitly simulated docking sensor: observes a simulated Pinky's reported stationary visit."""
-    pinky_id = host._pinky(command)
-    p = host.pinkies.get(pinky_id)
+    p = pinky_observation
     if not p or p["state"].get("stopped") is not True:
         return None
     return {
-        "pinky_id": pinky_id,
+        "pinky_id": p["pinky_id"],
         "pinky_boot_version": p["boot_version"],
         "arrival_command_id": p["state"].get("arrival_command_id"),
         "observed_at": p["observed_at"],
