@@ -439,3 +439,5 @@ ROPORT_TEST_DATABASE_URL='postgresql://localhost/roport_wss_test' \
 서비스 Java와의 로컬 상호운용은 [통합 시험](docs/service-web-local-test.md)으로 검사한다. 운영 TLS/프록시/인증·실물 로봇 검증은 후속 범위다.
 
 서비스 작업은 `service_tick`이 주문의 포장품마다 안정적인 request_id로 Fleet에 제출한다. `customer_service`는 기본적으로 pickup_at 300초 전에 배차하며 `service_policy.dispatch_lead_s`로 시험 정책을 지정한다. 업무 package_id는 재고에 보존하고 선택 marker만 OMX 명령에 매핑한다. 빈 명세/미등록 재고/미보정 목표는 주행을 생성하지 않는다. 수령 증거가 확인된 포장품만 복귀한다. WSS worker의 예상 밖 종료는 owner에 전달하며 기존 STOP·도착 재확인·복구 조건은 유지한다.
+
+현장 배포 묶음 생성, 체크섬 검증, MQTT 상태 수신 점검은 [Fleet 현장 배포 준비와 복구](../../docs/field/README.md)를 따른다.
