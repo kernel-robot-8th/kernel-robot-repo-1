@@ -35,7 +35,7 @@ def demo_command(body):
                 isinstance(n, str) and NODE.match(n) for n in route):
             raise ValueError('route must be 2..12 node ids like N08')
         return {'op': 'route', 'route': route, 'speed_limit_mps': _num(body, 'speed_limit_mps', 0.06, 0.01, 0.2)}
-    if op == 'switch_nav2' or op == 'stop':
+    if op in ('switch_nav2', 'switch_line', 'stop'):
         return {'op': op}
     if op == 'navigate':
         goal_id = body.get('goal_id')
@@ -52,7 +52,7 @@ def demo_command(body):
                 'max_duration_s': _num(body, 'max_duration_s', 120, 1, 300),
                 # 놓침 기준: 기본 1 s(SR-22), 4 s 까지는 명시했을 때만(시연값). 노트북 --follow-lost-s 와 같은 값으로
                 'lost_after_s': _num(body, 'lost_after_s', 1.0, 1.0, 4.0)}
-    raise ValueError('op must be route, switch_nav2, navigate, follow or stop')
+    raise ValueError('op must be route, switch_nav2, switch_line, navigate, follow or stop')
 
 
 class DemoLink:

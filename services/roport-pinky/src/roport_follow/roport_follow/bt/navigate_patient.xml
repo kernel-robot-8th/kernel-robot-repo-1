@@ -1,0 +1,24 @@
+<!--
+  Test-only NavigateToPose tree for demo_runner goals (gate guidance, ARR, return entry), FFT1-185.
+  Same policy as roport_pinky follow_target.xml, but for a fixed goal:
+  - NO costmap clearing: camera-only obstacles (small dolls the lidar cannot see) live only in the
+    doll layer; clearing erased a doll 14 cm ahead and the robot drove into it (2026-11-21).
+  - No spin/back-up. A blocked plan/path waits 1 s and retries (one Wait node only).
+  - The retry count is generous; the driver stops the goal when the robot has not moved 5 cm for
+    30 s (RECOVERY_TIMEOUT_S). The default trial tree gave up after 2 retries (13 s) when a doll
+    stood 14 cm ahead of the start pose (2026-11-22 d660).
+  The action succeeds when FollowPath reaches the goal (general_goal_checker).
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="100" name="NavigatePatient">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="2.0">
+          <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}"/>
+        </RateController>
+        <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
+      </PipelineSequence>
+      <Wait wait_duration="1.0"/>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

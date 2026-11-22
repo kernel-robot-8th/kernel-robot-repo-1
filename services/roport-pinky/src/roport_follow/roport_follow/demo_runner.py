@@ -5,7 +5,7 @@ TrialDriver·trial_guard(구동권 문지기)는 그대로 쓰고, 관제 키트
 (명령 검사 validate_action → dispatch, 0.1 s 마다 heartbeat → drain_results).
 
   ROS 입력  demo/cmd   std_msgs/String JSON {"op": ..., "seq": n, ...}
-            op = ping | route {"route": [...], "speed_limit_mps"} | switch_nav2
+            op = ping | route {"route": [...], "speed_limit_mps"} | switch_nav2 | switch_line(N12 에서 라인 복귀)
                  | navigate {"goal_id", "x", "y", "yaw"} (map 좌표 m·rad, Nav2 모드)
                  | follow {"card_id", "standoff_m", "max_duration_s", "lost_after_s"} | stop
   ROS 출력  demo/state std_msgs/String JSON 2 Hz: 드라이버 관측·진행 중 명령·최근 결과·콘솔 연결
@@ -28,7 +28,8 @@ import time
 import uuid
 from pathlib import Path
 
-OPS = ('ping', 'route', 'switch_nav2', 'navigate', 'follow', 'stop')
+OPS = ('ping', 'route', 'switch_nav2', 'switch_line', 'navigate', 'follow', 'stop')
+PATIENT_BT = Path(__file__).parent / 'bt' / 'navigate_patient.xml'
 # Nav2 목표 도착 판정(드라이버). Nav2 goal checker(xy 0.08 m)보다 넉넉히: 시험 목표 좌표가 실측 전 후보값이라
 NAV_POSITION_TOL_M = 0.12
 NAV_YAW_TOL_RAD = 0.35
@@ -110,6 +111,8 @@ class DemoRunner:
             return self._route(msg)
         if op == 'switch_nav2':
             return self._base('mode_switch.requested', {'to_mode': 'nav2', **self._maps()})
+        if op == 'switch_line':
+            return self._base('mode_switch.requested', {'to_mode': 'line', **self._maps()})
         if op == 'navigate':
             return self._navigate(msg)
         if op == 'follow':
@@ -203,9 +206,13 @@ def apply_start_mode(driver, mode):
 def lift_nav_recovery_cap(driver):
     """시험 편의(11-22): Nav2 목표(navigate)의 누적 복구 상한(공용 MAX_RECOVERIES 2)을 쓰지 않는다.
     인형 사이를 지나는 동안 「앞에 충돌 → 1 s 대기 → 다시」가 여러 번 생겨 2번으로는 출발 14 s 만에 끝났다(d660).
-    추종 goal 과 같은 기준만 남는다: 5 cm 이동 없이 30 s(RECOVERY_TIMEOUT_S)면 멈춤. 관제 경로에는 없는 동작이다."""
+    추종 goal 과 같은 기준만 남는다: 5 cm 이동 없이 30 s(RECOVERY_TIMEOUT_S)면 멈춤. 관제 경로에는 없는 동작이다.
+    Nav2 목표는 추종과 같은 방식의 트리(bt/navigate_patient.xml)로 보낸다: 막히면 1 s 기다렸다 계속 다시 계획하고
+    비용 지도를 비우지 않는다. 기본 트리는 2번 다시 해 보고 끝났고(11-22: 출발 자리 14 cm 앞 인형, 13 s), 비울 때
+    카메라로만 보이는 인형이 지도에서 사라진다. 추종은 자기 트리를 명시해 보내므로 영향 없다."""
     import functools
-    driver.nav.start = functools.partial(driver.nav.start, max_recoveries=None)
+    extra = {'behavior_tree': str(PATIENT_BT)} if PATIENT_BT.is_file() else {}
+    driver.nav.start = functools.partial(driver.nav.start, max_recoveries=None, **extra)
 
 
 def main(argv=None):

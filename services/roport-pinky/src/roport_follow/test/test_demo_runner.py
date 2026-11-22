@@ -174,4 +174,10 @@ def test_lift_nav_recovery_cap_keeps_explicit_arguments():
     lift_nav_recovery_cap(d)
     d.nav.start({'goal_id': 'g'})
     d.nav.start({'goal_id': 'f'}, behavior_tree='follow.xml', max_recoveries=None)
-    assert seen == [({'goal_id': 'g'}, '', None), ({'goal_id': 'f'}, 'follow.xml', None)]
+    assert seen[0][0] == {'goal_id': 'g'} and seen[0][1].endswith('navigate_patient.xml') and seen[0][2] is None
+    assert seen[1] == ({'goal_id': 'f'}, 'follow.xml', None)             # 추종은 자기 트리 그대로
+    import xml.etree.ElementTree as ET
+    tree = ET.parse(seen[0][1]).getroot()
+    names = [n.tag for n in tree.iter()]
+    assert 'ClearEntireCostmap' not in names and 'Spin' not in names and 'BackUp' not in names
+    assert names.count('Wait') == 1 and 'FollowPath' in names
