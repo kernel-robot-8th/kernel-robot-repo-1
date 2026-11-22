@@ -19,6 +19,11 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
+      # Jazzy publishes only after its period has strictly elapsed, from the
+      # update loop. At 2/2 Hz an aligned skip could consume the 1 s grid TTL.
+      update_frequency: 3.0
+      publish_frequency: 3.0
+      always_send_full_costmap: true  # Shopping subscribes to full grids.
       plugins:
       - static_layer
       - obstacle_layer

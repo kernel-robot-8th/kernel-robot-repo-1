@@ -243,6 +243,8 @@ class ShoppingNav:
                 if direct_grid is not None else None)
         if (self.anchor and self.direct_path and not self.cancelled
                 and (grid is None or not clear_short_leg(grid, pose[:2], self.destination))):
+            self.node.get_logger().info(
+                'SHOP_HOLD reason=costmap_stale' if grid is None else 'SHOP_HOLD reason=costmap_blocked')
             self.cancel()
         if self.anchor and (now-self.began > 60 or math.dist(pose[:2], self.origin) > .95):
             self.fault = 'NAV_LIMIT'

@@ -559,3 +559,60 @@ def test_loss_cancels_pending_goal_even_if_acceptance_arrives_in_that_tick(monke
     handle.cancel_goal_async.assert_called_once()
     nav.heartbeat.assert_called_once_with(False, now)
     nav.client.send_goal_async.assert_not_called()
+
+
+@pytest.mark.parametrize('jitter_ns', [0, 40_000_000])
+def test_shopping_global_cadence_keeps_active_direct_leg_until_grid_expires(jitter_ns):
+    pytest.importorskip('nav2_msgs')
+    from pathlib import Path
+    from unittest.mock import Mock
+    import yaml
+    from roport_smartcart.shopping_nav import COSTMAP_MAX_AGE_NS, ShoppingNav
+
+    overlay = Path(__file__).resolve().parents[1] / 'config/shopping_costmaps.yaml'
+    params = yaml.safe_load(overlay.read_text())['global_costmap']['global_costmap'][
+        'ros__parameters']
+    update_ns = int(1e9 / params['update_frequency'])
+    publish_ns = int(1e9 / params['publish_frequency'])
+    assert COSTMAP_MAX_AGE_NS == 1_000_000_000
+
+    # Model Jazzy's strict publication deadline on its update loop. Include
+    # exact alignment (one update skipped), alternating update jitter and
+    # positive DDS/consumer delay; not a benchmark of hardware or Gazebo.
+    base_ns = 10_000_000_000
+    sources = [base_ns]
+    for index in range(1, 20):
+        source = base_ns + index * update_ns + (jitter_ns if index % 2 else 0)
+        if sources[-1] + publish_ns < source:
+            sources.append(source)
+    assert len(sources) > 4
+
+    nav = ShoppingNav.__new__(ShoppingNav)
+    nav.follow_distance_m, nav.retry_after, nav.fault = .26, 0., None
+    nav.origin, nav.began, nav.boot = (0., 0.), 10., 'test'
+    nav.anchor, nav.destination = (.45, 0.), (.19, 0.)
+    nav.detouring, nav.turn_only, nav.cancelled, nav.direct_path = False, False, False, True
+    nav.pending, nav.result = None, None
+    nav.handle = Mock(accepted=True)
+    nav.node, nav.client, nav.heartbeat = Mock(), Mock(), Mock()
+    nav.ready = lambda _: True
+    pose, target = (0., 0., 0.), (.45, 0.)
+    samples = [(source, source + 80_000_000) for source in sources]
+
+    def tick(now_ns, sample):
+        source, receipt = sample
+        nav.node.get_clock().now().nanoseconds = now_ns
+        return nav.tick(now_ns / 1e9, True, pose, target,
+                        direct_grid=(make_grid(*divmod(source, 1_000_000_000)), receipt / 1e9))
+
+    sample_idx = 0
+    for now_ns in range(samples[0][1], samples[-1][1], 20_000_000):
+        while samples[sample_idx + 1][1] <= now_ns:
+            sample_idx += 1
+        assert tick(now_ns, samples[sample_idx]) == 'APPROACH'
+    nav.handle.cancel_goal_async.assert_not_called()
+    assert tick(sources[-1] + COSTMAP_MAX_AGE_NS, samples[-1]) == 'APPROACH'
+    assert tick(sources[-1] + COSTMAP_MAX_AGE_NS + 1, samples[-1]) == 'HOLD'
+    nav.handle.cancel_goal_async.assert_called_once()
+    assert nav.heartbeat.call_args.args[0] is False
+    nav.client.send_goal_async.assert_not_called()
