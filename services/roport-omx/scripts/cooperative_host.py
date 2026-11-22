@@ -290,7 +290,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--routes", type=Path, help="panel: (operation, slot) → model JSON file"
     )
     parser.add_argument(
-        "--box-marker", type=int, help="panel test: box ArUco ID used for every task"
+        "--box-marker",
+        type=int,
+        help="ignored (kept for old start commands): each command's package_id names the box",
     )
     parser.add_argument(
         "--report-placement",
@@ -370,7 +372,7 @@ def main() -> None:
             "HOLD on command %s: new tasks are rejected until --clear-hold", host.hold
         )
     if args.executor == "panel":
-        routes = ", ".join(f"{o}:{s}" for o, s in executor.routes)
+        routes = ", ".join(":".join(key) for key in executor.routes)
         log.info("PANEL executor %s routes=[%s]; arms move", args.panel_url, routes)
     else:
         log.info("SIMULATED executor")

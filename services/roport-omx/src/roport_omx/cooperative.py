@@ -1,4 +1,7 @@
-"""shelf-01 Host for OMX1·2 COOPERATIVE tasks (profile roport-omx-task-v1, test stage).
+"""shelf-01 Host for OMX1·2 shelf tasks (profile roport-omx-task-v1, test stage).
+
+The slot decides the arms (SLOT_ARMS): column B both arms together (COOPERATIVE), A OMX1 alone and
+C OMX2 alone (DEDICATED); a command with another assignment is refused (SLOT_ARM_MISMATCH).
 
 Checks control commands, records them in the journal before acting, gives one task at a time to a
 local executor and turns its observations into events kept in an outbox until control's event.ack.
@@ -56,6 +59,13 @@ ECHO_FIELDS = (
 # shelf-01 is 2 rows x 3 columns: row 1 = lower, 2 = upper; a/b/c = left to right seen from the
 # arms. Values are the slot's ArUco marker IDs (docs/aruco/markers.yaml v1.4, S1A..S2C).
 SLOTS = {"1a": 28, "1b": 29, "1c": 30, "2a": 31, "2b": 32, "2c": 33}
+# Which arm works each column (TK 2026-11-18): B = both arms together; A = OMX1 alone (the arm on
+# the A side), C = OMX2 alone. (manipulation_mode, assigned_arm_id); robot_ids follows from it.
+SLOT_ARMS = {
+    "a": ("DEDICATED", "omx1"),
+    "b": ("COOPERATIVE", None),
+    "c": ("DEDICATED", "omx2"),
+}
 _ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _IDS = ("type", "task_id", "step_id", "command_id", "execution_id")
 
@@ -547,14 +557,8 @@ class CooperativeHost:
             raise Rejected("BINDING_MISMATCH")
         if p["expected_boot_id"] != self.boot_id:
             raise Rejected("BOOT_MISMATCH")
-        if (
-            p["operation"],
-            p["workcell_id"],
-            p["manipulation_mode"],
-            p["assigned_arm_id"],
-            p["robot_ids"],
-        ) != (operation, WORKCELL, "COOPERATIVE", None, list(ARMS)):
-            raise Rejected("COOPERATIVE_SHELF_REQUIRED")
+        if (p["operation"], p["workcell_id"]) != (operation, WORKCELL):
+            raise Rejected("WORKCELL_MISMATCH")
         if type(p["quantity"]) is not int or p["quantity"] != 1:
             raise Rejected("QUANTITY_UNSUPPORTED")
         for key in TASK_FIELDS - {
@@ -571,6 +575,13 @@ class CooperativeHost:
                 raise Rejected("INVALID_FIELD")
         if p["slot_id"] not in SLOTS:
             raise Rejected("UNKNOWN_SLOT")
+        mode, arm = SLOT_ARMS[p["slot_id"][1]]
+        if (p["manipulation_mode"], p["assigned_arm_id"], p["robot_ids"]) != (
+            mode,
+            arm,
+            [arm] if arm else list(ARMS),
+        ):
+            raise Rejected("SLOT_ARM_MISMATCH")
         task = {k: p[k] for k in TASK_FIELDS - {"binding_id", "expected_boot_id"}}
         return {
             **task,

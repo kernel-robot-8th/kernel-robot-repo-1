@@ -11,6 +11,13 @@ from roport_control_server.adapters.mqtt.messages import timestamp, topic
 PROFILE = "roport-omx-task-v1"
 WORKCELL = "shelf-01"
 IDS = ("task_id", "step_id", "command_id", "execution_id")
+# shelf-01 arm per column (TK 2026-11-18, same table as the Host's SLOT_ARMS): B = both arms,
+# A = OMX1 alone, C = OMX2 alone. The Host refuses any other assignment (SLOT_ARM_MISMATCH).
+SLOT_ARMS = {
+    "a": ("DEDICATED", "omx1"),
+    "b": ("COOPERATIVE", None),
+    "c": ("DEDICATED", "omx2"),
+}
 ECHO = (
     "operation",
     "manipulation_mode",
@@ -251,13 +258,14 @@ class OmxTrial:
                     "calibration_version",
                 )
             }
+            mode, arm = SLOT_ARMS[self.settings["slot_id"][1]]
             payload.update(
                 expected_boot_id=self.status["boot_id"],
                 operation=gate["omx_operation"],
                 workcell_id=WORKCELL,
-                manipulation_mode="COOPERATIVE",
-                assigned_arm_id=None,
-                robot_ids=["omx1", "omx2"],
+                manipulation_mode=mode,
+                assigned_arm_id=arm,
+                robot_ids=[arm] if arm else ["omx1", "omx2"],
                 package_id=gate["package_id"],
                 quantity=1,
                 pinky_id=gate["robot_id"],

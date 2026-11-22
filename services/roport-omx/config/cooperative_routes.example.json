@@ -8,7 +8,15 @@
       "episode_s": 40,
       "reset_s": 15,
       "output_filter": "중",
-      "filter_gripper": false
+      "filter_gripper": false,
+      "markers": [
+        15,
+        16,
+        17,
+        20,
+        21,
+        22
+      ]
     }
   ]
 }
