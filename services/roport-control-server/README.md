@@ -110,6 +110,30 @@ uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --por
 
 이번 실행기는 루프백 simulation Fleet용입니다. 서비스 WSS와 PostgreSQL 연결을 포함하며 실물 Fleet 실행·운영 인증은 후속입니다. 웹 화면/가상 실행기 시험은 실제 센서·팔·주행 검증을 대신하지 않습니다. 전체 가상 실행은 `tools/start_virtual_ui.sh`, 고객 서비스 통합은 [실행 안내](docs/service-web-local-test.md)를 따릅니다. UI 회귀는 `npm run test:web -- tests/browser/fleet.spec.mjs`, HTTP→MQTT 입출고 회귀는 `REQUIRE_MQTT_TESTS=1 uv run pytest tests/test_fleet_web_mqtt.py`로 실행합니다.
 
+### Fleet 회귀시험과 가상 물품 선택
+
+```bash
+# 기본 실행은 요청 대기. 자동 입고·출고·수령·복귀는 명시적으로 선택한다.
+bash tools/start_virtual_ui.sh --verify        # 소형: 기존 옵션 유지
+bash tools/start_virtual_ui.sh --verify large  # 대형: OMX1·2 공동 상하차
+# 자동 시험은 완료 후 종료하며 실행 폴더의 outcome.json에 case·tasks를 남긴다.
+
+# Mosquitto와 격리 PostgreSQL(ROPORT_TEST_DATABASE_URL)이 필요한 회귀시험
+REQUIRE_MQTT_TESTS=1 REQUIRE_REGISTRY_TESTS=1 uv run pytest \
+  tests/test_fleet_concurrent_requests.py tests/test_fleet_reassignment_mqtt.py \
+  tests/test_fleet_spatial_matrix.py tests/test_fleet_persistence.py \
+  tests/test_virtual_fleet_launcher.py
+```
+
+| 검증 | 범위 |
+|---|---|
+| 동시 요청·복귀 재배차 | 실제 loopback MQTT와 Pinky 실행 코드로 중복 배정·경로 점유·병목 해제·수령 대기를 검사 |
+| 공간 조합 | 현재 지도, 대기점 N16/N17·H1/H2, 선반 6칸, 제외 기체·막힌 노드·가득 찬 선반을 합성 상태로 검사 |
+| 저장·재시작 | 임시 DB 저장 실패 시 명령 발행/완료 ACK를 막고, 재시작 후 작업·점유 보존 및 자동 출발 금지를 검사 |
+
+MQTT 회귀는 센서 tick을 가속한다. 가상 실행기는 1배속이며 OMX 구동·Nav2·센서는 모사한다.
+통신 단절·중복 응답·기체 재시작·한쪽 팔 실패는 기존 `test_fleet_mqtt.py` 및 정지·복구 시험과 함께 전체 `uv run pytest`로 검증한다. 물리 충돌·제동 거리·무선 품질 검증은 포함하지 않는다.
+
 ## Pinky MQTT 주행 시험 · FFT1-56
 
 1대/2대/스마트카트 시나리오를 CLI 또는 원본 웹 UI에서 실행합니다. `route → 수동/MQTT 상하차 완료 → N12 mode_switch → navigate`를 완료 응답으로 진행하며, 파일 이력·중복 방지·저장 ACK·오류 시 HOLD를 포함합니다. 같은 실행부를 사용하며 운영 DB는 연결하지 않습니다. 웹 연결·조작 키·시험 범위는 [가이드 7.4절](docs/pinky-trial.md)을 참고하세요.
