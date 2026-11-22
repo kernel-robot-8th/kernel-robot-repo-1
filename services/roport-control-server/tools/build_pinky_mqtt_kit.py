@@ -15,6 +15,20 @@ from roport_control_server.adapters.mqtt.field_wire import (
 SERVICE = Path(__file__).resolve().parents[1]
 
 
+MQTT_FILES = (
+    "__init__.py",
+    "messages.py",
+    "mqtt.py",
+    "journal.py",
+    "field_pinky.py",
+    "field_wire.py",
+    "trial_wire.py",
+    "trial_runner.py",
+    "motion.py",
+    "host_metrics.py",
+)
+
+
 def wire_schema():
     return json_schema()
 
@@ -32,18 +46,7 @@ def build(output, *, scenarios_dir=None):
         f"pinky_mqtt/{name}": (
             SERVICE / "src/roport_control_server/adapters/mqtt" / name
         ).read_bytes()
-        for name in (
-            "__init__.py",
-            "messages.py",
-            "mqtt.py",
-            "journal.py",
-            "field_pinky.py",
-            "field_wire.py",
-            "trial_wire.py",
-            "trial_runner.py",
-            "motion.py",
-            "host_metrics.py",
-        )
+        for name in MQTT_FILES
     }
     files["README.md"] = (SERVICE / "docs/mqtt-field.md").read_bytes()
     files["requirements.txt"] = b"paho-mqtt==2.1.0\n"

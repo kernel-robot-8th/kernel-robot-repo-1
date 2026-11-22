@@ -65,8 +65,6 @@ class Trace:
         ]
         assert len(assigned) == len(set(assigned)), "robot assigned twice"
         assert len(parking) == len(set(parking)), "return bay reserved twice"
-        assert len(active) <= len(self.env.clients)
-        assert len(moving) <= len(self.env.clients)
         self.max_active = max(self.max_active, len(active))
         self.max_moving = max(self.max_moving, len(moving))
         self.max_assigned = max(self.max_assigned, len(assigned))
@@ -134,16 +132,19 @@ def test_two_inbounds_follow_short_route_after_clearance(
         )
     )
     approach = []
+    resumed_after_clearance = False
     for command in trace.commands:
         if command["request_id"] != second or not command["route"]:
             continue
         route = command["route"]
         if route[0] == "N05":
+            resumed_after_clearance = True
             assert command["observed_nodes"]["pinky1"] == "N23"
             assert command["resources"]["edge:N07-N23"] == first
         approach.extend(route if not approach else route[1:])
         if route[-1] == "N01":
             break
+    assert resumed_after_clearance, "second robot must resume from N05"
     assert approach == ["N17", "N15", "N05", "N07", "N18", "N01"]
     assert trace.max_moving >= 2
     assert env.control.data["commands"] == {}

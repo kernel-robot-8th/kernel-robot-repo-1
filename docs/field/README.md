@@ -1,0 +1,16 @@
+# Fleet 현장 배포 준비와 복구
+
+저장소의 `services/roport-control-server`에서 실행한다. 다음 명령은 새 디렉터리에 배포 자료를 만들고 설정 오류를 JSON으로 기록한다.
+
+```bash
+uv run python tools/prepare_field.py --output /tmp/field-handoff
+(cd /tmp/field-handoff && sha256sum -c SHA256SUMS)
+uv run python tools/check_field.py --bundle /tmp/field-handoff --targets pinky1 omx3 --output /tmp/field-check.json
+```
+
+- 원본 묶음을 보관하고 작업 사본을 사용한다. Pinky에는 해당 슬롯의 `trial.json`, `pinky_mqtt/`, 지도와 필요한 ROS 패키지를 전달한다. OMX에는 `omx/`를 전달한다. 기존 보정·환경·journal은 기체에 유지한다.
+- 새 설정은 현장 확인 전 상태다. 실제 지도와 복귀 목표 `n12_goal`, 기체 배정, 모델·보정 버전을 확인한 뒤 작업 사본의 관제 및 대상 Pinky 설정에 현장 확인을 기록한다. 초기 점검은 미확정 항목을 표시하고 종료 코드 1을 반환한다.
+- 이미 실행 중인 기체 상태를 관찰할 때는 브로커 환경을 지정하고 점검 명령에 `--listen --seconds 5`를 추가한다. `--nav2 pinky1`은 해당 기체의 Nav2 및 위치 추정 준비도 확인한다. 이 도구는 동작 명령을 발행하지 않는다.
+- 점검 실패 시 보고서의 대상·원인을 확인한다. 이전 배포로 돌아갈 때는 보관한 원본과 해당 시점의 지도·코드 해시를 대조하고 미완료 명령의 journal을 보존한다. 재시작 후 HOLD 해제 및 재출발은 운영자가 별도로 결정한다.
+
+점검은 N12 복귀 목표의 ID가 `N12_RETURN`인지 확인하고, 배포된 지도·레이아웃에서 계산한 복귀 기준 자세와 비교한다. 기준 자세는 N12에서 센서 오프셋 3 cm를 적용한 차체 중심과 라인 진입 방향이다. 위치 편차 및 목표 허용오차 상한은 3 cm, 각도는 0.08 rad이다. 현장 실측과 정렬 확인은 별도로 수행한다. 상태 구독 시 각 Pinky의 개별 역할 경로 시작 노드를 대조하며, 같은 기동에서 순번이 증가한 최근 두 표본 모두 관제 시계 기준 과거 3초~미래 1초 이내여야 한다.
