@@ -40,7 +40,11 @@ PYTHONPATH=. $PY -m roport_follow.tool latency --robot <로봇 IP>
 
 ## 인형 장애물 → Nav2 (FFT1-187, 시험 1)
 
-노트북이 YOLO 인형 상자(adult·child, 신뢰도 0.35 이상, 1.2 m 안)를 바닥 점으로 바꿔 `/doll_obstacles`(PointCloud2, `base_footprint`)로 보낸다. 로봇 Nav2 는 `roport_smartcart` `navigation.launch.py` 를 그대로 쓰고, 지역·전역 비용 지도에 `doll_layer`(ObstacleLayer)만 더한 덮어쓰기 파일을 `overrides_file:=` 로 넘긴다. 이 도구는 모터 명령·Nav2 목표를 보내지 않는다.
+노트북이 YOLO 인형 상자(adult·child, 신뢰도 0.35 이상, 1.2 m 안)를 바닥 점으로 바꿔 `/doll_obstacles`(PointCloud2, `base_footprint`)로 보낸다. 로봇 Nav2 의 지역·전역 비용 지도에는 `doll_layer`(ObstacleLayer)를 더한다. 이 도구는 모터 명령·Nav2 목표를 보내지 않는다.
+
+로봇 Nav2 를 켜는 방법은 두 가지다. 카드 추종 실로봇 시험(11-20~21)은 (가)로 했다.
+- (가) `roport_pinky` `trial.launch.py` + 인형 층이 들어간 전체 설정 `params_file:=<share/roport_pinky/config/nav2_follow_real.yaml>`(아래 「고객 카드 추종」 절).
+- (나) `roport_smartcart` `navigation.launch.py` 에 인형 층만 더한 덮어쓰기 파일을 `overrides_file:=` 로 넘김(아래 명령, 11-19 멈춘 인형 우회 시험).
 
 ```bash
 # 1) 덮어쓰기 파일 만들기(노트북, 저장소 원본을 읽음) → 로봇으로 복사
@@ -58,17 +62,17 @@ cd roport_follow && PYTHONPATH=".:$PYTHONPATH" $PY -m roport_follow.tool web --r
 
 `--publish-obstacles` 이면 웹 화면이 **시험 화면**으로 바뀐다(보정 카드는 접힘).
 - 위쪽: 발행 상태(보내는 중 n Hz / 1 s 넘게 못 보내면 빨간 「멈춤」 / 일시 멈춤), 로봇 → 노트북 지연, 밀린 영상 수, ROS_DOMAIN_ID.
-- 가운데: 위에서 본 지도(로봇·지우는 시야·지우지 않는 15 cm·표시 한계·보낸 인형 점)와 인형 표(앞·왼쪽 cm, 폭). 「장애물 보내기 잠시 멈춤」= 끊김 시험(도구를 끄지 않고 보내기만 멈춤).
+- 가운데: 위에서 본 지도(로봇·지우는 시야·표시 한계·보낸 인형 점·기억한 인형)와 인형 표(앞·왼쪽 cm, 폭). 「장애물 보내기 잠시 멈춤」= 끊김 시험(도구를 끄지 않고 보내기만 멈춤).
 - 오른쪽: 시험 순서 1~6(클릭해서 고름, 다시 누르면 완료 표시), 메모 + 「기록 남기기」 → `~/roport_follow/measure/<name>_<시각>_test1.csv`(시각·단계·메모·발행 상태·인형 목록). 설정 확인: 카메라 파일(6422 파일이면 빨강), 표시 거리와 `--nav2-file`(기본 `~/roport_follow/nav2_overrides_doll.yaml`) 일치 여부.
 
 - 거리는 모두 바퀴 축(`base_footprint`) 기준. 웹 도구 `--max-range-cm` 과 `nav2_doll --max-range-cm` 은 **반드시 같게**(다르면 지움 점이 로봇 앞을 따라다니는 벽으로 칠해짐).
 - 점: 상자 아래 끝을 1 cm 간격으로 바닥에 투영 + 안쪽 두께(상자 폭, 3~8 cm), 높이 5 cm. 발이 잘린 상자(화면 아래 끝)는 로봇 쪽으로 5 cm 더 칠한다.
 - 지움: 시야 안 1.25 m 부채꼴 점을 매번 같이 보낸다. 광선이 그 사이 칸을 비워 치운 인형이 사라진다. 광선 끝 간격 0.8 cm(2° 간격이면 1 cm 칸이 남는 것을 costmap 노드 시험에서 확인).
-- 인형 기억(기본 켬, `--no-doll-memory` 로 끔): 어린이 인형(6 cm)은 라이다에 안 보이고, 카메라는 바퀴 축 약 13 cm 안을 못 본다. 두 번 이상 본 인형은 노트북이 odom 좌표로 기억해 영상마다 다시 보내고(`doll_memory.py`), 시야 밖 방향도 지우는 둘레 점(`clear_ring`, 끝 간격 2 cm)을 함께 보낸다. 로봇 Nav2 인형 층은 노트북이 이번에 보낸 것만 비춘다: `obstacle_min_range`·`raytrace_min_range` 0, `observation_persistence` 0(`nav2_doll` 기본값). 기억을 잊는 때: 카메라가 볼 수 있는 자리인데 3장 연속 안 보임 / adult 가 시야 밖 3 s / 로봇이 1.5 m 넘게 멀어짐 / 고객 둘레 15 cm. `/odom` 이 없으면 기억하지 못하고 보이는 것만 보낸다(화면 `memory.pose_ok`). 실로봇 확인 전(11-21).
-- 로봇 축에서 15 cm 안(`raytrace_min_range`)은 지우지 않는다. 렌즈 앞 약 10 cm 는 카메라 사각이라, 가까이 다가간 인형 표시를 남기기 위해서다. 화면 아래 모서리 쪽은 15 cm 밖도 사각이라 시야 양쪽 6°는 지우지 않는다(실제 보정 파일 d660·6422 로 「못 보는 칸을 지우지 않음」 시험).
+- 인형 기억(기본 켬, `--no-doll-memory` 로 끔): 어린이 인형(6 cm)은 라이다에 안 보이고, 카메라는 바퀴 축 약 13 cm 안을 못 본다. 두 번 이상 본 인형은 노트북이 odom 좌표로 기억해 영상마다 다시 보내고(`doll_memory.py`), 시야 밖 방향도 지우는 둘레 점(`clear_ring`, 끝 간격 2 cm)을 함께 보낸다. 로봇 Nav2 인형 층은 노트북이 이번에 보낸 것만 비춘다: `obstacle_min_range`·`raytrace_min_range` 0, `observation_persistence` 0(`nav2_doll` 기본값). 기억을 잊는 때: 카메라가 볼 수 있는 자리인데 3장 연속 안 보임 / adult 가 시야 밖 3 s / 로봇이 1.5 m 넘게 멀어짐 / child 가 시야 밖 60 s / 고객 둘레(adult 30 cm·child 15 cm) / 로봇이 라인 모드일 때(손으로 옮긴 뒤 옛 기억 방지). `/odom` 이 없으면 기억하지 못하고 보이는 것만 보낸다(화면 `memory.pose_ok`). 실로봇(d660, 11-21): 인형이 카메라 사각에 들어와도 비용 지도에 남아 돌아가는 것을 확인했다.
+- 인형 기억을 끈 예전 방식(`--no-doll-memory` + `nav2_doll --keep-near-cm 15 --persistence-s 1`)에서는 로봇 축 15 cm 안(`raytrace_min_range`)을 지우지 않는다. 렌즈 앞 약 10 cm 는 카메라 사각이라 가까이 다가간 인형 표시를 남기기 위해서다. 이 방식은 Nav2 가 비용 지도를 비우면 그 표시가 사라져 인형을 쳤다(11-21) → 기본은 인형 기억이다. 화면 아래 모서리 쪽은 사각이라 시야 양쪽 6°는 어느 방식에서도 지우지 않는다(실제 보정 파일 d660·6422 로 「못 보는 칸을 지우지 않음」 시험).
 - 시각: 프레임의 로봇 시각(`X-Robot-Time`)으로 보낸다(노트북 시계와 무관). 안 보내는 영상: 노트북이 받은 뒤 0.5 s 넘게 지난 것, 로봇 → 노트북 지연이 지금까지 최솟값보다 0.5 s 넘게 큰 것(화면 `lag`), 로봇 영상인데 로봇 시각이 없는 것.
-- 끊김: 지역 비용 지도 `expected_update_rate` 1 s. 노트북이 1 s 넘게 안 보내면 비용 지도가 「최신 아님」이 되어 Nav2 controller 가 멈추는 것을 노린 값이다(**실제 Nav2 멈춤은 아직 확인 안 함**, 계산상 약 1.5 s·0.08 m/s 에서 약 12 cm).
-  - 한계: Nav2 복구가 비용 지도를 비우면(ClearEntireCostmap) 그 층이 다시 1 s 동안 「최신」이 되고 축 15 cm 안 표시도 지워진다. 실로봇 시험에 「주행 중 노트북 도구 끄기 → 멈추는지, 몇 초 뒤 다시 움직이는지」를 넣는다.
+- 끊김: 지역 비용 지도 `expected_update_rate`(`nav2_doll --expected-s` 기본 1 s, 추종 시험 설정 `nav2_follow_real.yaml` 은 2 s). 노트북이 그 시간 넘게 안 보내면 비용 지도가 「최신 아님」이 되어 Nav2 controller 가 멈춘다(11-19 d660: 발행이 끊기면 약 2.5 s 안에 controller 중단). 카드 추종에서는 `roport_pinky` 드라이버가 status 2 s 미수신으로도 추종을 끝낸다.
+  - 한계: Nav2 복구가 비용 지도를 비우면(ClearEntireCostmap) 그 층이 잠깐 다시 「최신」이 된다. 추종 BT(`follow_target.xml`)는 비용 지도를 비우지 않는다.
   - 순서: **노트북 도구를 먼저** 켜고 점이 나가는 것(화면 `sent` 증가)을 본 뒤 Nav2 목표를 보낸다. 거꾸로면 목표가 바로 실패할 수 있다.
   - `mode:=sim` 에는 이 덮어쓰기를 쓰지 않는다(발행 쪽이 없어 늘 「최신 아님」).
 - 덮어쓰기 파일은 만들 때의 `roport_smartcart` 값 복사본이다. `roport_smartcart` 의 `nav2_overrides.yaml` 이 바뀌면 다시 만든다.
