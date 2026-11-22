@@ -11,6 +11,7 @@ server; secrets stay in the env.
 """
 
 import argparse
+import json
 import logging
 import math
 import os
@@ -86,11 +87,138 @@ class HostMetrics:
             log.warning("host metrics not sent: %s", type(exc).__name__)
 
 
+class HoldChannel:
+    """Local files next to the journal for the panel on this PC (same user, never the network).
+
+    <journal stem>.host-state.json   written by the Host: boot_id, active task, HOLD and its cause
+    <journal stem>.hold-request.json written by the panel's [HOLD 해제] button:
+        {"request_id", "hold": <command_id shown>, "checks": {arms_safe, package_checked,
+         pinky_checked}, "requested_at": <unix s>, "by": "panel"}
+    <journal stem>.hold-result.json  written by the Host: the latest {"request_id", "cleared",
+        "reason", ...} at the top, and "results": {request_id: result} for the last
+        RESULT_KEEP_S, so a panel waiting for its own request_id finds it even after a newer one
+    A request is read once and removed; one older than REQUEST_MAX_AGE_S is refused.
+
+    These files are for the panel's screen only: an I/O error on them is logged and retried on
+    the next tick, never raised into the MQTT loop (2026-11-21 review: a result file that could
+    not be replaced stopped the Host after the HOLD was already cleared). A request already run
+    is never run again; its result is kept and written once the file can be written, and until
+    then a new request stays in its file unread (it must not replace the pending result: second
+    2026-11-21 review). After a result is written the next request also waits RESULT_SHOWN_S, so
+    a panel that reads only the top of the file (100 ms polls) still sees each answer (third
+    2026-11-21 review). Journal errors (StorageError) still propagate and stop the Host as before.
+    """
+
+    REQUEST_MAX_AGE_S = 60.0
+    RESULT_KEEP_S = (
+        60.0  # results by request_id kept in the file (the panel waits up to 13 s)
+    )
+    RESULT_SHOWN_S = 1.0  # a written result stays on top at least this long
+
+    def __init__(self, journal_path: Path):
+        stem = journal_path.with_suffix("")
+        self.state_path = stem.with_name(stem.name + ".host-state.json")
+        self.request_path = stem.with_name(stem.name + ".hold-request.json")
+        self.result_path = stem.with_name(stem.name + ".hold-result.json")
+        self._last_state = None
+        self._latest: dict | None = None  # the last request's result (top of the file)
+        self._results: dict[str, dict] = {}  # request_id → result, last RESULT_KEEP_S
+        self._unwritten = (
+            False  # a result was run (journal updated) but not written yet
+        )
+        self._written_at: float | None = None  # when the file last got a new result
+        self._handled = None  # (file mtime, request_id) of the request last run
+
+    @staticmethod
+    def _write(path: Path, data: dict) -> bool:
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1))
+            tmp.replace(path)  # the panel never reads half a file
+        except OSError as exc:
+            log.warning("%s not written (retrying): %s", path.name, exc)
+            return False
+        return True
+
+    def _take_request(self) -> dict | None:
+        """The panel's request, removed once read; None when there is none or it was run."""
+        try:
+            seen = self.request_path.stat().st_mtime_ns
+        except OSError:  # absent (or unreadable: nothing to run)
+            return None
+        try:
+            request = json.loads(self.request_path.read_text())
+        except (OSError, ValueError):
+            request = {}
+        request = request if isinstance(request, dict) else {}
+        try:
+            self.request_path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("%s not removed: %s", self.request_path.name, exc)
+        key = (seen, request.get("request_id"))
+        if key == self._handled:  # the same file again (it could not be removed)
+            return None
+        self._handled = key
+        return request
+
+    def _write_results(self, now: float) -> None:
+        data = dict(self._latest or {}) | {"results": self._results}
+        if self._write(self.result_path, data):
+            self._unwritten, self._written_at = False, now
+
+    def _ready_for_request(self, now: float) -> bool:
+        if self._unwritten:
+            return False
+        return self._written_at is None or now - self._written_at >= self.RESULT_SHOWN_S
+
+    def tick(self, host: CooperativeHost, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        # a result still waiting for its file goes first; a new request waits in its file
+        if self._unwritten:
+            self._write_results(now)
+        request = self._take_request() if self._ready_for_request(now) else None
+        if request is not None:
+            asked = request.get("requested_at")
+            if isinstance(asked, bool) or not isinstance(asked, (int, float)):
+                asked = None
+            if asked is None or not 0 <= now - asked < self.REQUEST_MAX_AGE_S:
+                result = {
+                    "request_id": request.get("request_id"),
+                    "hold": host.hold,
+                    "cleared": False,
+                    "reason": "STALE_REQUEST",
+                }
+            else:
+                result = host.release_hold(request)  # StorageError propagates
+            entry = result | {"at": now}
+            log.warning("HOLD release request %s: %s", result.get("request_id"), result)
+            self._latest, self._unwritten = entry, True
+            request_id = result.get("request_id")
+            if isinstance(request_id, str):
+                self._results[request_id] = entry
+            self._results = {
+                k: v
+                for k, v in self._results.items()
+                if now - v["at"] < self.RESULT_KEEP_S
+            }
+            self._write_results(now)
+        state = {
+            "boot_id": host.boot_id,
+            "active": host.active,
+            "hold": host.hold_info(),
+        }
+        if state != self._last_state and self._write(
+            self.state_path, state | {"updated_at": now}
+        ):
+            self._last_state = state
+
+
 def serve(
     host: CooperativeHost,
     transport: MqttTransport,
     site: str,
     metrics: HostMetrics | None = None,
+    holds: HoldChannel | None = None,
 ) -> None:
     channels = {topic(site, "workcell", WORKCELL, c): c for c in ("cmd", "ack")}
     publish(transport, site, host.pending())
@@ -123,6 +251,8 @@ def serve(
             next_resend = time.monotonic() + RESEND_S
         if metrics is not None:
             metrics.tick(transport)
+        if holds is not None:
+            holds.tick(host)
 
 
 def positive_period(text: str) -> float:
@@ -250,6 +380,8 @@ def main() -> None:
     metrics = None
     if args.host_metrics_period_s is not None:
         metrics = HostMetrics(host.boot_id, args.control, args.host_metrics_period_s)
+    holds = HoldChannel(args.journal)  # the panel's [HOLD 해제] button
+    holds.tick(host)
     subscriptions = [topic(args.site, "workcell", WORKCELL, c) for c in ("cmd", "ack")]
     try:
         while True:
@@ -257,11 +389,15 @@ def main() -> None:
             try:
                 transport.start()
                 log.info("subscribed %s:%s", args.host, args.port)
-                serve(host, transport, args.site, metrics)
+                serve(host, transport, args.site, metrics, holds)
             except (ConnectionError, TimeoutError) as exc:
                 log.warning("broker link lost (%s); reconnecting", exc)
                 transport.stop()
-                time.sleep(2)
+                # The panel's [HOLD 해제] does not need the broker: keep answering it while
+                # waiting to reconnect.
+                for _ in range(10):
+                    holds.tick(host)
+                    time.sleep(0.2)
     except KeyboardInterrupt:
         pass
     except StorageError as exc:
