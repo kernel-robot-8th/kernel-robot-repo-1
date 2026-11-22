@@ -80,24 +80,38 @@ def test_outbound_all_six_slots_keep_actual_arm_and_dock(fleet, slot):
 
 
 @pytest.mark.parametrize(
-    "blocked", ["N01", "N14", "N18", "N19", "N11", "N21", "N22", "N12"]
+    ("blocked", "destination"),
+    [
+        ("N01", "N18"),
+        ("N14", None),
+        ("N18", "N10"),
+        ("N19", "N01"),
+        ("N11", "N01"),
+        ("N21", "N01"),
+        ("N22", "N01"),
+        ("N12", "N01"),
+    ],
 )
 @pytest.mark.parametrize("excluded", [False, True])
-def test_initial_node_occupancy_is_avoided_or_waited(fleet, blocked, excluded):
+def test_initial_node_occupancy_is_avoided_or_waited(
+    fleet, blocked, destination, excluded
+):
     if excluded:
         fleet.assign("pinky2", None)
     observe(fleet, "pinky2", node=blocked)
     key = submit(fleet, "box")
     cmd = dispatch(fleet)
-    if cmd is None:
+    if destination is None:
+        assert cmd is None
         assert fleet.data["tasks"][key]["stage"] in {"queued", "warehouse_route"}
         assert fleet.data["tasks"][key]["reason"]
         assert fleet.data["fault"] is None
     else:
+        assert cmd is not None
         path = cmd["payload"]["route"]
         assert blocked not in path
         assert path[0] == "N16"
-        assert path[-1] == "N01" or blocked in {"N01", "N18"}
+        assert path[-1] == destination
         assert all(b in fleet.config["nodes"][a] for a, b in pairwise(path))
         assert fleet.data["tasks"][key]["robot"] == "pinky1"
 

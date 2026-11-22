@@ -20,6 +20,15 @@ from run_virtual_fleet import fetch, send
 from run_virtual_trial import free_port
 
 
+def wait_for_shutdown(proc):
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise
+
+
 @pytest.mark.parametrize("termination", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
 def test_script_starts_current_checkout_and_cleans_up(termination):
     binary = os.environ.get("MOSQUITTO_BIN") or shutil.which("mosquitto")
@@ -107,7 +116,7 @@ def test_script_starts_current_checkout_and_cleans_up(termination):
                 finally:
                     if proc.poll() is None:
                         proc.send_signal(termination)
-                    proc.wait(timeout=30)
+                    wait_for_shutdown(proc)
             assert proc.returncode == 0
             assert (root / "control.json").exists()
             assert (
@@ -188,7 +197,7 @@ def test_explicit_verification_submits_selected_package(broker, tmp_path, case):
             wait_until(submitted, timeout=30)
         finally:
             proc.send_signal(signal.SIGINT)
-            proc.wait(timeout=30)
+            wait_for_shutdown(proc)
     assert proc.returncode == 0
     for pid in json.loads((root / "run.json").read_text())["pids"].values():
         with pytest.raises(ProcessLookupError):
