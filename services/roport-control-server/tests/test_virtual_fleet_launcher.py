@@ -20,11 +20,24 @@ from run_virtual_fleet import fetch, send
 from run_virtual_trial import free_port
 
 
-def wait_for_shutdown(proc):
+def wait_for_shutdown(proc, timeout=30):
     try:
-        proc.wait(timeout=30)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        # Each launcher child owns a separate session. Freeze the parent while
+        # enumerating its actual children, including before run.json exists.
+        proc.send_signal(signal.SIGSTOP)
+        try:
+            children = Path(f"/proc/{proc.pid}/task/{proc.pid}/children")
+            for child in children.read_text().split() if children.exists() else ():
+                pid = int(child)
+                try:
+                    if os.getpgid(pid) == pid:
+                        os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        finally:
+            proc.kill()
         proc.wait()
         raise
 
@@ -202,3 +215,31 @@ def test_explicit_verification_submits_selected_package(broker, tmp_path, case):
     for pid in json.loads((root / "run.json").read_text())["pids"].values():
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
+
+
+def test_timeout_stops_isolated_child_session(tmp_path):
+    child_file = tmp_path / "child"
+    owner = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import pathlib,subprocess,sys,time; "
+                "child=subprocess.Popen(['sleep','60'], start_new_session=True); "
+                "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); time.sleep(60)"
+            ),
+            str(child_file),
+        ]
+    )
+    try:
+        wait_until(lambda: child_file.exists() and child_file.read_text(), timeout=3)
+        child = int(child_file.read_text())
+        with pytest.raises(subprocess.TimeoutExpired):
+            wait_for_shutdown(owner, timeout=0.01)
+        stat = Path(f"/proc/{child}/stat")
+        wait_until(
+            lambda: not stat.exists() or stat.read_text().split()[2] == "Z", timeout=3
+        )
+    finally:
+        owner.kill()
+        owner.wait()

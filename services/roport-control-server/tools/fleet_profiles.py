@@ -2,7 +2,6 @@
 
 import math
 from copy import deepcopy
-from pathlib import Path
 
 from prepare_pinky_trial import prepare
 from run_virtual_trial import LAYOUT, MAP, VIRTUAL_SPEED_MPS
@@ -11,7 +10,12 @@ from roport_control_server.adapters.api.maps import load_map
 from roport_control_server.executor.plans import shortest_route
 
 
-def n12_reference(x, y, yaw):
+def n12_reference(positions):
+    x, y = positions["N12"]
+    ax, ay = positions["N08"]
+    if (ax, ay) == (x, y):
+        raise ValueError("N08 and N12 must define a return direction")
+    yaw = math.atan2(y - ay, x - ax)
     return {
         "goal_id": "N12_RETURN",
         "pose": {
@@ -32,11 +36,6 @@ def profiles(*, map_path=MAP, layout_path=LAYOUT, simulation=True):
     grid = load_map(map_path, layout_path)
     positions = {n["id"]: n["position"] for n in grid["layout"]["nodes"]}
     # Simulation-only IR offset and return tolerances; hardware needs measured values.
-    import yaml
-
-    layout = yaml.safe_load(Path(layout_path).read_text())
-    yaw = math.radians(layout["frame"]["yaw_deg"])
-    x, y = positions["N12"]
     goal = {
         k: v
         for k, v in trial["nav_goal"].items()
@@ -49,7 +48,7 @@ def profiles(*, map_path=MAP, layout_path=LAYOUT, simulation=True):
         "node_clearance_m": 0.35,
         "speed_limit_mps": speed,
         "goals": {"PUBLIC_SPACE_TRIAL": goal},
-        "n12_goal": {**goal, **n12_reference(x, y, yaw)},
+        "n12_goal": {**goal, **n12_reference(positions)},
         "omx": {
             r: {"model_version": "sim-model", "calibration_version": "sim-cal"}
             for r in ["omx1", "omx2", "omx3", "shelf-01"]
