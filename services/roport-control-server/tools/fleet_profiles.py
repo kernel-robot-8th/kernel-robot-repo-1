@@ -11,6 +11,19 @@ from roport_control_server.adapters.api.maps import load_map
 from roport_control_server.executor.plans import shortest_route
 
 
+def n12_reference(x, y, yaw):
+    return {
+        "goal_id": "N12_RETURN",
+        "pose": {
+            "x": x + 0.03 * math.cos(yaw),
+            "y": y + 0.03 * math.sin(yaw),
+            "yaw": math.atan2(math.sin(math.pi + yaw), math.cos(math.pi + yaw)),
+        },
+        "position_tolerance_m": 0.03,
+        "yaw_tolerance_rad": 0.08,
+    }
+
+
 def profiles(*, map_path=MAP, layout_path=LAYOUT, simulation=True):
     trial = prepare(map_path, layout_path, simulation=simulation)
     speed = VIRTUAL_SPEED_MPS if simulation else 0.06
@@ -29,17 +42,6 @@ def profiles(*, map_path=MAP, layout_path=LAYOUT, simulation=True):
         for k, v in trial["nav_goal"].items()
         if k not in {"goal_version", "map_id"}
     }
-    back = {
-        **goal,
-        "goal_id": "N12_RETURN",
-        "pose": {
-            "x": x + 0.03 * math.cos(yaw),
-            "y": y + 0.03 * math.sin(yaw),
-            "yaw": math.atan2(math.sin(math.pi + yaw), math.cos(math.pi + yaw)),
-        },
-        "position_tolerance_m": 0.03,
-        "yaw_tolerance_rad": 0.08,
-    }
     fleet = {
         **trial,
         "node_positions": positions,
@@ -47,7 +49,7 @@ def profiles(*, map_path=MAP, layout_path=LAYOUT, simulation=True):
         "node_clearance_m": 0.35,
         "speed_limit_mps": speed,
         "goals": {"PUBLIC_SPACE_TRIAL": goal},
-        "n12_goal": back,
+        "n12_goal": {**goal, **n12_reference(x, y, yaw)},
         "omx": {
             r: {"model_version": "sim-model", "calibration_version": "sim-cal"}
             for r in ["omx1", "omx2", "omx3", "shelf-01"]

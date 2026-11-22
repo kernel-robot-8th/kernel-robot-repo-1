@@ -115,7 +115,7 @@ def test_settings_detects_cross_pc_map_and_slot_mismatch(tmp_path):
     assert any("field_verified" in p for p in issues)
     assert any("model_version" in p for p in issues)
     assert any("n12_goal" in p for p in issues)
-    fleet["n12_goal"] = dict(fleet["goals"]["PUBLIC_SPACE_TRIAL"])
+    fleet["n12_goal"] = profiles()[0]["n12_goal"]
     fleet["field_verified"] = True
     fleet["omx"]["omx3"] = {
         "model_version": "measured-model",
@@ -143,6 +143,7 @@ def test_settings_detects_cross_pc_map_and_slot_mismatch(tmp_path):
 
 def test_report_requires_fresh_increasing_single_boot_states():
     config, _ = profiles()
+    config["expected_starts"] = {"pinky1": "N16"}
     check = StateCheck(config, ["pinky1"], ["pinky1"])
     first = sample(config)
     check.receive(delivery(first))
@@ -162,6 +163,7 @@ def test_report_requires_fresh_increasing_single_boot_states():
 )
 def test_invalid_delivery_never_counts_as_prepared(change):
     config, _ = profiles()
+    config["expected_starts"] = {"pinky1": "N16"}
     check = StateCheck(config, ["pinky1"])
     with pytest.raises(ValueError):
         check.receive(delivery(sample(config), **change))
@@ -180,6 +182,7 @@ def test_invalid_delivery_never_counts_as_prepared(change):
 )
 def test_report_explains_unready_state(change):
     config, _ = profiles()
+    config["expected_starts"] = {"pinky1": "N16"}
     check = StateCheck(config, ["pinky1"], ["pinky1"])
     for sequence in (1, 2):
         check.receive(delivery(sample(config, sequence=sequence, **change)))
@@ -188,6 +191,7 @@ def test_report_explains_unready_state(change):
 
 def test_passive_mqtt_sends_no_command_ack_or_keepalive(broker):
     config, _ = profiles()
+    config["expected_starts"] = {"pinky1": "N16"}
     sender = MqttTransport(
         MqttConfig("127.0.0.1", "test-field-source", broker[0]),
         [wire.topic("pinky1", c) for c in ("cmd", "ack")],
@@ -257,3 +261,51 @@ def test_shelf_readiness_requires_both_arms(arm_ids, ok):
         msg = wire.build_message("robot_state", "shelf-01", config["control_id"], p)
         check.receive(delivery(msg))
     assert check.report()["ok"] is ok
+
+
+@pytest.mark.parametrize(
+    "change", ["copied", "renamed", "missing_id", "heading", "tolerance"]
+)
+def test_delivery_pose_cannot_be_used_for_n12_return(tmp_path, change):
+    root = tmp_path / "bundle"
+    fleet = prepare_field(root)
+    goal = profiles()[0]["n12_goal"]
+    if change in {"copied", "renamed"}:
+        goal = dict(fleet["goals"]["PUBLIC_SPACE_TRIAL"])
+        if change == "renamed":
+            goal["goal_id"] = "N12_RETURN"
+    elif change == "missing_id":
+        del goal["goal_id"]
+    elif change == "heading":
+        goal["pose"]["yaw"] = 0.0
+    else:
+        goal["position_tolerance_m"] = 0.5
+    fleet["n12_goal"] = goal
+    (root / "fleet.json").write_text(json.dumps(fleet))
+    assert any("N12_RETURN identity" in issue for issue in settings(root, [])[1])
+
+
+@pytest.mark.parametrize("node,ready", [("N17", True), ("N16", False)])
+def test_second_logistics_robot_uses_individual_start(tmp_path, node, ready):
+    root = tmp_path / "bundle"
+    prepare_field(root)
+    config, _ = settings(root, ["pinky2"])
+    check = StateCheck(config, ["pinky2"])
+    for seq in (1, 2):
+        msg = sample(config, sequence=seq, node=node)
+        msg["source"] = "pinky2"
+        check.receive(delivery(msg))
+    assert check.report()["ok"] is ready
+
+
+def test_old_first_sample_expires_until_replaced():
+    config, _ = profiles()
+    config["expected_starts"] = {"pinky1": "N16"}
+    check = StateCheck(config, ["pinky1"])
+    msg = sample(config)
+    msg["payload"]["observed_at"] = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    check.receive(delivery(msg))
+    check.receive(delivery(sample(config, sequence=2)))
+    assert not check.report()["ok"]
+    check.receive(delivery(sample(config, sequence=3)))
+    assert check.report()["ok"]

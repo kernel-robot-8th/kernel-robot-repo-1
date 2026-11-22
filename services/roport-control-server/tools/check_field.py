@@ -10,8 +10,10 @@ from queue import Empty
 from time import monotonic
 from uuid import uuid4
 
+from fleet_profiles import n12_reference
 from prepare_pinky_trial import trial_inputs
 
+from roport_control_server.adapters.api.maps import load_map
 from roport_control_server.adapters.mqtt import field_wire as wire
 from roport_control_server.adapters.mqtt.mqtt import MqttTransport
 from roport_control_server.adapters.mqtt.trial_runner import select_robot
@@ -67,6 +69,25 @@ def settings(root, targets):
             )
         except ValueError:
             issues.append(f"fleet: invalid goal {name}")
+            continue
+        if name == "N12_RETURN":
+            mapped = load_map(map_path, root / "maps/layout.yaml")["layout"]["nodes"]
+            x, y = next(node["position"] for node in mapped if node["id"] == "N12")
+            ref = n12_reference(x, y, math.radians(layout["frame"]["yaw_deg"]))
+            pose, expected = goal["pose"], ref["pose"]
+            distance = math.hypot(pose["x"] - expected["x"], pose["y"] - expected["y"])
+            heading = abs(math.remainder(pose["yaw"] - expected["yaw"], math.tau))
+            if (
+                goal.get("goal_id") != ref["goal_id"]
+                or distance > ref["position_tolerance_m"]
+                or heading > ref["yaw_tolerance_rad"]
+                or goal["position_tolerance_m"] > ref["position_tolerance_m"]
+                or goal["yaw_tolerance_rad"] > ref["yaw_tolerance_rad"]
+            ):
+                issues.append(
+                    "fleet: N12_RETURN identity, pose or tolerance differs from layout reference"
+                )
+    expected_starts = {}
     for target in targets:
         if target in ROLES:
             role = fleet.get("initial_roles", ROLES).get(target)
@@ -74,6 +95,11 @@ def settings(root, targets):
                 issues.append(f"{target}: not assigned in this field configuration")
                 continue
             profile = json.loads((root / target / "trial.json").read_text())
+            route = "cart_to_delivery" if role == "smartcart" else "to_loading"
+            start = profile["routes"][route]["start_node"]
+            if start not in fleet["nodes"]:
+                issues.append(f"{target}: unknown start node {start}")
+            expected_starts[target] = start
             if profile.get("mode") != "hardware":
                 issues.append(f"{target}: hardware profile required")
             try:
@@ -101,13 +127,14 @@ def settings(root, targets):
                     or value.startswith(("sim-", "REPLACE"))
                 ):
                     issues.append(f"{target}: actual {key} required")
-    return fleet, issues
+    return {**fleet, "expected_starts": expected_starts}, issues
 
 
 class StateCheck:
     def __init__(self, config, targets, nav2=()):
         self.config, self.targets, self.nav2 = config, targets, nav2
         self.samples = {}
+        self.previous_at = {}
         self.boots = {t: set() for t in targets}
         self.counts = {t: 0 for t in targets}
         self.rejected = 0
@@ -134,6 +161,8 @@ class StateCheck:
             and p["sequence"] <= previous["sequence"]
         ):
             return
+        if previous:
+            self.previous_at[target] = wire.timestamp(previous["observed_at"])
         self.samples[target] = p
         self.counts[target] += 1
 
@@ -148,7 +177,10 @@ class StateCheck:
                 continue
             s = p["state"]
             age = (now - wire.timestamp(p["observed_at"])).total_seconds()
-            if not -1 <= age <= 3:
+            previous = self.previous_at.get(target)
+            if not -1 <= age <= 3 or (
+                previous and not -1 <= (now - previous).total_seconds() <= 3
+            ):
                 problems.append("state stale or clocks differ")
             if self.counts[target] < 2:
                 problems.append("need two increasing state sequences")
@@ -168,12 +200,9 @@ class StateCheck:
                     or s["heading_rad"] is None
                 ):
                     problems.append("initial line position/heading unknown")
-                role = self.config.get("initial_roles", {}).get(target)
-                if role in {"smartcart", "logistics"}:
-                    route = "cart_to_delivery" if role == "smartcart" else "to_loading"
-                    start = self.config["routes"][route]["start_node"]
-                    if s["node"] != start:
-                        problems.append(f"expected initial placement at {start}")
+                start = self.config["expected_starts"].get(target)
+                if start is None or s["node"] != start:
+                    problems.append(f"expected initial placement at {start}")
                 if s["line_enabled"] or s["drive_owner"] != "none":
                     problems.append("drive owner not released")
                 if target in self.nav2 and not (
