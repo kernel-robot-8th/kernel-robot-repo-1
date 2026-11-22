@@ -57,9 +57,9 @@ Nav2로 N12 복귀 골에 이동 → 정지 → `nav2 → line` 전환 → 라�
 
 main 96e05fa 기준 코드와 `VirtualPinky` 재현으로 확인했다. 실로봇·실브로커에서는 확인하지 않았다.
 
-- **운영자 정지·HOLD는 정지 명령이 아니다.** 관제 시험 실행부(`field_trial_transport.py`)는 `robot_stop_command`를 보내지 않고, 정지·HOLD 때 `keep_running_command_id` 상태 요청만 멈춘다. Pinky는 마지막 유효 요청 뒤 3초가 지나야 `control_link_lost`로 정지하므로 0.06 m/s에서 최대 약 18 cm를 더 간다. 그동안 `trial_guard`는 로봇 안의 lease로 열려 있다.
+- **운영자 정지·HOLD는 정지 명령이 아니다.** 관제 시험 실행부(`field_trial_transport.py`)는 `robot_stop_command`를 보내지 않고, 정지·HOLD 때 `keep_running_command_id` 상태 요청만 멈춘다. Pinky는 마지막 유효 요청을 받은 뒤 3초가 넘은 것을 다음 `poll()`에서 확인하고 `control_link_lost`로 `safe_stop()`을 요청한다. 이 watchdog 대기 시간 동안 0.06 m/s 정속으로 주행한다고 가정한 이동 거리가 약 18 cm다(0.06 m/s × 3 s). 여기에는 폴링 주기, 정지 명령 반영, 실제 감속 시간이 들어 있지 않으므로 정지거리 상한이 아니며, 실제 정지거리 상한은 실측 전이라 미확정이다. 그동안 `trial_guard`는 로봇 안의 lease로 열려 있다.
 - **Pinky endpoint가 일부 stop을 거절한다.** `field_pinky.py`는 `robot_stop_command`도 일반 명령과 같은 순서로 `sent_at` 신선도(−0.5~3초), boot, 기록 1024개 한도를 먼저 검사한다. 늦게 도착한 stop은 `stale_message`, 기록이 찬 뒤의 stop은 `command_history_full`, 이미 끝난 명령을 가리키는 stop은 `stop_target_mismatch`로 거절되고, 주행 중이었다면 그대로 간다.
-- **수정 제안(미구현, 관제 담당 결정).** Pinky endpoint는 OMX 쪽(`task/control-integration-test` 91c0a84)처럼 stop을 신선도·기록 한도 검사보다 먼저 처리하고, 이미 끝난 명령을 가리키는 stop에는 「이미 정지」로 completed를 보낸다. 관제는 HOLD·운영자 정지 때 keep-running을 끊으면서 `robot_stop_command`도 한 번 보낸다. fleet runtime에서 stop을 보내게 되면 endpoint도 함께 고쳐야 한다.
+- **수정 제안(미구현, 관제 담당 결정).** Pinky endpoint는 OMX 쪽(`task/control-integration-test` 91c0a84)처럼 stop을 신선도·기록 한도 검사보다 먼저 처리하고, 이미 끝난 명령을 가리키는 stop에는, 다른 활성 명령이 없고 최신 상태에서 실제 정지가 확인된 경우에만 「이미 정지」로 completed를 보낸다. 다른 명령이 실행 중이면(이전 주행 A가 끝난 뒤 주행 B가 시작된 상태에서 A를 가리키는 지연 stop이 도착한 경우) 대상 불일치(`stop_target_mismatch`)를 유지한다. 관제는 HOLD·운영자 정지 때 keep-running을 끊으면서 `robot_stop_command`도 한 번 보낸다. fleet runtime에서 stop을 보내게 되면 endpoint도 함께 고쳐야 한다.
 - **host 토픽 ACL.** `--host-metrics-period-s`를 켜면 현장 브로커 ACL에 `roport/robot/{pinky}/host` 발행 권한이 있어야 한다. 없으면 QoS0이라 조용히 버려지고 관제 화면에는 `unknown`·`stale`만 보인다. 정지·HOLD·출발 판정에는 영향이 없다.
 
 ## 가상 시험 범위
