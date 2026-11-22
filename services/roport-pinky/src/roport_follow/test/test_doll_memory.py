@@ -134,7 +134,8 @@ def test_only_the_customer_detection_is_excluded_not_a_doll_standing_next_to_it(
     sink = ObstacleSink(cam, cfg, lambda pts, stamp: sent.append(pts))
     customer = (0.60 + cfg.cam_x_m, 0.0)
     child = _det('child', _box_at(cam, 0.60, 0.10, width=0.04))        # 카드 옆 10 cm, 혼자 검출
-    assert [o.name for o in sink.handle(_frame(100.0), [child], exclude=customer)] == []      # 어른이 없으면 가장 가까운 하나
+    out = sink.handle(_frame(100.0), [child], exclude=customer)        # 카드는 보이는데 고객 인형 검출만 누락된 영상
+    assert [o.name for o in out] == ['child'] and sink.excluded == 0 and len(sent[-1]) > 0    # 옆 인형은 그대로 장애물
     adult = _det('adult', _box_at(cam, 0.45, 0.02, width=0.08))        # 고객 인형(카드에서 약 15 cm)
     out = sink.handle(_frame(100.2), [adult, child], exclude=customer)
     assert [o.name for o in out] == ['child'] and sink.excluded == 1   # 고객만 빠지고 옆 인형은 장애물

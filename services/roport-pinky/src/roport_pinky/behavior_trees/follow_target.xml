@@ -6,9 +6,13 @@
     used only when its stamp is newer than the action goal.
   - The driver already places the goal standoff_m before the customer, so TruncatePath is not
     used (the customer point itself lies in the customer's costmap obstacle/inflation).
-  - No spin/back-up recovery, no search and NO costmap clearing. A blocked plan/path waits 1 s
-    and retries (one Wait node only: the behavior server runs one wait at a time, so two
-    concurrent Waits cancelled each other, 2026-11-20). Clearing is not used because camera-only
+  - No spin, no search and NO costmap clearing. A blocked plan/path waits 1 s and retries; every
+    third consecutive block backs up 5 cm at 3 cm/s (2026-11-22). The waits and the back-up run
+    one at a time (RoundRobin): the behavior server runs one behavior at a time, so two
+    concurrent Waits cancelled each other (2026-11-20).
+    Why back up: a doll 14 cm ahead is cut off at the image bottom, so its marks reach 8-9 cm
+    from the axle; the footprint's rear corner (9.3 cm) would sweep them when rotating in place,
+    so the robot could neither advance nor turn and stood still for 30 s (2026-11-22, 4 runs). Clearing is not used because camera-only
     obstacles (small dolls the lidar cannot see) are remembered only in the costmap once they
     are inside the camera blind zone / obstacle_min_range (0.15 m): clearing erased a doll
     14 cm ahead and the robot drove into it (2026-11-21). After the outer retries the action
@@ -21,7 +25,8 @@
        지워 로봇이 인형을 치고 지나감 → 비우기를 모두 뺌. 막힌 원인이 실제 장애물이면 지도에 남아 돌아가는 길을 찾고,
        길이 없으면 드라이버의 RECOVERY_TIMEOUT_S(5 cm 이동 없이 30 s)가 멈춘다.
        바깥 재시도 횟수는 추종 한 번 동안 누적된다(따라가기가 「성공」으로 끝나지 않음, 11-21 2분 추종에 8번) →
-       횟수(100)는 넉넉히 두고, 멈추는 기준은 드라이버의 「5 cm 이동 없이 30 s」로 둔다. 회전·후진 복구는 넣지 않음. -->
+       횟수(100)는 넉넉히 두고, 멈추는 기준은 드라이버의 「5 cm 이동 없이 30 s」로 둔다. 회전 복구는 넣지 않음.
+       11-22 실로봇: 코앞(14 cm) 인형에서 전진도 제자리 회전도 못 해 30 s 서 있다 끝남(4회) → 세 번째 막힘마다 5 cm 후진. -->
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="100" name="FollowRecovery">
       <PipelineSequence name="FollowTarget">
@@ -35,7 +40,15 @@
           <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
         </KeepRunningUntilFailure>
       </PipelineSequence>
-      <Wait wait_duration="1.0"/>
+      <!-- 막힐 때마다 차례로: 1 s 대기 → 1 s 대기 → 5 cm 후진(3 cm/s). 후진은 behavior_server 가 지역 비용 지도로
+           뒤쪽 충돌을 확인하고 하며(라이다·기억한 인형 층), 실패해도 추종·안내를 끝내지 않는다(ForceSuccess). -->
+      <RoundRobin name="BlockedActions">
+        <Wait wait_duration="1.0"/>
+        <Wait wait_duration="1.0"/>
+        <ForceSuccess>
+          <BackUp backup_dist="0.05" backup_speed="0.03" time_allowance="5.0"/>
+        </ForceSuccess>
+      </RoundRobin>
     </RecoveryNode>
   </BehaviorTree>
 </root>

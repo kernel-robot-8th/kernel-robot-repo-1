@@ -68,7 +68,9 @@ def test_feet_cut_box_extends_toward_robot():
     (o,) = doll_obstacles(cam, [_det('adult', box)], cfg)
     assert o.cut
     edge = cam.pixel_to_ground(320, 479)[0] + cfg.cam_x_m
-    assert min(p[0] for p in o.points) < edge - 0.04                  # 화면 아래 끝보다 로봇 쪽까지
+    near = min(p[0] for p in o.points)
+    assert edge - 0.03 < near < edge - 0.01                           # 화면 아래 끝보다 로봇 쪽으로 2 cm(11-22: 5 → 2)
+    assert cfg.cut_extend_m == 0.02
 
 
 def test_clear_points_fan_inside_view_beyond_mark_range():

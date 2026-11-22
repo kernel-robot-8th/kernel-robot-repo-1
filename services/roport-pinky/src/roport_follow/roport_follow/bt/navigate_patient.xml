@@ -3,7 +3,8 @@
   Same policy as roport_pinky follow_target.xml, but for a fixed goal:
   - NO costmap clearing: camera-only obstacles (small dolls the lidar cannot see) live only in the
     doll layer; clearing erased a doll 14 cm ahead and the robot drove into it (2026-11-21).
-  - No spin/back-up. A blocked plan/path waits 1 s and retries (one Wait node only).
+  - No spin. A blocked plan/path waits 1 s and retries; every third consecutive block backs up 5 cm
+    (2026-11-22: a doll 14 cm ahead left the robot unable to advance or rotate in place for 30 s).
   - The retry count is generous; the driver stops the goal when the robot has not moved 5 cm for
     30 s (RECOVERY_TIMEOUT_S). The default trial tree gave up after 2 retries (13 s) when a doll
     stood 14 cm ahead of the start pose (2026-11-22 d660).
@@ -18,7 +19,15 @@
         </RateController>
         <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
       </PipelineSequence>
-      <Wait wait_duration="1.0"/>
+      <!-- Blocked: wait 1 s, wait 1 s, then back up 5 cm at 3 cm/s (one at a time). The behavior server checks
+           the local costmap behind the robot; a failed back-up does not end the goal (ForceSuccess). -->
+      <RoundRobin name="BlockedActions">
+        <Wait wait_duration="1.0"/>
+        <Wait wait_duration="1.0"/>
+        <ForceSuccess>
+          <BackUp backup_dist="0.05" backup_speed="0.03" time_allowance="5.0"/>
+        </ForceSuccess>
+      </RoundRobin>
     </RecoveryNode>
   </BehaviorTree>
 </root>

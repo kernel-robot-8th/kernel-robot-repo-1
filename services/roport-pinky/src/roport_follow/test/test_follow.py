@@ -187,7 +187,7 @@ def test_customer_doll_excluded_from_obstacles_while_tracking():
 
     sent = []
     sink = ObstacleSink(CAM, ObstacleConfig(), lambda pts, st: sent.append(pts), require_robot_time=True)
-    det = Detection(1, 'child', 0.9, (300.0, 200.0, 340.0, 260.0))
+    det = Detection(1, 'adult', 0.9, (300.0, 200.0, 340.0, 260.0))      # 고객 카드는 어른 인형에 붙인다
     fr = SimpleNamespace(recv_time=time.time(), robot_time=50.0)
     obs = sink.handle(fr, [det])
     assert len(obs) == 1

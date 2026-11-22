@@ -56,8 +56,8 @@ class ObstacleSink:
     def customer_obstacle(self, obs, exclude):
         """이번 영상의 인형 가운데 고객(카드를 단 인형) 하나. 없으면 None.
 
-        카드 바닥 점에서 그 종류의 반경 안에 있는 검출 중 customer_classes(카드를 붙이는 어른 인형)를 먼저,
-        그중 가장 가까운 하나만 고객으로 본다. 고객 옆에 따로 서 있는 인형은 장애물로 남긴다(리뷰 #130:
+        카드 바닥 점에서 반경 안에 있는 customer_classes(카드를 붙이는 어른 인형) 검출 중 가장 가까운 하나만 고객으로
+        본다. 그 종류의 검출이 이번 영상에 없으면(고객 인형 검출 누락) 아무것도 빼지 않는다. 고객 옆에 따로 서 있는 인형은 장애물로 남긴다(리뷰 #130:
         카드 옆 10 cm 어린이 인형이 함께 빠졌음)."""
         if exclude is None:
             return None
@@ -65,8 +65,9 @@ class ObstacleSink:
         near = [(d, o) for d, o in near if d <= self.exclude_radius(o.name)]
         if not near:
             return None
-        first = [c for c in near if c[1].name in self.customer_classes] or near
-        return min(first, key=lambda c: c[0])[1]
+        # 고객 인형(카드를 붙이는 종류)의 검출이 없으면 아무것도 빼지 않는다: 카드 옆의 다른 인형을 고객으로 잘못 고르지 않게
+        near = [c for c in near if c[1].name in self.customer_classes]
+        return min(near, key=lambda c: c[0])[1] if near else None
 
     def exclude_radius(self, name):
         """고객 둘레에서 이 종류의 인형을 장애물에서 빼는 반경(m)."""

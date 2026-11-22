@@ -179,5 +179,7 @@ def test_lift_nav_recovery_cap_keeps_explicit_arguments():
     import xml.etree.ElementTree as ET
     tree = ET.parse(seen[0][1]).getroot()
     names = [n.tag for n in tree.iter()]
-    assert 'ClearEntireCostmap' not in names and 'Spin' not in names and 'BackUp' not in names
-    assert names.count('Wait') == 1 and 'FollowPath' in names
+    assert 'ClearEntireCostmap' not in names and 'Spin' not in names and 'FollowPath' in names
+    rr = tree.find('BehaviorTree/RecoveryNode/RoundRobin')                # 대기 2번 뒤 5 cm 후진(실패해도 계속)
+    assert [c.tag for c in rr] == ['Wait', 'Wait', 'ForceSuccess']
+    assert rr.find('ForceSuccess/BackUp').attrib['backup_dist'] == '0.05'
