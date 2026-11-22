@@ -422,7 +422,7 @@ class Shopping:
                     _, scores, match = tracker.step(frame, near_anchor=near_anchor)
                     if match['state'] == 'MATCH':
                         pick = match['index']
-                        if pick >= template_count:
+                        if pick >= template_count and 0 < boxes[pick][0] and boxes[pick][2] < w-1:
                             # Refresh the fast proposal crop; identity still uses the original portrait.
                             templates = SelectedProposals(frame, normalized[pick]['box'])
                         point = foot_position(boxes[pick], info, camera, self.floor_z)

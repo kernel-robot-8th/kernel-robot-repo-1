@@ -93,6 +93,22 @@ def test_seed_at_close_range_can_propose_same_figure_at_half_scale():
                for box in finder.detect(far))
 
 
+@pytest.mark.parametrize('left', [-8, 376])
+def test_selected_figure_partly_clipped_on_either_side(left):
+    cv2 = pytest.importorskip('cv2')
+    from roport_smartcart.box_detector import SelectedProposals
+    rng = np.random.default_rng(11)
+    crop = cv2.resize(rng.integers(0, 255, (25, 16, 3), dtype=np.uint8), (112, 168))
+    frame = np.zeros((420, 480, 3), dtype=np.uint8)
+    frame[60:228, 80:192] = crop
+    finder = SelectedProposals(frame, (80/480, 60/420, 192/480, 228/420))
+    edge = np.zeros_like(frame)
+    a, c = max(0, left), min(480, left+112)
+    edge[60:228, a:c] = crop[:, a-left:c-left]
+    assert any(abs(x['box'][0]-a) <= 2 and abs(x['box'][2]-c) <= 2
+               and abs(x['box'][1]-60) <= 2 for x in finder.detect(edge))
+
+
 def test_proximity_notice_waits_for_sustained_loss_or_distance_and_clears_on_confirmation():
     from roport_smartcart.shopping_track import ProximityNotice
     notice = ProximityNotice()
