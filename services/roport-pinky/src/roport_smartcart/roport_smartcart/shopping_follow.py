@@ -156,6 +156,19 @@ class Shopping:
             self.grid = None
         # Redelivery of the same observation cannot refresh its monotonic receipt.
 
+    def sensor_transform(self, frame_id, stamp):
+        sample = Time.from_msg(stamp)
+        try:
+            return self.tf.lookup_transform('map', frame_id, sample).transform
+        except TransformException:
+            try:
+                nearby = self.tf.lookup_transform('map', frame_id, Time())
+            except TransformException:
+                return None
+            if abs(Time.from_msg(nearby.header.stamp).nanoseconds - sample.nanoseconds) <= 80_000_000:
+                return nearby.transform
+            return None
+
     def sonar(self, msg):
         stamp = self.received(msg)
         if stamp and (msg.min_range <= msg.range <= msg.max_range or msg.range == math.inf):
@@ -163,17 +176,9 @@ class Shopping:
             if msg.range >= .55:
                 self.hit = None
             else:
-                try:
-                    tf = self.tf.lookup_transform('map', msg.header.frame_id, Time.from_msg(msg.header.stamp)).transform
-                except TransformException:
-                    try:
-                        nearby = self.tf.lookup_transform('map', msg.header.frame_id, Time())
-                    except TransformException:
-                        return
-                    if abs(Time.from_msg(nearby.header.stamp).nanoseconds -
-                           Time.from_msg(msg.header.stamp).nanoseconds)>80_000_000:
-                        return
-                    tf = nearby.transform
+                tf = self.sensor_transform(msg.header.frame_id, msg.header.stamp)
+                if tf is None:
+                    return
                 t, q = tf.translation, tf.rotation
                 self.hit_at = stamp
                 self.hit = (t.x+msg.range*(1-2*(q.y*q.y+q.z*q.z)),
@@ -189,23 +194,19 @@ class Shopping:
                 or not self.optical_frame and msg.header.frame_id != info.header.frame_id):
             return
         child = self.optical_frame or info.header.frame_id
-        try:
-            transform = self.tf.lookup_transform('map', child, Time.from_msg(msg.header.stamp)).transform
-        except TransformException:
-            try:
-                nearby = self.tf.lookup_transform('map', child, Time())
-            except TransformException:
-                return
-            skew = abs(Time.from_msg(nearby.header.stamp).nanoseconds-Time.from_msg(msg.header.stamp).nanoseconds)
-            if skew > 80_000_000:
-                return
-            transform = nearby.transform
+        transform = self.sensor_transform(child, msg.header.stamp)
+        if transform is None or not msg.data:
+            return
         if isinstance(msg, CompressedImage):
-            img = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
+            try:
+                img = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
+            except cv2.error:
+                return
             if img is None or img.shape[:2] != (info.height, info.width):
                 return
         else:
-            if (info.width, info.height) != (msg.width, msg.height) or msg.encoding not in ('bgr8', 'rgb8'):
+            if ((info.width, info.height) != (msg.width, msg.height) or msg.encoding not in ('bgr8', 'rgb8')
+                    or not msg.width or msg.step < 3*msg.width or len(msg.data) != msg.height*msg.step):
                 return
             img = np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.step)[:, :msg.width*3].reshape(msg.height, msg.width, 3)
             if msg.encoding == 'rgb8':
