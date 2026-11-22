@@ -437,7 +437,7 @@ def make_shop(now):
         shop.track.update(stamp, (.55, 0.))
     shop.observed = now-.1
     shop.proximity, shop.still_since, shop.odom_at = ProximityNotice(), None, now
-    shop.frozen = shop.frame_box = shop.grid = shop.hit = None
+    shop.frozen = shop.frame_box = shop.grid = shop.hit = shop.bypass = shop.miss_reason = None
     shop.hit_at, shop.last_display, shop.display_at = float('-inf'), '', float('-inf')
     shop.display = Mock()
     nav.follow_distance_m, nav.retry_after, nav.fault = .26, 0., None
@@ -632,3 +632,91 @@ def test_shopping_global_cadence_keeps_active_direct_leg_until_grid_expires(jitt
     nav.handle.cancel_goal_async.assert_called_once()
     assert nav.heartbeat.call_args.args[0] is False
     nav.client.send_goal_async.assert_not_called()
+
+
+@pytest.mark.parametrize('case, expected', [
+    ('edge', 'continue'), ('center', 'hold'), ('ambiguous', 'hold'),
+    ('bad_camera', 'hold'), ('blocked_point', 'hold'), ('stale', 'hold'),
+    ('expired', 'hold'), ('cancelled', 'look'), ('lost_too_long', 'hold'),
+    ('accepted_other_goal', 'look'), ('timeout_to_look', 'look'),
+])
+def test_bypass_requires_same_accepted_leg_and_turn_explaining_loss(case, expected):
+    pytest.importorskip('nav2_msgs')
+    shop = make_shop(10.)
+    nav = shop.nav
+    nav.last_reached = None
+    target, via = nav.anchor, nav.destination
+    shop.bypass = via, (0., 0., 0.), -16. if case == 'expired' else 8.
+    info = NS(width=640,k=[0. if case == 'bad_camera' else 575.,0.,320.,0.,575.,240.,0.,0.,1.],d=[])
+    yaw = 0. if case == 'center' else .55
+    c, s = math.cos(yaw/2), math.sin(yaw/2)
+    camera = NS(translation=NS(x=0.,y=0.,z=.1),
+                rotation=NS(x=(-c-s)/2,y=(c-s)/2,z=(-c+s)/2,w=(c+s)/2))
+    shop.packet, shop.floor_z = (10., None, info, camera), 0.
+    stamp = {'lost_too_long': -5., 'timeout_to_look': 1.}.get(case, 9.)
+    shop.track.samples.clear()
+    shop.track.samples.append((stamp, target))
+    shop.track.confirmed = stamp, target
+    shop.track.state = 'AMBIGUOUS' if case == 'ambiguous' else 'SEARCHING'
+    shop.miss_reason = 'no_detection'
+    nav.cancelled = case == 'cancelled'
+    if case == 'accepted_other_goal':
+        nav.destination = (.3, 0.)
+    grid = make_grid()
+    if case == 'blocked_point':
+        grid.data = [100] * len(grid.data)
+    pose = (0., 0., 0. if case == 'center' else .55)
+    drive_target, _, look = shop.bypass_command(10., pose, None, grid, case != 'stale')
+    if expected == 'continue':
+        assert drive_target == target and look is None
+    elif expected == 'look':
+        assert drive_target is None and look == pytest.approx((-.55, stamp))
+    else:
+        assert drive_target is None and look is None
+
+
+def test_look_cancels_old_action_and_turns_only_once_per_sighting():
+    pytest.importorskip('nav2_msgs')
+    from concurrent.futures import Future
+    from unittest.mock import Mock
+    from action_msgs.msg import GoalStatus
+    nav = make_shop(10.).nav
+    nav.spin_client = Mock()
+    old = nav.handle
+    assert nav.look(10., 2., 7.) == 'HOLD'
+    old.cancel_goal_async.assert_called_once()
+    nav.spin_client.send_goal_async.assert_not_called()
+    nav.handle = nav.pending = None
+    future = Future()
+    nav.spin_client.send_goal_async.return_value = future
+    assert nav.look(10.1, 2., 7.) == 'HOLD'
+    goal = nav.spin_client.send_goal_async.call_args.args[0]
+    assert goal.target_yaw == pytest.approx(math.pi/3) and goal.time_allowance.sec == 5
+    result = Future()
+    future.set_result(Mock(accepted=True, get_result_async=lambda: result))
+    assert nav.look(10.2, 1., 7.) == 'APPROACH'
+    result.set_result(NS(status=GoalStatus.STATUS_SUCCEEDED))
+    assert nav.look(10.3, .1, 7.) == 'HOLD'
+    nav.spin_client.send_goal_async.assert_called_once()
+    nav.heartbeat.assert_called_with(False, 10.3)
+
+
+def test_rotation_prediction_requires_both_appearance_and_map_agreement():
+    from roport_smartcart.session_target import SessionTracker
+    from roport_smartcart.shopping_track import foot_pixel
+    info = NS(k=[500.,0,320.,0,500.,240.,0,0,1.], height=480, width=640, d=[])
+    cam = NS(rotation=NS(x=-.5,y=.5,z=-.5,w=.5), translation=NS(x=1.,y=.2,z=.12))
+    assert foot_pixel((1.6,.2), info, cam, 0.) == pytest.approx((320,340))
+    assert foot_pixel((.6,.2), info, cam, 0.) is None
+    frame = np.zeros((320,480,3), np.uint8)
+    box = [260,115,310,215]
+    class Encoder:
+        def encode(self, crops):
+            return np.tile(self.embedding,(len(crops),1))
+        embedding = [1.,0.]
+    encoder = Encoder()
+    tracker = SessionTracker(encoder,lambda _: [box],frame,(.1,.1,.25,.5))
+    assert tracker.step(frame, near_anchor=lambda _:False, expected_box=box)[2]['state'] == 'LOST'
+    assert tracker.step(frame, near_anchor=lambda _:True, expected_box=box)[2]['state'] == 'MATCH'
+    encoder.embedding = [0.,1.]
+    assert tracker.step(frame, near_anchor=lambda _:True, expected_box=box)[2]['state'] == 'LOST'

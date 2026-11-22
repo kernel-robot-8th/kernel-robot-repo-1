@@ -29,6 +29,7 @@ class Track:
     def __init__(self):
         self.samples = deque(maxlen=12)
         self.streak = 0
+        self.confirmed = None
         self.observation_stamp = float('-inf')
         self.state = 'SEARCHING'
 
@@ -48,6 +49,8 @@ class Track:
             self.streak += 1
             self.samples.append((stamp, point))
             self.state = 'FOLLOWING' if self.streak >= 3 else 'VERIFYING'
+            if self.state == 'FOLLOWING':
+                self.confirmed = self.samples[-1]
         else:
             self.streak = 0
             self.state = 'AMBIGUOUS' if ambiguous else 'SEARCHING'
@@ -86,6 +89,44 @@ def foot_position(box, info, camera, floor_z=0.):
     return None
 
 
+def foot_pixel(point, info, camera, floor_z):
+    """Project a recent map-frame foot point into this frame's calibrated camera."""
+    import numpy as np
+    if min(info.k[0], info.k[4]) <= 0:
+        return None
+    t, q = camera.translation, camera.rotation
+    delta = np.array([point[0]-t.x, point[1]-t.y, floor_z-t.z])
+    axis = np.array([-q.x, -q.y, -q.z])
+    x, y, z = delta + 2*np.cross(axis, np.cross(axis, delta)+q.w*delta)
+    if not all(map(math.isfinite, (x,y,z))) or z <= .02:
+        return None
+    if any(info.d):
+        import cv2
+        if info.distortion_model not in ('plumb_bob', 'rational_polynomial'):
+            return None
+        uv, _ = cv2.projectPoints(np.array([[x,y,z]]), np.zeros(3), np.zeros(3),
+                                  np.array(info.k).reshape(3, 3), np.array(info.d))
+        return tuple(uv.ravel())
+    return info.k[0]*x/z+info.k[2], info.k[4]*y/z+info.k[5]
+
+
+def waypoint_cost(grid, x, y):
+    meta = grid.info
+    col = math.floor((x-meta.origin.position.x)/meta.resolution)
+    row = math.floor((y-meta.origin.position.y)/meta.resolution)
+    if 0 <= col < meta.width and 0 <= row < meta.height:
+        value = grid.data[row*meta.width+col]
+        if value >= 0:
+            return value
+    return 100
+
+
+def bypass_segment_costs(grid, start, end):
+    steps = max(1, math.ceil(2*math.dist(start[:2], end[:2])/grid.info.resolution))
+    return [waypoint_cost(grid, start[0]+(end[0]-start[0])*i/steps,
+                          start[1]+(end[1]-start[1])*i/steps) for i in range(steps+1)]
+
+
 def bypass_waypoint(origin, target, hit, grid):
     """Choose a free side of a short-range echo between cart and shopper, in map metres."""
     if hit is None or grid is None:
@@ -100,27 +141,14 @@ def bypass_waypoint(origin, target, hit, grid):
     if not .10 < along < min(.55, distance-.22) or abs(hy*ux-hx*uy) > .11:
         return None
 
-    def cost(x, y):
-        meta = grid.info
-        col = math.floor((x-meta.origin.position.x)/meta.resolution)
-        row = math.floor((y-meta.origin.position.y)/meta.resolution)
-        if 0 <= col < meta.width and 0 <= row < meta.height:
-            value = grid.data[row*meta.width+col]
-            if value >= 0:
-                return value
-        return 100
-
     choices = []
     for sign in (-1, 1):
         wx = hit[0] + .12*ux - sign*.20*uy
         wy = hit[1] + .12*uy + sign*.20*ux
         # Compare the swept centreline on the inflated costmap, including the exit.
-        costs = []
         exit_point = hit[0]+.20*ux, hit[1]+.20*uy
-        for start, end in ((origin,(wx,wy)), ((wx,wy),exit_point)):
-            for i in range(1, 13):
-                costs.append(cost(start[0]+i*(end[0]-start[0])/12,
-                                  start[1]+i*(end[1]-start[1])/12))
+        costs = (bypass_segment_costs(grid, origin, (wx,wy)) +
+                 bypass_segment_costs(grid, (wx,wy), exit_point))
         if max(costs) < 99:
             choices.append((max(costs), sum(costs), wx, wy))
     return min(choices)[2:] if choices else None
