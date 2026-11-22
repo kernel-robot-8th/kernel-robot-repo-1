@@ -94,8 +94,8 @@ Nav2 모드에서 노트북 `roport_follow`가 보낸 고객 카드 위치를 Na
 
 | 구분 | 내용 |
 |---|---|
-| 드라이버 명령 | `follow.requested` payload `{binding_id, expected_boot_id, map_id, map_version, card_id(35~49), standoff_m(기본 0.5, 0.3~1.2 m), max_duration_s(선택, 1~3600 s)}` |
-| 출발 조건 | mode=nav2, 정지, 지도 일치, Nav2·위치 준비, 이전 Nav2 goal 종료 확인, 해당 card_id status 2 s 이내·`tracking`, 같은 stamp의 target이 1 s 이내이고 TF로 map 변환 가능. 거절 코드: `not_in_nav2_mode`, `drive_busy`, `map_mismatch`, `nav2_not_ready`, `invalid_card_id`, `invalid_standoff`, `invalid_max_duration`, `follow_bt_missing`, `follow_status_stale`, `follow_card_mismatch`, `follow_not_tracking`, `follow_target_stale`, `follow_tf_unavailable` |
+| 드라이버 명령 | `follow.requested` payload `{binding_id, expected_boot_id, map_id, map_version, card_id(35~49), standoff_m(기본 0.5, 0.3~1.2 m), max_duration_s(선택, 1~3600 s), lost_after_s(선택, 기본 1 s = SR-22, 1~4 s. 4 s 는 명시했을 때만 쓰는 시연값이며 노트북 `--follow-lost-s`와 같은 값을 준다)}` |
+| 출발 조건 | mode=nav2, 정지, 지도 일치, Nav2·위치 준비, 이전 Nav2 goal 종료 확인, 해당 card_id status 2 s 이내·`tracking`·**`seen=true`**(가려진 동안의 옛 위치로는 출발하지 않음), 그 status와 같은 stamp의 target이 1 s 이내이고 TF로 map 변환 가능. 거절 코드: `not_in_nav2_mode`, `drive_busy`, `map_mismatch`, `nav2_not_ready`, `invalid_card_id`, `invalid_standoff`, `invalid_max_duration`, `invalid_lost_after`, `follow_bt_missing`, `follow_status_stale`, `follow_card_mismatch`, `follow_not_tracking`, `follow_target_stale`, `follow_tf_unavailable` |
 | 입력 | `follow/target` `geometry_msgs/PointStamped`(frame `base_footprint`, stamp = 로봇 카메라 시각), `follow/status` `std_msgs/String` JSON. 둘 다 reliable depth 5. target은 stamp가 같은 status가 `tracking`·`seen`·요청 card_id일 때만 쓴다 |
 | 출력 | `NavigateToPose` goal의 `behavior_tree` = 설치된 `behavior_trees/follow_target.xml`, 이후 `goal_update` `geometry_msgs/PoseStamped`(frame `map`, stamp = target stamp, 최대 4 Hz, BT가 4 Hz로 읽음) |
 | 목표 | target을 그 stamp의 `map`←`base_footprint` TF로 옮기고 로봇→고객 직선에서 `standoff_m` 앞. 이미 안쪽이면 제자리에서 고객 쪽을 본다 |
@@ -105,7 +105,7 @@ Nav2 모드에서 노트북 `roport_follow`가 보낸 고객 카드 위치를 Na
 
 | 조건 | error_code | 드라이버 잠금 |
 |---|---|---|
-| status `lost`(노트북 기준 4 s 못 봄, 11-20 시험값)·`searching`, 또는 target이 4.5 s 넘게 끊긴 순간 마지막 status가 `seen=false`(그동안 마지막 목표로 계속 감) | `follow_lost` | 없음, 새 follow로 다시 시작 |
+| status `lost`(노트북 기준 `lost_after_s` 못 봄)·`searching`, 또는 target이 `lost_after_s` + 0.5 s 넘게 끊긴 순간 마지막 status가 `seen=false`(그동안 마지막 목표로 계속 감) | `follow_lost` | 없음, 새 follow로 다시 시작 |
 | 해당 card_id status 2 s(11-21 시험값) 넘게 미수신, 또는 target이 끊긴 순간 status도 0.5 s 넘게 없음(노트북 꺼짐·다른 카드) | `follow_status_stale` | 없음 |
 | 카드가 보인다는 status는 오는데 받아들인 target이 로봇 시각 1 s 넘게 없음 | `follow_target_stale` | 없음 |
 | `max_duration_s` 지남 | `follow_max_duration` | 없음 |

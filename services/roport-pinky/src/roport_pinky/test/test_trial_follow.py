@@ -40,7 +40,8 @@ def no_tf(stamp, x, y):
 
 
 POSE = {'x': 0.0, 'y': 0.0, 'yaw': 0.0}
-PAYLOAD = {'card_id': 35, 'standoff_m': 0.5, **PROFILE}
+# lost_after_s 4 = 시연값(아래 시간 시험들의 기준). 기본 1 s(SR-22)는 따로 검사한다
+PAYLOAD = {'card_id': 35, 'standoff_m': 0.5, 'lost_after_s': 4.0, **PROFILE}
 
 
 # ------------------------------------------------------------------ payload·status 검사
@@ -201,7 +202,7 @@ def test_status_of_another_card_does_not_keep_follow_alive():
 
 def test_tracking_status_without_targets_is_target_stale():
     inputs, s = started()
-    inputs.on_status(status(stamp=104.7), 51.7)          # tracking 이라도 target 이 안 옴(TARGET_MAX_AGE 4.5)
+    inputs.on_status(status(stamp=104.7), 51.7)          # tracking 이라도 target 이 안 옴(lost_after_s 4 + 지연 0.5)
     assert s.step(inputs, 104.7, 51.7, shift(), POSE) == ('stop', 'follow_target_stale')
 
 
@@ -438,7 +439,7 @@ def test_target_age_allows_pipeline_latency():
     assert s.step(inputs, 101.05, 50.95, shift(), POSE) is None
     assert s.step(inputs, 102.05, 50.99, shift(), POSE) is None      # 2 s 끊김 + 지연도 아직 놓침 아님
     assert s.step(inputs, 104.35, 50.99, shift(), POSE) is None      # 피해 가는 동안 4 s 까지 버팀(8 s 시험은 되돌림)
-    assert tf.TARGET_MAX_AGE == 4.5 and tf.STATUS_MAX_AGE == 2.0
+    assert s.target_max_age == 4.5 and tf.STATUS_MAX_AGE == 2.0
 
 
 def test_follow_tree_recovers_before_failing():
@@ -504,3 +505,61 @@ def test_hold_margin_is_five_cm():
     goal, turning = tf.approach(pose, (0.40, 0.0), 0.3, False)
     assert goal == pytest.approx((0.10, 0.0, 0.0)) and not turning                           # 10 cm 다가감
     assert tf.parse_payload({'card_id': 35, 'standoff_m': 0.2})[1] == 0.2
+
+
+def test_lost_after_defaults_to_sr22_one_second_and_demo_value_is_explicit():
+    """놓침 기준 기본 = SR-22 의 1 s. 4 s 는 명령에 적었을 때만(시연값), 범위 밖은 거절."""
+    base = {'card_id': 35, 'standoff_m': 0.5}
+    assert tf.parse_lost_after(base) == 1.0 and tf.FollowSession(base, 50.0).target_max_age == 1.5
+    assert tf.FollowSession({**base, 'lost_after_s': 4}, 50.0).target_max_age == 4.5
+    for bad in (0.5, 8, True, '4', float('nan')):
+        with pytest.raises(ValueError, match='invalid_lost_after'):
+            tf.FollowSession({**base, 'lost_after_s': bad}, 50.0)
+    inputs = tf.FollowInput()
+    frame(inputs, 100.0)
+    s = tf.FollowSession(base, started=50.0)
+    assert s.step(inputs, 100.1, 50.0, shift(), POSE)[0] == 'goal'
+    inputs.on_status(status('tracking', stamp=101.4, seen=False), 51.4)
+    assert s.step(inputs, 101.45, 51.45, shift(), POSE) is None                      # 1.5 s 전까지는 버팀
+    inputs.on_status(status('tracking', stamp=101.6, seen=False), 51.6)
+    assert s.step(inputs, 101.6, 51.6, shift(), POSE) == ('stop', 'follow_lost')
+
+
+def test_admit_rejects_hidden_card_and_accepts_when_seen_again():
+    """카드가 가려진 채(tracking, seen=false)로는 옛 위치로 새 추종을 시작하지 않는다(주행 중 가림 유예와 별개)."""
+    inputs = tf.FollowInput()
+    frame(inputs, 100.0, x=1.0)                                  # 1 m 앞에서 마지막으로 봄
+    inputs.on_status(status('tracking', stamp=103.0, seen=False), 53.0)
+    with pytest.raises(ValueError, match='follow_not_tracking'):
+        tf.admit(PAYLOAD, inputs, 103.05, 53.05, shift(), POSE)
+    frame(inputs, 103.4, x=0.8, received=53.4)                   # 다시 보임
+    assert tf.admit(PAYLOAD, inputs, 103.5, 53.5, shift(), POSE)[:2] == pytest.approx((0.3, 0.0))
+    frame(inputs, 103.6, x=0.8, received=53.6)
+    with pytest.raises(ValueError, match='follow_target_stale'):  # 본 지 1 s 넘은 위치로는 출발 안 함
+        tf.admit(PAYLOAD, inputs, 104.7, 53.7, shift(), POSE)
+
+
+def test_first_goal_turns_in_place_when_customer_is_off_to_the_side():
+    """첫 목표는 첫 관측 방향으로 정한다: 23° 옆 1 m 고객이면 전진이 아니라 제자리 회전(유지 시간은 그 뒤 전환부터)."""
+    inputs = tf.FollowInput()
+    a = math.radians(23)
+    frame(inputs, 100.0, x=math.cos(a), y=math.sin(a))
+    x, y, yaw, _ = tf.admit(PAYLOAD, inputs, 100.1, 50.1, shift(), POSE)
+    assert (x, y) == pytest.approx((POSE['x'], POSE['y'])) and yaw == pytest.approx(a, abs=1e-6)
+    s = tf.FollowSession(PAYLOAD, started=50.0)
+    kind, goal = s.step(inputs, 100.1, 50.1, shift(), POSE)
+    assert kind == 'goal' and goal[:2] == pytest.approx((POSE['x'], POSE['y'])) and s.turning
+
+
+def test_stop_goal_is_sent_when_customer_comes_inside_standoff():
+    """0.57 m 고객 → 7 cm 앞 목표. 고객이 0.48 m 로 다가오면 지금 자리 목표를 반드시 보낸다(8 cm 미만이라고 거르지 않음)."""
+    inputs = tf.FollowInput()
+    frame(inputs, 100.0, x=0.57)
+    s = tf.FollowSession(PAYLOAD, started=50.0)
+    kind, goal = s.step(inputs, 100.1, 50.1, shift(), POSE)
+    assert kind == 'goal' and goal[0] == pytest.approx(0.07)
+    frame(inputs, 100.5, x=0.48, received=50.5)
+    kind, goal = s.step(inputs, 100.6, 50.6, shift(), POSE)
+    assert kind == 'goal' and goal[:3] == pytest.approx((POSE['x'], POSE['y'], POSE['yaw']))
+    frame(inputs, 101.0, x=0.47, received=51.0)                  # 서 있는 동안에는 다시 보내지 않음
+    assert s.step(inputs, 101.1, 51.1, shift(), POSE) is None

@@ -33,14 +33,16 @@ STANDOFF_RANGE = (0.2, 1.2)
 MAX_DURATION_RANGE = (1.0, 3600.0)  # s
 STATUS_MAX_AGE = 2.0              # s, status 수신(로봇 monotonic) 나이. 11-21 실로봇: 노트북 부하로 1 s 끊김에 추종이 끝남 → 2.0
 STATUS_SILENT = 0.5               # s, target 이 끊긴 순간 status 도 이만큼 없으면 노트북 끊김으로 분류
-# s, 받아들인 target 의 stamp 나이(로봇 ROS 시각). stamp 는 카메라 시각이라 노트북 처리·전송 지연(실측 0.3~0.5 s)이
-# 더해진다. 1.0 이면 노트북에서 0.65 s 끊긴 것도 놓침이 됨(11-20 d660 실로봇) → 1.5. 「1 s 미인식 = 놓침」(SR-22)은
-# 노트북 쪽 status(lost) 와 수신 기준 STATUS_MAX_AGE 로 지킨다.
-# 11-20 저녁 사용자 결정: 노트북 놓침 기준 1 s → 2 s(회전 중 번짐·잠깐 가림 버팀, SR-22 문서 갱신 필요) → 2.0 + 지연 0.5
-# 11-20 밤 사용자 결정: 피해 가는 동안(경로가 옆으로 휨) 고객이 시야 밖·가림 → 2 s 로는 놓침. 노트북 놓침 기준 2 → 4 s,
-# 그동안 새 목표가 없으므로 로봇은 마지막 고객 위치 앞 목표로 계속 간다 → 4.0 + 지연 0.5
-# 11-21: 놓침 8 s 를 한 번 시험(37회차 2.9 m) → 그 설정에서 태엽 인형을 침(사용자 관찰) → 4 s 로 되돌림
-TARGET_MAX_AGE = 4.5
+# 놓침 기준 lost_after_s(payload, 선택): 노트북이 카드를 이 시간 못 보면 status lost 를 낸다. 기본 = 요구사항 SR-22 의 1 s.
+# 4 s 까지는 명령에 명시했을 때만 쓰는 시연값이다(SR-22 변경 합의 전). 11-20~21 d660 실로봇: 인형을 피해 가는 동안
+# 고객이 카메라 시야(±24°) 밖으로 나가 1~2 s 로는 추종이 끝남 → 4 s 로 시험. 8 s 는 그 설정에서 태엽 인형을 쳐서 쓰지 않음.
+# 그동안 새 목표가 없으므로 로봇은 마지막 고객 위치 앞 목표로 계속 간다. 노트북 --follow-lost-s 와 같은 값을 준다.
+LOST_AFTER_DEFAULT = 1.0
+LOST_AFTER_RANGE = (1.0, 4.0)
+# s, 받아들인 target 의 stamp 나이 상한 = lost_after_s + TARGET_DELAY. stamp 는 카메라 시각이라 노트북 처리·전송 지연
+# (실측 0.3~0.5 s)이 더해진다. 지연 여유가 없으면 노트북에서 0.65 s 끊긴 것도 놓침이 됨(11-20 d660 실로봇).
+TARGET_DELAY = 0.5
+START_TARGET_MAX_AGE = 1.0        # s, 출발할 때는 방금 실제로 본 카드 위치만 쓴다
 FUTURE_TOLERANCE = 0.1            # s, 로봇 시각보다 앞선 stamp 허용
 STAMP_MATCH = 0.002               # s, target ↔ status stamp 대응
 GOAL_PERIOD = 0.25                # s, goal_update 최소 간격(BT 는 4 Hz 로 읽음)
@@ -55,6 +57,7 @@ HOLD_MARGIN_M = 0.05   # 11-20: 0.10 이면 고객이 간격 + 10 cm 안에서 �
 # 바뀔 때마다 Nav2 제어기가 처음부터 다시 시작해 직진을 못 하고 좌우로만 움직임)
 GOAL_MIN_MOVE_M = 0.08           # 직전에 보낸 목표와 이보다 가깝고
 GOAL_MIN_TURN_RAD = math.radians(8)  # 방향 차이도 이보다 작으면 다시 보내지 않음
+STOP_GOAL_MIN_M = 0.02           # 정지 목표는 직전 목표가 이보다 멀리 남아 있으면 걸러 내지 않음(서 있을 때 위치 떨림보다 큼)
 MODE_DWELL_S = 0.8               # 「제자리 회전」·「다가가기」는 바꾼 뒤 이 시간은 유지
 HOLD_YAW_DEADBAND = math.radians(10)
 MAX_TARGET_RANGE = 4.0            # m, base_footprint 기준 이보다 먼 점은 버림
@@ -85,6 +88,14 @@ def parse_payload(payload):
                                  or not MAX_DURATION_RANGE[0] <= duration <= MAX_DURATION_RANGE[1]):
         raise ValueError('invalid_max_duration')
     return card, float(standoff), None if duration is None else float(duration)
+
+
+def parse_lost_after(payload):
+    """follow.requested payload 의 lost_after_s(선택) → s. 잘못되면 ValueError(코드)."""
+    value = payload.get('lost_after_s', LOST_AFTER_DEFAULT)
+    if not _finite(value) or not LOST_AFTER_RANGE[0] <= value <= LOST_AFTER_RANGE[1]:
+        raise ValueError('invalid_lost_after')
+    return float(value)
 
 
 def parse_status(text):
@@ -179,13 +190,14 @@ class FollowSession:
 
     def __init__(self, payload, started):
         self.card, self.standoff, self.max_duration = parse_payload(payload)
+        self.target_max_age = parse_lost_after(payload) + TARGET_DELAY
         self.started = started
         self.map_target = None    # (stamp, x, y) map 으로 옮긴 최신 target
         self.tf_failed = None     # 마지막으로 TF 에 실패한 target stamp
         self.published = None     # 마지막으로 보낸 목표의 stamp
         self.published_at = -math.inf
         self.turning = False      # 제자리 회전 중(히스테리시스)
-        self.mode_since = started    # 처음 동작도 MODE_DWELL_S 유지
+        self.mode_since = None    # 첫 동작은 첫 관측 방향으로 정하고(None), 유지 시간(MODE_DWELL_S)은 그때부터 잰다
         self.last_goal = None     # 마지막으로 보낸 (x, y, yaw)
 
     def step(self, inputs, ros_now, mono_now, transform, pose):
@@ -208,12 +220,12 @@ class FollowSession:
                 self.map_target = (target[0], *transform(*target))
             except LookupError:
                 self.tf_failed = target[0]
-        if self.map_target is None or ros_now - self.map_target[0] > TARGET_MAX_AGE:
+        if self.map_target is None or ros_now - self.map_target[0] > self.target_max_age:
             if mono_now - mine[1] > STATUS_SILENT:
                 return 'stop', 'follow_status_stale'
             if not mine[0]['seen']:
                 return 'stop', 'follow_lost'
-            fresh = target is not None and -FUTURE_TOLERANCE <= ros_now - target[0] <= TARGET_MAX_AGE
+            fresh = target is not None and -FUTURE_TOLERANCE <= ros_now - target[0] <= self.target_max_age
             return 'stop', 'follow_tf_unavailable' if fresh and self.tf_failed == target[0] \
                 else 'follow_target_stale'
         if (pose is None or mono_now - self.published_at < GOAL_PERIOD
@@ -221,14 +233,21 @@ class FollowSession:
             return None
         self.published, self.published_at = self.map_target[0], mono_now
         goal, turning = approach(pose, self.map_target[1:], self.standoff, self.turning)
-        if turning != self.turning:
+        if self.mode_since is None:                            # 첫 목표: 유지 시간 없이 관측대로
+            self.mode_since = mono_now
+        elif turning != self.turning:
             if mono_now - self.mode_since < MODE_DWELL_S:      # 막 바꾼 동작은 잠깐 유지
                 turning = self.turning
                 goal = goal_for(pose, self.map_target[1:], self.standoff, turning)
             else:
                 self.mode_since = mono_now
         self.turning = turning
-        if self.last_goal is not None and math.dist(goal[:2], self.last_goal[:2]) < GOAL_MIN_MOVE_M \
+        # 거리 유지로 바뀌는 순간(목표 = 지금 자리)인데 직전에 보낸 목표가 앞쪽에 남아 있으면 반드시 보낸다.
+        # 안 그러면 고객이 간격 안으로 들어와도 8 cm 미만 차이라 걸러져 예전 전진 목표로 계속 다가간다.
+        stop_here = goal[0] == pose['x'] and goal[1] == pose['y']
+        leftover = self.last_goal is not None and math.dist(self.last_goal[:2], goal[:2]) >= STOP_GOAL_MIN_M
+        if not (stop_here and leftover) and self.last_goal is not None \
+                and math.dist(goal[:2], self.last_goal[:2]) < GOAL_MIN_MOVE_M \
                 and abs(math.atan2(math.sin(goal[2] - self.last_goal[2]),
                                    math.cos(goal[2] - self.last_goal[2]))) < GOAL_MIN_TURN_RAD:
             return None                                          # 거의 같은 목표: Nav2 를 다시 시작시키지 않음
@@ -246,6 +265,12 @@ def admit(payload, inputs, ros_now, mono_now, transform, pose):
         raise ValueError('follow_card_mismatch' if others else 'follow_status_stale')
     if mine[0]['state'] != 'tracking':
         raise ValueError('follow_not_tracking')
+    # 출발은 그 카드를 지금 실제로 보고 있을 때만: 가려진 동안(tracking, seen=false)의 옛 위치로 새 주행을 시작하지 않는다.
+    # 주행 중 가림 유예(lost_after_s)는 step() 이 그대로 적용한다.
+    target = inputs.target.get(card)
+    if (not mine[0]['seen'] or target is None or abs(target[0] - mine[0]['stamp']) > STAMP_MATCH
+            or ros_now - target[0] > START_TARGET_MAX_AGE):
+        raise ValueError('follow_not_tracking' if not mine[0]['seen'] else 'follow_target_stale')
     if pose is None:
         raise ValueError('nav2_not_ready')
     session = FollowSession(payload, mono_now)
