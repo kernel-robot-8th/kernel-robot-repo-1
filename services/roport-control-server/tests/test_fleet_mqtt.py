@@ -89,11 +89,11 @@ def fleet_mqtt(broker, tmp_path):
         stack.callback(worker.join, 5)
         stack.callback(stop.set)
 
-        def pump_until(predicate, timeout=60):
+        def pump_until(predicate, timeout=60, *, expected_fault=None):
             deadline = time.monotonic() + timeout
             while not predicate():
                 assert not errors, errors
-                assert not control.data["fault"], control.data
+                assert control.data["fault"] in (None, expected_fault), control.data
                 for client in clients:
                     # Real sensor callbacks run independently of MQTT handling;
                     # refresh the manual simulator before answering a queued poll.
@@ -240,6 +240,40 @@ def test_one_arm_failure_holds_before_departure_over_mqtt(fleet_mqtt):
     assert env.control.data["slots"][task["slot"]]["state"] != "occupied"
     assert env.executors["shelf-01"].aborted
     assert env.control.next_action() is None
+
+    from roport_control_server.executor.fleet_recovery import request_host_release
+
+    fault = env.control.data["fault"]
+    cmd_id = next(
+        cid
+        for cid, cmd in env.control.data["commands"].items()
+        if cmd["message"]["target"] == "shelf-01"
+    )
+    env.executors["shelf-01"].unreturned.clear()
+    env.pump(
+        lambda: (
+            not env.host.data.get("recovery_command_id")
+            and env.control.observed["shelf-01"]["state"]["fault"]
+        ),
+        expected_fault=fault,
+    )
+    request_host_release(
+        env.control,
+        "release-test",
+        cmd_id,
+        "operator-test",
+        {"arms": True, "box": True, "pinky": True},
+    )
+    env.pump(
+        lambda: (
+            env.control.data["host_releases"]["release-test"]["status"] != "pending"
+        ),
+        expected_fault=fault,
+    )
+    assert env.control.data["host_releases"]["release-test"]["status"] == "completed"
+    assert env.host.data["hold"] is None
+    assert not env.control.data["enabled"] and env.control.data["fault"] == fault
+    assert env.control.data["slots"][task["slot"]]["state"] != "occupied"
 
 
 @pytest.mark.parametrize("verify_failed", [False, True])

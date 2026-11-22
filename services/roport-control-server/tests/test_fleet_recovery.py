@@ -283,3 +283,50 @@ def test_terminal_then_stop_rejection_requires_fresh_idle(fleet, issue):
     else:
         reconcile(fleet, cmd["command_id"], "completed", "checked")
         assert not fleet.data["commands"]
+
+
+def test_workcell_operator_command_waits_for_host_result(monkeypatch, capsys):
+    import sys
+    from pathlib import Path
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "tools"))
+    import release_workcell as tool
+
+    requests = []
+
+    def rpc(path, request):
+        assert path == "local.sock"
+        requests.append(request)
+        if len(requests) == 1:
+            return {"session_id": "session"}
+        if len(requests) == 2:
+            return {}
+        return {"host_releases": {requests[1]["request_id"]: {"status": "completed"}}}
+
+    monkeypatch.setattr(tool, "rpc", rpc)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_workcell",
+            "--socket",
+            "local.sock",
+            "--hold-command-id",
+            "held",
+            "--arms-confirmed",
+            "--box-confirmed",
+            "--pinky-confirmed",
+        ],
+    )
+    tool.main()
+    assert requests[1]["hold_command_id"] == "held" and requests[1]["confirmed"] == {
+        "arms": True,
+        "box": True,
+        "pinky": True,
+    }
+    assert [r["action"] for r in requests] == [
+        "snapshot",
+        "release_workcell",
+        "snapshot",
+    ]
+    assert "일반 HOLD를 해제" in capsys.readouterr().out

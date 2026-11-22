@@ -128,10 +128,7 @@ class FieldOmxHost:
             self.data = deepcopy(self.journal.data)
             raise
 
-    def release_hold(self, note):
-        """Local device-owner confirmation; command history/outbox remain immutable."""
-        if not isinstance(note, str) or not note.strip():
-            raise ValueError("operator note required")
+    def _verify_release(self):
         if (
             self.failed
             or self.data["active"]
@@ -150,11 +147,19 @@ class FieldOmxHost:
                 raise ReadinessPending(
                     target + ": stopped, returned and empty observation required"
                 )
+
+    def release_hold(self, note):
+        """Local device-owner confirmation; command history/outbox remain immutable."""
+        if not isinstance(note, str) or not note.strip():
+            raise ValueError("operator note required")
+        self._verify_release()
         if self.data["hold"]:
             self.data.setdefault("recoveries", []).append(
                 {"fault": self.data["hold"], "note": note, "at": _now()}
             )
             self.data["hold"] = None
+            self.data.pop("local_release_only", None)
+            self.data.pop("hold_command_id", None)
             self._save()
 
     def pending(self):
@@ -460,6 +465,30 @@ class FieldOmxHost:
                 return self._stop(message)
             if not _fresh(message["sent_at"], 3.0, future_s=0.5):
                 raise ValueError("stale_message")
+            if kind == "hold_release_command":
+                held = self.data.get("hold_command_id")
+                if (
+                    not self.data["hold"]
+                    or p["hold_command_id"] != held
+                    or self.data["commands"][held]["command"]["target"] != "shelf-01"
+                ):
+                    raise ValueError("hold_changed")
+                if self.data.get("local_release_only"):
+                    raise ValueError("local_emergency_release_required")
+                if not all(p["confirmed"].values()):
+                    raise ValueError("operator_checks_required")
+                self._verify_release()
+                self.data.setdefault("recoveries", []).append(
+                    {
+                        "fault": self.data["hold"],
+                        "hold_command_id": held,
+                        "request_id": command_id,
+                        "operator": p["operator"],
+                        "at": _now(),
+                    }
+                )
+                self.data.update(hold=None, hold_command_id=None)
+                return [self._event(message, "completed", {"released_hold": held})]
             if p.get("operation") == "return_home":
                 raise ValueError("unsupported_operation")
             if self.data["hold"] or self.data["active"]:
@@ -522,6 +551,9 @@ class FieldOmxHost:
 
     def _fail(self, command, reason):
         self.data["hold"] = str(reason)
+        self.data["hold_command_id"] = command["command_id"]
+        if reason == "PANEL_EMERGENCY_STOP":
+            self.data["local_release_only"] = True
         # A failed outcome does not prove that the device stopped; retain its stop target.
         self.data["recovery_command_id"] = command["command_id"]
         abort = getattr(self.executors[command["target"]], "abort", None)
@@ -563,6 +595,7 @@ class FieldOmxHost:
             ]
         self.data["active"] = original["command_id"]
         self.data["hold"] = "operator_stop_requires_reconciliation"
+        self.data["hold_command_id"] = original["command_id"]
         self.data["stop"] = deepcopy(stop)
         accepted = self._event(stop, "accepted")
         try:

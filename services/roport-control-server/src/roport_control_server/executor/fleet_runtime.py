@@ -98,6 +98,29 @@ class FleetRuntime:
 
     def stored_result(self, event):
         c = self.control
+        release = c.data.get("host_releases", {}).get(event["command_id"])
+        if release:
+            cmd = release["command"]
+            p = event["payload"]
+            if (
+                event["type"] != "command_status"
+                or event["source"] != cmd["target"]
+                or p["boot_version"] != cmd["payload"]["expected_boot_version"]
+                or p["status"] not in {"completed", "rejected"}
+                or (
+                    p["status"] == "completed"
+                    and p.get("result", {}).get("released_hold")
+                    != cmd["payload"]["hold_command_id"]
+                )
+            ):
+                raise ValueError("host release result mismatch")
+            if release["status"] not in {"pending", "unconfirmed"}:
+                return c.data["events"].get(event["message_id"]) == event
+            data = deepcopy(c.data)
+            data["host_releases"][event["command_id"]]["status"] = p["status"]
+            data["events"][event["message_id"]] = event
+            c.save(data)
+            return True
         stop = next(
             (
                 a["stop"]
@@ -185,6 +208,16 @@ class FleetRuntime:
             c.save(data)
         now = monotonic()
         if now - self.last_poll >= 1:
+            for request_id, release in c.data.get("host_releases", {}).items():
+                if release["status"] != "pending":
+                    continue
+                command = release["command"]
+                if wire.timestamp(command["expires_at"]) <= datetime.now(UTC):
+                    data = deepcopy(c.data)
+                    data["host_releases"][request_id]["status"] = "unconfirmed"
+                    c.save(data)
+                else:
+                    self.transport.publish(wire.topic("shelf-01", "cmd"), command)
             active = (
                 {
                     a["message"]["target"]: a["message"]

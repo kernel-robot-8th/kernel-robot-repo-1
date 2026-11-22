@@ -20,6 +20,7 @@ COMMANDS = {
     "shelf_transfer_command",
     "arm_action_command",
     "warehouse_load_command",
+    "hold_release_command",
     "robot_stop_command",
 }
 TYPES = COMMANDS | {
@@ -197,6 +198,12 @@ SCHEMAS = {
         model_version=ID,
         calibration_version=ID,
     ),
+    "hold_release_command": obj(
+        **FENCE,
+        hold_command_id=ID,
+        operator=ID,
+        confirmed=obj(arms=BOOL, box=BOOL, pinky=BOOL),
+    ),
     "robot_stop_command": obj(**FENCE, target_command_id=ID, reason=ID),
     "robot_state": obj(**REPORT, active_command_id=NULL_ID, state={"type": "object"}),
     "command_status": obj(
@@ -370,6 +377,8 @@ def validate(message):
         and set(p) != {"expected_boot_version", "keep_running_command_id"}
     ):
         raise ValueError("keep-running requires boot and command")
+    if kind == "hold_release_command" and endpoint != "shelf-01":
+        raise ValueError("release requires shelf workcell")
     if kind == "robot_state":
         _check(
             p["state"],

@@ -1,9 +1,11 @@
 """Use the existing local socket server; only the owner mutates fleet state."""
 
+import os
+import pwd
 import time
 from copy import deepcopy
 
-from .fleet_recovery import reconcile, recover_stop, release
+from .fleet_recovery import reconcile, recover_stop, release, request_host_release
 from .trial_socket import TrialSocket
 
 
@@ -40,6 +42,7 @@ class FleetSocket(TrialSocket):
             "submit": {"request"},
             "receipt": {"request_id"},
             "reconcile": {"command_id", "outcome", "note"},
+            "release_workcell": {"request_id", "hold_command_id", "confirmed"},
             "release_hold": {"note"},
             "recover_stop": {"command_id", "stop_id", "boot_version", "note"},
             "confirm_arrival": {"robot", "command_id", "boot_version", "note"},
@@ -76,6 +79,14 @@ class FleetSocket(TrialSocket):
             )
         elif action == "release_hold":
             release(self.control, request["note"])
+        elif action == "release_workcell":
+            request_host_release(
+                self.control,
+                request["request_id"],
+                request["hold_command_id"],
+                pwd.getpwuid(os.getuid()).pw_name,
+                request["confirmed"],
+            )
         elif action == "submit":
             self.control.submit(request["request"])
         elif action == "receipt":

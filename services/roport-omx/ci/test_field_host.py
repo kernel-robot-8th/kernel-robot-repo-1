@@ -740,6 +740,67 @@ class FieldHostTest(unittest.TestCase):
             self.host.release_hold("checked")
         self.assertNotIsInstance(active.exception, ReadinessPending)
 
+    def test_remote_release_checks_held_command_and_never_starts_motion(self):
+        command = self.command()
+        self.host.handle(command)
+        self.host.handle(self.stop_command())
+        self.host.poll()
+
+        def request(key, held, **checks):
+            return build_message(
+                "hold_release_command",
+                "control-01",
+                "shelf-01",
+                {
+                    "expected_boot_version": self.host.boot_version,
+                    "hold_command_id": held,
+                    "operator": "test-operator",
+                    "confirmed": {"arms": True, "box": True, "pinky": True, **checks},
+                },
+                command_id=key,
+                expires_at=expiry(),
+            )
+
+        for msg, reason in [
+            (request("old", "old-hold"), "hold_changed"),
+            (
+                request("unchecked", "command-1", pinky=False),
+                "operator_checks_required",
+            ),
+        ]:
+            self.assertEqual(self.host.handle(msg)[0]["payload"]["reason"], reason)
+        msg = request("release-1", "command-1")
+        (event,) = self.host.handle(msg)
+        self.assertEqual(event["payload"]["result"]["released_hold"], "command-1")
+        self.assertEqual(self.host.handle(msg), [event])
+        self.assertIsNone(self.host.data["hold"])
+        self.assertEqual(len(self.executors["shelf-01"].tasks), 1)
+
+    def test_emergency_hold_stays_local_after_confirmed_stop(self):
+        command = self.command()
+        self.host.handle(command)
+        self.host._fail(command, "PANEL_EMERGENCY_STOP")
+        self.host.handle(self.stop_command())
+        self.host.poll()
+        msg = build_message(
+            "hold_release_command",
+            "control-01",
+            "shelf-01",
+            {
+                "expected_boot_version": self.host.boot_version,
+                "hold_command_id": "command-1",
+                "operator": "test-operator",
+                "confirmed": {"arms": True, "box": True, "pinky": True},
+            },
+            command_id="release-1",
+            expires_at=expiry(),
+        )
+        self.assertEqual(
+            self.host.handle(msg)[0]["payload"]["reason"],
+            "local_emergency_release_required",
+        )
+        self.assertIsNotNone(self.host.data["hold"])
+
     def test_local_reconciliation_preserves_history_and_never_resumes_motion(self):
         self.host.handle(self.command())
         with self.assertRaisesRegex(ValueError, "pending device stop"):
