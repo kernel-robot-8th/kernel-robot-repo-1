@@ -135,6 +135,7 @@ class FakePanel:
             "OMX 1": live("left"),
             "OMX 2": live("right"),
         }  # None = panel before 3.11
+        self.arms_at = "2026-11-22T21:30:00"  # panel /api/arms "at" (bus read time)
         self.arms_models = []
         server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.server = server
@@ -168,7 +169,14 @@ class FakePanel:
                     if panel.arms is None:
                         self._json({"error": "not found"}, 404)
                     else:
-                        self._json({"source": "bus", "arms": panel.arms, "error": None})
+                        self._json(
+                            {
+                                "source": "bus",
+                                "at": panel.arms_at,
+                                "arms": panel.arms,
+                                "error": None,
+                            }
+                        )
                 elif self.path == "/api/train/runs":
                     self._json({"runs": [{"model_path": m} for m in panel.models]})
                 else:
@@ -1616,6 +1624,60 @@ class PanelExecutorTest(unittest.TestCase):
             events[-1]["payload"].get("error_code"), "PANEL_BOX_NOT_ON_SHELF"
         )
         self.assertNotEqual(events[-1]["type"], "shelf_inbound.completed")
+
+    def test_readiness_reports_the_bus_read_behind_the_arm_flags(self):
+        # v2 compares two such reads to see the arms standing still after a stop (#135 review)
+        ready = self.executor.readiness()
+        self.assertEqual(ready["arms_read"]["at"], self.panel.arms_at)
+        self.assertEqual(
+            ready["arms_read"]["joints"]["omx1"], {"shoulder_pan": 0.0, "gripper": 49.0}
+        )
+        self.assertEqual(set(ready["arms_read"]["joints"]), {"omx1", "omx2"})
+        self.panel.arms_at = None  # no read time: no bus read to compare
+        self.assertIsNone(self.executor.readiness()["arms_read"])
+        self.panel.status["job"] = {"running": True}
+        self.assertIsNone(self.executor.readiness()["arms_read"])  # busy: not read
+
+    def test_route_versions_for_v2(self):
+        # #135 review: v2 runs a route only for the exact model/calibration pair it declares
+        path = Path(self.dir.name) / "routes.json"
+        route = {
+            "operation": "INBOUND",
+            "slot_id": "2b",
+            "model_path": MODEL,
+            "task": "t",
+            "reset_s": 5,
+        }
+        path.write_text(
+            json.dumps(
+                {
+                    "model_version": "m-top",
+                    "calibration_version": "c-top",
+                    "routes": [
+                        route,
+                        route | {"slot_id": "1b", "model_version": "m-1b"},
+                    ],
+                }
+            )
+        )
+        routes = load_routes(path)
+        executor = PanelExecutor(routes, box_marker=16, base_url=self.panel.url)
+        task = {"operation": "INBOUND", "manipulation_mode": "COOPERATIVE"}
+        self.assertEqual(
+            executor.versions(task | {"slot_id": "2b"}),
+            {"model_version": "m-top", "calibration_version": "c-top"},
+        )
+        self.assertEqual(
+            executor.versions(task | {"slot_id": "1b"})["model_version"], "m-1b"
+        )
+        self.assertIsNone(executor.versions(task | {"slot_id": "3b"}))
+        path.write_text(json.dumps({"routes": [route]}))
+        bare = PanelExecutor(load_routes(path), box_marker=16, base_url=self.panel.url)
+        self.assertIsNone(bare.versions(task | {"slot_id": "2b"}))  # v2 refuses it
+        path.write_text(json.dumps({"routes": [route | {"model_version": ""}]}))
+        with self.assertRaises(ValueError):
+            load_routes(path)
+        load_routes(ROOT / "config/cooperative_routes.example.json")
 
     def test_placement_judge_counts_only_in_the_slot_it_watches(self):
         # the judge's camera area and shelf edge are those of 2B (panel handover_fk.json): a

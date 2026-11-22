@@ -409,6 +409,10 @@ class Route:
     eval_options: dict | None = None
     # box markers the model learned; None = any package marker
     markers: frozenset[int] | None = None
+    # the field profile's names for this model and the arms' calibration (v2 commands carry
+    # model_version / calibration_version); None = not declared, v2 refuses the route
+    model_version: str | None = None
+    calibration_version: str | None = None
 
 
 def _route_key(task: dict) -> tuple[str, str, str]:
@@ -419,10 +423,13 @@ def load_routes(path: Path) -> dict[tuple[str, str, str], Route]:
     """{"routes": [{"operation", "slot_id", "model_path", "task", "reset_s"}]}
 
     Optional per route: "episode_s" (absent or null = EPISODE_DEFAULT_S, inside the control tower's task limit), "manipulation_mode" (the slot's own, COOPERATIVE for column B and DEDICATED
-    for A/C), "markers" (box markers the model learned), output_filter, filter_gripper, eval_options.
+    for A/C), "markers" (box markers the model learned), output_filter, filter_gripper, eval_options,
+    "model_version" and "calibration_version" (v2: the exact pair control may command; a top-level
+    value is every route's default).
     """
     routes = {}
-    for item in json.loads(Path(path).read_text())["routes"]:
+    doc = json.loads(Path(path).read_text())
+    for item in doc["routes"]:
         operation, slot = item["operation"], item["slot_id"]
         if operation not in OPERATIONS.values() or slot not in SLOTS:
             raise ValueError(f"unknown operation/slot in routes: {(operation, slot)}")
@@ -459,7 +466,13 @@ def load_routes(path: Path) -> dict[tuple[str, str, str], Route]:
             bool(item.get("filter_gripper", False)),
             dict(item.get("eval_options") or {}) or None,
             frozenset(markers) if markers is not None else None,
+            item.get("model_version", doc.get("model_version")),
+            item.get("calibration_version", doc.get("calibration_version")),
         )
+        for name in ("model_version", "calibration_version"):
+            value = getattr(route, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"route {key} {name} must be a non-empty string")
         if not route.model_path or not route.task:
             raise ValueError(f"route {key} needs model_path and task")
         if route.output_filter not in OUTPUT_FILTERS:
@@ -487,6 +500,7 @@ class PanelExecutor:
         end_on_place: bool = False,
         place_shadow: bool = False,
     ):
+        self._arms_read: dict | None = None  # bus read behind the last arm flags
         self.routes, self.box_marker = routes, box_marker
         self.box: int | None = None  # the running task's box marker
         # Loading in two reports: COMPLETE once the box is in its slot (Pinky may leave), then the
@@ -539,11 +553,16 @@ class PanelExecutor:
             error = f"PANEL_VERSION: {status.get('version')} (needs {need}+)"
         else:
             error = _ai_link_error(status, time.time())
+        self._arms_read = None
+        arms = {} if busy else self._arms_now()
         return {
             "armed": armed if isinstance(armed, bool) else None,
             "busy": busy,
             "error": error,
-            "arms": {} if busy else self._arms_now(),
+            "arms": arms,
+            # the bus read behind those flags (panel "at" + joints per arm); v2 compares two of
+            # them to see the arms standing still after a stop
+            "arms_read": self._arms_read,
         }
 
     def _arms_now(self) -> dict:
@@ -554,6 +573,7 @@ class PanelExecutor:
         Any doubt (older panel, read error, unknown home) leaves the flag None: never ready by guess.
         """
         merged: dict[str, dict] = {}
+        read = None
         for model in sorted({r.model_path for r in self.routes.values()}):
             try:
                 seen = self._call(
@@ -563,6 +583,20 @@ class PanelExecutor:
                 )
             except Exception:  # noqa: BLE001 - panel before 3.11 or unreachable: unknown
                 return {}
+            if seen.get("source") == "bus" and isinstance(seen.get("at"), str):
+                joints = {
+                    name: dict(arm["joints"])
+                    for name, arm in _by_side(seen.get("arms")).items()
+                    if isinstance(arm.get("joints"), dict)
+                }
+                # one cached bus read serves every model; a different "at" is a different read
+                read = (
+                    {"at": seen["at"], "joints": joints}
+                    if read is None or read["at"] == seen["at"]
+                    else None
+                )
+            else:
+                read = None
             for name, arm in _by_side(seen.get("arms")).items():
                 flags = _live_flags(arm)
                 prev = merged.get(name)
@@ -571,6 +605,7 @@ class PanelExecutor:
                     both = (prev["returned"], flags["returned"])
                     flags["returned"] = False if False in both else None
                 merged[name] = flags
+        self._arms_read = read
         return merged
 
     def check(self, task: dict) -> None:
@@ -594,6 +629,17 @@ class PanelExecutor:
             raise Rejected("EXECUTOR_ERROR") from exc
         if route.model_path not in models:
             raise Rejected("MODEL_NOT_READY")
+
+    def versions(self, task: dict) -> dict | None:
+        """The model/calibration pair this task's route was set up with (v2 compares it with the
+        command's); None when the route declares none."""
+        route = self.routes.get(_route_key(task))
+        if route is None or not route.model_version or not route.calibration_version:
+            return None
+        return {
+            "model_version": route.model_version,
+            "calibration_version": route.calibration_version,
+        }
 
     def _model_paths(self) -> set[str]:
         fetched, paths = self._models
@@ -681,6 +727,14 @@ class PanelExecutor:
         self.slot, self._recovery = task["slot_id"], None
         self.operation, self.box = task["operation"], box
         self._placed = False
+
+    def stop(self) -> None:
+        """Stop the running evaluation the way the panel's [중지] does (v2 robot_stop_command).
+
+        The panel turns armed off and lets the run land the arms (safe stop); observe() then
+        reports the run as failed with operator_stop once it ended. A person re-arms the panel.
+        """
+        self._call("POST", "/api/stop", {})
 
     def _placement(self, result) -> dict | None:
         """The box seen in the commanded slot while the alignment still runs (panel 3.17+)."""

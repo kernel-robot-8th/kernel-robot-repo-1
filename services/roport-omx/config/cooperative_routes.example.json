@@ -1,4 +1,6 @@
 {
+  "model_version": "model-demo-v1",
+  "calibration_version": "calibration-demo-v1",
   "routes": [
     {
       "operation": "INBOUND",

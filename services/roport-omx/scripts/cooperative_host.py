@@ -1,13 +1,20 @@
-"""Run the shelf-01 COOPERATIVE Host: broker ↔ CooperativeHost ↔ executor.
+"""Run the shelf-01 COOPERATIVE Host: broker ↔ Host ↔ executor.
+
+The field contract roport-control-v2 (Fleet control, topics roport/workcell/shelf-01/* and
+roport/robot/omx1|omx2/*; src/roport_omx/cooperative_v2.py) is the default. --protocol v1 runs the
+earlier roport-omx-task-v1 test link (OmxTrial) instead; each protocol needs its own journal (the
+other's is refused).
 
 --executor mock (default) simulates the arms. --executor panel runs each task through the local OMX
 control panel (v3.14+, armed switch on the panel screen) with the model routed for its slot; the
 arms move, so a person stays by them. Broker settings come from ROPORT_MQTT_* like the control
 server; secrets stay in the env.
 
-  uv run python scripts/cooperative_host.py --journal ~/.local/state/roport/shelf-01.json
+  uv run python scripts/cooperative_host.py --executor mock --no-require-docking \
+      --mock-versions model-demo-v1 calibration-demo-v1 --journal ~/.local/state/roport/shelf-01-v2.json
   uv run python scripts/cooperative_host.py --executor panel --routes ~/.config/roport/shelf-01-routes.json \
-      --box-marker 16 --journal ~/.local/state/roport/shelf-01.json
+      --journal ~/.local/state/roport/shelf-01-v2.json
+  uv run python scripts/cooperative_host.py --protocol v1 --journal ~/.local/state/roport/shelf-01.json
 """
 
 import argparse
@@ -16,6 +23,7 @@ import logging
 import math
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from queue import Empty
@@ -23,6 +31,7 @@ from queue import Empty
 from cooperative_mock import MockExecutor
 
 from roport_omx.cooperative import WORKCELL, CooperativeHost, StorageError
+from roport_omx.cooperative_v2 import ENDPOINTS, PINKIES, FieldHost
 from roport_omx.mqtt_link import field_wire
 from roport_omx.mqtt_link.host_metrics import host_metrics_message, read_host_metrics
 from roport_omx.mqtt_link.journal import Journal
@@ -255,6 +264,160 @@ def serve(
             holds.tick(host)
 
 
+class ReadinessSampler(threading.Thread):
+    """v2: reads the executor's readiness every period_s so robot_state never waits on a slow
+    panel read (Fleet drops a state observed more than 3 s ago). The latest sample and its time."""
+
+    def __init__(self, executor, period_s: float = 1.0):
+        super().__init__(name="readiness-sampler", daemon=True)
+        self.executor, self.period_s = executor, period_s
+        self._latest: tuple[dict, float] | None = None
+        self._lock = threading.Lock()
+
+    def run(self) -> None:
+        while True:
+            try:
+                ready = self.executor.readiness()
+            except Exception as exc:  # noqa: BLE001 - an unreachable executor is not ready
+                ready = {
+                    "armed": None,
+                    "busy": False,
+                    "error": str(exc)[:200],
+                    "arms": {},
+                }
+            with self._lock:
+                self._latest = (ready, time.time())
+            time.sleep(self.period_s)
+
+    def __call__(self) -> tuple[dict, float]:
+        with self._lock:
+            if self._latest is None:
+                raise RuntimeError("no readiness sample yet")
+            return self._latest
+
+
+V2_RESEND_S, V2_STATE_S = 2.0, 1.0
+# v2 PUBACK wait per message: short, so a slow broker never holds the keep-running watchdog
+# (3 s) back for long; an unconfirmed event stays in the outbox and is resent.
+V2_PUBLISH_TIMEOUT_S = 1.0
+
+
+def publish_v2(transport: MqttTransport, events, host: FieldHost | None = None) -> None:
+    queue = list(events)
+    while queue:
+        event = queue.pop(0)
+        try:
+            transport.publish(
+                field_wire.topic(event["source"], "event"),
+                event,
+                timeout=V2_PUBLISH_TIMEOUT_S,
+            )
+            if event["type"] == "command_status":
+                log.info(
+                    "%s %s %s seq=%s",
+                    event["source"],
+                    event["command_id"],
+                    event["payload"]["status"],
+                    event["payload"]["sequence"],
+                )
+        except TimeoutError as exc:
+            log.warning("%s not confirmed (%s); kept for resend", event["type"], exc)
+        if host is not None:  # between slow publishes too
+            queue += host.local_safety()
+
+
+def wait_offline_v2(
+    host: FieldHost, holds: HoldChannel | None, seconds: float, until=None
+) -> None:
+    """No broker: keep the local stop rules (watchdog, Pinky visit, stop timeout) and the panel's
+    [HOLD 해제] running; their events wait in the outbox for the reconnect."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and not (until and until()):
+        host.poll()
+        if holds is not None:
+            holds.tick(host)
+        time.sleep(0.1)
+
+
+def start_v2(transport: MqttTransport, host: FieldHost, holds) -> None:
+    """transport.start() waits up to 5 s for the broker; poll the Host meanwhile."""
+    failure: list[BaseException] = []
+
+    def connect() -> None:
+        try:
+            transport.start()
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the caller
+            failure.append(exc)
+
+    thread = threading.Thread(target=connect, name="mqtt-connect", daemon=True)
+    thread.start()
+    wait_offline_v2(host, holds, math.inf, until=lambda: not thread.is_alive())
+    thread.join()
+    if failure:
+        raise failure[0]
+
+
+def serve_v2(
+    host: FieldHost,
+    transport: MqttTransport,
+    metrics: HostMetrics | None = None,
+    holds: HoldChannel | None = None,
+) -> None:
+    channels = {
+        field_wire.topic(e, c): (e, c) for e in ENDPOINTS for c in ("cmd", "ack")
+    }
+    pinkies = {field_wire.topic(p, "event"): p for p in PINKIES}
+    publish_v2(transport, host.pending(), host)
+    next_resend = time.monotonic() + V2_RESEND_S
+    next_state = 0.0
+    while True:
+        try:
+            delivery = transport.receive(timeout=0.1)
+        except Empty:
+            delivery = None
+        if delivery is not None:
+            events = []
+            try:
+                message = field_wire.decode(delivery.payload)
+                if delivery.topic in pinkies:
+                    if (
+                        delivery.qos != 1
+                        or delivery.retained
+                        or message["source"] != pinkies[delivery.topic]
+                    ):
+                        raise ValueError("untrusted Pinky observation")
+                    if message["type"] == "robot_state":
+                        host.observe_pinky(message)
+                elif delivery.topic in channels:
+                    endpoint, channel = channels[delivery.topic]
+                    events = host.handle(
+                        message,
+                        endpoint=endpoint,
+                        channel=channel,
+                        qos=delivery.qos,
+                        retained=delivery.retained,
+                    )
+                else:
+                    raise ValueError("unsubscribed topic")
+            except ValueError as exc:
+                log.warning("dropped message on %s: %s", delivery.topic, exc)
+            # Reached only when the journal holds the result (StorageError propagates).
+            transport.ack(delivery)
+            publish_v2(transport, events, host)
+        publish_v2(transport, host.poll(), host)
+        now = time.monotonic()
+        if now >= next_state:
+            publish_v2(transport, [host.state(e) for e in ENDPOINTS], host)
+            next_state = now + V2_STATE_S
+        if now >= next_resend:
+            publish_v2(transport, host.pending(), host)
+            next_resend = now + V2_RESEND_S
+        if metrics is not None:
+            metrics.tick(transport)
+        if holds is not None:
+            holds.tick(host)
+
+
 def positive_period(text: str) -> float:
     value = float(text)
     if not 0 < value < math.inf:
@@ -274,7 +437,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--client-id", default="roport-shelf-01-host")
     parser.add_argument("--site", default="test")
-    parser.add_argument("--control", default="control-test")
+    parser.add_argument(
+        "--protocol",
+        choices=["v1", "v2"],
+        default="v2",
+        help="v2 (default): roport-control-v2, the field contract (Fleet control); "
+        "v1: the earlier roport-omx-task-v1 test link (OmxTrial), only when asked for",
+    )
+    parser.add_argument(
+        "--control", default=None, help="control id (v1 control-test, v2 control-01)"
+    )
+    parser.add_argument(
+        "--require-pinky",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="v2: accept a transfer only while the Pinky's own state shows it stopped at N11 "
+        "with the named arrival; --no-require-pinky for bench tests without a Pinky "
+        "(simulated executor only)",
+    )
+    parser.add_argument(
+        "--require-docking",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="v2: a transfer also needs a docking sensor's fresh confirmation of the visit; "
+        "none is connected yet, so the panel executor refuses every transfer "
+        "(docking_alignment_unconfirmed). --no-require-docking: simulated executor only",
+    )
+    parser.add_argument(
+        "--mock-versions",
+        nargs=2,
+        metavar=("MODEL_VERSION", "CALIBRATION_VERSION"),
+        help="v2 simulated executor: the model/calibration pair it accepts (none without)",
+    )
     parser.add_argument("--binding", default="test-binding")
     parser.add_argument(
         "--journal", type=Path, required=True, help="persistent file, not under /tmp"
@@ -328,6 +522,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="publish display-only host telemetry every N s; off when omitted",
     )
     args = parser.parse_args(argv)
+    if args.control is None:
+        args.control = "control-01" if args.protocol == "v2" else "control-test"
+    if (
+        args.protocol == "v2"
+        and args.executor == "panel"
+        and not (args.require_pinky and args.require_docking)
+    ):
+        # #135 review: the arms move only with a confirmed visit; bench runs use the mock
+        parser.error(
+            "--no-require-pinky/--no-require-docking need --executor mock "
+            "(v2 runs the real arms only with the Pinky and docking checks)"
+        )
+    if args.protocol == "v2" and args.report_placement:
+        parser.error(
+            "--report-placement is v1 only: v2 reports once, after the alignment"
+        )
     if str(args.journal.resolve()).startswith("/tmp/"):
         parser.error("journal must survive a restart; do not use /tmp")
     if args.executor == "panel" and args.routes is None:
@@ -355,16 +565,37 @@ def main() -> None:
             args.mock_run_s,
             armed=not args.mock_disarmed,
             unreturned=set(args.mock_unreturned),
+            # v2 completes only with placement evidence; the mock claims it (SIMULATED)
+            evidence={"INBOUND": "shelf_align", "OUTBOUND": "pinky_load"}
+            if args.protocol == "v2"
+            else None,
+            versions=dict(
+                zip(("model_version", "calibration_version"), args.mock_versions)
+            )
+            if args.mock_versions
+            else None,
         )
     journal = Journal(args.journal)
+    sampler = None
     try:
-        host = CooperativeHost(
-            journal,
-            executor,
-            site=args.site,
-            control=args.control,
-            binding=args.binding,
-        )
+        if args.protocol == "v2":
+            sampler = ReadinessSampler(executor)
+            host = FieldHost(
+                journal,
+                executor,
+                control=args.control,
+                require_pinky=args.require_pinky,
+                require_docking=args.require_docking,
+                readiness=sampler,
+            )
+        else:
+            host = CooperativeHost(
+                journal,
+                executor,
+                site=args.site,
+                control=args.control,
+                binding=args.binding,
+            )
         if args.clear_hold:
             host.clear_hold()
     except (ValueError, StorageError) as exc:
@@ -391,28 +622,56 @@ def main() -> None:
         )
     else:
         log.info("SIMULATED executor")
-    log.info("boot_id=%s site=%s", host.boot_id, args.site)
+    if args.protocol == "v2":
+        log.info(
+            "protocol v2 (%s) control=%s boot_version=%s require_pinky=%s "
+            "require_docking=%s",
+            field_wire.PROFILE,
+            args.control,
+            host.boot_id,
+            "on" if args.require_pinky else "off",
+            "on" if args.require_docking else "off",
+        )
+        sampler.start()
+    else:
+        log.info("boot_id=%s site=%s", host.boot_id, args.site)
     metrics = None
     if args.host_metrics_period_s is not None:
         metrics = HostMetrics(host.boot_id, args.control, args.host_metrics_period_s)
     holds = HoldChannel(args.journal)  # the panel's [HOLD 해제] button
     holds.tick(host)
-    subscriptions = [topic(args.site, "workcell", WORKCELL, c) for c in ("cmd", "ack")]
+    if args.protocol == "v2":
+        subscriptions = [
+            field_wire.topic(e, c) for e in ENDPOINTS for c in ("cmd", "ack")
+        ] + [field_wire.topic(p, "event") for p in PINKIES]
+    else:
+        subscriptions = [
+            topic(args.site, "workcell", WORKCELL, c) for c in ("cmd", "ack")
+        ]
     try:
         while True:
             transport = MqttTransport(mqtt_config(args), subscriptions)
             try:
-                transport.start()
+                if args.protocol == "v2":
+                    start_v2(transport, host, holds)
+                else:
+                    transport.start()
                 log.info("subscribed %s:%s", args.host, args.port)
-                serve(host, transport, args.site, metrics, holds)
+                if args.protocol == "v2":
+                    serve_v2(host, transport, metrics, holds)
+                else:
+                    serve(host, transport, args.site, metrics, holds)
             except (ConnectionError, TimeoutError) as exc:
                 log.warning("broker link lost (%s); reconnecting", exc)
                 transport.stop()
                 # The panel's [HOLD 해제] does not need the broker: keep answering it while
-                # waiting to reconnect.
-                for _ in range(10):
-                    holds.tick(host)
-                    time.sleep(0.2)
+                # waiting to reconnect (v2 also keeps its local stop rules running).
+                if args.protocol == "v2":
+                    wait_offline_v2(host, holds, 2.0)
+                else:
+                    for _ in range(10):
+                        holds.tick(host)
+                        time.sleep(0.2)
     except KeyboardInterrupt:
         pass
     except StorageError as exc:
