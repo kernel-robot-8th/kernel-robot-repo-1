@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>카메라 보정 화면</title>
+<style>
+:root{--bg:#f6f6f4;--surface:#fff;--ink:#1d1d1b;--ink2:#56564f;--line:#e0e0da;--accent:#2f6fb3;--accent-soft:#e6eef8;
+--ok:#2e7d4f;--ok-soft:#e5f4ea;--bad:#c0392b;--bad-soft:#fbe7e4;--warn:#9a5b00;--warn-soft:#fff3df}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#161614;--surface:#1f1f1c;--ink:#ecece6;--ink2:#b5b5ad;
+--line:#34342f;--accent:#7fb0e6;--accent-soft:#1d2b3b;--ok:#7ccf9b;--ok-soft:#173022;--bad:#ef7a6e;--bad-soft:#3a1d19;--warn:#f0b35a;--warn-soft:#352812}}
+:root[data-theme="dark"]{--bg:#161614;--surface:#1f1f1c;--ink:#ecece6;--ink2:#b5b5ad;--line:#34342f;--accent:#7fb0e6;--accent-soft:#1d2b3b;
+--ok:#7ccf9b;--ok-soft:#173022;--bad:#ef7a6e;--bad-soft:#3a1d19;--warn:#f0b35a;--warn-soft:#352812}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "Pretendard","Noto Sans KR",system-ui,sans-serif}
+header{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+header h1{font-size:17px;margin:0}
+header .sub{color:var(--ink2);font-size:13px}
+main{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:14px;padding:14px 16px}
+@media (max-width:980px){main{grid-template-columns:1fr}}
+.view{background:#000;border-radius:8px;overflow:hidden;position:relative}
+.view img{display:block;width:100%;height:auto;cursor:crosshair}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:12px}
+.card h2{font-size:14px;margin:0 0 8px}
+.big{font-size:22px;font-weight:700}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-weight:600;font-size:13px}
+.ok{background:var(--ok-soft);color:var(--ok)} .bad{background:var(--bad-soft);color:var(--bad)} .warn{background:var(--warn-soft);color:var(--warn)}
+button{font:inherit;padding:6px 10px;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:6px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.on{background:var(--accent-soft);border-color:var(--accent)}
+button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+button.primary kbd{color:#fff;border-color:rgba(255,255,255,.6)}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:6px 0}
+kbd{font:12px ui-monospace,monospace;border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--ink2)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+td,th{border-bottom:1px solid var(--line);padding:3px 4px;text-align:left}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+input{font:inherit;width:90px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink)}
+.muted{color:var(--ink2);font-size:12px}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden}.bar>i{display:block;height:100%;background:var(--accent)}
+#msg{min-height:1.5em;color:var(--warn);font-weight:600}
+/* 시험 1(--publish-obstacles) 화면: 영상 · 지도·인형 표 · 시험 순서 세 칸 */
+[hidden]{display:none!important}
+.hdr-pills{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.mode{background:var(--accent);color:#fff;border-radius:6px;padding:2px 8px;font-size:12px;font-weight:700}
+main.t{grid-template-columns:640px minmax(0,1fr) 330px}
+@media (max-width:1320px){main.t{grid-template-columns:minmax(0,1fr) 330px}main.t>#testcol{grid-column:1/-1;grid-row:2}}
+@media (max-width:980px){main.t{grid-template-columns:1fr}}
+#steps{margin:4px 0 0;padding:0;list-style:none}
+#steps li{margin:2px 0;padding:3px 6px;border-radius:6px;cursor:pointer;display:flex;gap:6px}
+#steps li:hover{background:var(--accent-soft)} #steps li.done{color:var(--ok)} #steps li.cur{outline:1px solid var(--accent)}
+details#calib>summary{cursor:pointer;font-weight:600;margin:0 0 10px}
+svg text{font-family:inherit}
+#tcfg td:first-child{white-space:nowrap;width:5.5em;color:var(--ink2)}
+#tcfg td{word-break:break-all}
+#tcfg td.ok,#tcfg td.bad{background:none;font-weight:600}
+</style>
+</head>
+<body>
+<header><h1 id="title">카메라 보정 화면</h1><span id="modebadge" class="mode" hidden>시험 1 · FFT1-187</span><span class="sub" id="sub">FFT1-186 0단계 · 로봇은 카메라만 사용(bringup 없음) · 키보드 단축키도 동작</span>
+  <span class="hdr-pills" id="tpills" hidden></span></header>
+<main id="main">
+<div>
+  <div class="view"><img id="cam" src="/stream.mjpg" alt="로봇 카메라 실시간 영상"></div>
+  <p class="muted">영상을 클릭하면 그 점의 바닥 거리를 보여 줍니다. 줄자 맞춤: 오른쪽에 거리(cm)를 넣고 줄자 표시를 클릭하세요.</p>
+  <div class="card" id="wherecard" hidden><h2>로봇이 아는 내 위치 <span class="muted" id="wmap"></span></h2>
+    <canvas id="wcanvas" width="360" height="360" style="width:100%;max-width:360px;display:block;margin:0 auto;background:#fff;border-radius:6px"></canvas>
+    <div class="row" id="wpills"></div>
+    <p class="muted">초록 = 로봇이 아는 자기 위치(TF map→base_footprint) · 파랑 = 지금 라이다 점(지도 벽과 겹치면 위치가 맞음) ·
+      빨강 = 지역 비용 지도 장애물 · 주황 = 로봇 중심이 들어가면 충돌로 보는 곳(로봇 앞에 있으면 Nav2 가 멈춤) · 3 m × 3 m</p>
+  </div>
+  <div class="card" id="measurecard"><h2>측정 기록 · YOLO · 카드</h2>
+    <div class="row">줄자 거리(cm) <input id="typed" inputmode="numeric" maxlength="4" placeholder="예 60">
+      <button data-key="enter">측정 기록 <kbd>Enter</kbd></button><button data-key="s">사진 저장 <kbd>s</kbd></button><button data-key="r" id="k-r">연속 저장 <kbd>r</kbd></button><button data-key="v" id="k-v">원본 녹화 <kbd>v</kbd></button><span id="burst" class="pill warn" style="display:none"></span><span id="rec" class="pill warn" style="display:none"></span></div>
+    <table><thead><tr><th>종류</th><th>이름</th><th class="n">거리(cm)</th><th>비고</th></tr></thead><tbody id="dets"></tbody></table>
+    <p class="muted" id="logpath"></p>
+  </div>
+</div>
+<div id="testcol" hidden>
+  <div class="card"><h2>위에서 본 모습 (로봇 기준, 20 cm 격자)</h2>
+    <svg id="top" viewBox="-70 -150 140 165" style="width:70%;height:auto;display:block;margin:0 auto" role="img" aria-label="로봇 기준 인형 장애물 위치"></svg>
+    <p class="muted">빨간 점 = Nav2 로 보낸 인형 점 · 진한 파랑 = 지우는 시야 · 회색 원 = 지우지 않는 15 cm · 점선 = 표시 한계</p></div>
+  <div class="card"><h2>인형 장애물 (지금 보낸 것)</h2>
+    <table><thead><tr><th>종류</th><th class="n">신뢰도</th><th class="n">앞 cm</th><th class="n">왼쪽 cm</th><th class="n">폭 cm</th><th>비고</th></tr></thead><tbody id="dolls"></tbody></table>
+    <p class="muted">바퀴 축 기준. 사람(human)은 화면 표시만, 장애물로 안 보냄.</p>
+    <p class="muted" id="moving"></p>
+    <div class="row"><button data-key="v" id="t-v">원본 녹화 <kbd>v</kbd></button><button data-key="s">사진 저장 <kbd>s</kbd></button>
+      <button data-key="y" id="t-y">YOLO 상자 표시 <kbd>y</kbd></button><button id="pause">장애물 보내기 잠시 멈춤</button></div>
+  </div>
+  <div class="card" id="followcard" hidden><h2>고객 카드 추종 (FFT1-188)</h2>
+    <div class="row" id="fpills"></div>
+    <table id="ftab"></table>
+    <div id="democtl" hidden>
+      <h2 style="margin-top:12px">로봇 명령 (시험용 · 관제 대신 demo_runner)</h2>
+      <div class="row"><button id="d-route">① N08 → N12 라인 출발</button><button id="d-nav2">② Nav2 전환</button>
+        <button id="d-follow" class="primary">③ 추종 시작</button><button id="d-stop">■ 정지</button></div>
+      <div class="row" id="dpills"></div>
+      <table id="dtab"></table>
+      <ol id="devents" class="muted" style="margin:4px 0 0 18px"></ol>
+    </div>
+    <p class="muted" id="fnote">--demo 를 켜면 이 칸에서 로봇 명령 버튼을 씀. 꺼져 있으면 /follow/target·/follow/status 만 보냄</p>
+  </div>
+</div>
+<aside>
+  <div id="testaside" hidden>
+    <div class="card"><h2>시험 순서</h2>
+      <ol id="steps"></ol>
+      <div class="row"><input id="note" maxlength="100" placeholder="메모(예: 최소 18 cm)" style="width:100%"></div>
+      <div class="row"><button class="primary" id="tlog">기록 남기기</button><span class="muted">고른 단계·시각·인형 목록을 CSV 로</span></div>
+      <p class="muted" id="tlogpath"></p></div>
+    <div class="card"><h2>설정 확인</h2><table id="tcfg"></table></div>
+  </div>
+  <div class="card"><h2>상태</h2>
+    <div class="row"><span>체스보드</span> <span id="board" class="pill warn">검출 꺼짐</span> <span id="fps" class="muted"></span></div>
+    <div class="row">
+      <button data-key="b" id="k-b">체스보드 검출 <kbd>b</kbd></button>
+      <button data-key="y" id="k-y">YOLO <kbd>y</kbd></button>
+      <button data-key="a" id="k-a">고객 카드 <kbd>a</kbd></button>
+    </div>
+    <div id="msg"></div>
+    <div id="err" class="pill bad" style="display:none"></div>
+  </div>
+
+  <details id="calib" open><summary>카메라 보정 (A 렌즈 · B 바닥 자세 · C 줄자)</summary>
+  <div class="card"><h2>A. 렌즈 보정 (보드를 손에 들고)</h2>
+    <div class="row"><span class="big" id="ncal">0</span><span>/ 15~20장</span></div>
+    <div class="bar"><i id="calbar" style="width:0%"></i></div>
+    <div class="row"><button class="primary" data-key="c">지금 장 저장 <kbd>c</kbd></button></div>
+    <p class="muted">보드 전체가 보이고 체스보드가 「검출됨」일 때 저장. 위치·각도를 매번 바꾸고 화면 가장자리 쪽도 찍기. 다 모으면 터미널에서 <code>calib-intrinsics</code> 실행.</p>
+  </div>
+
+  <div class="card"><h2>B. 바닥 자세 (보드를 바닥에 눕혀서)</h2>
+    <div class="row"><button class="primary" data-key="f">계산 <kbd>f</kbd></button><button data-key="w">저장 <kbd>w</kbd></button></div>
+    <p class="muted">긴 변을 로봇 앞 방향으로, 검은 칸이 로봇 앞 끝에서 8~12 cm부터 시작.</p>
+    <table id="pose"></table>
+  </div>
+
+  <div class="card"><h2>C. 줄자 맞춤</h2>
+    <div class="row"><button class="primary" data-key="h">맞춤 계산 <kbd>h</kbd></button><button data-key="x">표본 지우기 <kbd>x</kbd></button><button data-key="w">저장 <kbd>w</kbd></button></div>
+    <p class="muted">25·40·60·80 cm 표시: 거리 입력 → 표시 가운데 클릭. 목표 rms 1 cm 이하.</p>
+    <div id="tape" class="muted"></div>
+  </div>
+
+  <div class="card"><h2>지금 카메라 값</h2><table id="camv"></table></div>
+  </details>
+</aside>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+let lensHeight = 0;   // 서버의 --lens-height-cm (줄자로 잰 렌즈 높이)
+async function post(path, body) {
+  const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  return r.json();
+}
+async function key(k) { await post('/api/key', {key: k}); refresh(); }
+document.querySelectorAll('[data-key]').forEach(b => b.addEventListener('click', () => {
+  if (['enter', 's', 'r'].includes(b.dataset.key)) syncTyped().then(() => key(b.dataset.key)); else key(b.dataset.key);
+}));
+async function syncTyped() { await post('/api/typed', {value: $('typed').value}); }
+$('typed').addEventListener('input', syncTyped);
+$('typed').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); syncTyped().then(() => key('enter')); } });
+document.addEventListener('keydown', e => {
+  if (e.target === $('typed') || e.target === $('note') || e.ctrlKey || e.metaKey || e.altKey) return;
+  if ('yabcfhxwsrv'.includes(e.key) && e.key.length === 1) { e.preventDefault(); key(e.key); }
+});
+$('cam').addEventListener('click', async e => {
+  const img = e.currentTarget, rect = img.getBoundingClientRect();
+  const u = Math.round((e.clientX - rect.left) * img.naturalWidth / rect.width);
+  const v = Math.round((e.clientY - rect.top) * img.naturalHeight / rect.height);
+  await syncTyped();
+  await post('/api/click', {u, v});
+  refresh();
+});
+function txt(el, s) { el.textContent = s; }
+function rows(el, data) {
+  el.replaceChildren(...data.map(cells => {
+    const tr = document.createElement('tr');
+    cells.forEach(c => { const td = document.createElement('td'); if (typeof c === 'object' && c) { td.textContent = c.t; if (c.cls) td.className = c.cls; } else td.textContent = c; tr.appendChild(td); });
+    return tr;
+  }));
+}
+function verdict(ok) { return {t: ok ? '통과' : '다시', cls: ok ? 'ok' : 'bad'}; }
+let busy = false;
+async function refresh() {
+  if (busy) return; busy = true;
+  try {
+    const s = await (await fetch('/api/state')).json();
+    lastState = s;
+    lensHeight = s.lens_height_cm || 0;
+    const b = $('board');
+    if (!s.show.board) { b.className = 'pill warn'; txt(b, '검출 꺼짐 (b)'); }
+    else if (s.board_found) { b.className = 'pill ok'; txt(b, '검출됨 ✓'); }
+    else { b.className = 'pill bad'; txt(b, '못 찾음 ✗'); }
+    txt($('fps'), `${s.fps} fps`);
+    ['b', 'y', 'a'].forEach(k => $('k-' + k).classList.toggle('on', s.show[{b: 'board', y: 'yolo', a: 'card'}[k]]));
+    txt($('msg'), s.msg || '');
+    const err = $('err'); err.style.display = s.error ? '' : 'none'; txt(err, s.error || '');
+    txt($('ncal'), s.calib_images); $('calbar').style.width = Math.min(100, s.calib_images / 20 * 100) + '%';
+    if (document.activeElement !== $('typed') && $('typed').value !== s.typed) $('typed').value = s.typed;
+    const p = s.pending;
+    if (p && p.kind === 'floor') {
+      const hOk = lensHeight ? Math.abs(p.height_cm - lensHeight) <= 0.3 : null;
+      rows($('pose'), [
+        ['높이', `${p.height_cm} cm`, lensHeight ? verdict(hOk) : '--lens-height-cm 주면 판정'],
+        ['숙임', `${p.pitch_deg}°`, ''],
+        ['roll', `${p.roll_deg}°`, verdict(Math.abs(p.roll_deg) <= 2)],
+        ['재투영', `${p.reproj_px} px`, verdict(p.reproj_px <= 0.5)],
+        ['보드까지', `${p.board_dist_cm} cm`, ''],
+      ]);
+    } else rows($('pose'), []);
+    const tape = s.tape.map(t => `${t.cm} cm`).join(' · ');
+    txt($('tape'), (tape ? `표본: ${tape}` : '표본 없음') + (p && p.kind === 'tape' ? `  → 높이 ${p.height_cm} cm, 숙임 ${p.pitch_deg}°, rms ${p.rms_cm} cm ${p.rms_cm <= 1 ? '(통과)' : '(다시)'}` : ''));
+    const c = s.camera;
+    rows($('camv'), [['출처', c.source], ['높이', `${c.height_cm} cm`], ['숙임', `${c.pitch_deg}°`], ['roll', `${c.roll_deg}°`], ['초점 fx', `${c.fx} px`], ['파일', c.file]]);
+    const d = [];
+    s.click.forEach(k => d.push(['클릭', `(${k.u}, ${k.v})`, k.x_cm == null ? '-' : String(k.x_cm), k.y_cm == null ? '수평선 위' : `왼쪽 ${k.y_cm} cm`]));
+    s.yolo.forEach(y => d.push(['YOLO', `${y.name} ${y.conf}`, y.dist_cm == null ? '-' : String(y.dist_cm), y.feet_cut ? '발 잘림(더 가까움)' : '']));
+    s.cards.forEach(k => d.push(['카드', `ID ${k.id}`, String(k.dist_cm), `한 변 ${k.side_px} px`]));
+    rows($('dets'), d.map(r => [r[0], r[1], {t: r[2], cls: 'n'}, r[3]]));
+    txt($('logpath'), `측정 CSV: ${s.log} · 저장한 사진 ${s.saved_photos}장 → ${s.photo_dir}`);
+    $('k-r').classList.toggle('on', s.burst); const bu = $('burst'); bu.style.display = s.burst ? '' : 'none';
+    txt(bu, `● 연속 저장 ${s.burst_count}장 (${s.burst_sec}s 간격)`);
+    $('k-v').classList.toggle('on', !!s.rec); const rc = $('rec'); rc.style.display = s.rec ? '' : 'none';
+    txt(rc, `● 원본 녹화 ${s.rec_frames}프레임`);
+    renderTest(s.obstacles);
+    renderFollow(s.follow, s.obstacles);
+    renderDemo(s.demo, s.follow);
+    renderWhere(s.where);
+  } catch (e) { txt($('msg'), '서버 연결 끊김'); }
+  finally { busy = false; }
+}
+// ---- 시험 1 화면(--publish-obstacles 일 때만)
+const STEPS = ['노트북 도구 켜기 → 「보내는 중」·sent 증가 확인',
+  '로봇 Nav2 켜기 (overrides_file = nav2_overrides_doll.yaml)',
+  '인형 하나 경로 위에 두기 → 위 지도에 빨간 점 확인',
+  'Nav2 목표 보내기 → 인형을 돌아가는지 · 가장 가까운 거리',
+  '인형 치우기 → 1.5 s 안에 점 사라짐',
+  '끊김 시험: 「잠시 멈춤」 또는 도구 끄기 → 로봇이 멈추는지'];
+const stepDone = new Set(); let stepCur = 1, testOn = false, paused = false;
+function renderSteps() {
+  $('steps').replaceChildren(...STEPS.map((t, i) => {
+    const li = document.createElement('li'), n = i + 1;
+    li.className = (stepDone.has(n) ? 'done ' : '') + (n === stepCur ? 'cur' : '');
+    li.textContent = `${stepDone.has(n) ? '✓' : n + '.'} ${t}`;
+    li.addEventListener('click', () => { if (stepCur === n) { stepDone.has(n) ? stepDone.delete(n) : stepDone.add(n); } stepCur = n; renderSteps(); });
+    return li;
+  }));
+}
+function pill(text, cls) { const e = document.createElement('span'); e.className = 'pill ' + cls; e.textContent = text; return e; }
+const SVG = 'http://www.w3.org/2000/svg';
+function drawTop(o) {
+  const svg = $('top'); svg.replaceChildren();
+  const el = (t, a, txt) => { const e = document.createElementNS(SVG, t); for (const k in a) e.setAttribute(k, a[k]); if (txt) e.textContent = txt; svg.appendChild(e); return e; };
+  const g = o.geom, cx = g.cam_x_cm, R = g.clear_range_cm, M = g.max_range_cm;
+  for (let x = -60; x <= 60; x += 20) el('line', {x1: x, y1: -145, x2: x, y2: 10, stroke: 'var(--line)', 'stroke-width': .4});
+  for (let y = 0; y <= 140; y += 20) { el('line', {x1: -70, y1: -y, x2: 70, y2: -y, stroke: 'var(--line)', 'stroke-width': .4});
+    el('text', {x: -68, y: -y - 1, 'font-size': 4, fill: 'var(--ink2)'}, y + ' cm'); }
+  // 화면: 오른쪽 = 로봇 오른쪽(-Y), 위 = 앞(+X)
+  const at = (deg, r) => { const a = deg * Math.PI / 180; return [-r * Math.sin(a), -cx - r * Math.cos(a)]; };
+  const [lx, ly] = at(g.fov_left_deg, R), [rx, ry] = at(-g.fov_right_deg, R);
+  el('path', {d: `M 0 ${-cx} L ${lx} ${ly} A ${R} ${R} 0 0 1 ${rx} ${ry} Z`, fill: 'var(--accent)', 'fill-opacity': .13});
+  el('circle', {cx: 0, cy: 0, r: 15, fill: 'var(--ink2)', 'fill-opacity': .18});
+  const a0 = 60 * Math.PI / 180;
+  el('path', {d: `M ${-M * Math.sin(a0)} ${-M * Math.cos(a0)} A ${M} ${M} 0 0 1 ${M * Math.sin(a0)} ${-M * Math.cos(a0)}`, fill: 'none', stroke: 'var(--bad)', 'stroke-dasharray': '2 2', 'stroke-width': .6});
+  el('rect', {x: -4.4, y: -4.2, width: 8.8, height: 11.7, rx: 1.5, fill: 'var(--ink)', 'fill-opacity': .85});
+  el('circle', {cx: 0, cy: -cx, r: 1.2, fill: 'var(--accent)'});
+  for (const [x, y] of o.points_cm) el('circle', {cx: -y, cy: -x, r: .55, fill: 'var(--bad)'});
+  // 기억한 인형(지금은 안 보이지만 로봇에 계속 보내는 것): 빈 동그라미 + 못 본 시간
+  for (const m of (o.memory ? o.memory.remembered : [])) {
+    el('circle', {cx: -m.y_cm, cy: -m.x_cm, r: 2.2, fill: 'none', stroke: 'var(--bad)', 'stroke-width': .6, 'stroke-dasharray': '1.2 .8'});
+    el('text', {x: -m.y_cm + 3, y: -m.x_cm + 1, 'font-size': 3.6, fill: 'var(--muted)'}, `기억 ${m.name} ${m.age_s.toFixed(0)}s`);
+  }
+  for (const d of o.dolls) el('text', {x: -d.y_cm + 3, y: -d.x_cm + 1, 'font-size': 4.2, fill: 'var(--ink)', 'font-weight': 700},
+    `${d.name} ${Math.round(Math.hypot(d.x_cm, d.y_cm))}cm`);
+}
+function renderTest(o) {
+  if (!o) return;
+  if (!testOn) {           // 처음 한 번: 시험 화면으로 바꾸고 보정 카드는 접음
+    testOn = true; $('main').classList.add('t'); $('calib').open = false;
+    ['testcol', 'testaside', 'modebadge', 'tpills'].forEach(id => { $(id).hidden = false; });
+    $('measurecard').hidden = true;   // 보정용 측정 기록은 시험 중 숨김(원본 녹화·사진 저장은 가운데 칸에)
+    txt($('title'), '스마트카트 인형 회피 시험'); document.title = '인형 회피 시험';
+    txt($('sub'), '노트북 YOLO → /doll_obstacles → 로봇 Nav2 비용 지도 · 이 화면은 모터·Nav2 목표를 보내지 않음');
+    renderSteps();
+  }
+  paused = o.paused;
+  const stop = o.last_age_s == null || o.last_age_s > 1.0;
+  $('tpills').replaceChildren(
+    o.paused ? pill('⏸ 일시 멈춤 (보내지 않음)', 'warn')
+      : stop ? pill(o.last_age_s == null ? '■ 아직 안 보냄' : `■ 멈춤: ${o.last_age_s.toFixed(1)} s 동안 안 보냄`, 'bad')
+      : pill(`● 장애물 보내는 중 ${o.rate_hz} Hz`, 'ok'),
+    pill(`지연 lag ${o.lag_ms == null ? '-' : o.lag_ms + ' ms'}`, o.lag_ms != null && o.lag_ms > 300 ? 'warn' : 'ok'),
+    pill(`밀린 영상 ${o.stale}`, o.stale ? 'warn' : 'ok'),
+    pill(`ROS_DOMAIN_ID ${o.meta.domain || '?'}`, 'ok'));
+  const pb = $('pause'); txt(pb, o.paused ? '장애물 보내기 다시 시작' : '장애물 보내기 잠시 멈춤'); pb.classList.toggle('on', o.paused);
+  drawTop(o);
+  rows($('dolls'), o.dolls.map(d => [d.name, {t: d.conf.toFixed(2), cls: 'n'}, {t: Math.round(d.x_cm), cls: 'n'},
+    {t: (d.y_cm >= 0 ? '+' : '') + Math.round(d.y_cm), cls: 'n'}, {t: d.width_cm.toFixed(1), cls: 'n'}, d.feet_cut ? '발 잘림' : '']));
+  const m = o.meta, n2 = m.nav2 || {};
+  rows($('tcfg'), [
+    ['카메라 값', {t: m.camera + (/6422/.test(m.camera || '') ? '  ⚠ 6422 파일' : ''), cls: /6422/.test(m.camera || '') ? 'bad' : ''}],
+    ['영상', m.source], ['렌즈 위치', `축 앞 ${o.geom.cam_x_cm} cm`],
+    ['표시 거리', {t: `${o.geom.max_range_cm} cm · Nav2 파일 ${n2.status === 'same' ? '같음' : n2.status === 'missing' ? '없음' : '다름'}${n2.status === 'same' ? '' : ' (' + n2.detail + ')'}`,
+                   cls: n2.status === 'same' ? 'ok' : 'bad'}],
+    ['신뢰도', `${o.geom.min_conf} 이상`], ['모델', m.model], ['토픽', `${m.topic} · ${m.frame}`],
+    ['YOLO 스레드', String(m.torch_threads ?? 'default')],
+    ['움직이는 인형 예측', o.moving ? (o.moving.pose_ok ? `켜짐 · ${o.moving.horizon_s} s 앞까지` : {t: '켜짐 · odom 없음(예측 안 함)', cls: 'bad'}) : '꺼짐']]);
+  const mv = o.moving && o.moving.tracks.filter(t => t.moving);
+  txt($('moving'), !o.moving ? '' : !mv.length ? '움직이는 인형 없음'
+    : '움직이는 인형: ' + mv.map(t => `#${t.id} ${t.name} ${t.speed_cms} cm/s${t.ttc_s != null ? ` · ${t.ttc_s} s 뒤 닿음` : ''}`).join(' · ')
+      + ` (예상 자리 점 ${o.moving.predicted_points}개)`);
+  $('t-v').classList.toggle('on', !!lastState.rec); $('t-y').classList.toggle('on', !!lastState.show?.yolo);
+}
+let lastState = {};
+// ---- 시험용 로봇 명령(--demo 일 때만): 버튼 → /api/demo → 로봇 demo_runner
+let demoCard = null;
+async function demo(body) {
+  const r = await post('/api/demo', body);
+  if (r && r.error) txt($('msg'), '로봇 명령 거절(노트북): ' + r.error);
+  refresh();
+}
+$('d-route').addEventListener('click', () => demo({op: 'route', route: ['N08', 'N12'], speed_limit_mps: 0.06}));
+$('d-nav2').addEventListener('click', () => demo({op: 'switch_nav2'}));
+$('d-follow').addEventListener('click', () => demoCard && demo({op: 'follow', card_id: demoCard, standoff_m: 0.25, max_duration_s: 120}));
+$('d-stop').addEventListener('click', () => demo({op: 'stop'}));
+function renderDemo(d, f) {
+  if (!d) return;
+  $('democtl').hidden = false; $('followcard').hidden = false; $('testcol').hidden = false; $('main').classList.add('t');
+  demoCard = f ? f.card_id : null;
+  const r = d.robot || {}, o = r.observed || {}, fresh = d.robot_age_s != null && d.robot_age_s < 2;
+  ['d-route', 'd-nav2', 'd-follow'].forEach(id => { $(id).disabled = !fresh || !!r.active; });
+  $('d-follow').disabled = $('d-follow').disabled || !f || f.state !== 'tracking';
+  $('d-stop').disabled = d.robot_age_s == null;
+  $('dpills').replaceChildren(
+    fresh ? pill(`로봇 연결 · ${d.robot_age_s} s 전`, 'ok') : pill(d.robot_age_s == null ? '로봇 demo_runner 응답 없음' : `로봇 응답 끊김 ${d.robot_age_s} s`, 'bad'),
+    pill(r.console_alive ? '로봇이 콘솔 신호 받는 중' : '콘솔 신호 없음(구동 안 함)', r.console_alive ? 'ok' : 'warn'),
+    o.fault ? pill('fault: ' + o.fault, 'bad') : pill('fault 없음', 'ok'));
+  rows($('dtab'), [['모드 · 노드', `${o.mode ?? '-'} · ${o.node_id ?? '-'}`], ['정지', String(o.stopped ?? '-')],
+    ['진행 중 명령', r.active ? r.active.type : '없음'], ['지도 버전', r.map_version || '-'], ['보낸 명령', String(d.sent)]]);
+  $('devents').replaceChildren(...(r.events || []).slice(-5).reverse().map(e => {
+    const li = document.createElement('li');
+    li.textContent = `${new Date(e.t * 1000).toLocaleTimeString()} ${e.kind} ${e.op || ''} ${e.reason || e.error_code || ''}`;
+    return li; }));
+}
+// ---- 로봇이 아는 내 위치(--demo + 지도 yaml): 지도 위에 TF 자세·라이다·비용 지도 장애물
+const wimg = new Image(); let wimgReady = false;
+wimg.onload = () => { wimgReady = true; };
+function renderWhere(w) {
+  if (!w) return;
+  $('wherecard').hidden = false;
+  if (!wimg.src) wimg.src = '/map.png';
+  const cv = $('wcanvas'), g = cv.getContext('2d'), W = cv.width, span = 3.0, k = W / span, m = w.map;
+  g.fillStyle = '#ddd'; g.fillRect(0, 0, W, W);
+  txt($('wmap'), `(${m.name})`);
+  const p = w.pose;
+  if (!p) { g.fillStyle = '#c53030'; g.font = '14px sans-serif'; g.fillText('위치 없음: ' + (w.error || '시험 스택 꺼짐'), 10, 24);
+    $('wpills').replaceChildren(pill('TF map→base_footprint 없음', 'bad')); return; }
+  const cx = p.x, cy = p.y, X = x => (x - cx) * k + W / 2, Y = y => W / 2 - (y - cy) * k;
+  if (wimgReady) {      // 지도 화소 = (x - ox)/res, 위가 +y
+    const res = m.resolution, sx = (cx - span / 2 - m.origin[0]) / res, sy = m.height - (cy + span / 2 - m.origin[1]) / res;
+    g.imageSmoothingEnabled = false; g.drawImage(wimg, sx, sy, span / res, span / res, 0, 0, W, W);
+  }
+  for (const [x, y, v] of w.cells) { g.fillStyle = v >= 100 ? 'rgba(197,48,48,.9)' : 'rgba(230,140,30,.35)'; g.fillRect(X(x) - 1, Y(y) - 1, 2, 2); }
+  g.fillStyle = 'rgba(30,120,230,.9)'; for (const [x, y] of w.scan) g.fillRect(X(x) - 1.5, Y(y) - 1.5, 3, 3);
+  const a = p.yaw_deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  const fp = [[0.042, 0.055], [0.042, -0.055], [-0.075, -0.055], [-0.075, 0.055]];
+  g.strokeStyle = '#1f8a4c'; g.lineWidth = 2; g.beginPath();
+  fp.forEach(([fx, fy], i) => { const mx = cx + c * fx - s * fy, my = cy + s * fx + c * fy; i ? g.lineTo(X(mx), Y(my)) : g.moveTo(X(mx), Y(my)); });
+  g.closePath(); g.stroke();
+  g.beginPath(); g.moveTo(W / 2, W / 2); g.lineTo(W / 2 + 0.2 * k * c, W / 2 - 0.2 * k * s); g.stroke();
+  const am = w.amcl, ok = am && am.xx <= 0.04 && am.yy <= 0.04 && am.yaw <= 0.1;
+  const ahead = w.cells.filter(([x, y, v]) => v >= 100 && Math.hypot(x - cx, y - cy) < 0.3).length;
+  $('wpills').replaceChildren(pill(`(${p.x.toFixed(2)}, ${p.y.toFixed(2)}) ${p.yaw_deg}°`, 'ok'),
+    am ? pill(`분산 ${am.xx.toFixed(4)} / ${am.yy.toFixed(4)} / ${am.yaw.toFixed(3)} ${ok ? '기준 통과' : '기준 넘음'}`, ok ? 'ok' : 'bad') : pill('AMCL 분산 없음', 'warn'),
+    pill(ahead ? `30 cm 안 장애물 칸 ${ahead}` : '30 cm 안 장애물 없음', ahead ? 'warn' : 'ok'));
+}
+// ---- 고객 카드 추종(--follow-card 일 때만)
+const FSTATE = {searching: ['아직 못 찾음', 'warn'], tracking: ['따라갈 고객 보임', 'ok'], lost: ['고객 놓침', 'bad']};
+function renderFollow(f, o) {
+  if (!f) return;
+  $('followcard').hidden = false; $('testcol').hidden = false; $('main').classList.add('t');
+  const [label, cls] = FSTATE[f.state] || [f.state, 'warn'];
+  $('fpills').replaceChildren(pill(`카드 ${f.card_id} · ${label}`, cls),
+    pill(`보내는 중 ${f.rate_hz} Hz`, f.rate_hz > 0 ? 'ok' : 'bad'), pill(`밀린 영상 ${f.stale}`, f.stale ? 'warn' : 'ok'),
+    ...(o ? [pill(`고객 인형 장애물 제외 ${o.excluded_customer || 0}`, 'ok')] : []));
+  rows($('ftab'), [
+    ['위치(바퀴 축 기준)', f.dist_m == null ? '-' : `앞 ${Math.round(f.x_m * 100)} · 왼쪽 ${Math.round(f.y_m * 100)} cm (${Math.round(f.dist_m * 100)} cm, ${f.bearing_deg}°)`],
+    ['마지막으로 본 뒤', f.age_s == null ? '-' : `${f.age_s} s`],
+    ['다른 카드', (f.others || []).join(', ') || '없음'], ['버린 튐 검출', String(f.rejected ?? 0)],
+    ['토픽', f.meta ? `${f.meta.target_topic} · ${f.meta.status_topic}` : '-']]);
+  if (o && f.x_m != null) {          // 위에서 본 그림에 고객 위치(초록) 표시
+    const svg = $('top'), c = document.createElementNS(SVG, 'circle');
+    c.setAttribute('cx', -f.y_m * 100); c.setAttribute('cy', -f.x_m * 100); c.setAttribute('r', 2.2);
+    c.setAttribute('fill', f.state === 'lost' ? 'var(--bad)' : 'var(--ok)'); svg.appendChild(c);
+  }
+}
+$('pause').addEventListener('click', async () => { await post('/api/obstacles', {pause: !paused}); refresh(); });
+$('tlog').addEventListener('click', async () => {
+  const r = await post('/api/test_log', {step: stepCur, note: $('note').value});
+  txt($('tlogpath'), r.file ? `${stepCur}단계 기록 → ${r.file}` : (r.error || '기록 실패'));
+  if (r.file) { stepDone.add(stepCur); $('note').value = ''; renderSteps(); }
+});
+// 서버를 다시 켜거나 연결이 끊기면 실시간 영상을 다시 붙인다(MJPEG <img>는 저절로 다시 연결하지 않음)
+let lastOk = Date.now();
+function reconnect() { $('cam').src = '/stream.mjpg?t=' + Date.now(); }
+$('cam').addEventListener('error', () => setTimeout(reconnect, 1000));
+setInterval(async () => {
+  try { const r = await fetch('/api/state', {cache: 'no-store'}); if (r.ok) { if (Date.now() - lastOk > 3000) reconnect(); lastOk = Date.now(); } }
+  catch (e) { /* 서버 꺼짐: 다시 켜지면 위에서 다시 연결 */ }
+}, 1500);
+setInterval(refresh, 500); refresh();
+</script>
+</body>
+</html>
