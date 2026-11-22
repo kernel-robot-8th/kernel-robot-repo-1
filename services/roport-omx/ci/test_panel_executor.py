@@ -1225,8 +1225,9 @@ class PanelExecutorTest(unittest.TestCase):
             len(self.panel.arms_models), before
         )  # no bus read while a run owns it
 
-    def test_route_without_episode_s_has_no_time_limit(self):
-        # TK 2026-11-22: no mission time limit by default; the panel's longest episode is 600 s
+    def test_route_without_episode_s_fits_the_control_task_limit(self):
+        # #134 review: the default leaves room in the control tower's 300 s task limit for the
+        # alignment and the return home; 3-600 s may still be set per route
         path = Path(self.dir.name) / "routes.json"
         route = {
             "operation": "INBOUND",
@@ -1237,9 +1238,10 @@ class PanelExecutorTest(unittest.TestCase):
         }
         key = ("INBOUND", "2b", "COOPERATIVE")
         for change, expected in (
-            ({}, 600.0),
-            ({"episode_s": None}, 600.0),
+            ({}, 180.0),
+            ({"episode_s": None}, 180.0),
             ({"episode_s": 40}, 40.0),
+            ({"episode_s": 600}, 600.0),
         ):
             with self.subTest(change=change):
                 path.write_text(json.dumps({"routes": [route | change]}))
@@ -1252,7 +1254,7 @@ class PanelExecutorTest(unittest.TestCase):
         path.write_text(json.dumps({"routes": [route]}))
         self.executor.routes = load_routes(path)
         self.send(self.inbound())
-        self.assertEqual(self.panel.starts[-1]["episode_s"], 600.0)
+        self.assertEqual(self.panel.starts[-1]["episode_s"], 180.0)
 
     def test_routes_file(self):
         path = Path(self.dir.name) / "routes.json"
@@ -1503,6 +1505,7 @@ class PanelExecutorTest(unittest.TestCase):
             "source": "eval_judge",
             "tips_clear": True,
         }
+        # panel 3.21 keeps only source/on_shelf/times under "first": box and slot unknown
         moved_on = {
             "on_shelf": None,
             "slot": "2B",
@@ -1510,12 +1513,35 @@ class PanelExecutorTest(unittest.TestCase):
             "source": "align",
             "first": {"source": "eval_judge", "on_shelf": True},
         }
+        first_named = moved_on | {
+            "first": {"source": "eval_judge", "on_shelf": True, "slot": "2B", "box": 16}
+        }
         placed = {"mode": "handover", "state": "taken", "end_reason": "placed"}
         cases = [
             ("judge on top", judge, placed, "completed"),
-            ("judge kept under first", moved_on, placed, "completed"),
+            (
+                "judge kept under first, box and slot named",
+                first_named,
+                placed,
+                "completed",
+            ),
+            ("judge kept under first without box/slot", moved_on, placed, "held"),
+            (
+                "first names another box",
+                first_named | {"first": first_named["first"] | {"box": 17}},
+                placed,
+                "held",
+            ),
             ("hands not clear", judge | {"tips_clear": False}, placed, "held"),
             ("another slot", judge | {"slot": "2C"}, placed, "held"),
+            # #134 review: the command is package 16; a judge record for box 17 never completes it
+            ("another box", judge | {"box": 17}, placed, "held"),
+            (
+                "box not recorded",
+                {k: v for k, v in judge.items() if k != "box"},
+                placed,
+                "held",
+            ),
             (
                 "no judge (no hand-over)",
                 {"on_shelf": None, "slot": "2B", "source": "align"},

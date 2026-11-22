@@ -297,10 +297,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--report-placement",
         action=argparse.BooleanOptionalAction,
-        default=True,  # on by default (TK 2026-11-22); --no-report-placement for one report
+        default=False,  # off until the control tower handles two reports (#134 review)
         help="panel: loading in two reports (COMPLETE when the box is in its slot, then the "
-        "alignment result); the control tower must accept evidence shelf_placed. Default on; "
-        "--no-report-placement reports once after the alignment",
+        "alignment result); the control tower must accept evidence shelf_placed. Default off: "
+        "one report after the alignment (control v1 holds on shelf_placed)",
     )
     parser.add_argument(
         "--end-on-place",

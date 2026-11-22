@@ -89,9 +89,9 @@ class HostStartTest(unittest.TestCase):
         )
         self.assertIn("boot_id=", output)
 
-    def test_hand_over_on_and_no_time_limit_by_default(self):
-        # TK 2026-11-22: loading hand-over (end_on_place) on by default, and a route without
-        # episode_s gets the panel's longest episode (the run ends on its own)
+    def test_start_defaults(self):
+        # hand-over (end_on_place) on by default (TK 2026-11-22); one report after the alignment
+        # and an episode limit inside the control tower's 300 s task limit (#134 review)
         routes = self.dir / "routes.json"
         route = {
             "slot_id": "2b",
@@ -111,18 +111,18 @@ class HostStartTest(unittest.TestCase):
         )
         output = self.run_main("--executor", "panel", "--routes", str(routes))
         self.assertIn("hand-over (end_on_place)=on", output)
-        self.assertIn("early COMPLETE on placement (report_placement)=on", output)
-        self.assertIn("episode limit [INBOUND:2b=600s, OUTBOUND:2b=70s]", output)
+        self.assertIn("early COMPLETE on placement (report_placement)=off", output)
+        self.assertIn("episode limit [INBOUND:2b=180s, OUTBOUND:2b=70s]", output)
         output = self.run_main(
             "--executor",
             "panel",
             "--routes",
             str(routes),
             "--no-end-on-place",
-            "--no-report-placement",
+            "--report-placement",
         )
         self.assertIn("hand-over (end_on_place)=off", output)
-        self.assertIn("(report_placement)=off", output)
+        self.assertIn("(report_placement)=on", output)
 
     def test_mock_executor_starts(self):
         self.assertIn("SIMULATED executor", self.run_main("--executor", "mock"))

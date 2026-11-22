@@ -205,11 +205,14 @@ HOLD_ERRORS = {
     "RESULT_UNAVAILABLE",
 }
 HOME_RETURN_TIMEOUT_S = 90.0
-# The panel takes episodes of 3-600 s and has no "no limit" setting. A control-tower evaluation ends
-# on its own (end_on_return: the arms are back; end_on_place: the box is placed and the hands are
-# clear), so by default it gets the panel's longest episode: no time limit in practice (TK
-# 2026-11-22). A route may still set a shorter episode_s.
+# The panel takes episodes of 3-600 s. A control-tower evaluation ends on its own (end_on_return:
+# the arms are back; end_on_place: the box is placed and the hands are clear); the limit only
+# bounds a run that does neither. The default must leave room inside the control tower's task
+# limit (command_timeout_s 300 s) for the alignment (up to 60 s) and the return home, or a late but
+# good result arrives after the control tower has already held (#134 review). A route may set
+# 3-600 s explicitly (longer only with a matching control limit).
 EPISODE_MIN_S, EPISODE_MAX_S = 3.0, 600.0
+EPISODE_DEFAULT_S = 180.0
 
 
 # Unloading mission (shelf → waiting Pinky; completion rule agreed 2026-11-17): judged only by the
@@ -328,7 +331,7 @@ def _align_error(align: dict, slot: str | None) -> str | None:
     return None
 
 
-def _judge_placed(result: dict, slot: str | None) -> bool:
+def _judge_placed(result: dict, slot: str | None, box: int | None) -> bool:
     """The evaluation's own placement judge (panel 3.18+, hand-over) saw the box in the commanded
     slot with both hands clear of it.
 
@@ -336,20 +339,37 @@ def _judge_placed(result: dict, slot: str | None) -> bool:
     frame; TK 2026-11-22). The panel keeps the judge's report at the top of last_result.placement
     (tips_clear) or, once the aligner wrote its own shelf read, under placement["first"]; then the
     hand-over ending on "placed" says the hands were clear (the panel ends only then).
+
+    The judged box and slot must be this mission's (#134 review): a record for another box or slot
+    never completes it. Under "first" they must be recorded in that judge record itself; the panel
+    (3.21) keeps only source/on_shelf/times there, so that path holds until it records them.
     """
+
+    def same(record: dict) -> bool:
+        judged_box = record.get("box")
+        return (
+            str(record.get("slot") or "").lower() == slot.lower()
+            and isinstance(judged_box, int)
+            and not isinstance(judged_box, bool)
+            and judged_box == box
+        )
+
     placement = result.get("placement")
-    if not isinstance(placement, dict) or slot is None:
-        return False
-    if str(placement.get("slot") or "").lower() != slot.lower():
+    if not isinstance(placement, dict) or slot is None or box is None:
         return False
     if placement.get("source") == "eval_judge":
-        return placement.get("on_shelf") is True and placement.get("tips_clear") is True
+        return (
+            same(placement)
+            and placement.get("on_shelf") is True
+            and placement.get("tips_clear") is True
+        )
     first = placement.get("first")
     handover = (
         result.get("handover") if isinstance(result.get("handover"), dict) else {}
     )
     return (
         isinstance(first, dict)
+        and same(first)
         and first.get("source") == "eval_judge"
         and first.get("on_shelf") is True
         and handover.get("end_reason") == "placed"
@@ -379,7 +399,7 @@ def _route_key(task: dict) -> tuple[str, str, str]:
 def load_routes(path: Path) -> dict[tuple[str, str, str], Route]:
     """{"routes": [{"operation", "slot_id", "model_path", "task", "reset_s"}]}
 
-    Optional per route: "episode_s" (absent or null = EPISODE_MAX_S, the run ends by itself), "manipulation_mode" (the slot's own, COOPERATIVE for column B and DEDICATED
+    Optional per route: "episode_s" (absent or null = EPISODE_DEFAULT_S, inside the control tower's task limit), "manipulation_mode" (the slot's own, COOPERATIVE for column B and DEDICATED
     for A/C), "markers" (box markers the model learned), output_filter, filter_gripper, eval_options.
     """
     routes = {}
@@ -405,7 +425,7 @@ def load_routes(path: Path) -> dict[tuple[str, str, str], Route]:
         if key in routes:
             raise ValueError(f"duplicate route: {key}")
         episode_s = item.get("episode_s")
-        episode_s = EPISODE_MAX_S if episode_s is None else float(episode_s)
+        episode_s = EPISODE_DEFAULT_S if episode_s is None else float(episode_s)
         if not EPISODE_MIN_S <= episode_s <= EPISODE_MAX_S:
             raise ValueError(
                 f"route {key} episode_s must be {EPISODE_MIN_S:g}-{EPISODE_MAX_S:g} s "
@@ -731,7 +751,7 @@ class PanelExecutor:
                     "state": "running",
                     "step": step if isinstance(step, str) else None,
                 }
-            observation = self._result(result, self.slot, self.operation)
+            observation = self._result(result, self.slot, self.operation, self.box)
             if observation["state"] == "finished":
                 # Evaluation snapshots predate alignment; every completion (aligned or not)
                 # also needs the final motor pose: arms home with grippers released.
@@ -801,7 +821,10 @@ class PanelExecutor:
 
     @staticmethod
     def _result(
-        result: dict, slot: str | None = None, operation: str | None = None
+        result: dict,
+        slot: str | None = None,
+        operation: str | None = None,
+        box: int | None = None,
     ) -> dict:
         exit_ok = result.get("exit_ok") is True
         safe = True if exit_ok else (False if result.get("exit_ok") is False else None)
@@ -892,7 +915,7 @@ class PanelExecutor:
                     error == "PANEL_ALIGN_FAILED"
                 ):  # the cameras could not tell where the box is
                     error = "PANEL_SHELF_UNREADABLE"
-                if align.get("on_shelf") is None and _judge_placed(result, slot):
+                if align.get("on_shelf") is None and _judge_placed(result, slot, box):
                     # TK 2026-11-22: the aligner could not read the shelf (camera moved, no
                     # frame), but this mission's placement judge saw the box in its slot with the
                     # hands clear: loaded, not aligned. Completed (Pinky may leave) only if the
