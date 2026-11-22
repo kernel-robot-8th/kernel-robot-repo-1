@@ -354,18 +354,28 @@ def main():
         "--journal", help="simulation file journal; omit for PostgreSQL"
     )
     parser.add_argument("--socket", required=True)
+    parser.add_argument("--hardware-authorized", action="store_true")
     args = parser.parse_args()
     with open(args.config) as file:
         config = json.load(file)
-    if config.get("mode") != "simulation":
-        parser.error("a file-journal fleet requires simulation mode")
+    if config.get("mode") == "hardware":
+        if args.journal:
+            parser.error(
+                "file journal requires simulation; use PostgreSQL for hardware"
+            )
+        if not args.hardware_authorized or config.get("field_verified") is not True:
+            parser.error(
+                "hardware requires field verification and explicit authorization"
+            )
+    elif config.get("mode") != "simulation":
+        parser.error("mode must be simulation or hardware")
     connection = mqtt_config(config["control_id"])
     if connection.host not in {
         "localhost",
         "127.0.0.1",
         "::1",
     }:
-        parser.error("simulation requires isolated loopback broker")
+        parser.error("Fleet requires a local loopback broker (simulation or field)")
     database = os.environ.get("ROPORT_DATABASE_URL")
     service_url = os.environ.get("ROPORT_SERVICE_WSS_URL")
     if bool(args.journal) == bool(database):

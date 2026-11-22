@@ -51,3 +51,15 @@ ROPORT_SERVICE_RUN="$HOME/roport-trial/service/<실행시각>/run.json" \
 - 서비스 WSS는 로컬에 구현된 outbox/inbox 규약을 사용한다. `interfaces/wss/README.md`의 S1은 아직 합의 전 제안이며 이번 작업에서 확정 규약으로 바꾸지 않았다.
 - 기존 고객 QR 렌더링·재발급 및 서버 검증을 유지한다. 카메라 인식은 이번 범위에 없다. 브라우저 시험은 예약번호를 사용한다. 안내·추종 기능은 서버 모드에서 표시하지 않는다.
 - OMX 실제 모터·카메라, 실물 Nav2 결과, 실제 인증/외부 HTTPS 배포는 별도 현장 검증이 필요하다. 물리 I/O만 가상이며 임의 완료로 관제 단계를 건너뛰지 않는다.
+
+### 서비스 요청을 두 대의 현장 Fleet에 연결하기
+
+`tools/prepare_field.py --output <새 폴더> --two-cart-trial`로 두 역할의 번들을 생성한다. 이 시험 배정은 물류 Pinky2(N17), 스마트카트 Pinky1(H1)이다. 현장에서 지도·출발 방향·N12 복귀 목표·선반 모델 및 보정 버전을 확인하고 번들의 현장 검증 절차를 마친다.
+
+관제 PC에서 기존 시험용 브로커와 외부 Pinky 두 대, 선반 Host를 준비한 뒤 아래처럼 실행한다. 이 모드에서는 실행기가 창고 OMX3를 모의하므로 같은 브로커의 실제 OMX3 Host는 종료해 둔다.
+
+```bash
+uv run python tools/run_service_fleet.py --field-bundle "$FIELD_BUNDLE" --broker-port "$BROKER_PORT" --hardware-authorized --real-shelf 2b
+```
+
+위 명령에서 슬롯을 생략하고 `--real-shelf`만 지정해도 `2b`를 사용한다. 현장 기준은 **2층 B열(`2b`), 상자 마커 16**이다. `1b`는 1층 B열이다. 서비스 계정은 `large-login`을 사용한다. 입고는 대기 상태로 생성된다. 관제자가 시작하면 N11에서 양팔이 지정 칸에 보관하고, 고객 예약으로 같은 칸에서 출고한다. 카트 도착 후 패드에서 수령을 확인하면 복귀한다. 각 실행의 서비스·관제 DB는 새로 생성된다.

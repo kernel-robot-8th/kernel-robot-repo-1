@@ -164,3 +164,18 @@ def test_arrival_cli_binds_current_session_and_reports_failure(
         "boot_version": "boot-2",
         "note": "checked stopped robot",
     }
+
+
+@pytest.mark.parametrize("verified,authorized", [(False, True), (True, False)])
+def test_field_owner_requires_both_confirmations(
+    tmp_path, monkeypatch, capsys, verified, authorized
+):
+    config = tmp_path / "fleet.json"
+    config.write_text(json.dumps({"mode": "hardware", "field_verified": verified}))
+    argv = ["owner", "--config", str(config), "--socket", "unused"]
+    if authorized:
+        argv.append("--hardware-authorized")
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit):
+        fleet_runtime.main()
+    assert "field verification and explicit authorization" in capsys.readouterr().err

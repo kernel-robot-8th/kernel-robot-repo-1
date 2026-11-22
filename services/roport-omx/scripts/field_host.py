@@ -111,7 +111,15 @@ def main():
         help="virtual package_id -> small/large/unknown JSON",
     )
     parser.add_argument("--run-s", type=float, default=0.15)
+    parser.add_argument(
+        "--mock-targets",
+        nargs="+",
+        choices=("omx1", "omx2", "shelf-01", "omx3"),
+        help="serve only these mock endpoints",
+    )
     args = parser.parse_args()
+    if args.mock_targets and not args.mock:
+        parser.error("--mock-targets requires --mock")
     if args.mock and (
         args.host not in {"localhost", "127.0.0.1", "::1"} or args.hardware_authorized
     ):
@@ -130,9 +138,12 @@ def main():
     logging.basicConfig(level=logging.INFO)
     with closing(Journal(args.journal)) as journal:
         if args.mock:
+            devices = virtual_executors(args.run_s, args.package_size, sizes)
+            if args.mock_targets:
+                devices = {t: devices[t] for t in args.mock_targets}
             host = FieldOmxHost(
                 journal,
-                virtual_executors(args.run_s, args.package_size, sizes),
+                devices,
                 control=args.control,
                 alignment=virtual_alignment,
             )
