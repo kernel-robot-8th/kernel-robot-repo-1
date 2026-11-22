@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import sys
 import tempfile
 import time
 import unittest
@@ -195,13 +196,15 @@ class FieldChecks(unittest.TestCase):
             for file in assets.values():
                 file.write_bytes(b'original')
             expected = {k: hashlib.sha256(v.read_bytes()).hexdigest() for k, v in assets.items()}
-            (root/'map.yaml').write_bytes(b'map')
+            (root/'map.yaml').write_text('image: map.pgm')
             (root/'map.pgm').write_bytes(b'image')
-            profile = {'map_version': hashlib.sha256(b'mapimage').hexdigest()[:16]}
+            with patch.object(sys, 'path', [str(SOURCE.parents[2]/'src/roport_pinky'), *sys.path]):
+                from roport_pinky.trial_nav2 import map_profile
+            profile = map_profile(root/'map.yaml')
             ns = {'handoff_id': 'a'*32, 're': re, 'hashlib': hashlib, 'Path': Path,
                   'options': NS(robot='test_robot'), 'asset_paths': assets,
                   'asset_hashes': expected, 'path': root/'map.yaml',
-                  'map_data': {'image': 'map.pgm'}, 'profile': profile}
+                  'map_profile': map_profile, 'profile': profile}
             context = helper('handoff_context', ns)
             self.assertEqual(context()['trip_id'], 'a'*32)
             assets['ir_sha256'].write_bytes(b'changed')
