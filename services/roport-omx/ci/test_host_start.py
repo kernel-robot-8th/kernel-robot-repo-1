@@ -111,11 +111,18 @@ class HostStartTest(unittest.TestCase):
         )
         output = self.run_main("--executor", "panel", "--routes", str(routes))
         self.assertIn("hand-over (end_on_place)=on", output)
+        self.assertIn("early COMPLETE on placement (report_placement)=on", output)
         self.assertIn("episode limit [INBOUND:2b=600s, OUTBOUND:2b=70s]", output)
         output = self.run_main(
-            "--executor", "panel", "--routes", str(routes), "--no-end-on-place"
+            "--executor",
+            "panel",
+            "--routes",
+            str(routes),
+            "--no-end-on-place",
+            "--no-report-placement",
         )
         self.assertIn("hand-over (end_on_place)=off", output)
+        self.assertIn("(report_placement)=off", output)
 
     def test_mock_executor_starts(self):
         self.assertIn("SIMULATED executor", self.run_main("--executor", "mock"))

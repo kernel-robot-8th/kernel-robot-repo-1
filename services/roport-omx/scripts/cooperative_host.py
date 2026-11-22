@@ -296,9 +296,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--report-placement",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,  # on by default (TK 2026-11-22); --no-report-placement for one report
         help="panel: loading in two reports (COMPLETE when the box is in its slot, then the "
-        "alignment result); the control tower must accept evidence shelf_placed",
+        "alignment result); the control tower must accept evidence shelf_placed. Default on; "
+        "--no-report-placement reports once after the alignment",
     )
     parser.add_argument(
         "--end-on-place",
@@ -381,8 +383,10 @@ def main() -> None:
             for key, route in executor.routes.items()
         )
         log.info(
-            "loading hand-over (end_on_place)=%s; episode limit [%s]",
+            "loading hand-over (end_on_place)=%s; early COMPLETE on placement "
+            "(report_placement)=%s; episode limit [%s]",
             "on" if args.end_on_place else "off",
+            "on" if args.report_placement else "off",
             episodes,
         )
     else:
