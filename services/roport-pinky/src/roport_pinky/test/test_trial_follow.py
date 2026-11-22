@@ -263,7 +263,7 @@ def test_follow_tree_uses_goal_updater_without_recovery_motion():
     assert updater.attrib == {'input_goal': '{goal}', 'output_goal': '{updated_goal}'}
     assert updater.find('ComputePathToPose').attrib['goal'] == '{updated_goal}'
     assert tree.find('.//KeepRunningUntilFailure/FollowPath') is not None
-    for name in ('Spin', 'DriveOnHeading'):                      # 회전·전진 복구는 넣지 않음(대기와 짧은 후진만)
+    for name in ('Spin', 'BackUp', 'DriveOnHeading'):            # 움직이는 복구는 넣지 않음(대기·비우기만)
         assert tree.find('.//' + name) is None
 
 
@@ -272,7 +272,7 @@ def test_follow_tree_ports_match_installed_nav2_jazzy_nodes():
     models = ET.parse(Path(get_package_share_directory('nav2_behavior_tree')) / 'nav2_tree_nodes.xml')
     ports = {m.attrib['ID']: {p.attrib['name'] for p in m if 'name' in p.attrib}
              for m in models.findall('.//TreeNodesModel/*')}
-    builtin = {'root', 'BehaviorTree', 'KeepRunningUntilFailure', 'Sequence', 'ForceSuccess'}   # BehaviorTree.CPP v4
+    builtin = {'root', 'BehaviorTree', 'KeepRunningUntilFailure', 'Sequence'}   # BehaviorTree.CPP v4
     for node in ET.parse(BT).iter():
         assert node.tag in ports or node.tag in builtin, node.tag
         if node.tag in ports:
@@ -447,19 +447,9 @@ def test_follow_tree_recovers_before_failing():
     root = ET.parse(BT).getroot()
     recov = list(root.iter('RecoveryNode'))
     assert len(recov) == 1 and recov[0].attrib == {'number_of_retries': '100', 'name': 'FollowRecovery'}
-    assert [c.tag for c in recov[0]] == ['PipelineSequence', 'RoundRobin']
+    assert [c.tag for c in recov[0]] == ['PipelineSequence', 'Wait']
     assert root.find('.//RateController').attrib['hz'] == '4.0'
-    assert not list(root.iter('Spin'))
-
-
-def test_follow_tree_backs_up_five_cm_on_every_third_block_without_ending_the_follow():
-    """11-22 실로봇: 14 cm 앞 인형에서 전진도 제자리 회전도 못 해 30 s 서 있다 끝남 → 세 번째 막힘마다 5 cm 후진.
-    후진이 실패해도(뒤가 막힘) 추종이 끝나지 않게 ForceSuccess 로 감싼다."""
-    rr = ET.parse(BT).getroot().find('BehaviorTree/RecoveryNode/RoundRobin')
-    assert [c.tag for c in rr] == ['Wait', 'Wait', 'ForceSuccess']
-    back = rr.find('ForceSuccess/BackUp')
-    assert back.attrib == {'backup_dist': '0.05', 'backup_speed': '0.03', 'time_allowance': '5.0'}
-    assert len(list(ET.parse(BT).getroot().iter('BackUp'))) == 1
+    assert not list(root.iter('Spin')) and not list(root.iter('BackUp'))
 
 
 def test_follow_tree_never_clears_costmaps():
@@ -471,12 +461,11 @@ def test_follow_tree_never_clears_costmaps():
 
 
 def test_follow_tree_has_single_wait():
-    """11-20 실로봇: 두 복구가 동시에 「대기」를 요청하면 behavior_server 가 먼저 것을 취소 → 대기·후진은 한 번에 하나씩
-    도는 RoundRobin 한 곳에만 둔다."""
+    """11-20 실로봇: 두 복구가 동시에 「대기」를 요청하면 behavior_server 가 먼저 것을 취소 → Wait 는 한 곳에만."""
     root = ET.parse(BT).getroot()
     waits = list(root.iter('Wait'))
-    assert len(waits) == 2 and all(w.attrib['wait_duration'] == '1.0' for w in waits)
-    assert all(w in list(root.find('BehaviorTree/RecoveryNode/RoundRobin')) for w in waits)
+    assert len(waits) == 1 and waits[0].attrib['wait_duration'] == '1.0'
+    assert waits[0] in list(root.find('BehaviorTree/RecoveryNode'))
 
 
 def test_close_customer_small_angle_jitter_does_not_rotate():
