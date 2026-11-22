@@ -539,6 +539,25 @@ def test_admit_rejects_hidden_card_and_accepts_when_seen_again():
         tf.admit(PAYLOAD, inputs, 104.7, 53.7, shift(), POSE)
 
 
+def test_admit_rejects_position_held_by_doll_fallback():
+    """노트북의 「인형으로 잇기」(임시)로 이어 잡은 위치는 새 주행의 출발 근거가 아니다. 주행 중에는 그대로 쓴다."""
+    def doll_frame(inputs, stamp, received, source):
+        body = {'state': 'tracking', 'card_id': 35, 'seen': True, 'age_s': 0.0, 'stamp': stamp,
+                'frame_id': 'base_footprint', 'source': source}
+        inputs.on_target(stamp, 'base_footprint', 0.8, 0.0)
+        inputs.on_status(tf.parse_status(json.dumps(body)), received)
+    inputs = tf.FollowInput()
+    doll_frame(inputs, 100.0, 50.0, 'doll')
+    with pytest.raises(ValueError, match='follow_not_tracking'):
+        tf.admit(PAYLOAD, inputs, 100.1, 50.1, shift(), POSE)
+    doll_frame(inputs, 100.4, 50.4, 'card')
+    assert tf.admit(PAYLOAD, inputs, 100.5, 50.5, shift(), POSE)[0] == pytest.approx(0.3)
+    assert status()['source'] == 'card'                                   # source 없는 status = 카드
+    inputs, s = started()
+    doll_frame(inputs, 100.5, 50.5, 'doll')                               # 주행 중: 인형으로 이은 위치도 목표로 씀
+    assert s.step(inputs, 100.6, 50.6, shift(), POSE)[0] == 'goal'
+
+
 def test_first_goal_turns_in_place_when_customer_is_off_to_the_side():
     """첫 목표는 첫 관측 방향으로 정한다: 23° 옆 1 m 고객이면 전진이 아니라 제자리 회전(유지 시간은 그 뒤 전환부터)."""
     inputs = tf.FollowInput()

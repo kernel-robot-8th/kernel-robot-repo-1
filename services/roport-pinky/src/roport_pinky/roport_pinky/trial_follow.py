@@ -110,7 +110,8 @@ def parse_status(text):
     if (body.get('state') not in STATES or type(card) is not int or type(seen) is not bool
             or not _finite(stamp) or body.get('frame_id', 'base_footprint') != 'base_footprint'):
         return None
-    return {'state': body['state'], 'card_id': card, 'seen': seen, 'stamp': float(stamp)}
+    return {'state': body['state'], 'card_id': card, 'seen': seen, 'stamp': float(stamp),
+            'source': body.get('source') if isinstance(body.get('source'), str) else 'card'}
 
 
 def approach_goal(pose, target, standoff):
@@ -268,6 +269,8 @@ def admit(payload, inputs, ros_now, mono_now, transform, pose):
     # 출발은 그 카드를 지금 실제로 보고 있을 때만: 가려진 동안(tracking, seen=false)의 옛 위치로 새 주행을 시작하지 않는다.
     # 주행 중 가림 유예(lost_after_s)는 step() 이 그대로 적용한다.
     target = inputs.target.get(card)
+    if mine[0].get('source', 'card') != 'card':      # 카드 대신 인형으로 이어 잡은 위치(노트북 임시 기능)는 출발 근거가 아님
+        raise ValueError('follow_not_tracking')
     if (not mine[0]['seen'] or target is None or abs(target[0] - mine[0]['stamp']) > STAMP_MATCH
             or ros_now - target[0] > START_TARGET_MAX_AGE):
         raise ValueError('follow_not_tracking' if not mine[0]['seen'] else 'follow_target_stale')
