@@ -1225,6 +1225,35 @@ class PanelExecutorTest(unittest.TestCase):
             len(self.panel.arms_models), before
         )  # no bus read while a run owns it
 
+    def test_route_without_episode_s_has_no_time_limit(self):
+        # TK 2026-11-22: no mission time limit by default; the panel's longest episode is 600 s
+        path = Path(self.dir.name) / "routes.json"
+        route = {
+            "operation": "INBOUND",
+            "slot_id": "2b",
+            "model_path": MODEL,
+            "task": "t {box}",
+            "reset_s": 15,
+        }
+        key = ("INBOUND", "2b", "COOPERATIVE")
+        for change, expected in (
+            ({}, 600.0),
+            ({"episode_s": None}, 600.0),
+            ({"episode_s": 40}, 40.0),
+        ):
+            with self.subTest(change=change):
+                path.write_text(json.dumps({"routes": [route | change]}))
+                self.assertEqual(load_routes(path)[key].episode_s, expected)
+        for bad in (2, 601, "long"):
+            with self.subTest(bad=bad):
+                path.write_text(json.dumps({"routes": [route | {"episode_s": bad}]}))
+                with self.assertRaises(ValueError):
+                    load_routes(path)
+        path.write_text(json.dumps({"routes": [route]}))
+        self.executor.routes = load_routes(path)
+        self.send(self.inbound())
+        self.assertEqual(self.panel.starts[-1]["episode_s"], 600.0)
+
     def test_routes_file(self):
         path = Path(self.dir.name) / "routes.json"
         route = {

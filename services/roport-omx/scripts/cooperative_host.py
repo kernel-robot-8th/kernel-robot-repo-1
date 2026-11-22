@@ -302,15 +302,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--end-on-place",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,  # on by default (TK 2026-11-22); --no-end-on-place for the older flow
         help="panel 3.18+: end the loading evaluation once the box is placed and the hands are "
-        "clear, and let the aligner take the arms there (hand-over)",
+        "clear, and let the aligner take the arms there (hand-over). Default on; "
+        "--no-end-on-place returns home first and aligns from there",
     )
     parser.add_argument(
         "--place-shadow",
         action="store_true",
         help="panel 3.18+: judge the placement during loading and only record it (no hand-over); "
-        "ignored with --end-on-place",
+        "only with --no-end-on-place",
     )
     parser.add_argument("--mock-run-s", type=float, default=3.0)
     parser.add_argument("--mock-disarmed", action="store_true")
@@ -374,6 +376,15 @@ def main() -> None:
     if args.executor == "panel":
         routes = ", ".join(":".join(key) for key in executor.routes)
         log.info("PANEL executor %s routes=[%s]; arms move", args.panel_url, routes)
+        episodes = ", ".join(
+            f"{':'.join(key[:2])}={route.episode_s:g}s"
+            for key, route in executor.routes.items()
+        )
+        log.info(
+            "loading hand-over (end_on_place)=%s; episode limit [%s]",
+            "on" if args.end_on_place else "off",
+            episodes,
+        )
     else:
         log.info("SIMULATED executor")
     log.info("boot_id=%s site=%s", host.boot_id, args.site)

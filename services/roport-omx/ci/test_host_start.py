@@ -89,6 +89,34 @@ class HostStartTest(unittest.TestCase):
         )
         self.assertIn("boot_id=", output)
 
+    def test_hand_over_on_and_no_time_limit_by_default(self):
+        # TK 2026-11-22: loading hand-over (end_on_place) on by default, and a route without
+        # episode_s gets the panel's longest episode (the run ends on its own)
+        routes = self.dir / "routes.json"
+        route = {
+            "slot_id": "2b",
+            "model_path": "/models/m/pretrained_model",
+            "task": "t {box}",
+            "reset_s": 15,
+        }
+        routes.write_text(
+            json.dumps(
+                {
+                    "routes": [
+                        route | {"operation": "INBOUND"},
+                        route | {"operation": "OUTBOUND", "episode_s": 70},
+                    ]
+                }
+            )
+        )
+        output = self.run_main("--executor", "panel", "--routes", str(routes))
+        self.assertIn("hand-over (end_on_place)=on", output)
+        self.assertIn("episode limit [INBOUND:2b=600s, OUTBOUND:2b=70s]", output)
+        output = self.run_main(
+            "--executor", "panel", "--routes", str(routes), "--no-end-on-place"
+        )
+        self.assertIn("hand-over (end_on_place)=off", output)
+
     def test_mock_executor_starts(self):
         self.assertIn("SIMULATED executor", self.run_main("--executor", "mock"))
 

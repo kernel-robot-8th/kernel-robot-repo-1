@@ -203,6 +203,11 @@ HOLD_ERRORS = {
     "RESULT_UNAVAILABLE",
 }
 HOME_RETURN_TIMEOUT_S = 90.0
+# The panel takes episodes of 3-600 s and has no "no limit" setting. A control-tower evaluation ends
+# on its own (end_on_return: the arms are back; end_on_place: the box is placed and the hands are
+# clear), so by default it gets the panel's longest episode: no time limit in practice (TK
+# 2026-11-22). A route may still set a shorter episode_s.
+EPISODE_MIN_S, EPISODE_MAX_S = 3.0, 600.0
 
 
 # Unloading mission (shelf → waiting Pinky; completion rule agreed 2026-11-17): judged only by the
@@ -342,9 +347,9 @@ def _route_key(task: dict) -> tuple[str, str, str]:
 
 
 def load_routes(path: Path) -> dict[tuple[str, str, str], Route]:
-    """{"routes": [{"operation", "slot_id", "model_path", "task", "episode_s", "reset_s"}]}
+    """{"routes": [{"operation", "slot_id", "model_path", "task", "reset_s"}]}
 
-    Optional per route: "manipulation_mode" (the slot's own, COOPERATIVE for column B and DEDICATED
+    Optional per route: "episode_s" (absent or null = EPISODE_MAX_S, the run ends by itself), "manipulation_mode" (the slot's own, COOPERATIVE for column B and DEDICATED
     for A/C), "markers" (box markers the model learned), output_filter, filter_gripper, eval_options.
     """
     routes = {}
@@ -369,10 +374,17 @@ def load_routes(path: Path) -> dict[tuple[str, str, str], Route]:
             )
         if key in routes:
             raise ValueError(f"duplicate route: {key}")
+        episode_s = item.get("episode_s")
+        episode_s = EPISODE_MAX_S if episode_s is None else float(episode_s)
+        if not EPISODE_MIN_S <= episode_s <= EPISODE_MAX_S:
+            raise ValueError(
+                f"route {key} episode_s must be {EPISODE_MIN_S:g}-{EPISODE_MAX_S:g} s "
+                "(leave it out for no time limit)"
+            )
         route = Route(
             str(item["model_path"]),
             str(item["task"]),
-            float(item["episode_s"]),
+            episode_s,
             float(item["reset_s"]),
             item.get("output_filter") or None,
             bool(item.get("filter_gripper", False)),
