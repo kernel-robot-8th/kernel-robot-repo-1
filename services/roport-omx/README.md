@@ -170,6 +170,24 @@ uv run python scripts/cooperative_control_sim.py --host BROKER_HOST inbound
 - 준비가 아니면 `executor_error`에 `AI_LINK_DOWN`·`AI_LINK_STALE`·`AI_LINK_NOT_UDP`·`AI_LINK_UNKNOWN`을 싣고, 작업 명령은 접수 전에 `EXECUTOR_ERROR`로 거절합니다(HOLD 없음).
 - PING 성공은 서버가 살아 있다는 뜻이며 첫 추론의 모델 적재 지연까지 보장하지 않습니다.
 
+## shelf-01 Host v2 연결 (`--protocol v2`, Fleet 관제)
+
+현장 MQTT 규약 v2(`roport-control-v2`, `interfaces/mqtt`, Confluence "메세지 규약 정리")로 Fleet 관제와 통신합니다. 실행부(제어판·모의)와 journal·outbox·HOLD 해제 채널은 v1과 같고 MQTT 입출력만 다릅니다(`src/roport_omx/cooperative_v2.py`). v1 journal은 거절하므로 v2용 새 `--journal`을 씁니다.
+
+```bash
+uv run python scripts/cooperative_host.py --protocol v2 --executor panel \
+    --routes ~/.config/roport/shelf-01-routes.json --journal ~/.local/state/roport/shelf-01-v2.json
+```
+
+- 토픽: `roport/workcell/shelf-01/{cmd,event,ack}`, `roport/robot/{omx1,omx2}/{cmd,event,ack}`, Pinky 상태 `roport/robot/{pinky1,2,3}/event`(구독만). 관제 ID 기본 `control-01`(`--control`).
+- `robot_state_request` → `robot_state`(shelf-01, omx1, omx2; 1초 주기 발행도 함). 상태는 별도 스레드가 1초마다 읽은 실행부 값이며 3초보다 오래되면 `fault: observation_stale`입니다. `docking`은 N11에 정차한 Pinky의 자체 상태로 채우고, 작업셀 정렬 센서가 없으므로 `alignment: "unknown"`입니다.
+- `shelf_transfer_command`(B열 `1b`/`2b`, 양팔): `store` = 입고(INBOUND), `retrieve` = 하차(OUTBOUND). 접수 조건: `expires_at` 전, `sent_at` 나이 −0.5~3초(관제·Host 시계 동기 필요), `expected_boot_version`·`arms[].expected_boot_version` = 현재 boot, HOLD·작업·정지 없음, armed, 양팔 홈·그리퍼 놓음, Pinky가 3초 이내 자기 상태로 N11 정차·`arrival_command_id`·boot 일치(`--no-require-pinky`는 Pinky 없는 시험대용). 거절은 `command_status` `rejected` + `reason`.
+- 완료(`completed`)는 실행부 근거가 있을 때만입니다: 입고 `shelf_align`·`shelf_load_not_aligned`, 하차 `pinky_load`, 양팔 홈·그리퍼 놓음. `result`는 규약 예시의 필드(`package_id`, `slot_id`, `pinky_id`, `arrival_command_id`, `placement_confirmed`, `release_confirmed`, 팔별 `stopped`·`home_reached`·`holding_state`·`boot_version`)만 보냅니다. 정렬 여부(Not Aligned)는 v2 결과 필드가 없어 journal에만 남깁니다. 근거가 없으면 `failed` `placement_or_release_unconfirmed`. 놓였음 조기 보고(`--report-placement`)는 v1 전용입니다.
+- `robot_stop_command`: 실행 중 작업이면 제어판 `/api/stop`(armed 꺼짐, 안전 정지)을 부르고, 실행이 끝난 것을 보면 원래 명령은 `interrupted`(`reason` = 정지 사유, `result.stopped: true`), 정지 명령은 `completed {"stopped": true}`입니다. 이미 끝난 명령이면 실행부가 쉬고 있을 때 바로 완료, 30초 안에 정지를 못 보면 정지 명령 `failed` `physical_stop_not_confirmed` + HOLD.
+- 작업 중 Pinky 상태가 N11 정차가 아니게 바뀌면 팔을 정지하고 `failed` `pinky_left` + HOLD. Pinky 상태가 끊기는 것만으로는 멈추지 않습니다.
+- `arm_action_command`(A·C열 한 팔)는 `rejected` `unsupported_one_arm_command`입니다(양팔 미션만). 같은 `command_id`의 같은 본문은 저장한 결과를 다시 보내고, 다른 본문은 로그만 남기고 답하지 않습니다(원래 명령의 결과를 덮지 않음).
+- 확인: `ci/test_cooperative_v2.py`(모든 송신 메시지를 `field_wire.validate`로 검사). 관제 `task/control-integration-test`의 `tools/run_virtual_fleet.py --verify large`에서 shelf-01·omx1·omx2를 이 Host(모의 실행부)로 바꿔 입고·출고 COMPLETE까지 확인했습니다(2026-11-22). 실물 팔·제어판 연결은 별도 현장 확인 대상입니다.
+
 ## AI 추론 UDP 클라이언트 (시험 단계, FFT1-154)
 
 `src/roport_omx/infer_link/`는 Host PC가 GPU AI 추론 서버(`services/roport-ai-server`의 `omx_udp`)와 UDP 규약 `RPI1`로 통신하는 클라이언트입니다. 규약 파일 `wire.py`는 AI 서버 쪽 원본을 그대로 복사하며 두 곳을 함께 갱신합니다.

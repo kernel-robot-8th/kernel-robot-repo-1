@@ -17,9 +17,13 @@ class MockExecutor:
         *,
         armed: bool = True,
         unreturned: set[str] = frozenset(),
+        evidence: dict[str, str] | None = None,
     ):
         self.run_s, self.armed, self.unreturned = run_s, armed, set(unreturned)
+        # simulated completion evidence by operation, e.g. {"INBOUND": "shelf_align"} (v2)
+        self.evidence = dict(evidence or {})
         self.started_at: float | None = None
+        self.stopped = False
         self.tasks: list[dict] = []
 
     def _running(self) -> bool:
@@ -50,7 +54,13 @@ class MockExecutor:
         if self._running():
             raise RuntimeError("mock already running")
         self.tasks.append(task)
-        self.started_at = monotonic()
+        self.started_at, self.stopped = monotonic(), False
+
+    def stop(self) -> None:
+        """Simulated safe stop: the run ends at once with the arms set down."""
+        if self._running():
+            self.stopped = True
+            self.started_at = monotonic() - self.run_s
 
     def observe(self) -> dict:
         if self.started_at is None:
@@ -59,4 +69,14 @@ class MockExecutor:
         if elapsed < self.run_s:
             step = "pick" if elapsed < self.run_s / 2 else "place"
             return {"state": "running", "step": step, "arms": self._arms(moving=True)}
-        return {"state": "finished", "step": "home", "arms": self._arms(moving=False)}
+        arms = self._arms(moving=False)
+        if self.stopped:
+            return {
+                "state": "failed",
+                "error": "MOCK_STOPPED",
+                "arms": arms,
+                "operator_stop": True,
+            }
+        done = {"state": "finished", "step": "home", "arms": arms}
+        evidence = self.evidence.get(self.tasks[-1].get("operation"))
+        return done | ({"evidence": evidence} if evidence else {})

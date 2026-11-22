@@ -663,6 +663,14 @@ class PanelExecutor:
         self.operation, self.box = task["operation"], box
         self._placed = False
 
+    def stop(self) -> None:
+        """Stop the running evaluation the way the panel's [중지] does (v2 robot_stop_command).
+
+        The panel turns armed off and lets the run land the arms (safe stop); observe() then
+        reports the run as failed with operator_stop once it ended. A person re-arms the panel.
+        """
+        self._call("POST", "/api/stop", {})
+
     def _placement(self, result) -> dict | None:
         """The box seen in the commanded slot while the alignment still runs (panel 3.17+)."""
         if (
