@@ -27,6 +27,11 @@ class FleetSocket(TrialSocket):
             raise ValueError("unknown release request")
         return {"status": record["status"]}
 
+    def _dispatch_client(self, request, client):
+        if isinstance(request, dict) and request.get("action") == "release_workcell":
+            return self.dispatch(request, client=client)
+        return super()._dispatch_client(request, client)
+
     def dispatch(self, request, *, client=None):
         if request == {"action": "snapshot"}:
             return self.snapshot()

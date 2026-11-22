@@ -136,7 +136,7 @@ class TrialSocket:
             ],
         }
 
-    def dispatch(self, request, *, client=None):
+    def dispatch(self, request):
         if request == {"action": "snapshot"}:
             return self.snapshot()
         required = {"action", "session_id", "task_id", "phase", "expires_at"}
@@ -284,6 +284,9 @@ class TrialSocket:
         self.clients.pop(client)
         client.close()
 
+    def _dispatch_client(self, request, _client):
+        return self.dispatch(request)
+
     def poll(self):
         for key, _ in self.selector.select(0):
             client = key.fileobj
@@ -306,7 +309,7 @@ class TrialSocket:
                     raise ValueError("invalid local request size")
                 result = {
                     "ok": True,
-                    "snapshot": self.dispatch(json.loads(raw), client=client),
+                    "snapshot": self._dispatch_client(json.loads(raw), client),
                 }
             except (ValueError, TypeError, RecursionError) as exc:
                 result = {"ok": False, "error": str(exc)}
