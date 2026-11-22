@@ -184,6 +184,16 @@ def test_recovery_limit_cancels_and_late_success_cannot_replace_failure():
     assert bridge.result[0] == 'nav2_recovery_limit'
 
 
+def test_no_cumulative_recovery_cap_when_max_recoveries_none():
+    """추종(max_recoveries=None): Nav2 누적 복구 횟수로 실패시키지 않음(BT 재시도·RECOVERY_TIMEOUT_S 만)."""
+    bridge = recovery_bridge()
+    bridge.max_recoveries = None
+    feedback(bridge, 2)
+    feedback(bridge, 9)
+    assert bridge.result is None and bridge.cancelled == []
+    assert bridge.navigation['phase'] == 'recovering' and bridge.navigation['recoveries'] == 9
+
+
 def test_recovery_timeout_does_not_restart_on_more_feedback(monkeypatch):
     bridge = recovery_bridge()
     monkeypatch.setattr(time, 'monotonic', lambda: 100.)

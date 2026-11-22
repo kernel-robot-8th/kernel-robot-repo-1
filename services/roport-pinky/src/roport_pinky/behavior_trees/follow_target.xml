@@ -1,0 +1,43 @@
+<!--
+  Customer-card following (FFT1-188). Sent per goal in NavigateToPose.behavior_tree by
+  roport_pinky.trial_driver for follow.requested; the default navigate tree is unchanged.
+  Adapted from Jazzy nav2_bt_navigator/behavior_trees/follow_point.xml:
+  - GoalUpdater reads geometry_msgs/PoseStamped on `goal_update` (map frame); a received goal is
+    used only when its stamp is newer than the action goal.
+  - The driver already places the goal standoff_m before the customer, so TruncatePath is not
+    used (the customer point itself lies in the customer's costmap obstacle/inflation).
+  - No spin/back-up recovery, no search and NO costmap clearing. A blocked plan/path waits 1 s
+    and retries (one Wait node only: the behavior server runs one wait at a time, so two
+    concurrent Waits cancelled each other, 2026-11-20). Clearing is not used because camera-only
+    obstacles (small dolls the lidar cannot see) are remembered only in the costmap once they
+    are inside the camera blind zone / obstacle_min_range (0.15 m): clearing erased a doll
+    14 cm ahead and the robot drove into it (2026-11-21). After the outer retries the action
+    aborts and the driver stops and reports. KeepRunningUntilFailure keeps holding at the
+    reached goal.
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <!-- 11-20 실로봇: 「collision ahead」 한 번에 추종이 끝남 → 복구(1 s 대기 뒤 다시) 추가. 대기는 한 곳에서만.
+       11-21 실로봇: 복구의 「비용 지도 비우기」가 로봇 14 cm 앞 어린이 인형(라이다에 안 보임, 15 cm 안은 다시 안 찍힘)을
+       지워 로봇이 인형을 치고 지나감 → 비우기를 모두 뺌. 막힌 원인이 실제 장애물이면 지도에 남아 돌아가는 길을 찾고,
+       길이 없으면 드라이버의 RECOVERY_TIMEOUT_S(5 cm 이동 없이 30 s)가 멈춘다.
+       바깥 재시도 횟수는 추종 한 번 동안 누적된다(따라가기가 「성공」으로 끝나지 않음, 11-21 2분 추종에 8번) →
+       횟수(100)는 넉넉히 두고, 멈추는 기준은 드라이버의 「5 cm 이동 없이 30 s」로 둔다. 회전·후진 복구는 넣지 않음.
+       11-22: 자동 후진(5 cm)을 시험했으나 뺌 — 카메라는 앞만 보고 라이다는 낮은 인형을 못 봐 뒤가 비었다는 근거가 없고,
+       실로봇에서 10번 중 9번은 바로 실패했으며 그때 막힌 원인은 바닥 테이프 오인식이었다. -->
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="100" name="FollowRecovery">
+      <PipelineSequence name="FollowTarget">
+        <!-- 4 Hz: 옆으로 움직이는 고객을 1 Hz 로는 늦게 따라감(11-20 실로봇). Pi CPU 는 실측할 것 -->
+        <RateController hz="4.0">
+          <GoalUpdater input_goal="{goal}" output_goal="{updated_goal}">
+            <ComputePathToPose goal="{updated_goal}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}"/>
+          </GoalUpdater>
+        </RateController>
+        <KeepRunningUntilFailure>
+          <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker" error_code_id="{follow_path_error_code}"/>
+        </KeepRunningUntilFailure>
+      </PipelineSequence>
+      <Wait wait_duration="1.0"/>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

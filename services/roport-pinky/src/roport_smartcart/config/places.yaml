@@ -1,8 +1,8 @@
 # REAL ROBOT: all stop poses require on-site measurement before measured: true.
 map:
   frame: map
-  yaml_sha256: 6e11b12ffb260a4c6a2333661b2ab495156923f072584ad9711c465aa5381522
-  image_sha256: 078160541849f3632cc2cc07df395bd7210077ba494c4a019e9d468c872d2642
+  yaml_sha256: d9d61c75a7c864abd470004d4f0d5412fbc26bc0132cf9027c1a20abf2b39dd5
+  image_sha256: 7e7c4f9c5d2b1bd2095c6fc835cdf7550ae397c565cddb929b3a06cb989dd943
 places:
   wait_p1:
     measured: false

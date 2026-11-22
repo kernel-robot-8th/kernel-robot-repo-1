@@ -181,3 +181,38 @@ export function resetDemo(): void {
     p.received = p.pickupId === 'demo-pickup-3';
   });
 }
+
+export interface ShoppingStatus {
+  ownsCamera: boolean;
+  stopped: boolean;
+  simulation: boolean;
+  canStart: boolean;
+  notice: 'INACTIVE' | 'SHOPPING' | 'COME_CLOSER' | 'BLOCKED' | 'UNAVAILABLE' | 'PAUSED';
+  selected: boolean;
+  armed: boolean;
+  state: string;
+  drive: 'HOLD' | 'APPROACH';
+  reason: string;
+  frame: string | null;
+  detecting: boolean;
+  boxes: number[][];
+  box: number[] | null;
+}
+
+export async function shopping(session: string, action = 'status', args: Record<string, unknown> = {}): Promise<ShoppingStatus> {
+  const res = await fetch('/shopping/' + action, action === 'status'
+    ? {headers: {'X-Shopping-Session': session}, cache: 'no-store', signal: AbortSignal.timeout(1500)}
+    : {method: 'POST', headers: {'Content-Type':'application/json'}, signal: AbortSignal.timeout(2000),
+       body: JSON.stringify({session, ...args})});
+  // A restarted cart has forgotten this session. Read the camera status again.
+  if (action === 'heartbeat' && res.status === 409) return shopping(session);
+  if (!res.headers.get('content-type')?.includes('application/json')) throw new Error('카트 카메라 연결을 기다리고 있어요.');
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '카트 연결을 확인해 주세요.');
+  return data;
+}
+
+export async function shoppingImage(session: string, path: string, signal: AbortSignal): Promise<Blob | null> {
+  const res = await fetch(path, {headers: {'X-Shopping-Session': session}, cache: 'no-store', signal});
+  return res.ok && res.headers.get('content-type') === 'image/jpeg' ? res.blob() : null;
+}
