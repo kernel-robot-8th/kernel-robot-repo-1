@@ -63,6 +63,12 @@ def validate_service_message(message, kind):
         "message.ack": {"message_id"},
     }
     if (
+        kind == "handover.receipt_recorded"
+        and isinstance(payload, dict)
+        and "follow_card" in payload
+    ):
+        required[kind].add("follow_card")
+    if (
         kind not in required
         or not isinstance(payload, dict)
         or set(payload) != required[kind]

@@ -1,25 +1,37 @@
 import { newRequestId } from './scenario.js';
 
 // Requests go to the single owner; roles, shelf stock and tasks share its saved state.
-const stages = {queued:'배차 대기', warehouse_route:'창고로 이동', warehouse_load:'창고 상차', choose_slot:'선반 배정 대기', shelf_route:'인도장으로 이동', transfer:'선반 상하차', return_route:'대기 장소로 복귀', switch_route:'N12로 이동', switch_nav:'Nav2 전환', navigate:'고객에게 이동', await_receipt:'고객 수령 대기', return_nav:'N12로 복귀', switch_line:'라인 주행 전환', done:'완료'};
+const stages = {queued:'배차 대기', warehouse_route:'창고로 이동', warehouse_load:'창고 상차', choose_slot:'선반 배정 대기', shelf_route:'인도장으로 이동', transfer:'선반 상하차', return_route:'대기 장소로 복귀', switch_route:'N12로 이동', switch_nav:'Nav2 전환', navigate:'고객에게 이동', await_receipt:'고객 수령 대기', follow_pending:'추종 승인 대기', follow_start:'추종 시작 확인 중', following:'추종 중', follow_stopping:'추종 정지 확인 중', follow_paused:'추종 정지', return_nav:'N12로 복귀', switch_line:'라인 주행 전환', done:'완료'};
 const shelfStates = {empty:'빈 칸', occupied:'보관 중', reserved:'작업 예약'};
 const $ = id => document.getElementById(id);
 let state, online = false, busy = false, request;
 function refresh() {
   const blocked = state?.mode === 'hardware' && location.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  for (const button of $('fleet-work').querySelectorAll('button')) {
+    const robot = button.dataset.robot;
+    const report = state?.robots?.[robot];
+    const idle = report?.state.stopped && !report.active_command_id && !report.state.fault && state.ages?.[robot] <= 3 && !state.awaiting_state?.includes(robot);
+    button.disabled = !online || busy || blocked || !$('fleet-key').value ||
+      (button.dataset.operation && (!state.enabled || !!state.fault || (button.dataset.operation !== 'pause' && !idle)));
+  }
   $('fleet-fields').disabled = !online || busy || blocked || !$('fleet-key').value;
   $('fleet-enable').disabled = !online || busy || blocked || !$('fleet-key').value || !!state?.fault || state?.enabled;
   $('fleet-stop').disabled = !online || busy || blocked || !$('fleet-key').value;
   $('fleet-recovery').disabled = !online || busy || blocked || !$('fleet-key').value || (!state?.fault && !Object.values(state?.pending_arrivals ?? {}).some(a => a.recovery_boot));
+  const n16 = $('fleet-recovery-outcome').value === 'repositioned_n16';
   const id = $('fleet-recovery-command').value;
   const command = state?.commands?.[id];
   const report = state?.robots?.[command?.message.target];
   const arrivalRobot = $('fleet-arrival').value;
   const arrival = state?.pending_arrivals?.[arrivalRobot];
   const check = $('fleet-recovery-confirm');
-  const context = JSON.stringify([state?.session_id, id, $('fleet-recovery-outcome').value, command?.stop?.command_id, report?.boot_version, report?.state?.node, report?.state?.stopped, arrivalRobot, arrival]);
+  const context = JSON.stringify([n16, state?.session_id, id, $('fleet-recovery-outcome').value, command?.stop?.command_id, report?.boot_version, report?.state?.node, report?.state?.stopped, arrivalRobot, arrival]);
   if (!online || check.dataset.context !== context) check.checked = false;
   check.dataset.context = context;
+  $('fleet-confirm-label').textContent = n16 && id
+    ? command.message.target + '의 N16 재배치, N14 방향, 기체 정지와 통로 확보를 현장에서 확인했습니다.'
+    : '정지·물품 위치를 현장에서 확인했습니다.';
+
   const confirmed = $('fleet-recovery-confirm').checked && $('fleet-recovery-note').value.trim();
   $('fleet-reconcile').disabled = !state?.fault || !confirmed || !$('fleet-recovery-command').value;
   $('fleet-recover-stop').disabled = !state?.fault || !confirmed || !command?.stop || !report?.boot_version;
@@ -45,7 +57,14 @@ $('fleet-key').addEventListener('input', refresh);
 $('fleet-enable').onclick = () => send('enable');
 $('fleet-stop').onclick = () => send('stop');
 for (const id of ['fleet-recovery-note', 'fleet-recovery-confirm', 'fleet-recovery-command', 'fleet-recovery-outcome', 'fleet-arrival']) $(id).addEventListener('input', refresh);
-$('fleet-reconcile').onclick = () => send('reconcile', {command_id: $('fleet-recovery-command').value, outcome: $('fleet-recovery-outcome').value, note: $('fleet-recovery-note').value.trim()});
+$('fleet-reconcile').onclick = () => {
+  const command_id = $('fleet-recovery-command').value, outcome = $('fleet-recovery-outcome').value;
+  const extra = outcome === 'repositioned_n16' ? {
+    confirmed: $('fleet-recovery-confirm').checked,
+    boot_version: state.robots[state.commands[command_id].message.target]?.boot_version,
+  } : {};
+  return send('reconcile', {command_id, outcome, note: $('fleet-recovery-note').value.trim(), ...extra});
+};
 $('fleet-recover-stop').onclick = () => {
   const command_id = $('fleet-recovery-command').value, command = state.commands[command_id];
   return send('recover_stop', {command_id, stop_id: command.stop.command_id, boot_version: state.robots[command.message.target].boot_version, note: $('fleet-recovery-note').value.trim()});
@@ -125,17 +144,32 @@ export function renderFleet(data) {
     cell.textContent = `${slot} · ${state.slot_definitions[slot].node} · ${shelfStates[value.state] ?? value.state} · ${value.package_id ?? '—'}`;
     return cell;
   }));
-  $('fleet-work').replaceChildren(...Object.entries(state.tasks ?? {}).map(([id, task]) => {
-    const item = document.createElement('li');
-    item.textContent = [task.request.package_id, task.robot ?? '배정 대기', task.status === 'CANCELED' ? '운영자 처리로 종료' : (stages[task.stage] ?? task.stage), task.reason].filter(Boolean).join(' · ');
-    if (task.stage === 'await_receipt' && state.mode === 'simulation') {
-      const button = document.createElement('button'); button.textContent = '가상 고객 수령 확인';
-      button.dataset.fleetReceipt = id;
-      button.disabled = !online || busy || !$('fleet-key').value;
-      button.onclick = () => send('receipt', {request_id: id}); item.append(button);
-    }
-    return item;
-  }));
+  // Keep clickable controls mounted between robot pose updates.
+  const work = $('fleet-work');
+  const workKey = JSON.stringify([state.session_id, state.mode, Object.entries(state.tasks ?? {}).map(([id, t]) =>
+    [id, t.robot, t.request.package_id, t.stage, t.status, t.reason, t.follow_card])]);
+  if (work.dataset.key !== workKey) {
+    work.dataset.key = workKey;
+    work.replaceChildren(...Object.entries(state.tasks ?? {}).map(([id, task]) => {
+      const item = document.createElement('li');
+      item.textContent = [task.request.package_id, task.robot ?? '배정 대기', task.status === 'CANCELED' ? '운영자 처리로 종료' : (stages[task.stage] ?? task.stage), task.reason].filter(Boolean).join(' · ');
+      const operations = {follow_pending: [['approve','추종 승인'],['return','복귀']], follow_start: [['pause','추종 정지']], following: [['pause','추종 정지']], follow_paused: [['resume','추종 재개'],['return','추종 종료 및 복귀']]}[task.stage] ?? [];
+      if (task.follow_card) item.append(document.createTextNode(` · 카드 ${task.follow_card}`));
+      for (const [operation, label] of operations) {
+        const button = document.createElement('button');
+        button.textContent = label;
+        button.dataset.robot = task.robot;
+        button.dataset.operation = operation;
+        button.onclick = () => send('follow', {request_id: id, operation});
+        item.append(button);
+      }
+      if (task.stage === 'await_receipt' && state.mode === 'simulation') {
+        const button = document.createElement('button'); button.textContent = '가상 고객 수령 확인';
+        button.onclick = () => send('receipt', {request_id: id}); item.append(button);
+      }
+      return item;
+    }));
+  }
   $('fleet-resources').textContent = `점유: ${Object.keys(state.resources ?? {}).join(', ') || '이동 예약 없음'}`;
   renderDiagnostics();
   refresh();

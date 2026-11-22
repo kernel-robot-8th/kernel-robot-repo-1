@@ -60,12 +60,19 @@ class FleetSocket(TrialSocket):
             "assign": {"robot", "role"},
             "submit": {"request"},
             "receipt": {"request_id"},
+            "follow": {"request_id", "operation"},
             "reconcile": {"command_id", "outcome", "note"},
             "release_workcell": {"request_id", "hold_command_id", "confirmed"},
             "release_hold": {"note"},
             "recover_stop": {"command_id", "stop_id", "boot_version", "note"},
             "confirm_arrival": {"robot", "command_id", "boot_version", "note"},
         }
+        if action == "reconcile" and request.get("outcome") == "repositioned_n16":
+            fields[action] |= {"confirmed", "boot_version"}
+            if request.get("confirmed") is not True or not isinstance(
+                request.get("boot_version"), str
+            ):
+                raise ValueError("N16 재배치·방향·통로를 확인하세요.")
         if (
             action not in fields
             or set(request) != {"action", "session_id", "expires_at"} | fields[action]
@@ -79,7 +86,11 @@ class FleetSocket(TrialSocket):
             self.control.assign(request["robot"], request["role"])
         elif action == "reconcile":
             reconcile(
-                self.control, request["command_id"], request["outcome"], request["note"]
+                self.control,
+                request["command_id"],
+                request["outcome"],
+                request["note"],
+                confirmed_boot=request.get("boot_version"),
             )
         elif action == "confirm_arrival":
             self.control.confirm_arrival_after_restart(
@@ -118,6 +129,8 @@ class FleetSocket(TrialSocket):
             return self._release_status(request["request_id"])
         elif action == "submit":
             self.control.submit(request["request"])
+        elif action == "follow":
+            self.control.follow_control(request["request_id"], request["operation"])
         elif action == "receipt":
             if self.control.config["mode"] != "simulation":
                 raise ValueError(

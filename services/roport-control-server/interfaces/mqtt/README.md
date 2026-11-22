@@ -11,7 +11,7 @@ Pinky와 OMX v2 Host에 같은 계약을 적용한다. OMX 단독·공동 작업
 
 | 토픽 | 메시지 | 방향 / QoS |
 | --- | --- | --- |
-| `roport/robot/{robot}/cmd` | `robot_state_request`, `line_route_command`, `set_drive_mode_command`, `nav_goal_command`, `arm_action_command`, `warehouse_load_command`, `robot_stop_command` | 관제 → 로봇 / 1 |
+| `roport/robot/{robot}/cmd` | `robot_state_request`, `line_route_command`, `set_drive_mode_command`, `nav_goal_command`, `follow_target_command`, `arm_action_command`, `warehouse_load_command`, `robot_stop_command` | 관제 → 로봇 / 1 |
 | `roport/workcell/shelf-01/cmd` | `robot_state_request`, `shelf_transfer_command`, `hold_release_command`, `robot_stop_command` | 관제 → 공동 작업셀 / 1 |
 | `roport/robot/{robot}/event`, `roport/workcell/shelf-01/event` | `robot_state`, `command_status` | 로봇/작업셀 → 관제 / 1 |
 | `roport/robot/{robot}/ack`, `roport/workcell/shelf-01/ack` | `event_stored` | 관제 → 발행 주체 / 1 |
@@ -63,3 +63,6 @@ npx @asyncapi/cli@latest generate fromTemplate services/roport-control-server/in
 ### 인도장 일반 HOLD 해제
 
 관제는 `roport/workcell/shelf-01/cmd` 채널로 `hold_release_command`를 보낸다. 현재 Host 기동과 보류된 공동 작업의 명령 ID, 운영자, 팔·물품·Pinky 확인이 필요하다. Host가 `command_status`로 보류 명령 ID를 반환하면 관제는 저장 후 `event_stored`를 보낸다. 동일 명령 재전달은 기존 결과를 반환한다. 해제는 Fleet 출발 승인과 별개다.
+
+
+카드 추종의 `follow_target_command`는 현재 기동, 지도 버전과 카드 번호 35~49를 바인딩한다. 관제의 일시 정지는 활성 추종 명령을 대상으로 `robot_stop_command`를 보낸다. 새 추종 명령을 승인하기 전에 Pinky의 최신 정차 상태를 확인한다.

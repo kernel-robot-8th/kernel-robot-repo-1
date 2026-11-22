@@ -104,7 +104,7 @@ public class ControlExchange {
     @Transactional
     public void publishReceipts(String site) {
         var rows = db.sql("""
-                SELECT r.receipt_id,r.pickup_id,r.order_id,v.task_ref
+                SELECT r.follow_card,r.receipt_id,r.pickup_id,r.order_id,v.task_ref
                 FROM receipts r JOIN control_task_views v USING(pickup_id)
                 WHERE v.site_id=? AND NOT EXISTS
                 (SELECT 1 FROM control_link_outbox b WHERE b.source_ref='receipt:' || r.receipt_id)""")
@@ -113,9 +113,11 @@ public class ControlExchange {
             var packages = db.sql("SELECT package_id FROM receipt_packages WHERE receipt_id=? ORDER BY package_id")
                     .param(row.get("receipt_id")).query(String.class).list();
             if (packages.isEmpty()) continue; // Receipt alone is not evidence for an unspecified package.
-            var message = envelope(site, "handover.receipt_recorded", Map.of(
+            var payload = new java.util.HashMap<String,Object>(Map.of(
                     "receipt_id", row.get("receipt_id"), "reservation_id", row.get("pickup_id"),
                     "order_id", row.get("order_id"), "package_ids", packages));
+            if (row.get("follow_card") != null) payload.put("follow_card", row.get("follow_card"));
+            var message = envelope(site, "handover.receipt_recorded", payload);
             message.put("task_id", row.get("task_ref"));
             enqueue("receipt:" + row.get("receipt_id"), message);
         }

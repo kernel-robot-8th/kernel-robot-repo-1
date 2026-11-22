@@ -111,7 +111,7 @@
               <fieldset id="fleet-recovery" disabled>
                 <legend>운영자 복구</legend>
                 <label>대상 명령 <select id="fleet-recovery-command"></select></label>
-                <label>처리 <select id="fleet-recovery-outcome"><option value="completed">저장된 완료 근거 반영</option><option value="not_started">장치가 거절한 작업 재배정</option><option value="removed">물품 제거·주차 확인 후 작업 종료</option></select></label>
+                <label>처리 <select id="fleet-recovery-outcome"><option value="completed">저장된 완료 근거 반영</option><option value="not_started">장치가 거절한 작업 재배정</option><option value="repositioned_n16">라인 유실 · N16 재배치 후 기존 입고 재준비</option><option value="removed">물품 제거·주차 확인 후 작업 종료</option></select></label>
                 <label>현장 확인 기록 <input id="fleet-recovery-note" maxlength="500" placeholder="기체·팔·물품 위치 확인 내용"></label>
                 <label><input id="fleet-recovery-confirm" type="checkbox"><span id="fleet-confirm-label">정지·물품 위치를 현장에서 확인했습니다.</span></label>
                 <button id="fleet-reconcile" type="button">선택 명령 복구 적용</button>

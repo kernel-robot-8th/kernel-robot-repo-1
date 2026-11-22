@@ -575,3 +575,42 @@ def test_robot_restart_recovers_inherited_command_without_automatic_motion(
             assert env.control.data["tasks"][key]["status"] == "CANCELED"
         assert operate("enable")["ok"]
         assert not env.executors["omx3"].tasks
+
+
+def test_follow_wait_pause_resume_and_return_over_mqtt(fleet_mqtt):
+    env = fleet_mqtt
+    control = env.control
+    inbound = env.submit("follow-box", "inbound")
+    env.pump(lambda: control.data["tasks"][inbound]["status"] == "COMPLETE")
+    key = env.submit("follow-box", "outbound")
+
+    def stage():
+        return control.data["tasks"][key]["stage"]
+
+    env.pump(lambda: stage() == "await_receipt")
+    control.receipt(key, 42)
+    assert stage() == "follow_pending" and control.next_action() is None
+    cart = next(
+        c for c in env.clients if c.robot == control.data["tasks"][key]["robot"]
+    )
+
+    def stopped():
+        return (
+            cart.robot not in control.awaiting_state
+            and not control.observed[cart.robot]["active_command_id"]
+            and control.observed[cart.robot]["state"]["stopped"]
+        )
+
+    for operation in ("approve", "resume"):
+        env.pump(stopped)
+        control.follow_control(key, operation)
+        env.pump(lambda: stage() == "following")
+        assert cart.driver.follow["payload"]["card_id"] == 42
+        first_pose = cart.driver.nav.pose.copy()
+        env.pump(lambda first_pose=first_pose: first_pose != cart.driver.nav.pose)
+        control.follow_control(key, "pause")
+        env.pump(lambda: stage() == "follow_paused" and stopped())
+        assert cart.driver.nav.quiescent() and cart.halted is None
+    control.follow_control(key, "return")
+    env.pump(lambda: stage() == "done")
+    assert control.observed[cart.robot]["state"]["node"] in {"H1", "H2"}

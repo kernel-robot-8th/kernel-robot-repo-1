@@ -357,10 +357,11 @@ class FleetControl:
                 task["robot_boot"] = boot_version
         self.save(data)
 
-    def receipt(self, request_id):
+    def receipt(self, request_id, follow_card=None):
         task = self.data["tasks"].get(request_id)
         if not task or task["stage"] not in {
             "await_receipt",
+            "follow_pending",
             "return_nav",
             "switch_line",
             "return_route",
@@ -371,8 +372,49 @@ class FleetControl:
             return
         data = deepcopy(self.data)
         data["tasks"][request_id].update(
-            stage="return_nav", status="RUNNING", reason=None
+            stage="return_nav" if follow_card is None else "follow_pending",
+            status="RUNNING",
+            reason=None,
         )
+        if follow_card is not None:
+            if type(follow_card) is not int or not 35 <= follow_card <= 49:
+                raise ValueError("invalid follow card")
+            data["tasks"][request_id]["follow_card"] = follow_card
+        self.save(data)
+
+    def check_follow_robot(self, task):
+        if self.config["mode"] == "hardware" and (
+            self.config.get("field_verified") is not True
+            or task["robot"] != self.config.get("verified_follow_robot")
+            or self.data["roles"].get(task["robot"]) != "smartcart"
+        ):
+            raise ValueError(
+                "현장에서 추종 시작·정지 보고를 확인한 스마트카트만 승인할 수 있습니다."
+            )
+
+    def follow_control(self, request_id, operation):
+        data = deepcopy(self.data)
+        task = data["tasks"].get(request_id)
+        transitions = {
+            ("approve", "follow_pending"): "follow_start",
+            ("pause", "follow_start"): "follow_stopping",
+            ("pause", "following"): "follow_stopping",
+            ("resume", "follow_paused"): "follow_start",
+            ("return", "follow_paused"): "return_nav",
+            ("return", "follow_pending"): "return_nav",
+        }
+        stage = transitions.get((operation, task and task["stage"]))
+        if not stage or not data["enabled"] or data["fault"]:
+            raise ValueError("현재 작업 단계에서 실행할 수 없습니다.")
+        if operation in {"approve", "resume"}:
+            self.check_follow_robot(task)
+        if stage == "follow_stopping" and not any(
+            c["task"] == request_id for c in data["commands"].values()
+        ):
+            stage = "follow_paused"  # Approval was withdrawn before dispatch.
+        if operation != "pause":
+            self.ready(task["robot"])
+        task.update(stage=stage, reason=None)
         self.save(data)
 
     def occupied(self, robot):
@@ -523,7 +565,18 @@ class FleetControl:
             key=lambda item: {"queued": 1, "return_route": 2}.get(item[1]["stage"], 0),
         )
         for request_id, task in pending:
-            if task["stage"] in {"done", "await_receipt"} or task["status"] == "HOLD":
+            if (
+                task["stage"]
+                in {
+                    "done",
+                    "await_receipt",
+                    "follow_pending",
+                    "following",
+                    "follow_stopping",
+                    "follow_paused",
+                }
+                or task["status"] == "HOLD"
+            ):
                 continue
             if any(c["task"] == request_id for c in data["commands"].values()):
                 continue
@@ -579,7 +632,12 @@ class FleetControl:
             elif stage in {"shelf_route", "transfer"}:
                 start = SLOTS[other["slot"]]["node"]
                 goals = {other["parking"] if other["role"] == "logistics" else "N12"}
-            elif stage in {"navigate", "await_receipt", "return_nav", "switch_line"}:
+            elif stage.startswith("follow") or stage in {
+                "navigate",
+                "await_receipt",
+                "return_nav",
+                "switch_line",
+            }:
                 start, goals = "N12", {other["parking"]}
             else:
                 continue
@@ -668,6 +726,23 @@ class FleetControl:
                     "to_mode": "nav2" if stage == "switch_nav" else "line",
                     "graph_version": self.config["graph_version"],
                     "map_version": self.config["map_version"],
+                },
+            )
+        if stage == "follow_start":
+            self.check_follow_robot(task)
+            if (
+                state["mode"] != "nav2"
+                or not state["nav2_ready"]
+                or not state["localization_ready"]
+            ):
+                raise ValueError("추종에는 Nav2 위치 추정이 필요합니다.")
+            return (
+                robot,
+                "follow_target_command",
+                {
+                    **base,
+                    "map_version": self.config["map_version"],
+                    "card_id": task["follow_card"],
                 },
             )
         if stage in {"navigate", "return_nav"}:
@@ -774,6 +849,8 @@ class FleetControl:
                     clearance=self.config.get("node_clearance_m"),
                 )
             )
+        elif kind == "follow_target_command":
+            resources.add("public:follow")
         elif kind in {"set_drive_mode_command", "nav_goal_command"}:
             resources.add("node:N12")
         else:
@@ -870,7 +947,25 @@ class FleetControl:
         data["commands"][message["command_id"]]["sequence"] = p["sequence"]
         data["events"][message["message_id"]] = message
         task = data["tasks"][active["task"]]
-        if p["status"] in {"failed", "rejected", "interrupted"}:
+        follow_paused = (
+            not data["fault"]
+            and task["stage"] == "follow_stopping"
+            and stop.get("reason") == "follow_pause"
+            and p["status"] == "interrupted"
+            and p.get("reason") == "follow_pause"
+            and p.get("result", {}).get("stopped") is True
+        )
+        if follow_paused:
+            task.update(stage="follow_paused", reason=None)
+            del data["commands"][message["command_id"]]
+            data["resources"] = self.reservations(data)
+        elif (
+            cmd["type"] == "follow_target_command"
+            and task["stage"] == "follow_start"
+            and p["status"] in {"accepted", "in_progress"}
+        ):
+            task.update(stage="following")
+        elif p["status"] in {"failed", "rejected", "interrupted"}:
             task.update(status="HOLD", reason=p.get("reason", p["status"]))
             data.update(fault=data["fault"] or task["reason"], enabled=False)
             for other in data["commands"].values():
@@ -898,7 +993,7 @@ class FleetControl:
                 "command_id": cmd["command_id"],
             }
         self.save(data)
-        if pinky_completed and cmd["type"] != "line_route_command":
+        if follow_paused or (pinky_completed and cmd["type"] != "line_route_command"):
             self.awaiting_state.add(cmd["target"])
         if p["status"] == "in_progress" and not data["fault"]:
             self.route_progress(message["command_id"], p.get("result", {}).get("node"))

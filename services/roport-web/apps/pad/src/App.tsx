@@ -64,6 +64,8 @@ export function App() {
   const { step, notice, lastPickup } = state;
   const busy = state.request !== null;
   const [now, setNow] = useState(() => Date.now());
+  const [card, setCard] = useState(35);
+  const [requestedFollow, setRequestedFollow] = useState(false);
   const nextToken = useRef(0);
   // 같은 렌더 안의 연속 터치로 요청이 두 번 나가지 않게 reduce의 요청 상태를 즉시 따라가는 값
   const inFlight = useRef<{ token: number; stop: boolean } | null>(null);
@@ -111,8 +113,11 @@ export function App() {
       command === 'PAUSE',
     );
 
-  const confirm = (target: VerifiedPickup) =>
-    send(() => api.confirmReceipt(target), (token, res) => dispatch({ type: 'receiptAnswered', token, res }));
+  const confirm = (target: VerifiedPickup, followCard?: number) =>
+    send(() => api.confirmReceipt(target, followCard), (token, res) => {
+      if (res?.accepted) setRequestedFollow(followCard !== undefined);
+      dispatch({ type: 'receiptAnswered', token, res });
+    });
 
   function reset() {
     api.resetDemo();
@@ -309,10 +314,16 @@ export function App() {
         {step.name === 'receipt' && (
           <Split visual={<StatusIcon name="bag" />}>
             <h1>물품을 모두 받으셨나요?</h1>
-            <p className="lead">수령을 확인하면 카트는 대기 장소로 돌아갑니다.</p>
+            <p className="lead">{api.FOLLOW_AVAILABLE ? '바로 복귀하려면 수령 확인을, 추종하려면 카드 번호를 선택하고 추종 요청을 눌러 주세요.' : '수령을 확인하면 카트는 대기 장소로 돌아갑니다.'}</p>
             <button className="btn btn-primary btn-block" disabled={busy} onClick={() => confirm(step.pickup)}>
               {busy ? '저장 중…' : '수령 확인'}
             </button>
+            {api.FOLLOW_AVAILABLE && <>
+              <label>추종 카드 번호 <select value={card} disabled={busy} onChange={e => setCard(Number(e.target.value))}>
+                {Array.from({length: 15}, (_, i) => i + 35).map(n => <option key={n}>{n}</option>)}
+              </select></label>
+              <button className="btn btn-secondary" disabled={busy} onClick={() => confirm(step.pickup, card)}>수령 확인 및 추종 요청</button>
+            </>}
           </Split>
         )}
 
@@ -320,7 +331,7 @@ export function App() {
           <div className="finale">
             <StatusIcon name="check" tone="done" />
             <h1>수령이 완료되었습니다</h1>
-            <p className="lead">수령 확인을 저장했습니다. 카트 복귀는 관제에서 처리합니다.</p>
+            <p className="lead">{requestedFollow ? '추종 요청을 접수했습니다. 관제 승인 후 출발합니다.' : '수령 확인을 저장했습니다. 카트 복귀는 관제에서 처리합니다.'}</p>
             {api.RECEIPT_IS_DEMO && <p className="demo-note">데모: 수령 기록은 아직 서버에 연결 전이라 저장되지 않았습니다.</p>}
             <p className="tagline">로봇이 만드는 더 편리한 여행의 시작, RO:PORT</p>
           </div>

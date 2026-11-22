@@ -8,7 +8,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 class HandoverController {
-    record Confirmation(String verificationId, String confirmationRequestId) {}
+    record Confirmation(String verificationId, String confirmationRequestId, Integer followCard) {}
     private final HandoverService service;
     HandoverController(HandoverService service) { this.service = service; }
 
@@ -17,6 +17,8 @@ class HandoverController {
         if (request == null || request.verificationId() == null || request.confirmationRequestId() == null
                 || !CartApiConfig.ID.matcher(request.verificationId()).matches()
                 || !CartApiConfig.ID.matcher(request.confirmationRequestId()).matches()) throw ApiException.badRequest("verificationId·confirmationRequestId가 필요합니다.");
-        return service.confirm(cart, request.verificationId(), request.confirmationRequestId());
+        if (request.followCard() != null && (request.followCard() < 35 || request.followCard() > 49))
+            throw ApiException.badRequest("추종 카드 번호는 35~49입니다.");
+        return service.confirm(cart, request.verificationId(), request.confirmationRequestId(), request.followCard());
     }
 }

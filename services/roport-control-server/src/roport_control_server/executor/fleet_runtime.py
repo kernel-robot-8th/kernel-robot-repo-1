@@ -131,6 +131,8 @@ class FleetRuntime:
             ),
             None,
         )
+        if stop is None:
+            stop = c.data.get("follow_stops", {}).get(event["command_id"])
         if stop:
             if (
                 event["source"] != stop["target"]
@@ -150,8 +152,12 @@ class FleetRuntime:
     def publish_stops(self):
         c = self.control
         for cid, command in list(c.data["commands"].items()):
-            if (
+            pause = (
                 not c.data["fault"]
+                and c.data["tasks"][command["task"]]["stage"] == "follow_stopping"
+            )
+            if (
+                (not c.data["fault"] and not pause)
                 or command.get("stop_published")
                 or command.get("manual_stop")
             ):
@@ -169,9 +175,16 @@ class FleetRuntime:
                     for e in c.data["events"].values()
                 ):
                     continue  # Pinky has already ended this command; recovery still checks idle state.
-                stop = new_stop(c.config["control_id"], active, boot)
+                stop = new_stop(
+                    c.config["control_id"],
+                    active,
+                    boot,
+                    reason="follow_pause" if pause else "control_hold",
+                )
                 data = deepcopy(c.data)
                 data["commands"][cid]["stop"] = stop
+                if pause:
+                    data.setdefault("follow_stops", {})[stop["command_id"]] = stop
                 c.save(data)
             if not stop_current(stop, observed_boot, datetime.now(UTC)):
                 continue
@@ -348,7 +361,11 @@ def service_tick(control, store, *, now=None):
                 in receipt["message"]["payload"]["package_ids"]
                 and child["stage"] == "await_receipt"
             ):
-                control.receipt(request_id)
+                follow_card = receipt["message"]["payload"].get("follow_card")
+                if follow_card is None:
+                    control.receipt(request_id)
+                else:
+                    control.receipt(request_id, follow_card)
 
 
 def main(*, field_loader=None):

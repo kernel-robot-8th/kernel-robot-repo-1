@@ -248,3 +248,281 @@ def test_timeout_stops_isolated_child_session(tmp_path):
     finally:
         owner.kill()
         owner.wait()
+
+
+def test_d660_line_loss_keeps_evidence(tmp_path):
+    from roport_control_server.adapters.mqtt.mqtt import MqttConfig
+    from roport_control_server.executor.fleet import TARGETS
+
+    """Replay the field IR failure; optional Chromium reload shares this actual owner."""
+    import time
+    from datetime import UTC, datetime
+    from queue import Empty
+
+    from roport_control_server.adapters.mqtt import field_wire as wire
+    from roport_control_server.adapters.mqtt.mqtt import MqttTransport
+
+    binary = os.environ.get("MOSQUITTO_BIN") or shutil.which("mosquitto")
+    if not binary:
+        if os.environ.get("REQUIRE_MQTT_TESTS") == "1":
+            pytest.fail("Mosquitto required")
+        pytest.skip("Mosquitto required")
+    port = free_port()
+    url = f"http://127.0.0.1:{port}"
+    # Keep the Unix socket path below the platform limit even with long pytest paths.
+    with tempfile.TemporaryDirectory(prefix="rp-line-") as folder:
+        root = Path(folder) / "run"
+        with (tmp_path / "launcher.log").open("w") as log:
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-u",
+                    "tools/run_virtual_fleet.py",
+                    "--d660-line-loss",
+                    "--output",
+                    str(root),
+                    "--port",
+                    str(port),
+                    "--mosquitto",
+                    binary,
+                ],
+                cwd=SERVICE,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+            try:
+
+                def ready():
+                    assert proc.poll() is None, "simulation launcher exited"
+                    return "조작 키:" in (tmp_path / "launcher.log").read_text()
+
+                wait_until(ready, timeout=30)
+                broker_port = int((root / "mosquitto.conf").read_text().split()[1])
+                spy = MqttTransport(
+                    MqttConfig("127.0.0.1", "line-loss-spy", broker_port),
+                    [wire.topic(r, "cmd") for r in TARGETS],
+                )
+                spy.start()
+                try:
+                    key = (root / "ui-key.txt").read_text().strip()
+                    state = fetch(url)
+                    send(
+                        url,
+                        key,
+                        state,
+                        "submit",
+                        request={
+                            "request_id": "field-replay",
+                            "operation": "inbound",
+                            "package_id": "package-small-1",
+                            "goal": None,
+                        },
+                    )
+                    send(url, key, state, "enable")
+                    messages = []
+
+                    def drain():
+                        assert spy.ready, "command observer disconnected"
+                        while True:
+                            try:
+                                delivery = spy.receive(0)
+                            except Empty:
+                                return
+                            messages.append(wire.decode(delivery.payload))
+                            spy.ack(delivery)
+
+                    def held():
+                        time.sleep(0.2)
+                        drain()
+                        return fetch(url)["fault"]
+
+                    wait_until(held, timeout=120)
+                    cutoff = datetime.now(UTC)
+
+                    def evidence():
+                        with urlopen(
+                            url + "/api/snapshot?mode=fleet", timeout=3
+                        ) as response:
+                            data = json.load(response)
+                        row = next(
+                            r for r in data["robots"] if r["robot_id"] == "pinky1"
+                        )
+                        f = data["fleet"]
+                        assert f["tasks"]["field-replay"]["reason"] == "line_lost", f[
+                            "fault"
+                        ]
+                        assert f["resources"]["edge:N10-N18"] == "field-replay"
+                        assert (
+                            not f["enabled"]
+                            and f["tasks"]["field-replay"]["status"] == "HOLD"
+                        )
+                        if (
+                            f["poses"]["pinky1"]["pose"] is not None
+                            or row["status"]["node"] is not None
+                        ):
+                            return None
+                        assert row["pose_stale"] and not row["pose_live"]
+                        assert (
+                            row["pose"] and "마지막 확인 노드 N10" in row["pose_source"]
+                        )
+                        return row["pose"], f["resources"]
+
+                    wait_until(evidence)
+                    before = evidence()
+                    # Queue competing work while the failed robot owns the leg.
+                    send(
+                        url,
+                        key,
+                        state,
+                        "submit",
+                        request={
+                            "request_id": "second",
+                            "operation": "inbound",
+                            "package_id": "second-box",
+                            "goal": None,
+                        },
+                    )
+
+                    # Observe two new, non-renewing status polls after HOLD.
+                    def two_polls():
+                        drain()
+                        return (
+                            sum(
+                                m["type"] == "robot_state_request"
+                                and m["target"] == "pinky1"
+                                and wire.timestamp(m["sent_at"]) > cutoff
+                                for m in messages
+                            )
+                            >= 2
+                        )
+
+                    wait_until(two_polls, timeout=10)
+                    assert evidence() == before
+                    stopped = fetch(url)
+                    (cid,) = stopped["commands"]
+                    note = "N16 정지·N14 방향·통로 확인"
+                    if os.environ.get("ROPORT_TEST_BROWSER") == "1":
+                        browser = subprocess.Popen(
+                            [
+                                "node",
+                                "tests/line_loss_reload.mjs",
+                                url,
+                                str(tmp_path / "line-loss-reload.png"),
+                                str(root),
+                            ],
+                            cwd=SERVICE,
+                        )
+                        try:
+
+                            def browser_finished():
+                                drain()
+                                return browser.poll() is not None
+
+                            wait_until(browser_finished, timeout=100)
+                            assert browser.returncode == 0
+                        finally:
+                            if browser.poll() is None:
+                                browser.kill()
+                            browser.wait()
+
+                    else:
+                        from urllib.error import HTTPError
+
+                        def confirm(boot):
+                            return send(
+                                url,
+                                key,
+                                state,
+                                "reconcile",
+                                command_id=cid,
+                                outcome="repositioned_n16",
+                                note=note,
+                                confirmed=True,
+                                boot_version=boot,
+                            )
+
+                        with pytest.raises(HTTPError) as denied:
+                            confirm(stopped["robots"]["pinky1"]["boot_version"])
+                        assert denied.value.code == 409
+                        os.kill(
+                            json.loads((root / "run.json").read_text())["pids"][
+                                "pinky1"
+                            ],
+                            signal.SIGUSR1,
+                        )
+                        wait_until(
+                            lambda: (
+                                fetch(url)["robots"]["pinky1"]["state"]["node"] == "N16"
+                            )
+                        )
+                        parked = fetch(url)
+                        assert parked["resources"] == before[1]
+                        confirm(parked["robots"]["pinky1"]["boot_version"])
+                        send(url, key, state, "release_hold", note=note)
+                    standby = fetch(url)
+                    assert standby["fault"] is None and not standby["enabled"]
+                    assert (
+                        not standby["commands"]
+                        and "edge:N10-N18" not in standby["resources"]
+                    )
+                    assert (
+                        standby["tasks"]["field-replay"]["stage"] == "warehouse_route"
+                    )
+                    assert standby["tasks"]["second"]["status"] == "QUEUED"
+                    assert standby["slots"] == stopped["slots"]
+                    assert (
+                        standby["recoveries"][cid]["confirmed_boot"]
+                        == standby["robots"]["pinky1"]["boot_version"]
+                    )
+                    hold_cutoff = cutoff
+                    cutoff = datetime.now(UTC)
+                    wait_until(two_polls, timeout=10)
+
+                    work = [
+                        (m["target"], m["type"])
+                        for m in messages
+                        if m["type"]
+                        not in {"robot_state_request", "robot_stop_command"}
+                    ]
+                    assert work == [("pinky1", "line_route_command")], work
+                    assert not any(
+                        m["payload"].get("keep_running_command_id")
+                        for m in messages
+                        if wire.timestamp(m["sent_at"]) > hold_cutoff
+                    )
+                    final = fetch(url)
+                    assert final["tasks"]["second"]["status"] == "QUEUED"
+                    (tmp_path / "line-loss-result.json").write_text(
+                        json.dumps(
+                            {
+                                "route": next(
+                                    m["payload"]["route"]
+                                    for m in messages
+                                    if m["type"] == "line_route_command"
+                                ),
+                                "reason": stopped["tasks"]["field-replay"]["reason"],
+                                "reserved_by": stopped["resources"]["edge:N10-N18"],
+                                "last_confirmed_node": stopped["last_nodes"]["pinky1"],
+                                "failed_node": stopped["robots"]["pinky1"]["state"][
+                                    "node"
+                                ],
+                                "standby_node": final["robots"]["pinky1"]["state"][
+                                    "node"
+                                ],
+                                "standby_enabled": final["enabled"],
+                                "standby_commands": final["commands"],
+                                "recovery": final["recoveries"][cid],
+                                "second_request": final["tasks"]["second"]["status"],
+                                "work_commands": work,
+                                "browser_reload": os.environ.get("ROPORT_TEST_BROWSER")
+                                == "1",
+                            },
+                            indent=2,
+                        )
+                        + "\n"
+                    )
+                finally:
+                    spy.stop()
+            finally:
+                proc.terminate()
+                proc.wait(timeout=30)

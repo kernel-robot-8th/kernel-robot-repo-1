@@ -32,14 +32,14 @@ class HandoverService {
     }
 
     @Transactional
-    public Map<String, Object> confirm(String cart, String verificationId, String requestId) {
+    public Map<String, Object> confirm(String cart, String verificationId, String requestId, Integer followCard) {
         // Serializes retry IDs and receipt assignment; no device or external network calls in this transaction.
         db.sql("SELECT pg_advisory_xact_lock(71519006)").query().singleValue();
-        var previous = db.sql("SELECT r.receipt_id,a.verification_id,a.cart_ref FROM receipts r JOIN handover_approvals a USING(approval_id) WHERE confirmation_request_id=?")
+        var previous = db.sql("SELECT r.receipt_id,r.follow_card,a.verification_id,a.cart_ref FROM receipts r JOIN handover_approvals a USING(approval_id) WHERE confirmation_request_id=?")
                 .param(requestId).query().listOfRows().stream().findFirst();
         if (previous.isPresent()) {
             var row = previous.get();
-            if (!cart.equals(row.get("cart_ref")) || !verificationId.equals(row.get("verification_id"))) throw conflict("IDEMPOTENCY_CONFLICT");
+            if (!java.util.Objects.equals(followCard, row.get("follow_card")) || !cart.equals(row.get("cart_ref")) || !verificationId.equals(row.get("verification_id"))) throw conflict("IDEMPOTENCY_CONFLICT");
             return result((String) row.get("receipt_id"));
         }
         var found = db.sql("""
@@ -81,8 +81,8 @@ class HandoverService {
         db.sql("INSERT INTO handover_approvals(approval_id,pickup_id,order_id,verification_id,task_ref,cart_ref,order_revision,manifest_hash,consumed_at) VALUES(?,?,?,?,?,?,?,?,now())")
                 .param(approval).param(pickup).param(order).param(verificationId).param(view.get("task_ref")).param(cart)
                 .param(verified.get("revision")).param(QrTokens.hash(json.writeValueAsString(packages.stream().sorted().toList()))).update();
-        db.sql("INSERT INTO receipts(receipt_id,order_id,pickup_id,approval_id,confirmation_request_id,confirmed_by,channel,received_at,order_revision) VALUES(?,?,?,?,?,?,'CART',now(),?)")
-                .param(receipt).param(order).param(pickup).param(approval).param(requestId).param("cart:" + cart).param(verified.get("revision")).update();
+        db.sql("INSERT INTO receipts(receipt_id,order_id,pickup_id,approval_id,confirmation_request_id,confirmed_by,channel,received_at,order_revision,follow_card) VALUES(?,?,?,?,?,?,'CART',now(),?,?)")
+                .param(receipt).param(order).param(pickup).param(approval).param(requestId).param("cart:" + cart).param(verified.get("revision")).param(followCard).update();
         for (String id : packages) {
             db.sql("INSERT INTO receipt_packages(receipt_id,order_id,package_id,package_revision) SELECT ?,order_id,package_id,package_revision FROM packages WHERE package_id=?")
                     .param(receipt).param(id).update();

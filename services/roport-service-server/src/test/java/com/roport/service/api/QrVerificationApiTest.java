@@ -316,6 +316,22 @@ class QrVerificationApiTest {
     }
 
     @Test
+    void receiptPreservesRequestedFollowCardOnRetry() throws Exception {
+        packageRow("a-" + s);
+        arrived("a-" + s);
+        String verification = verify("verify-" + s, "RESERVATION_NO", reservationNo).body().path("verificationId").asString();
+        var body = new java.util.HashMap<String, Object>(java.util.Map.of(
+                "verificationId", verification, "confirmationRequestId", "follow-" + s, "followCard", 50));
+        assertThat(call(cart, "POST", "/cart-api/receipts", json.writeValueAsString(body), cartId()).status()).isEqualTo(400);
+        body.put("followCard", 42);
+        var receipt = call(cart, "POST", "/cart-api/receipts", json.writeValueAsString(body), cartId());
+        assertThat(receipt.status()).as(receipt.body().toString()).isEqualTo(200);
+        assertThat(call(cart, "POST", "/cart-api/receipts", json.writeValueAsString(body), cartId()).body())
+                .isEqualTo(receipt.body());
+        assertThat(receive(verification, "follow-" + s, cartId()).status()).isEqualTo(409);
+    }
+
+    @Test
     void receiptRequiresExplicitConfirmationAndMatchingCartArrival() throws Exception {
         packageRow("a-" + s);
         String verified = verify("verify-" + s, "RESERVATION_NO", reservationNo).body().path("verificationId").asString();

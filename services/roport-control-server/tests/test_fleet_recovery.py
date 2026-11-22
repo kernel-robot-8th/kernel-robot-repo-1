@@ -1,3 +1,4 @@
+import math
 from copy import deepcopy
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -18,7 +19,7 @@ def held(fleet):
     return cmd
 
 
-def terminal(fleet, cmd, status):
+def terminal(fleet, cmd, status, reason="test"):
     message = wire.build_message(
         "command_status",
         cmd["target"],
@@ -28,7 +29,7 @@ def terminal(fleet, cmd, status):
             "observed_at": cmd["sent_at"],
             "sequence": 4,
             "status": status,
-            "reason": "test",
+            "reason": reason,
             "result": {},
         },
         command_id=cmd["command_id"],
@@ -400,3 +401,69 @@ def test_workcell_operator_command_waits_for_host_result(monkeypatch, capsys):
         "host_release_status",
     ]
     assert "일반 HOLD를 해제" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "issue",
+    [
+        "wrong_node",
+        "wrong_heading",
+        "old_boot",
+        "stale",
+        "before_failure",
+        "wrong_map",
+        "other_robot",
+        "other_failure",
+        None,
+    ],
+)
+def test_repositioned_line_loss_requires_current_evidence_and_separate_start(
+    fleet, issue
+):
+    submit(fleet, "recover")
+    cmd = dispatch(fleet)
+    terminal(
+        fleet, cmd, "failed", "node_missed" if issue == "other_failure" else "line_lost"
+    )
+    robot, cid = cmd["target"], cmd["command_id"]
+    report = fleet.observed[robot]
+    boot = "new-placement-boot"
+    report.update(boot_version=boot, observed_at=datetime.now(UTC).isoformat())
+    pos = fleet.config["node_positions"]
+    x, y = pos["N16"]
+    yaw = math.atan2(pos["N14"][1] - y, pos["N14"][0] - x)
+    report["state"].update(node="N16", heading_rad=yaw)
+    if issue == "wrong_node":
+        report["state"]["node"] = "N17"
+    elif issue == "wrong_heading":
+        report["state"]["heading_rad"] += math.pi
+    elif issue == "old_boot":
+        boot = cmd["payload"]["expected_boot_version"]
+    elif issue == "stale":
+        fleet.heard[robot] -= 5
+    elif issue == "before_failure":
+        report["observed_at"] = cmd["sent_at"]
+    elif issue == "wrong_map":
+        report["state"]["map_version"] = "old"
+    elif issue == "other_robot":
+        fleet.observed["pinky2"]["state"]["node"] = "N16"
+    args = (fleet, cid, "repositioned_n16", "N16 N14 확인")
+    before = deepcopy(fleet.data)
+    if issue:
+        with pytest.raises(ValueError):
+            reconcile(*args, confirmed_boot=boot)
+        assert fleet.data == before
+        return
+    reconcile(*args, confirmed_boot=boot)
+    saved = deepcopy(fleet.data)
+    reconcile(*args, confirmed_boot=boot)
+    assert fleet.data == saved
+    assert fleet.data["tasks"]["inbound-recover"]["robot_boot"] == boot
+    assert fleet.data["slots"] == before["slots"]
+    release(fleet, "출발 대기")
+    assert dispatch(fleet) is None
+    fleet.enable()
+    retry = dispatch(fleet)
+    assert retry["type"] == "line_route_command" and retry["command_id"] != cid
+    assert retry["payload"]["expected_boot_version"] == boot
+    assert retry["payload"]["route"][:2] == ["N16", "N14"]

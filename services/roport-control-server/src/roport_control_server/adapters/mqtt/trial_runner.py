@@ -49,6 +49,8 @@ def run(
     driver,
     host_metrics_period_s=None,
     host_temp_path=None,
+    *,
+    stop_event=None,
 ):
     for name in (
         "observe",
@@ -75,7 +77,7 @@ def run(
             f"MQTT endpoint running: {role}/{robot['robot_id']} (not motion readiness)",
             flush=True,
         )
-        while True:
+        while stop_event is None or not stop_event.is_set():
             client.poll(0.1)
             # Only the MQTT owner loop renews the independent robot drive lease.
             heartbeat = getattr(driver, "heartbeat", None)
