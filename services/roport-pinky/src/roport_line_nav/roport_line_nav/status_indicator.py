@@ -339,7 +339,7 @@ def make_node(**kwargs):
 
         def tick(self):
             now = self._now()
-            if self.pending is not None and self.pending.done():
+            if self.cart and self.pending is not None and self.pending.done():
                 try:
                     response = self.pending.result()
                     applied = response.success if self.backend == 'led' else response.result

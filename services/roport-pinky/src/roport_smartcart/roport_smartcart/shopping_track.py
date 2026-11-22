@@ -29,57 +29,33 @@ class Track:
     def __init__(self):
         self.samples = deque(maxlen=12)
         self.streak = 0
-        self.edge = False
-        self.centers = deque(maxlen=4)
-        self.prediction = None
+        self.observation_stamp = float('-inf')
         self.state = 'SEARCHING'
 
-    def update(self, stamp, point, edge, ambiguous=False, center=None):
+    def update(self, stamp, point, ambiguous=False):
+        # Loss is an observation too: an older result must not undo it.
+        if not math.isfinite(stamp) or stamp <= self.observation_stamp:
+            return False
+        self.observation_stamp = stamp
         if self.samples:
             last, previous = self.samples[-1]
-            if stamp <= last:
-                return
             # A full onboard YOLO + appearance pass can take nearly a second.
             if stamp - last > 1.15:
                 self.streak = 0
-            if point and math.dist(point, previous) > min(.50, .09 + .45*(stamp-last)):
+            if point is not None and math.dist(point, previous) > min(.50, .09 + .45*(stamp-last)):
                 point, ambiguous = None, True
-        if point is not None:
+        if point is not None and all(map(math.isfinite, point)) and not ambiguous:
             self.streak += 1
             self.samples.append((stamp, point))
-            if self.streak==1:
-                self.centers.clear()
-            if center is not None:
-                self.centers.append(center)
-            drift = [b-a for a,b in zip(self.centers,list(self.centers)[1:])]
-            turning = (len(drift)>=2 and abs(sum(drift))>.055
-                       and (min(drift)>0 or max(drift)<0))
-            self.edge, self.prediction = edge or turning, None
             self.state = 'FOLLOWING' if self.streak >= 3 else 'VERIFYING'
-            return
-        if ambiguous:
-            self.prediction = None
-            self.edge = False
-        elif self.edge and self.streak >= 3 and self.samples:
-            last, pos = self.samples[-1]
-            older = next(((t, p) for t, p in self.samples if .20 <= last-t <= .8), None)
-            if older:
-                dt, origin = last-older[0], older[1]
-                dx, dy = pos[0]-origin[0], pos[1]-origin[1]
-                distance = math.hypot(dx, dy)
-                if .025 <= distance and distance/dt <= .45:
-                    scale = min(.7/dt, .12/distance)
-                    self.prediction = (pos[0]+scale*dx, pos[1]+scale*dy)
-        self.streak = 0
-        self.state = ('AMBIGUOUS' if ambiguous else 'CORNER'
-                      if self.prediction and stamp-self.samples[-1][0] <= 2 else 'SEARCHING')
+        else:
+            self.streak = 0
+            self.state = 'AMBIGUOUS' if ambiguous else 'SEARCHING'
+        return True
 
     def target(self):
-        if self.state == 'FOLLOWING':
-            return self.samples[-1][1]
-        if self.state == 'CORNER':
-            return self.prediction
-        return None
+        # History is identity evidence only; it is never an extrapolated motion target.
+        return self.samples[-1][1] if self.state == 'FOLLOWING' and self.samples else None
 
 
 def foot_position(box, info, camera, floor_z=0.):

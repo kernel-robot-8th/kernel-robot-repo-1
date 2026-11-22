@@ -20,21 +20,35 @@ def serve(shop, dist, port):
             self.end_headers()
             self.wfile.write(raw)
 
+        def loopback_host(self):
+            host = self.headers.get('Host', '')
+            if host in (f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'):
+                return host
+            return None
+
         def do_GET(self):
+            host = self.loopback_host()
             url = urlsplit(self.path)
+            origin = self.headers.get('Origin')
+            if (not host or (url.path.startswith('/shopping/') and (
+                    (origin is not None and origin != 'http://' + host)
+                    or self.headers.get('Sec-Fetch-Site') in ('cross-site', 'same-site')))):
+                self.reply(403, {})
+                return
+            session = self.headers.get('X-Shopping-Session')
             if url.path == '/shopping/status':
-                self.reply(200, shop.status(self.headers.get('X-Shopping-Session')))
+                self.reply(200, shop.status(session))
             elif url.path == '/shopping/image':
                 frame = parse_qs(url.query).get('frame', [None])[0]
-                jpeg = shop.image(frame)
+                jpeg = shop.image(frame, session)
                 self.reply(200, jpeg, 'image/jpeg') if jpeg else self.reply(404, {})
             else:
                 super().do_GET()
 
         def do_POST(self):
-            host = self.headers.get('Host','')
-            if (host not in (f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}')
-                or self.headers.get('Origin') != 'http://'+host or self.headers.get_content_type() != 'application/json'):
+            host = self.loopback_host()
+            if (not host or self.headers.get('Origin') != 'http://' + host
+                    or self.headers.get_content_type() != 'application/json'):
                 self.reply(403, {})
                 return
             if not self.path.startswith('/shopping/'):

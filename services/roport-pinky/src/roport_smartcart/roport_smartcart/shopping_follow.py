@@ -24,8 +24,8 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from .appearance_reid import DinoEncoder, normalized, padded_rgb
 from .box_detector import SelectedProposals, ShoppingDetector, proposals
 from .session_target import SessionTracker, _box
-from .shopping_nav import (MIN_FOLLOW_GAP_M, RETARGET_ANGLE, ShoppingNav,
-                           following_distances, target_bearing_change)
+from .shopping_nav import (MIN_FOLLOW_GAP_M, ShoppingNav, costmap_stamp_ns,
+                           following_distances, fresh_costmap)
 from .shopping_track import ProximityNotice, Track, bypass_waypoint, foot_position
 
 
@@ -90,12 +90,12 @@ class Shopping:
         self.drive = 'HOLD'
         self.reason = ''
         self.frame_box = None
-        self.paused_at = None
         self.still_since = None
         self.odom_at = float('-inf')
         self.close_streak = 0
         self.grid = self.hit = None
-        self.grid_at = self.hit_at = float('-inf')
+        self.grid_source_ns = 0
+        self.hit_at = float('-inf')
         node.create_subscription(OccupancyGrid, 'global_costmap/costmap', self.costmap, 1)
         if calibration is None:
             node.create_subscription(CameraInfo, 'camera/camera_info', self.camera_info, qos_profile_sensor_data)
@@ -143,10 +143,18 @@ class Shopping:
             self.scan_at = stamp
 
     def costmap(self, msg):
-        q = msg.info.origin.orientation
-        if (msg.header.frame_id == 'map' and msg.info.resolution > 0
-                and len(msg.data) == msg.info.width*msg.info.height and abs(q.w)>.99999):
-            self.grid, self.grid_at = msg, time.monotonic()
+        receipt = time.monotonic()
+        sample = (msg, receipt)
+        # Clear instead of keeping a previous proof if the incoming grid is unusable.
+        if fresh_costmap(sample, self.node.get_clock().now().nanoseconds, receipt) is None:
+            self.grid = None
+            return
+        stamp = costmap_stamp_ns(msg)
+        if stamp > self.grid_source_ns:
+            self.grid, self.grid_source_ns = sample, stamp
+        elif stamp < self.grid_source_ns:
+            self.grid = None
+        # Redelivery of the same observation cannot refresh its monotonic receipt.
 
     def sonar(self, msg):
         stamp = self.received(msg)
@@ -222,14 +230,29 @@ class Shopping:
         self.armed = False
         self.reason = ''
 
+    def hold_motion(self, now):
+        self.armed = False
+        self.nav.cancel()
+        self.nav.heartbeat(False, now)
+        self.drive = 'HOLD'
+
+    def expire_operator(self, now):
+        idle = now-self.touch
+        if self.armed and idle >= 1.5:
+            self.hold_motion(now)
+        if self.owner and idle >= 2.:
+            self.reset()
+            self.owner = None
+
     def command(self, action, body):
         with self.lock:
             now = time.monotonic()
+            self.expire_operator(now)
             key = body.get('session')
             if not isinstance(key, str) or not 16 <= len(key) <= 64:
                 raise ValueError('쇼핑 화면을 다시 열어 주세요')
             if self.owner != key:
-                if action != 'capture' or self.owner and now-self.touch < 2:
+                if action not in ('preview', 'capture') or self.owner and now-self.touch < 2:
                     raise ValueError('다른 화면에서 사용 중이거나 세션이 종료되었습니다')
                 self.reset()
                 self.owner = key
@@ -240,8 +263,8 @@ class Shopping:
                     raise ValueError('이전 요청이 만료되었습니다')
                 self.order = order
             if action == 'heartbeat':
-                if now-self.touch > 2:
-                    self.armed = False
+                self.touch = now
+            elif action == 'preview':
                 self.touch = now
             elif action == 'capture':
                 self.reset()
@@ -287,7 +310,7 @@ class Shopping:
                 self.gap_selected = True
                 self.armed = True
             elif action in ('stop', 'end'):
-                self.armed = False
+                self.hold_motion(now)
                 self.proximity = ProximityNotice()
                 if action == 'end':
                     if not self.stopped(now):
@@ -299,9 +322,9 @@ class Shopping:
             return self.status(key)
 
     def can_start(self, now):
-        return bool(self.seed and self.track.state in ('FOLLOWING','CLOSE') and now-self.observed < .55
+        return bool(self.seed and self.track.state in ('FOLLOWING','CLOSE') and 0 <= now-self.observed < .55
                     and (not self.field_camera or self.gap_selected or self.track.state == 'CLOSE')
-                    and now-self.touch <= 1.5 and not self.reason
+                    and now-self.touch < 1.5 and not self.reason
                     and (not self.nav.fault or self.nav.fault == 'PATH_BLOCKED' and self.stopped(now))
                     and self.nav.guard.get('owner')=='none' and not self.nav.handle and not self.nav.pending)
 
@@ -309,9 +332,9 @@ class Shopping:
         with self.lock:
             own = key == self.owner and self.owner is not None
             frozen = self.frozen if own else None
-            return dict(stopped=self.stopped(time.monotonic()), simulation=self.node.get_parameter('use_sim_time').value, canStart=bool(own and not self.armed and self.can_start(time.monotonic())), selected=bool(own and self.seed), armed=self.armed if own else False,
+            return dict(ownsCamera=own, stopped=self.stopped(time.monotonic()), simulation=self.node.get_parameter('use_sim_time').value, canStart=bool(own and not self.armed and self.can_start(time.monotonic())), selected=bool(own and self.seed), armed=self.armed if own else False,
                         state=self.track.state if own else 'SEARCHING', drive=self.drive if own else 'HOLD',
-                        notice=self.indicator() if own else 'INACTIVE', reason=self.reason, age=round(time.monotonic()-self.observed, 2) if self.observed>0 else None,
+                        notice=self.indicator() if own else 'INACTIVE', reason=self.reason if own else '', age=round(time.monotonic()-self.observed, 2) if own and self.observed>0 else None,
                         position=self.track.samples[-1][1] if own and self.track.samples else None, frame=frozen[0] if frozen else None,
                         detecting=bool(frozen and frozen[1][2] is None),
                         boxes=[i['box'] for i in frozen[1][2]] if frozen and frozen[1][2] else [],
@@ -328,8 +351,10 @@ class Shopping:
             return 'PAUSED'
         return 'COME_CLOSER' if self.proximity.active else 'SHOPPING'
 
-    def image(self, frame_id):
+    def image(self, frame_id, key):
         with self.lock:
+            if self.owner is None or key != self.owner or time.monotonic()-self.touch >= 2:
+                return None
             if frame_id:
                 if not self.frozen or self.frozen[0] != frame_id:
                     return None
@@ -387,7 +412,7 @@ class Shopping:
                 if version != generation:
                     tracker = SessionTracker(self.encoder, lambda _: boxes, *seed)
                     version = generation
-                pick, point, uncertain, edge = None, None, False, False
+                pick, point, uncertain = None, None, False
                 if tracker:
                     with self.lock:
                         anchor = self.track.samples[-1][1] if self.track.samples else None
@@ -400,9 +425,7 @@ class Shopping:
                         if pick >= template_count:
                             # Refresh the fast proposal crop; identity still uses the original portrait.
                             templates = SelectedProposals(frame, normalized[pick]['box'])
-                        a,b,c,d = boxes[pick]
                         point = foot_position(boxes[pick], info, camera, self.floor_z)
-                        edge = (a+c)/(2*w) < .28 or (a+c)/(2*w) > .72
                         uncertain = point is None
                     else:
                         uncertain = match['state']=='AMBIGUOUS' or match.get('reason')=='processing_error'
@@ -410,9 +433,10 @@ class Shopping:
                     if generation != self.generation:
                         continue
                     if tracker:
+                        if not self.track.update(stamp, point, uncertain):
+                            continue
                         cropped = pick is not None and point is None and boxes[pick][3]>=h-2
                         self.close_streak = self.close_streak+1 if cropped else 0
-                        self.track.update(stamp, point, edge, uncertain, (a+c)/(2*w) if pick is not None else None)
                         if self.close_streak >= 3:
                             self.track.state = 'CLOSE'
                         self.frame_box = normalized[pick]['box'] if pick is not None else None
@@ -444,16 +468,13 @@ class Shopping:
             pose = None
         with self.lock:
             guard_ready = self.nav.ready(now)
-            if self.owner and now-self.touch > 2:
-                self.reset()
-                self.owner = None
+            self.expire_operator(now)
             self.reason = ('주행 가드 또는 Nav2 연결 대기' if not guard_ready else
                            '지도 위치 확인 대기' if pose is None else
                            '라이다·초음파 연결 대기' if now-min(self.scan_at,self.sonar_at)>.5 else
                            '카메라 연결 대기' if self.packet is None or now-self.packet[0]>.5 else '')
-            if now-self.touch > 1.5 or self.nav.fault or self.nav.guard.get('blocked'):
+            if self.nav.fault or self.nav.guard.get('blocked'):
                 self.armed = False
-            target = self.track.target()
             if (self.field_camera and self.seed and not self.gap_selected and not self.armed and pose
                     and self.track.state == 'FOLLOWING' and now - self.observed < .55):
                 distances = [math.dist(pose[:2], point) for _, point in list(self.track.samples)[-3:]]
@@ -463,55 +484,24 @@ class Shopping:
                 self.node.get_logger().info(
                     f'Selected at {selected_distance:.3f} m; '
                     f'following gap {gap:.3f} m; advance at {advance_at:.3f} m')
-            if self.track.state=='CORNER' and now-self.track.samples[-1][0]>2:
-                target = None
-            if (self.track.state=='VERIFYING' and self.nav.anchor and pose and self.track.samples
-                    and math.dist(self.nav.anchor, self.track.samples[-1][1]) < .14
-                    and abs(target_bearing_change(pose, self.nav.anchor, self.track.samples[-1][1])) <= RETARGET_ANGLE):
-                # A unique matched crop can sustain only the existing, already verified leg.
-                target = self.nav.anchor
-            fresh_result = now-self.observed < .6
-            # Nav2 owns only this already checked waypoint. A pan or a slow
-            # identity inference cannot invalidate the costmap path. Never use
-            # a delayed result to start a leg, follow a new person, or drive
-            # after camera/scan/sonar/lease loss.
-            committed = bool(self.nav.detouring and self.nav.anchor and self.track.samples and
-                             now - self.track.samples[-1][0] < 15 and
-                             self.track.state in ('SEARCHING','VERIFYING','FOLLOWING') and
-                             self.nav.handle and not self.nav.cancelled)
-            if committed:
-                target = self.nav.anchor
-            # Pausing wheel permission is immediate. Reuse a pending Nav2 path after
-            # a brief sensor/inference gap instead of restarting its recovery tree.
-            gap = self.armed and guard_ready and self.nav.anchor is not None and (
-                self.reason or not (fresh_result or committed) or self.track.state=='VERIFYING' and target is None)
-            if gap and self.paused_at is None:
-                self.paused_at = now
-            if not gap:
-                self.paused_at = None
-            if gap and now-self.paused_at < 1. and self.track.state not in ('AMBIGUOUS','CLOSE'):
-                self.nav.poll()
-                self.nav.heartbeat(False, now)
-                self.drive = 'HOLD'
-            else:
-                active = self.armed and not self.reason and (fresh_result or committed)
-                via = None
-                if (active and pose and target and not self.nav.handle and not self.nav.pending
-                        and self.track.state=='FOLLOWING' and now-self.grid_at<3. and now-self.hit_at<.4):
-                    via = bypass_waypoint(pose, target, self.hit, self.grid)
-                self.drive = self.nav.tick(now, active, pose, target, via,
-                                           allow_new=fresh_result and (self.track.state == 'FOLLOWING' or
-                                               self.track.state == 'CORNER' and not self.nav.retry_after),
-                                           direct_grid=self.grid if (self.track.state == 'FOLLOWING' and
-                                               fresh_result and now-self.grid_at < 2.) else None)
+            fresh_result = 0 <= now-self.observed < .6
+            target = self.track.target() if fresh_result else None
+            # No prediction or retained detour can outlive sight of the selected shopper.
+            # Loss, verifying, ambiguity and stale sensors all revoke the lease and cancel.
+            active = bool(self.armed and not self.reason and target is not None)
+            via = None
+            if (active and pose and not self.nav.handle and not self.nav.pending and self.grid is not None
+                    and 0 <= now-self.hit_at < .4):
+                grid = fresh_costmap(self.grid, self.node.get_clock().now().nanoseconds, now)
+                via = bypass_waypoint(pose, target, self.hit, grid)
+            self.drive = self.nav.tick(now, active, pose, target, via, direct_grid=self.grid)
             if self.nav.fault:
                 self.armed = False
                 if self.nav.fault != 'PATH_BLOCKED':
                     self.reason = '경로 확인 필요 · 대상을 다시 선택해 주세요'
-            confirmed = self.track.target() if self.track.state == 'FOLLOWING' else None
-            distance = math.dist(pose[:2], confirmed) if pose and confirmed else None
-            if fresh_result or not self.armed or self.reason:
-                self.proximity.update(now, self.armed and not self.reason and not committed, self.track.state, distance)
+            distance = math.dist(pose[:2], target) if pose and target else None
+            observed_state = self.track.state if fresh_result else 'SEARCHING'
+            self.proximity.update(now, self.armed and not self.reason, observed_state, distance)
             notice = self.indicator()
             if notice != self.last_display or now-self.display_at >= .5:
                 if notice != self.last_display:

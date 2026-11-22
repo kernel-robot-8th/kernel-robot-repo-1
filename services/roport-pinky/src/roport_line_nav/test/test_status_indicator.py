@@ -188,3 +188,64 @@ def test_cart_lcd_and_led_share_the_report_and_recover_after_failed_led_ack():
         node.destroy_node()
         peer.destroy_node()
         rclpy.shutdown(context=ctx)
+
+
+@pytest.mark.parametrize('backend', ['led', 'lamp'])
+def test_default_logistics_does_not_retry_failed_indicator_ack(monkeypatch, backend):
+    """A failed acknowledgement does not stall the next non-cart status change."""
+    from types import SimpleNamespace
+
+    rospy = pytest.importorskip('rclpy.node')
+    pytest.importorskip('pinky_interfaces.srv')
+    from std_msgs.msg import String
+    from roport_line_nav.status_indicator import make_node
+
+    calls = []
+
+    class FakeClient:
+        def service_is_ready(self):
+            return True
+
+        def call_async(self, request):
+            if backend == 'led':
+                calls.append((request.r, request.g, request.b))
+            else:
+                calls.append(tuple(round(v * 255) for v in (
+                    request.color.r, request.color.g, request.color.b)))
+            return SimpleNamespace(done=lambda: True, result=lambda: SimpleNamespace(
+                success=False, result=False))
+
+    class FakeNode:
+        def __init__(self, _name, **kwargs):
+            pass
+
+        def declare_parameter(self, name, value):
+            return SimpleNamespace(value={'lcd': False, 'led_backend': backend}.get(name, value))
+
+        def create_client(self, *_args):
+            return FakeClient()
+
+        def create_subscription(self, *_args):
+            pass
+
+        def create_timer(self, *_args):
+            pass
+
+        def get_logger(self):
+            return SimpleNamespace(info=lambda *_a, **_kw: None, warn=lambda *_a, **_kw: None)
+
+    monkeypatch.setattr(rospy, 'Node', FakeNode)
+    node = make_node()
+    assert not node.cart
+    now = 12.0
+    monkeypatch.setattr(node, '_now', lambda: now)
+    node.on_state(String(data=json.dumps(st('idle'))))
+    node.tick()
+    assert calls == [Status('READY').led]
+    now += .05
+    node.tick()
+    assert calls == [Status('READY').led]
+    now += .05
+    node.on_state(String(data=json.dumps(st('stopped'))))
+    node.tick()
+    assert calls == [Status('READY').led, Status('STOPPED').led]

@@ -7,33 +7,30 @@ import pytest
 from roport_smartcart.shopping_track import Track, foot_position
 
 
-def test_corner_prediction_is_bounded_and_never_switches_to_a_crossing_person():
+def test_loss_revokes_motion_target_and_reacquisition_requires_three_matches():
     track = Track()
     for i in range(5):
-        track.update(i*.12, (.8, .04*i), True)
+        track.update(i*.12, (.8, .04*i))
     assert track.target() == (.8, .16)
-    track.update(.6, None, False)
-    assert track.state == 'CORNER'
-    assert math.dist(track.target(), (.8,.16)) == pytest.approx(.12)
-    track.update(.8, (.1,-.4), False)
+    track.update(.6, None)
+    assert track.state == 'SEARCHING' and track.target() is None
+    track.update(.8, (.1,-.4))
     assert track.state == 'AMBIGUOUS' and track.target() is None
-    for i in range(3):
-        track.update(.9+.12*i, (.8,.19), False)
-    assert track.state == 'FOLLOWING'
+    for stamp in (.9, 1.02):
+        track.update(stamp, (.8, .19))
+        assert track.state == 'VERIFYING' and track.target() is None
+    track.update(1.14, (.8, .19))
+    assert track.state == 'FOLLOWING' and track.target() == (.8, .19)
 
 
-def test_prediction_expires_and_stationary_occlusion_does_not_create_motion():
+def test_delayed_or_repeated_observation_cannot_restore_lost_target():
     track = Track()
     for i in range(5):
-        track.update(i*.1, (.8, .03*i), True)
-    track.update(.6,None,False)
-    assert track.target() is not None
-    track.update(2.5,None,False)
-    assert track.target() is None
-    for i in range(5):
-        track.update(3+i*.1,(.8,.12),True)
-    track.update(3.6,None,False)
-    assert track.target() is None
+        track.update(i*.1, (.8, .03*i))
+    track.update(.6, None)
+    for stamp in (.5, .6, float('nan')):
+        assert not track.update(stamp, (.8, .12))
+        assert track.state == 'SEARCHING' and track.target() is None
 
 
 def test_floor_intersection_uses_optical_tf_and_rejects_cut_off_feet():
@@ -58,14 +55,14 @@ def test_reference_proposals_handle_reappearance_and_two_similar_copies():
     assert len(finder.detect(blank))==2
 
 
-def test_sideways_motion_can_turn_behind_a_wall_in_the_middle_of_the_image():
+def test_sideways_motion_before_occlusion_still_drops_target_immediately():
     track = Track()
     for i in range(4):
-        track.update(.15*i, (.8,.03*i), False, center=.50+.025*i)
-    track.update(.60,None,False)
-    assert track.state=='CORNER' and track.target()[1] > .09
-    track.update(.72,None,False,ambiguous=True)
-    assert track.target() is None
+        track.update(.15*i, (.8,.03*i))
+    track.update(.60, None)
+    assert track.state == 'SEARCHING' and track.target() is None
+    track.update(.72, None, ambiguous=True)
+    assert track.state == 'AMBIGUOUS' and track.target() is None
 
 
 def test_sonar_bypass_uses_only_free_known_side_between_robot_and_target():
@@ -101,7 +98,7 @@ def test_proximity_notice_waits_for_sustained_loss_or_distance_and_clears_on_con
     notice = ProximityNotice()
     assert not notice.update(0, True, 'SEARCHING', None)
     assert not notice.update(2, True, 'FOLLOWING', .41)
-    assert not notice.update(3, True, 'CORNER', None)
+    assert not notice.update(3, True, 'SEARCHING', None)
     assert notice.update(6.1, True, 'AMBIGUOUS', None)
     assert notice.update(6.2, True, 'FOLLOWING', .7)
     assert not notice.update(6.8, True, 'FOLLOWING', .7)
@@ -190,9 +187,9 @@ def test_frozen_photo_is_examined_once_and_a_retake_discards_the_old_result():
 def test_onboard_inference_interval_keeps_verified_matches_but_expires_a_gap():
     track = Track()
     for stamp in (0., .22, .45, 1.33):
-        track.update(stamp, (.8, .12), False)
+        track.update(stamp, (.8, .12))
     assert track.state == 'FOLLOWING'
-    track.update(3., (.8, .12), False)
+    track.update(3., (.8, .12))
     assert track.target() is None
 
 
@@ -302,6 +299,7 @@ def test_short_follow_goal_points_to_current_shopper(old_y, new_y, detour, turn_
     nav.origin, nav.began, nav.boot = (0., 0.), 1., 'test'
     nav.anchor, nav.destination = (.38, old_y), (.12, old_y)
     nav.detouring, nav.turn_only, nav.cancelled = detour, turn_only, False
+    nav.direct_path = False
     nav.pending, nav.result = None, None
     nav.handle = Mock(accepted=True)
     nav.node, nav.client, nav.heartbeat = Mock(), Mock(), Mock()
@@ -323,15 +321,15 @@ def test_clear_aisle_tracks_exact_visual_bearing_otherwise_uses_planner(cost, re
     from unittest.mock import Mock
     from builtin_interfaces.msg import Time
     from roport_smartcart.shopping_nav import ShoppingNav
-    grid = NS(info=NS(width=20, height=20, resolution=.05, origin=NS(position=NS(x=-.5,y=-.5))),
-              data=[0]*400)
+    grid = make_grid()
     grid.data[10*20+11] = cost
     nav = Mock(follow_distance_m=.26, boot='boot', retry_after=0., path_failures=retry,
                pending=None, handle=None, anchor=None, last_reached=None, fault=None)
     nav.node.get_clock().now().to_msg.return_value = Time()
+    nav.node.get_clock().now().nanoseconds = 10_000_000_000
     yaw = math.radians(-15)
     target = (.34*math.cos(yaw), .34*math.sin(yaw))
-    ShoppingNav.tick(nav, 2., True, (0.,0.,0.), target, direct_grid=grid)
+    ShoppingNav.tick(nav, 2., True, (0.,0.,0.), target, direct_grid=(grid, 1.8))
     assert nav.follow_client.send_goal_async.called is direct
     assert nav.client.send_goal_async.called is not direct
     if direct:
@@ -340,3 +338,224 @@ def test_clear_aisle_tracks_exact_visual_bearing_otherwise_uses_planner(cost, re
         for p in path.poses[1:]:
             assert math.atan2(p.pose.position.y, p.pose.position.x) == pytest.approx(yaw)
         assert math.hypot(path.poses[-1].pose.position.x, path.poses[-1].pose.position.y) == pytest.approx(.08)
+
+
+def make_grid(sec=9, nanosec=100_000_000):
+    return NS(header=NS(frame_id='map', stamp=NS(sec=sec, nanosec=nanosec)),
+              info=NS(width=20, height=20, resolution=.05,
+                      origin=NS(position=NS(x=-.5, y=-.5),
+                                orientation=NS(x=0., y=0., z=0., w=1.))),
+              data=[0]*400)
+
+
+@pytest.mark.parametrize('sec,ns,receipt,direct', [
+    (9, 0, 1., True),
+    (8, 999_999_999, 2., False),  # newly received, but source expired
+    (10, 1, 2., False),          # future source
+    (0, 0, 2., False),           # unset source
+    (9, 400_000_000, .99, False),  # ROS clock not enough: receipt must also be recent
+    (9, 400_000_000, 2.01, False), # future receipt
+])
+def test_direct_path_requires_authentic_fresh_map_and_receipt(sec, ns, receipt, direct):
+    pytest.importorskip('nav2_msgs')
+    from builtin_interfaces.msg import Time
+    from unittest.mock import Mock
+    from roport_smartcart.shopping_nav import ShoppingNav
+
+    nav = Mock(follow_distance_m=.26, boot='boot', retry_after=0., path_failures=0,
+               pending=None, handle=None, anchor=None, last_reached=None, fault=None)
+    nav.node.get_clock().now().to_msg.return_value = Time()
+    nav.node.get_clock().now().nanoseconds = 10_000_000_000
+    ShoppingNav.tick(nav, 2., True, (0., 0., 0.), (.45, 0.),
+                     direct_grid=(make_grid(sec, ns), receipt))
+    assert nav.follow_client.send_goal_async.called is direct
+    assert nav.client.send_goal_async.called is not direct
+
+
+@pytest.mark.parametrize('fault', ['expired', 'new_obstacle'])
+def test_active_direct_leg_revokes_lease_when_its_live_grid_proof_fails(fault):
+    pytest.importorskip('nav2_msgs')
+    from unittest.mock import Mock
+    from roport_smartcart.shopping_nav import ShoppingNav
+
+    nav = ShoppingNav.__new__(ShoppingNav)
+    nav.follow_distance_m, nav.retry_after, nav.fault = .26, 0., None
+    nav.origin, nav.began, nav.boot = (0., 0.), 1., 'test'
+    nav.anchor, nav.destination = (.45, 0.), (.19, 0.)
+    nav.detouring, nav.turn_only, nav.cancelled, nav.direct_path = False, False, False, True
+    nav.pending, nav.result = None, None
+    nav.handle = Mock(accepted=True)
+    nav.node, nav.client, nav.heartbeat = Mock(), Mock(), Mock()
+    nav.node.get_clock().now().nanoseconds = 10_000_000_000
+    nav.ready = lambda _: True
+    grid = make_grid(8, 0) if fault == 'expired' else make_grid()
+    if fault == 'new_obstacle':
+        grid.data[10*20+11] = 100
+    assert nav.tick(2., True, (0., 0., 0.), (.45, 0.), direct_grid=(grid, 1.9)) == 'HOLD'
+    nav.handle.cancel_goal_async.assert_called_once()
+    nav.heartbeat.assert_called_once_with(False, 2.)
+    nav.client.send_goal_async.assert_not_called()
+
+
+def make_shop(now):
+    from threading import Condition
+    from unittest.mock import Mock
+    from builtin_interfaces.msg import Time
+    from roport_smartcart.shopping_follow import Shopping
+    from roport_smartcart.shopping_nav import ShoppingNav
+    from roport_smartcart.shopping_track import ProximityNotice
+
+    shop, nav = Shopping.__new__(Shopping), ShoppingNav.__new__(ShoppingNav)
+    shop.lock, shop.node, shop.nav, shop.tf = Condition(), Mock(), nav, Mock()
+    shop.node.get_clock().now().nanoseconds = 10_000_000_000
+    shop.tf.lookup_transform.return_value = NS(
+        header=NS(stamp=Time(sec=10)),
+        transform=NS(translation=NS(x=0., y=0.), rotation=NS(x=0., y=0., z=0., w=1.)))
+    shop.owner, shop.touch, shop.order = 'owner-session-12345', now, 1
+    shop.seed, shop.armed, shop.reason, shop.drive = object(), True, '', 'APPROACH'
+    shop.packet = (now, None)
+    shop.default_gap, shop.field_camera, shop.gap_selected = .26, False, True
+    shop.scan_at = shop.sonar_at = shop.observed = now
+    shop.track, shop.waiting, shop.generation = Track(), [], 0
+    for stamp in (now-.3, now-.2, now-.1):
+        shop.track.update(stamp, (.55, 0.))
+    shop.observed = now-.1
+    shop.proximity, shop.still_since, shop.odom_at = ProximityNotice(), None, now
+    shop.frozen = shop.frame_box = shop.grid = shop.hit = None
+    shop.hit_at, shop.last_display, shop.display_at = float('-inf'), '', float('-inf')
+    shop.display = Mock()
+    nav.follow_distance_m, nav.retry_after, nav.fault = .26, 0., None
+    nav.origin, nav.began, nav.boot = (0., 0.), now-.1, 'test'
+    nav.anchor, nav.destination = (.55, 0.), (.34, .15)
+    nav.detouring, nav.turn_only, nav.cancelled, nav.direct_path = True, False, False, False
+    nav.pending, nav.result = None, None
+    nav.handle = Mock(accepted=True)
+    nav.node, nav.client, nav.heartbeat = shop.node, Mock(), Mock()
+    nav.ready = lambda _: True
+    nav.guard_at, nav.guard = now, {'owner': 'nav2', 'boot': 'test'}
+    return shop
+
+
+@pytest.mark.parametrize('loss', ['searching', 'ambiguous', 'verifying', 'stale_result',
+                                  'scan', 'sonar', 'camera'])
+def test_unconfirmed_target_or_sensor_never_keeps_detour_lease(loss, monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from roport_smartcart import shopping_follow
+
+    now = 10.
+    shop = make_shop(now)
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: now)
+    if loss in ('searching', 'ambiguous', 'verifying'):
+        shop.track.update(now-.07, None, ambiguous=loss == 'ambiguous')
+        if loss == 'verifying':
+            shop.track.update(now-.01, (.55, 0.))
+        shop.observed = now-.01
+    elif loss == 'stale_result':
+        shop.observed = now-.61
+    elif loss == 'camera':
+        shop.packet = (now-.51, None)
+    else:
+        setattr(shop, loss+'_at', now-.51)
+    shop.tick()
+    assert shop.drive == 'HOLD'
+    shop.nav.handle.cancel_goal_async.assert_called_once()
+    shop.nav.heartbeat.assert_called_with(False, now)
+    shop.nav.client.send_goal_async.assert_not_called()
+
+
+def test_late_heartbeat_disarms_then_expired_owner_cannot_be_revived(monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from roport_smartcart import shopping_follow
+
+    shop = make_shop(10.)
+    now = 11.499
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: now)
+    shop.expire_operator(now)
+    assert shop.armed
+    now = 11.5
+    key = shop.owner
+    assert shop.command('heartbeat', {'session': key})['armed'] is False
+    assert shop.owner == key and shop.touch == now
+    shop.nav.heartbeat.assert_called_once_with(False, now)
+    shop.nav.handle.cancel_goal_async.assert_called_once()
+    now = 13.5
+    with pytest.raises(ValueError, match='세션이 종료'):
+        shop.command('heartbeat', {'session': key})
+    assert shop.owner is None and shop.seed is None and not shop.armed
+
+
+def test_stop_fences_a_start_waiting_for_a_confirmed_target(monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Condition, Event
+    from roport_smartcart import shopping_follow
+
+    waiting = Event()
+
+    class WaitObserved(Condition):
+        def wait(self, timeout=None):
+            waiting.set()
+            return super().wait(timeout)
+
+    shop = make_shop(10.)
+    shop.lock, shop.armed, shop.nav.handle = WaitObserved(), False, None
+    shop.nav.guard['owner'] = 'none'
+    shop.track.state = 'VERIFYING'
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: 10.)
+    key = shop.owner
+    with ThreadPoolExecutor() as workers:
+        result = workers.submit(shop.command, 'start', {'session': key, 'order': 2})
+        assert waiting.wait(1)
+        shop.command('stop', {'session': key, 'order': 3})
+        with shop.lock:
+            shop.track.state = 'FOLLOWING'
+            shop.lock.notify_all()
+        with pytest.raises(ValueError, match='주행 준비'):
+            result.result(timeout=1)
+    assert shop.order == 3 and not shop.armed
+    shop.nav.heartbeat.assert_called_once_with(False, 10.)
+
+
+def test_replayed_costmap_does_not_refresh_receipt_or_restore_invalid_proof(monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from roport_smartcart import shopping_follow
+    from roport_smartcart.shopping_nav import fresh_costmap
+
+    now = 10.
+    shop = make_shop(now)
+    shop.grid_source_ns = 0
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: now)
+    grid = make_grid()
+    shop.costmap(grid)
+    assert shop.grid == (grid, now)
+    now += 1.1  # ROS clock stalls while receipt clock advances.
+    shop.costmap(make_grid())
+    assert shop.grid == (grid, 10.)
+    assert fresh_costmap(shop.grid, 10_000_000_000, now) is None
+
+    shop.costmap(make_grid(9, 1))
+    assert shop.grid is None
+    shop.costmap(grid)
+    assert shop.grid is None
+
+
+def test_loss_cancels_pending_goal_even_if_acceptance_arrives_in_that_tick(monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from concurrent.futures import Future
+    from roport_smartcart import shopping_follow
+
+    now = 10.
+    shop = make_shop(now)
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: now)
+    nav, handle = shop.nav, shop.nav.handle
+    nav.handle = None
+    nav.pending = Future()
+    nav.pending.set_result(handle)
+    handle.get_result_async.return_value = Future()
+    shop.track.update(now-.01, None)
+    shop.observed = now-.01
+    shop.tick()
+    assert shop.drive == 'HOLD' and nav.cancelled
+    handle.cancel_goal_async.assert_called_once()
+    nav.heartbeat.assert_called_once_with(False, now)
+    nav.client.send_goal_async.assert_not_called()

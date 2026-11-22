@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { shopping, type ShoppingStatus } from './api';
+import { shopping, shoppingImage, type ShoppingStatus } from './api';
 import { automaticShopper } from './flow';
 import { Icon } from './icons';
 
@@ -9,7 +9,34 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [image, setImage] = useState('');
+  const [offline, setOffline] = useState(false);
+  const hasImage = Boolean(image);
   const [loaded, setLoaded] = useState('');
+  const [picture, setPicture] = useState<{url: string; path: string} | null>(null);
+  const pictureUrl = useRef('');
+  useEffect(() => {
+    if (!image || offline) return;
+    const controller = new AbortController();
+    void shoppingImage(session, image, AbortSignal.any([controller.signal, AbortSignal.timeout(1200)])).then(blob => {
+      if (!blob || controller.signal.aborted) return;
+      const url = URL.createObjectURL(blob);
+      if (pictureUrl.current) URL.revokeObjectURL(pictureUrl.current);
+      pictureUrl.current = url;
+      setPicture({url, path: image});
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [session, image, offline]);
+  useEffect(() => {
+    if (hasImage && !offline) return;
+    if (pictureUrl.current) URL.revokeObjectURL(pictureUrl.current);
+    pictureUrl.current = '';
+    setPicture(null);
+    setLoaded('');
+  }, [hasImage, offline]);
+  useEffect(() => () => {
+    if (pictureUrl.current) URL.revokeObjectURL(pictureUrl.current);
+    pictureUrl.current = '';
+  }, []);
   const [portrait, setPortrait] = useState('');
   const [started, setStarted] = useState(false);
   const [manual, setManual] = useState(false);
@@ -17,7 +44,6 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
   const [rect, setRect] = useState<number[] | null>(null);
   const drag = useRef<{frame: string; x: number; y: number} | null>(null);
   const video = useRef<HTMLDivElement>(null);
-  const [offline, setOffline] = useState(false);
   const audio = useRef<AudioContext | null>(null);
   const chime = Boolean(!offline && status?.armed && status.notice === 'COME_CLOSER');
   useEffect(() => {
@@ -59,12 +85,12 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
       try {
         const s = await shopping(session, active.current && !document.hidden ? 'heartbeat' : 'status');
         if (!closed && before === revision.current && !pending.current) {
-          if (active.current && !s.selected && !s.frame) {
+          if (active.current && !s.ownsCamera) {
             active.current = false;
             setPortrait(''); setStarted(false); setRect(null); drag.current = null;
           }
           setStatus(s); setOffline(false);
-          setImage('/shopping/image?' + (s.frame ? 'frame='+s.frame : 't='+Date.now()));
+          setImage(s.ownsCamera ? '/shopping/image?' + (s.frame ? 'frame='+s.frame : 't='+Date.now()) : '');
         }
       } catch {
         if (!closed && before === revision.current) setOffline(true);
@@ -103,12 +129,12 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
     try {
       const s = await shopping(session, action, {...args, order: rev});
       if (!mounted.current || revision.current !== rev) return;
-      active.current = action !== 'end';
+      active.current = s.ownsCamera;
       if (action === 'select') setPortrait(chosen);
       if (action === 'capture') { setPortrait(''); setStarted(false); setManual(false); }
       if (action === 'start') setStarted(true);
       setStatus(s); setOffline(false);
-      setImage('/shopping/image?' + (s.frame ? 'frame='+s.frame : 't='+Date.now()));
+      setImage(s.ownsCamera ? '/shopping/image?' + (s.frame ? 'frame='+s.frame : 't='+Date.now()) : '');
       then?.();
     } catch (err) {
       if (mounted.current && revision.current === rev) setError(err instanceof Error ? err.message : '연결을 확인해 주세요.');
@@ -168,8 +194,8 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
     <div className="shopping-camera"><div className="shopping-camera-head"><strong>카트 앞 카메라{s?.simulation ? ' · 시뮬레이션' : ''}</strong>
       <span className={picking ? 'still' : ''}>{picking ? '선택용 사진' : offline || !loaded ? '연결 대기' : '실시간'}</span></div>
     <div className="shopping-video" ref={video}>
-      {(!loaded || offline) && <span className="camera-empty"><Icon name="follow" />카메라를 기다리는 중</span>}
-      {image && !offline && <img src={image} alt="카트 앞 카메라" onLoad={e => setLoaded(e.currentTarget.src)} draggable={false} />}
+      {(!loaded || offline) && <span className="camera-empty"><Icon name="follow" />{!offline && s && !s.ownsCamera ? '카메라를 켜 주세요' : '카메라를 기다리는 중'}</span>}
+      {image && !offline && picture && <img src={picture.url} alt="카트 앞 카메라" onLoad={() => setLoaded(picture.path)} draggable={false} />}
       {s?.frame && frozen && !manual && s.boxes.map(([a,b,c,d], index) =>
         <button key={`${s.frame}-${index}`} className="shop-box" disabled={busy} aria-label={'대상 '+(index+1)+' 선택'}
           style={{left:a*100+'%', top:b*100+'%', width:(c-a)*100+'%', height:(d-b)*100+'%'}}
@@ -219,7 +245,8 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
       {error && <p className="shop-error" role="alert">{/crop|box|pixel|선택해/.test(error)
         ? '몸통이 안에 들어오도록 조금 더 크게 그려 주세요.' : error}</p>}
       <div className="actions">
-        {!s?.armed && <button className={'btn '+(!picking && !s?.selected ? 'btn-primary btn-block' : 'btn-secondary')} disabled={busy || offline} onClick={() => command('capture')}>{s?.frame || s?.selected ? '다시 찍기' : '내 모습 찾기'}</button>}
+        {s && !s.ownsCamera && <button className="btn btn-primary btn-block" disabled={busy || offline} onClick={() => command('preview')}>카메라 켜기</button>}
+        {s?.ownsCamera && !s.armed && <button className={'btn '+(!picking && !s?.selected ? 'btn-primary btn-block' : 'btn-secondary')} disabled={busy || offline} onClick={() => command('capture')}>{s?.frame || s?.selected ? '다시 찍기' : '내 모습 찾기'}</button>}
         {s?.frame && s.boxes.length > 0 && <button className="btn btn-secondary" disabled={busy}
           onClick={() => { setManual(!manual); setRect(null); }}>{manual ? '번호로 선택' : '직접 선택'}</button>}
         {s?.selected && !s.armed && <button className="btn btn-secondary" disabled={busy || offline}

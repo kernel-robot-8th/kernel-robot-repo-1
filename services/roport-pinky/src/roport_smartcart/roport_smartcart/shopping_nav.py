@@ -32,6 +32,38 @@ def target_bearing_change(pose, previous, current):
 RETARGET_ANGLE = math.radians(12)
 
 
+COSTMAP_MAX_AGE_NS = 1_000_000_000
+
+
+def costmap_stamp_ns(grid):
+    stamp = grid.header.stamp
+    if not 0 <= stamp.nanosec < 1_000_000_000:
+        raise ValueError('invalid costmap stamp')
+    return stamp.sec * 1_000_000_000 + stamp.nanosec
+
+
+def fresh_costmap(snapshot, ros_now_ns, now):
+    """Return authentic map/receipt evidence no more than one second old."""
+    if snapshot is None:
+        return None
+    grid, receipt = snapshot
+    try:
+        meta = grid.info
+        origin, q = meta.origin.position, meta.origin.orientation
+        source = costmap_stamp_ns(grid)
+        valid = (grid.header.frame_id == 'map' and source > 0
+                 and 0 <= ros_now_ns-source <= COSTMAP_MAX_AGE_NS
+                 and 0 <= now-receipt <= COSTMAP_MAX_AGE_NS/1e9
+                 and math.isfinite(meta.resolution) and meta.resolution > 0
+                 and meta.width > 0 and meta.height > 0
+                 and len(grid.data) == meta.width * meta.height
+                 and all(map(math.isfinite, (origin.x, origin.y, q.x, q.y, q.z, q.w)))
+                 and q.x == q.y == q.z == 0 and abs(q.w) == 1)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return grid if valid else None
+
+
 def clear_short_leg(grid, start, end):
     """Only use a straight reference in known, inflation-free costmap cells."""
     meta = grid.info
@@ -73,7 +105,7 @@ class ShoppingNav:
         self.pending = self.handle = self.result = None
         self.cancelled = False
         self.destination = self.anchor = None
-        self.detouring = self.turn_only = False
+        self.detouring = self.turn_only = self.direct_path = False
         self.fault = None
         self.path_failures = 0
         self.retry_after = 0.
@@ -190,6 +222,9 @@ class ShoppingNav:
             self.lease.publish(String(data=json.dumps(data)))
 
     def tick(self, now, enabled, pose, target, via=None, allow_new=True, direct_grid=None):
+        # Latch cancellation before consuming a just-arrived goal acceptance.
+        if not enabled or pose is None or target is None:
+            self.cancel()
         self.poll()
         ready = self.ready(now)
         if not enabled or not ready or pose is None or target is None or self.fault or now < self.retry_after:
@@ -204,6 +239,11 @@ class ShoppingNav:
         separation = math.hypot(dx, dy)
         gap, advance_at = following_distances(self.follow_distance_m)
         bearing = math.remainder(math.atan2(dy,dx)-pose[2], 2*math.pi)
+        grid = (fresh_costmap(direct_grid, self.node.get_clock().now().nanoseconds, now)
+                if direct_grid is not None else None)
+        if (self.anchor and self.direct_path and not self.cancelled
+                and (grid is None or not clear_short_leg(grid, pose[:2], self.destination))):
+            self.cancel()
         if self.anchor and (now-self.began > 60 or math.dist(pose[:2], self.origin) > .95):
             self.fault = 'NAV_LIMIT'
             self.cancel()
@@ -234,11 +274,11 @@ class ShoppingNav:
                     yaw = math.atan2(target[1]-via[1], target[0]-via[0])
                     self.node.get_logger().info(f'SONAR_BYPASS via={via} target={target}')
                 direct = False
-                if (advance and direct_grid is not None and via is None and not self.path_failures
+                if (advance and grid is not None and via is None and not self.path_failures
                         and self.follow_client.server_is_ready()):
                     step = min(.25, travel)
                     end = (pose[0]+step*math.cos(yaw), pose[1]+step*math.sin(yaw))
-                    if clear_short_leg(direct_grid, pose[:2], end):
+                    if clear_short_leg(grid, pose[:2], end):
                         self.destination, direct = end, True
                 # Grid discretisation can acknowledge a short leg before the base moves.
                 if self.last_reached:
@@ -252,6 +292,7 @@ class ShoppingNav:
                 self.goal_yaw = yaw
                 self.retry_after = 0.
                 stamp = self.node.get_clock().now().to_msg()
+                self.direct_path = direct
                 if direct:
                     goal = straight_follow_goal(pose[:2], self.destination, yaw, stamp)
                     self.pending = self.follow_client.send_goal_async(goal)

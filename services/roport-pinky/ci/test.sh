@@ -5,10 +5,16 @@ source /opt/ros/jazzy/setup.bash
 set -u
 python3 -m unittest discover -s ci -p 'test_*.py' -v
 node ci/test_field_roundtrip_browser.js
+# Build the range-layer test explicitly without enabling vendor package tests.
+# Keep a missing/renamed CTest entry from silently passing CI.
+colcon build --packages-ignore pinky_gz_sim --packages-select roport_range_layer \
+  --event-handlers console_direct+ --cmake-args -DBUILD_TESTING=ON
+ctest --test-dir build/roport_range_layer -R '^range_clear$' --output-on-failure --no-tests=error
+
 # Build Python console/world resources too; smartcart launch depends on them.
 # Exclude Gazebo discovery so this no-simulator job does not require its C++ stack.
 colcon build --packages-ignore pinky_gz_sim \
-  --packages-select roport_range_layer roport_pinky roport_pinky_line roport_line_nav roport_smartcart pinky_interfaces pinky_description pinky_navigation pinky_test_console roport_gz_world \
+  --packages-select roport_pinky roport_pinky_line roport_line_nav roport_smartcart pinky_interfaces pinky_description pinky_navigation pinky_test_console roport_gz_world \
   --event-handlers console_direct+ --cmake-args -DBUILD_TESTING=OFF
 set +u
 source install/setup.bash

@@ -169,6 +169,7 @@ export function resetDemo(): void {
 }
 
 export interface ShoppingStatus {
+  ownsCamera: boolean;
   stopped: boolean;
   simulation: boolean;
   canStart: boolean;
@@ -195,4 +196,9 @@ export async function shopping(session: string, action = 'status', args: Record<
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || '카트 연결을 확인해 주세요.');
   return data;
+}
+
+export async function shoppingImage(session: string, path: string, signal: AbortSignal): Promise<Blob | null> {
+  const res = await fetch(path, {headers: {'X-Shopping-Session': session}, cache: 'no-store', signal});
+  return res.ok && res.headers.get('content-type') === 'image/jpeg' ? res.blob() : null;
 }

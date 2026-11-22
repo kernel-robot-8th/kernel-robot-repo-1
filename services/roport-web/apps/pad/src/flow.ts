@@ -145,3 +145,8 @@ export function automaticShopper(boxes: number[][]): number | null {
   if (visible.length === 1 && Math.abs(visible[0].center - .5) <= .15) return visible[0].index;
   return null;
 }
+
+/** 외형 추종은 명시적으로 켠 단독 시험 빌드의 데모 예약 화면에서만 열 수 있다. */
+export function shoppingDemoEnabled(flag: string | undefined, apiMode: string | undefined): boolean {
+  return flag === 'true' && apiMode !== 'server';
+}
