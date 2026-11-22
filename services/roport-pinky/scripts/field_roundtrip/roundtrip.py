@@ -141,6 +141,7 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
     from action_msgs.msg import GoalStatus
     from nav2_msgs.action import BackUp, ComputePathThroughPoses, DriveOnHeading, FollowPath, Spin
     import mission_handoff as handoff
+    from roport_pinky.trial_nav2 import map_profile
     from roport_smartcart.real_return import HardwareReturn, Acquisition, n12_target, measured_handoff
     from roport_smartcart.goals import Destination, load_destination
     from roport_gz_world.layout import Layout
@@ -166,9 +167,7 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
     line_hint = {'x': hint_x, 'y': hint_y}
     outbound_heading = handoff.wrap(nominal.yaw+math.pi)
     path = Path(options.map)
-    map_data = yaml.safe_load(path.read_text())
-    profile = {'map_id': path.stem, 'map_version': hashlib.sha256(path.read_bytes()+
-        (path.parent/map_data['image']).read_bytes()).hexdigest()[:16]}
+    profile = map_profile(path)
     asset_paths = {'layout_sha256': Path(options.layout), 'places_sha256': base_places,
                    'ir_sha256': ir_calibration}
     asset_hashes = {key: hashlib.sha256(file.read_bytes()).hexdigest()
@@ -302,9 +301,7 @@ def main(resume_nav=False, resume_entry=False, resume_return=False, resume_retur
             raise RuntimeError('No N12 handoff record for this trip; start a new H1 trip')
         current_assets = {key: hashlib.sha256(file.read_bytes()).hexdigest()
                           for key, file in asset_paths.items()}
-        current_map = hashlib.sha256(path.read_bytes()+
-            (path.parent/map_data['image']).read_bytes()).hexdigest()[:16]
-        if current_assets != asset_hashes or current_map != profile['map_version']:
+        if current_assets != asset_hashes or map_profile(path) != profile:
             raise RuntimeError('Field assets changed during this trip; remaining stopped')
         return {'trip_id': handoff_id, 'robot': options.robot,
                 'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
