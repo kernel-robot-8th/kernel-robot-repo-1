@@ -9,7 +9,7 @@ import types
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from typing import ClassVar
 from unittest import mock
 
@@ -113,14 +113,23 @@ class StopWatchTest(unittest.TestCase):
             watch.observe()
         self.assertTrue(watch.status()["stopped"])  # hold 뒤 0.5 s 모이면 정지
 
-    def test_hold_failure_still_drops_samples(self):
-        robot = FakeRobot()
+    def test_failed_hold_keeps_stop_evidence_closed_until_a_successful_hold(self):
+        # #149 리뷰: hold 쓰기가 실패하면 마지막 구동 목표가 남을 수 있어 정지로 보지 않는다
+        robot, clock = FakeRobot(), Clock()
+        watch = field.StopWatch(robot, clock, clock.wall)
         robot.hold = mock.Mock(side_effect=OSError("bus"))
-        watch = watch_samples([INIT] * 7)
-        watch.robot = robot
         with self.assertRaises(OSError):
             watch.hold()
+        for _ in range(8):
+            watch.observe()
+            clock.t += 0.1
         self.assertEqual(watch.status()["observed_at"], None)
+        robot.hold = mock.Mock()
+        watch.hold()
+        for _ in range(6):
+            watch.observe()
+            clock.t += 0.1
+        self.assertTrue(watch.status()["stopped"])
 
     def test_samples_between_stop_request_and_hold_are_dropped(self):
         # #149 리뷰: abort 뒤·hold 전에 끝난 관측이 이전 정지 표본과 이어지지 않는다
@@ -354,6 +363,31 @@ class CloseTest(unittest.TestCase):
         self.assertLess(robot.calls.index("hold"), robot.calls.index("disconnect"))
         client.close.assert_called_once()
 
+    def test_close_keeps_ownership_while_stop_is_unconfirmed(self):
+        # #149 리뷰: Runner가 끝난 뒤에도 관절이 계속 움직이면 연결을 끊지 않고 hold를 다시 쓴다
+        executor, robot, client = self.make()
+        moving = [0.0]
+
+        def drifting():
+            moving[0] += 1.0
+            robot.state = [INIT[0] + moving[0], *INIT[1:]]
+            return SlowRobot.observe(robot)
+
+        robot.observe = drifting
+        closer = Thread(target=executor.close, kwargs={"stop_s": 0.7}, daemon=True)
+        with self.assertLogs("roport_omx.omx3.field", level="ERROR"):
+            closer.start()
+            closer.join(1.6)
+            self.assertTrue(closer.is_alive())  # 정지 미확인: 반환하지 않는다
+        self.assertNotIn("disconnect", robot.calls)
+        client.close.assert_not_called()
+        self.assertGreaterEqual(robot.calls.count("hold"), 3)  # abort + 재시도
+        del robot.observe  # 관절이 멈추면 정지를 확인하고 닫는다
+        closer.join(3)
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(robot.calls[-1], "disconnect")
+        client.close.assert_called_once()
+
     def test_idle_close_holds_and_disconnects(self):
         executor, robot, _ = self.make()
         executor.close()
@@ -461,6 +495,23 @@ class FieldHostIntegrationTest(unittest.TestCase):
         self.assertGreater(robot.held, 0)
         self.assertGreaterEqual(done["payload"]["observed_at"], robot.held_at)
 
+    def test_stop_with_failed_hold_is_not_completed(self):
+        robot = SlowFakeRobot()
+        robot.fail_hold = True
+        policy = tfh_runner.ScriptPolicy(away=10**6)
+        executor = self.connect(robot, policy, lambda frame: tfh_runner.BOX)
+        self.accept()
+        wait_for(lambda: robot.sent > 0)
+        self.host.handle(self.stop_command(target="omx3"))
+        executor.host.wait(2)  # Runner는 hold 실패를 로그로 남기고 끝난다
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            self.observe_pinky("N01")
+            statuses = [e["payload"]["status"] for e in self.host.poll()]
+            self.assertNotIn("completed", statuses)
+            time.sleep(0.01)
+        self.assertFalse(executor.observe().get("stopped"))
+
 
 class SlowFakeRobot(tfh_runner.FakeRobot):
     held_at = None
@@ -469,7 +520,11 @@ class SlowFakeRobot(tfh_runner.FakeRobot):
         time.sleep(0.03)
         return super().observe()
 
+    fail_hold = False
+
     def hold(self):
+        if self.fail_hold:
+            raise OSError("hold write failed")
         super().hold()
         self.held_at = datetime.now(UTC).isoformat()
 

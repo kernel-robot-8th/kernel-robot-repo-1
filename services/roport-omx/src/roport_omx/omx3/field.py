@@ -73,12 +73,12 @@ class StopWatch:
             self._accepting = False
 
     def hold(self):
-        try:
-            self.robot.hold()
-        finally:
-            with self._lock:
-                self._samples.clear()
-                self._accepting = True
+        # 실패한 hold 뒤에는 표본을 받지 않는다: 마지막 구동 목표가 남아 있을 수 있다(#149 리뷰)
+        self.invalidate()
+        self.robot.hold()
+        with self._lock:
+            self._samples.clear()
+            self._accepting = True
 
     def observe(self):
         obs = self.robot.observe()
@@ -167,12 +167,19 @@ class FieldWarehouseExecutor(WarehouseExecutor):
         return {"state": "running", "step": "VERIFY"}
 
     def close(self, stop_s=CONFIRM_S):
-        """Runner 취소 → 끝날 때까지 대기 → 정지 근거 확인 → 연결 정리. 토크는 끄지 않는다.
+        """Runner 취소 → 끝날 때까지 대기 → 정지 확인 → 연결 정리. 토크는 끄지 않는다.
 
-        Runner가 끝나지 않으면 반환하지 않는다: 반환하면 프로세스가 끝나 hold 없이 Runner가
-        사라진다. Runner는 관측·추론마다 시간 제한이 있어 보통 수 초 안에 끝난다.
+        정지가 확인될 때까지 반환하지 않고 장치 소유권을 유지한다: 반환하면 프로세스가 끝나
+        hold 없이 장치가 남는다. Runner가 안 끝나면 기다리고, 끝난 뒤 정지가 확인되지 않으면
+        stop_s마다 hold를 다시 쓴다(Runner가 끝났으니 버스를 다투지 않는다). 그래도 멈추지
+        않으면 현장에서 비상 정지·강제 종료로 인계한다.
         """
-        self.abort()  # 실행 중이면 취소 신호, 아니면 바로 hold
+        # hold를 다시 쓰면 표본을 지우므로 재시도 간격이 판정 구간보다 길어야 확인할 수 있다
+        stop_s = max(stop_s, STOP_SPAN_S + 0.2)
+        try:
+            self.abort()  # 실행 중이면 취소 신호, 아니면 바로 hold
+        except Exception:  # hold 실패: 아래에서 다시 쓴다
+            log.exception("OMX3 abort failed while closing")
         while True:
             self.host.wait(CLOSE_LOG_S)
             if self.host.status()["active"] is None:
@@ -183,9 +190,16 @@ class FieldWarehouseExecutor(WarehouseExecutor):
         deadline = self.clock() + stop_s
         while not self.observe().get("stopped"):
             if self.clock() >= deadline:
-                log.warning("OMX3 stop not confirmed within %.1fs", stop_s)
-                break
+                log.error(
+                    "OMX3 stop not confirmed; rewriting hold and keeping device ownership"
+                )
+                try:
+                    self.watch.hold()
+                except Exception:
+                    log.exception("OMX3 hold failed while closing")
+                deadline = self.clock() + stop_s
             self.sleep(FEED_S)
+        log.info("OMX3 stop confirmed; closing devices")
         for device in self.devices:
             try:
                 (getattr(device, "close", None) or device.disconnect)()
