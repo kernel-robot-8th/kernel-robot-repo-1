@@ -39,23 +39,25 @@ STOP_SPAN_S = 0.5  # 이 시간 이상 이어진 관측이어야 정지로 본�
 STOP_RANGE = 0.3  # 그 동안 모든 관절의 (최대 - 최소)가 이 값 이하
 STOP_WINDOW_S = 1.0  # 최근 이 시간의 관측만 남긴다
 
-# 종료(close): Runner는 매 주기(30 fps) 취소를 보지만 관측·추론 한 번이 최대 약 1초 걸린다
-CLOSE_RUNNER_S = 5.0
-CLOSE_STOP_S = 3.0
-CLOSE_POLL_S = 0.1
+# 정지 확인: Runner가 끝난 뒤(완료·취소) executor가 직접 관측을 모으는 간격과 한도
+FEED_S = 0.1
+CONFIRM_S = 3.0  # 완료 뒤 이 시간 안에 정지가 확인되지 않으면 OMX3_STOP_UNCONFIRMED
+CLOSE_LOG_S = 5.0  # 종료 때 Runner가 안 끝나면 이 간격으로 로그를 남기며 계속 기다린다
+STOP_UNCONFIRMED = "OMX3_STOP_UNCONFIRMED"
 
 
 class StopWatch:
-    """Robot 감싸기: Runner·executor가 이미 부르는 observe()의 관절 값으로 정지를 판정한다.
+    """Robot 감싸기: Runner·executor가 부르는 observe()의 관절 값으로 정지를 판정한다.
 
-    추가 버스 읽기를 하지 않는다(실행 중 모터 버스는 Runner가 소유).
-    hold()에서 이전 표본을 버린다: 취소·실패·완료는 모두 hold()를 거치므로, 정지 구간은
-    hold 이후의 관측으로만 만들어진다(정지 요청 전 표본으로 완료하지 않게, #149 리뷰).
+    정지 구간은 hold() 이후의 관측으로만 만든다(#149 리뷰). invalidate()(정지 요청)부터
+    hold()가 끝날 때까지 들어온 관측은 버린다: abort 뒤 hold 전에 끝난 관측이 이전 표본과
+    이어져 정지로 판정되지 않게 한다. 취소·실패·VERIFY는 모두 Runner의 hold()를 거친다.
     """
 
     def __init__(self, robot, clock=time.monotonic, now=lambda: datetime.now(UTC)):
         self.robot, self.clock, self.now = robot, clock, now
         self._samples: deque = deque()
+        self._accepting = True
         self._lock = threading.Lock()
 
     def ready(self):
@@ -64,20 +66,28 @@ class StopWatch:
     def send(self, action):
         self.robot.send(action)
 
+    def invalidate(self):
+        """정지 요청: 지금까지의 표본을 버리고, 다음 hold()까지 새 표본도 받지 않는다."""
+        with self._lock:
+            self._samples.clear()
+            self._accepting = False
+
     def hold(self):
         try:
             self.robot.hold()
         finally:
             with self._lock:
                 self._samples.clear()
+                self._accepting = True
 
     def observe(self):
         obs = self.robot.observe()
         t = self.clock()
         with self._lock:
-            self._samples.append((t, self.now(), tuple(obs.state)))
-            while t - self._samples[0][0] > STOP_WINDOW_S:
-                self._samples.popleft()
+            if self._accepting:
+                self._samples.append((t, self.now(), tuple(obs.state)))
+                while t - self._samples[0][0] > STOP_WINDOW_S:
+                    self._samples.popleft()
         return obs
 
     def status(self):
@@ -96,41 +106,86 @@ class StopWatch:
 
 
 class FieldWarehouseExecutor(WarehouseExecutor):
-    """WarehouseExecutor + 종료 경로: field_host.serve()가 끝날 때 부르는 close()."""
+    """WarehouseExecutor + 정지 확인 + 종료 경로(field_host.serve()가 끝날 때 부르는 close())."""
 
-    def __init__(self, runner, *, devices=(), sleep=time.sleep, **kwargs):
-        super().__init__(runner, **kwargs)
-        self.devices, self.sleep = (
-            devices,
-            sleep,
-        )  # close()로 닫을 것(추론 클라이언트·팔)
-
-    def close(
+    def __init__(
         self,
-        runner_s=CLOSE_RUNNER_S,
-        stop_s=CLOSE_STOP_S,
+        runner,
+        *,
+        watch,
+        devices=(),
         clock=time.monotonic,
+        sleep=time.sleep,
+        **kwargs,
     ):
-        """Runner 취소 → 끝날 때까지 대기 → 정지 근거 확인 → 연결 정리. 토크는 끄지 않는다."""
-        self.abort()  # 실행 중이면 취소 신호, 아니면 바로 hold
-        self.host.wait(runner_s)  # Runner가 취소를 보고 hold한 뒤 끝난다
+        super().__init__(runner, stop_status=watch.status, **kwargs)
+        self.watch, self.devices = watch, devices  # devices: close()로 닫을 것
+        self.clock, self.sleep = clock, sleep
+        self._finished_at = None
+        self._fed_at = None
+
+    def start(self, task):
+        self._finished_at = None
+        super().start(task)
+
+    def abort(self):
+        self.watch.invalidate()  # 정지 근거는 이 요청 뒤의 hold부터 다시 모은다
+        super().abort()
+
+    def _feed(self):
+        """Runner가 끝났으면 직접 관측해 정지 표본을 채운다(Runner가 버스를 놓은 뒤에만)."""
         if self.host.status()["active"] is not None:
-            # 아직 Runner가 버스를 쓰는 중: 연결을 끊으면 hold를 끊을 수 있다. 프로세스 종료에 맡긴다
-            log.error(
-                "OMX3 runner still active after %.1fs; leaving devices open", runner_s
-            )
             return
-        deadline = clock() + stop_s
+        now = self.clock()
+        if self._fed_at is None or now - self._fed_at >= FEED_S:
+            self._fed_at = now
+            self.runner.robot.observe()
+
+    def observe(self):
+        if self.stop_requested_at is not None:
+            try:
+                self._feed()
+            except Exception:  # 읽기 실패는 정지 미확인으로 남는다
+                log.exception("OMX3 observe failed while confirming stop")
+            return super().observe()
+        result = super().observe()
+        if result.get("state") != "finished" or result["arms"]["omx3"]["stopped"]:
+            return result
+        # 완료(VERIFY)는 hold 직후라 정지 표본이 아직 없다: 모일 때까지 완료를 보류한다
+        if self._finished_at is None:
+            self._finished_at = self.clock()
+        if self.clock() - self._finished_at > CONFIRM_S:
+            return {"state": "failed", "error": STOP_UNCONFIRMED}
+        try:
+            self._feed()
+        except Exception:
+            log.exception("OMX3 observe failed while confirming stop")
+            return {"state": "failed", "error": STOP_UNCONFIRMED}
+        result = super().observe()
+        if result.get("state") == "finished" and result["arms"]["omx3"]["stopped"]:
+            return result
+        return {"state": "running", "step": "VERIFY"}
+
+    def close(self, stop_s=CONFIRM_S):
+        """Runner 취소 → 끝날 때까지 대기 → 정지 근거 확인 → 연결 정리. 토크는 끄지 않는다.
+
+        Runner가 끝나지 않으면 반환하지 않는다: 반환하면 프로세스가 끝나 hold 없이 Runner가
+        사라진다. Runner는 관측·추론마다 시간 제한이 있어 보통 수 초 안에 끝난다.
+        """
+        self.abort()  # 실행 중이면 취소 신호, 아니면 바로 hold
+        while True:
+            self.host.wait(CLOSE_LOG_S)
+            if self.host.status()["active"] is None:
+                break
+            log.error(
+                "OMX3 runner still active; keeping device ownership until it stops"
+            )
+        deadline = self.clock() + stop_s
         while not self.observe().get("stopped"):
-            if clock() >= deadline:
+            if self.clock() >= deadline:
                 log.warning("OMX3 stop not confirmed within %.1fs", stop_s)
                 break
-            try:
-                self.runner.robot.observe()  # Runner가 끝났으니 버스를 읽어도 된다
-            except Exception:  # 읽기 실패는 정지 미확인으로 남긴다
-                log.exception("OMX3 observe failed while confirming stop")
-                break
-            self.sleep(CLOSE_POLL_S)
+            self.sleep(FEED_S)
         for device in self.devices:
             try:
                 (getattr(device, "close", None) or device.disconnect)()
@@ -191,11 +246,11 @@ def build():
     runner = Runner(watch, ChunkPolicy(client, settings), ArucoTargetMarker, settings)
     executor = FieldWarehouseExecutor(
         runner,
+        watch=watch,
         devices=(client, robot),
         marker_ids=marker_ids,
         model_version=model_version(model),
         calibration_version=calibration,
         package_sizes=sizes,
-        stop_status=watch.status,
     )
     return {"omx3": executor}, None

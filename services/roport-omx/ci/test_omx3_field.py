@@ -9,11 +9,15 @@ import types
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 from typing import ClassVar
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+sys.path[:0] = [str(ROOT / "src"), str(ROOT / "scripts"), str(ROOT / "ci")]
+
+import test_field_host as tfh
+import test_omx3_runner as tfh_runner
 
 from roport_omx.field_executors import WarehouseExecutor
 from roport_omx.omx3 import field
@@ -117,6 +121,24 @@ class StopWatchTest(unittest.TestCase):
         with self.assertRaises(OSError):
             watch.hold()
         self.assertEqual(watch.status()["observed_at"], None)
+
+    def test_samples_between_stop_request_and_hold_are_dropped(self):
+        # #149 리뷰: abort 뒤·hold 전에 끝난 관측이 이전 정지 표본과 이어지지 않는다
+        robot, clock = FakeRobot(), Clock()
+        watch = field.StopWatch(robot, clock, clock.wall)
+        for _ in range(7):
+            watch.observe()
+            clock.t += 0.1
+        watch.invalidate()
+        for _ in range(7):
+            watch.observe()  # Runner가 아직 hold 전
+            clock.t += 0.1
+        self.assertEqual(watch.status()["observed_at"], None)
+        watch.hold()
+        for _ in range(6):
+            watch.observe()
+            clock.t += 0.1
+        self.assertTrue(watch.status()["stopped"])
 
 
 class FakeLeRobotOmx(FakeRobot):
@@ -245,8 +267,14 @@ class BuildTest(unittest.TestCase):
 class SlowRobot(FakeRobot):
     """관측 한 번에 시간이 걸리는 팔: 종료가 Runner의 hold를 기다리는지 본다."""
 
+    delay = 0.02
+    slow = None  # 이 Event가 있으면 느린 관측이 시작될 때 알린다
+
     def observe(self):
-        time.sleep(0.02)
+        delay = self.delay
+        if self.slow is not None and delay > 0.1:
+            self.slow.set()
+        time.sleep(delay)
         return super().observe()
 
     def send(self, action):
@@ -291,7 +319,7 @@ class CloseTest(unittest.TestCase):
             model_version="m",
             calibration_version="c",
             package_sizes={"15": "small"},
-            stop_status=watch.status,
+            watch=watch,
         )
         return executor, robot, client
 
@@ -299,11 +327,8 @@ class CloseTest(unittest.TestCase):
         executor, robot, client = self.make()
         expires = (datetime.now(UTC) + timedelta(seconds=60)).isoformat()
         executor.start({"command_id": "c1", "package_id": "15", "expires_at": expires})
-        deadline = time.monotonic() + 3
-        while not any(c[0] == "send" for c in robot.calls if c != "hold"):
-            self.assertLess(time.monotonic(), deadline, "runner never started moving")
-            time.sleep(0.01)
-        executor.close(runner_s=3, stop_s=3)
+        wait_for(lambda: any(c[0] == "send" for c in robot.calls if c != "hold"))
+        executor.close()
         self.assertIsNone(executor.host.status()["active"])
         self.assertIn("hold", robot.calls)
         self.assertEqual(robot.calls[-1], "disconnect")
@@ -311,21 +336,142 @@ class CloseTest(unittest.TestCase):
         client.close.assert_called_once()
         self.assertTrue(executor.observe()["stopped"])  # 정지 근거를 확인한 뒤 정리
 
-    def test_close_leaves_devices_open_while_runner_still_active(self):
+    def test_close_keeps_ownership_until_runner_stops(self):
+        # #149 리뷰: Runner가 늦어도 close()가 먼저 반환해 hold 없이 프로세스가 끝나지 않게
         executor, robot, client = self.make()
-        executor.host.wait = lambda timeout: None
-        executor.host.status = lambda: {"active": "c1"}
-        executor.host.abort = lambda: None
-        executor.close(runner_s=0, stop_s=0)
-        self.assertNotIn("disconnect", robot.calls)
-        client.close.assert_not_called()
+        expires = (datetime.now(UTC) + timedelta(seconds=60)).isoformat()
+        executor.start({"command_id": "c1", "package_id": "15", "expires_at": expires})
+        wait_for(lambda: any(c[0] == "send" for c in robot.calls if c != "hold"))
+        robot.slow = Event()
+        robot.delay = 0.8  # 취소 때 진행 중인 관측이 로그 간격보다 오래 걸린다
+        robot.slow.wait(2)
+        with (
+            mock.patch.object(field, "CLOSE_LOG_S", 0.1),
+            self.assertLogs("roport_omx.omx3.field", level="ERROR"),
+        ):
+            executor.close()
+        self.assertIsNone(executor.host.status()["active"])
+        self.assertLess(robot.calls.index("hold"), robot.calls.index("disconnect"))
+        client.close.assert_called_once()
 
     def test_idle_close_holds_and_disconnects(self):
         executor, robot, _ = self.make()
-        executor.close(runner_s=1, stop_s=3)
+        executor.close()
         self.assertEqual(robot.calls[0], "hold")
         self.assertEqual(robot.calls[-1], "disconnect")
         self.assertTrue(executor.observe()["stopped"])
+
+
+def wait_for(predicate, timeout=3):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not reached")
+        time.sleep(0.01)
+
+
+class FieldHostIntegrationTest(unittest.TestCase):
+    """실제 FieldOmxHost + Runner + StopWatch(#149 리뷰 재현 경로). 팔·카메라는 가짜."""
+
+    observe_pinky = tfh.FieldHostTest.observe
+    command = tfh.FieldHostTest.command
+    stop_command = tfh.FieldHostTest.stop_command
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.journal = tfh.Journal(Path(temp.name) / "journal.json")
+        self.addCleanup(self.journal.close)
+
+    def connect(self, robot, policy, where, clock=None):
+        watch = field.StopWatch(robot)
+        markers = lambda marker_id: tfh_runner.FakeMarker(where)
+        settings = tfh_runner.S
+        if clock is None:
+            runner = field.Runner(watch, policy, markers, settings)
+        else:
+            runner = field.Runner(watch, policy, markers, settings, clock, clock.sleep)
+        executor = field.FieldWarehouseExecutor(
+            runner,
+            watch=watch,
+            marker_ids={"package-17": 17},
+            package_sizes={"package-17": "large"},
+            model_version="sim-model",
+            calibration_version="sim-cal",
+        )
+        executors = tfh.virtual_executors(0)
+        executors["omx3"] = executor
+        self.host = tfh.FieldOmxHost(self.journal, executors)
+        self.observe_pinky("N01")
+        # 접수 전 정지 근거: 상태 조회(_arms)의 관측이 0.5 s 넘게 모여야 ready
+        wait_for(lambda: executor.readiness()["arms"]["omx3"]["stopped"])
+        return executor
+
+    def accept(self, target="omx3"):
+        events = self.host.handle(self.command(target))
+        self.assertEqual(events[0]["payload"]["status"], "accepted", events)
+
+    def poll_until(self, status, timeout=3):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.observe_pinky("N01")
+            for event in self.host.poll():
+                if event["payload"]["status"] == status:
+                    return event
+            time.sleep(0.01)
+        raise AssertionError(f"no {status} event")
+
+    def test_normal_load_completes_after_fresh_stop_samples(self):
+        robot, policy = tfh_runner.FakeRobot(), tfh_runner.ScriptPolicy(away=4)
+        where = tfh_runner.box_until(robot, 4)
+        executor = self.connect(robot, policy, where, tfh_runner.Clock())
+        self.accept()
+        executor.host.wait(2)
+        # VERIFY 직후에는 정지 표본이 없다: 실패하지 않고 완료를 보류한다
+        self.assertEqual(executor.observe(), {"state": "running", "step": "VERIFY"})
+        done = self.poll_until("completed")
+        self.assertEqual(done["payload"]["result"]["package_size"], "large")
+        self.assertTrue(done["payload"]["result"]["arms"][0]["stopped"])
+
+    def test_unconfirmed_stop_after_verify_fails_separately(self):
+        robot, policy = tfh_runner.FakeRobot(), tfh_runner.ScriptPolicy(away=4)
+        where = tfh_runner.box_until(robot, 4)
+        executor = self.connect(robot, policy, where, tfh_runner.Clock())
+        self.accept()
+        executor.host.wait(2)
+        with mock.patch.object(field, "CONFIRM_S", 0.0):
+            executor.observe()
+            time.sleep(0.01)
+            self.assertEqual(
+                executor.observe(), {"state": "failed", "error": field.STOP_UNCONFIRMED}
+            )
+
+    def test_stop_during_run_completes_only_after_hold(self):
+        robot = SlowFakeRobot()
+        policy = tfh_runner.ScriptPolicy(
+            away=10**6
+        )  # 정지 요청 전까지 같은 자세로 머문다
+        self.connect(robot, policy, lambda frame: tfh_runner.BOX)
+        self.accept()
+        wait_for(lambda: robot.sent > 0)
+        time.sleep(0.7)  # 정지 요청 전 0.5 s 넘는 '정지' 표본이 쌓인다
+        self.host.handle(self.stop_command(target="omx3"))
+        self.assertEqual(self.host.poll(), [])
+        done = self.poll_until("completed")
+        self.assertGreater(robot.held, 0)
+        self.assertGreaterEqual(done["payload"]["observed_at"], robot.held_at)
+
+
+class SlowFakeRobot(tfh_runner.FakeRobot):
+    held_at = None
+
+    def observe(self):
+        time.sleep(0.03)
+        return super().observe()
+
+    def hold(self):
+        super().hold()
+        self.held_at = datetime.now(UTC).isoformat()
 
 
 SIZES = {"15": "small", "16": "small", "17": "large", "21": "large", "22": "small"}
