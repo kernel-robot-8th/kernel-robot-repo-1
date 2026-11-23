@@ -422,7 +422,9 @@ class PanelExecutorTest(unittest.TestCase):
                 self.assertIn(events[-1]["payload"]["phase"], {"REJECTED", "FAILED"})
                 self.assertIn("expired_command", str(events[-1]["payload"]))
 
-    def test_model_cache_fetches_on_fresh_boot_and_refreshes_after_ttl(self):
+    def test_model_cache_fetches_on_fresh_boot_and_refreshes_after_ttl_in_background(
+        self,
+    ):
         clock = 1.0
         with (
             patch.object(
@@ -436,6 +438,11 @@ class PanelExecutorTest(unittest.TestCase):
             self.assertEqual(self.executor._model_paths(), {MODEL})
             self.assertEqual(call.call_count, 1)
             clock += panel_executor.MODELS_TTL_S + 1
+            # expired: the known list answers at once (never a panel wait inside the MQTT loop,
+            # 2026-11-23 23:41) while a background refresh fetches the new one
+            self.assertEqual(self.executor._model_paths(), {MODEL})
+            self.executor._models_refresh.join(5)
+            self.assertEqual(call.call_count, 2)
             self.assertEqual(self.executor._model_paths(), set())
             self.assertEqual(call.call_count, 2)
 

@@ -889,6 +889,28 @@ class FieldHostTest(unittest.TestCase):
             self.host.state("omx1")["payload"]["state"]["fault"], "panel_down"
         )
 
+    def test_acceptance_uses_the_recent_sample_not_a_slow_panel_read(self):
+        # 2026-11-23 23:32 / 23:41: 2.8-4 s of direct panel reads during the checks; no Pinky
+        # state was read meanwhile and the transfer ended pinky_observation_stale at once
+        plain = self.executor.readiness
+        fresh = plain()
+
+        def slow():
+            time.sleep(3)
+            return plain()
+
+        self.executor.readiness = slow
+        self.host._sample = lambda: (
+            fresh,
+            time.time(),
+        )  # the sampler's reading, 0 s old
+        began = time.monotonic()
+        task = self.transfer()
+        self.assertEqual(self.statuses(self.send(task)), ["accepted"])
+        self.assertLess(time.monotonic() - began, 1.0)
+        timing = self.host._data["commands"][task["command_id"]]["timing"]
+        self.assertLess(timing["checked"] - timing["received"], 1.0)
+
     def test_v1_journal_is_refused(self):
         self.journal.save({"identity": {"profile": "roport-omx-task-v1"}})
         self.journal.close()

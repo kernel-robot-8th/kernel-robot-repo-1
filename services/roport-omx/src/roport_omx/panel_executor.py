@@ -12,7 +12,9 @@ only when last_result is final, and when alignment ran, arm return comes from it
 """
 
 import json
+import logging
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -519,6 +521,7 @@ class PanelExecutor:
         self._missing_since: float | None = None
         self._recovery: dict | None = None  # a failed mission's arms on their way home
         self._models: tuple[float, set[str]] = (float("-inf"), set())
+        self._models_refresh: threading.Thread | None = None
 
     def _call(self, method: str, path: str, body: dict | None = None, timeout=None):
         data = None if body is None else json.dumps(body).encode()
@@ -541,6 +544,8 @@ class PanelExecutor:
             raise PanelRefused(f"panel {path}: {message}", reply) from exc
 
     def readiness(self) -> dict:
+        if time.monotonic() - self._models[0] > MODELS_TTL_S:
+            self._refresh_models()  # kept warm off the MQTT loop (the sampler calls this)
         status = self._call("GET", "/api/status")
         armed = status.get("armed")  # absent before panel 3.8 → None → not armed
         busy = bool((status.get("job") or {}).get("running"))
@@ -642,12 +647,38 @@ class PanelExecutor:
         }
 
     def _model_paths(self) -> set[str]:
+        """The panel's trained models. Only the very first call waits for the panel (about 1 s);
+        later an expired list is refreshed in the background and the known list answers now, so a
+        transfer's checks never stall the Host's MQTT loop (2026-11-23 23:41 field run)."""
         fetched, paths = self._models
+        if fetched == float("-inf"):
+            return self._fetch_models()
         if time.monotonic() - fetched > MODELS_TTL_S:
-            runs = self._call("GET", "/api/train/runs", timeout=15).get("runs", [])
-            paths = {r.get("model_path") for r in runs if r.get("model_path")}
-            self._models = (time.monotonic(), paths)
+            self._refresh_models()
         return paths
+
+    def _fetch_models(self) -> set[str]:
+        runs = self._call("GET", "/api/train/runs", timeout=15).get("runs", [])
+        paths = {r.get("model_path") for r in runs if r.get("model_path")}
+        self._models = (time.monotonic(), paths)
+        return paths
+
+    def _refresh_models(self) -> None:
+        if self._models_refresh is not None and self._models_refresh.is_alive():
+            return
+
+        def run() -> None:
+            try:
+                self._fetch_models()
+            except Exception as exc:  # noqa: BLE001 - the known list stays until a refresh works
+                logging.getLogger(__name__).warning(
+                    "panel model list refresh failed: %s", exc
+                )
+
+        self._models_refresh = threading.Thread(
+            target=run, name="panel-models", daemon=True
+        )
+        self._models_refresh.start()
 
     def start(self, task: dict) -> None:
         if (

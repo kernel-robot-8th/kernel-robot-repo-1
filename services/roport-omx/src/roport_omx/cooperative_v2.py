@@ -80,6 +80,9 @@ LOCAL_RELEASE = {
     "physical_stop_failed",
     "physical_stop_not_confirmed",
 }
+ACCEPT_SAMPLE_MAX_AGE_S = (
+    2.0  # a sampler reading this recent stands for "now" when accepting
+)
 START_INLINE_S = (
     0.2  # wait this long in handle() for a start before leaving it to poll()
 )
@@ -431,6 +434,7 @@ class FieldHost:
             record["detail"] = str(exc)[:200]
             return self._status(record, "rejected", reason="invalid_command")
 
+        self._mark(record, "checked")
         record["task"] = task
         record["arrival_consumed"] = True  # one transfer per Pinky arrival (contract)
         self._data["active"] = message["command_id"]
@@ -715,7 +719,7 @@ class FieldHost:
                 and q.get("arrival_command_id") == p["arrival_command_id"]
             ):
                 raise Rejected("arrival_already_used")
-        ready = self._read()
+        ready = self._recent_ready()  # never a slow panel call inside the MQTT loop
         if ready["error"]:
             raise Rejected("executor_error")
         if ready["busy"]:
@@ -1136,6 +1140,20 @@ class FieldHost:
         self._data["outbox"] = [e for e in outbox if e["message_id"] != acked]
         self._save()
 
+    def _recent_ready(self) -> dict:
+        """The sampler's reading if it is recent, else a direct read.
+
+        A transfer's checks run inside the MQTT loop; a direct panel read there (status plus the
+        arms of every routed model) can take seconds, and while it waits no Pinky state is read
+        (2026-11-23 23:41 field run: 2.8 s of checks, then pinky_observation_stale at once)."""
+        try:
+            sample, observed = self._sample()
+        except Exception:  # noqa: BLE001 - no sample yet: read directly
+            return self._read()
+        if not 0 <= time.time() - observed <= ACCEPT_SAMPLE_MAX_AGE_S:
+            return self._read()
+        return self._normalize(sample)
+
     def _read(self) -> dict:
         try:
             ready = self.executor.readiness()
@@ -1146,6 +1164,10 @@ class FieldHost:
                 "error": str(exc)[:200] or "unreachable",
                 "arms": {},
             }
+        return self._normalize(ready)
+
+    @staticmethod
+    def _normalize(ready: dict) -> dict:
         armed = ready.get("armed")
         return {
             "armed": armed if isinstance(armed, bool) else None,
