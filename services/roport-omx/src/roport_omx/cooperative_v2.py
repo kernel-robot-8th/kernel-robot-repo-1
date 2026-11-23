@@ -55,18 +55,21 @@ PLACED = {
     "INBOUND": {"shelf_align", "shelf_load_not_aligned"},
     "OUTBOUND": {"pinky_load"},
 }
+# Freshness limits agreed with control on 2026-11-23 (TK: control moved its limits to 8 s; the
+# spec's 3 s were proposals to be fixed after field measurement). Change both sides together.
+FRESH_S = 8.0
 SENT_AGE_S = (
     -0.5,
-    3.0,
-)  # a new transfer's sent_at against this PC's clock (spec, Pinky alike)
+    FRESH_S,
+)  # a new transfer's sent_at against this PC's clock
 OBSERVATION_MAX_AGE_S = (
-    3.0  # Pinky state / readiness sample older than this proves nothing
+    FRESH_S  # Pinky state / readiness sample older than this proves nothing
 )
 STOP_TIMEOUT_S = 30.0  # the panel's safe stop lands the arms within a few seconds
 # Stop observed: two separate bus reads of both arms after the stop request, every joint within
 # STILL_TOL (panel joint units) of the previous read (the panel reads the bus about every 10 s).
 STILL_TOL = 1.0
-WATCHDOG_S = 3.0  # keep-running renewals (contract: stop/HOLD after 3 s without one)
+WATCHDOG_S = FRESH_S  # keep-running renewals: stop/HOLD after this long without one
 KEEP_RUNNING_SENT_S = 1.0  # a renewal's sent_at age (field_host.py alike)
 OBSERVED_FUTURE_S = (
     1.0  # a Pinky observed_at this far ahead of this PC's clock still counts

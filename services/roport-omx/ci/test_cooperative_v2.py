@@ -280,7 +280,10 @@ class FieldHostTest(unittest.TestCase):
                 ),
             ),
             ("cooperative_slot_mismatch", self.transfer(payload={"slot_id": "2a"})),
-            ("stale_message", self.transfer(sent_delay_s=4)),
+            (
+                "stale_message",
+                self.transfer(sent_delay_s=9),
+            ),  # older than FRESH_S (8 s)
             (
                 "pinky_boot_mismatch",
                 self.transfer(payload={"expected_pinky_boot_version": "x"}),
@@ -675,7 +678,7 @@ class FieldHostTest(unittest.TestCase):
             (
                 "stale_message",
                 self.release(hold)
-                | {"sent_at": (datetime.now(UTC) - timedelta(seconds=4)).isoformat()},
+                | {"sent_at": (datetime.now(UTC) - timedelta(seconds=9)).isoformat()},
             ),
         ]
         for reason, message in refusals:
