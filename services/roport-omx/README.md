@@ -91,6 +91,26 @@ Pinky의 최신 N01 정차·도착·boot·라인 비활성·주행 소유권 해
 HOLD하고 Pinky의 다음 주행을 발행하지 않습니다. OMX3만 실행하는 factory는 `(executors, None)`을
 반환할 수 있습니다. 이 기준은 학습된 N01 도킹 위치·보정값이 현장에 적용된 것을 전제로 합니다.
 
+OMX3 factory는 `--factory roport_omx.omx3.field:build`입니다. `ROPORT_OMX3_INFER_SERVER`
+(`host:port`), `ROPORT_OMX3_MODEL`(GPU PC 체크포인트 경로), `ROPORT_OMX3_PACKAGE_SIZES`(상자 크기
+JSON, 형식: `{"15": "small", "16": "large", ...}`. 값은 관제와 합의한 상자별 크기)가 필요합니다.
+크기 파일은 학습한 마커 15·16·17·21·22를 빠짐없이 `small`·`large`로 담아야 하며, 아니면 GPU·팔을
+쓰기 전에 시작을 거절합니다(관제 선반 배정이 이 값을 씁니다). 포트·카메라·키 파일은
+`ROPORT_OMX3_PORT`·`ROPORT_OMX3_CAMERA`·`ROPORT_OMX3_KEY_FILE`로 바꿀 수 있습니다. 모델을
+GPU 서버에 먼저 올린 뒤 팔을 연결하며, 연결할 때 토크를 씁니다. `stopped`는 Runner와 상태 조회가
+이미 읽은 관절 값으로 판정합니다. 자세 유지(`hold`) 이후 0.5초 넘게 모든 관절 변화가 0.3 이하이면
+정지입니다. 정지 요청(`abort`)부터 hold가 성공할 때까지의 관측은 버립니다(hold가 실패하면 계속 버려
+정지로 보지 않습니다). 실측한 정지 떨림은 최대
+0.049였습니다. VERIFY 직후에는 정지 표본이 없으므로, Runner가 끝난 뒤 executor가 직접 관측을 모으는
+동안 `running`(`VERIFY`)으로 보고합니다. 정지가 확인되면 `finished`로 바뀌고, 3초 안에 확인되지 않으면
+`OMX3_STOP_UNCONFIRMED` 실패입니다. 종료할 때 `close()`는 Runner를 취소하고 끝날 때까지 기다립니다.
+Runner가 끝나지 않으면 5초마다 로그를 남기며 계속 기다리고, 팔 소유권도 놓지 않습니다. 끝난 뒤
+정지가 확인되어야 연결을 닫습니다. 3초 안에 확인되지 않으면 hold를 다시 쓰고 계속 기다리며, 그래도
+멈추지 않으면 현장에서 비상 정지·강제 종료로 처리합니다. 토크는 끄지 않습니다. `model_version`은
+체크포인트 폴더 이름이고 `calibration_version`은 `robot_id-캘리브레이션 파일 sha256 앞 8자리`입니다.
+lerobot·OpenCV·paho-mqtt가 함께 있는 장비 환경이 필요하며, 실물 팔과 실브로커로는 아직 검증하지
+않았습니다.
+
 아래 정렬 센서 계약은 **OMX1·2 개별 이송과 `shelf-01` 공동 이송**에 적용합니다.
 
 센서 호출은 `alignment_sensor(command, pinky_observation)`입니다. 기존 한 인자 센서는
