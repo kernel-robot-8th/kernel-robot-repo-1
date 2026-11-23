@@ -428,6 +428,13 @@ def _with_detail(observation: dict, why: str | None) -> dict:
     return observation
 
 
+def _then(then: str, why: str | None) -> str:
+    """A recovery failure together with the mission's first cause (#157 review: the wrist camera
+    numbers must not be lost when the home return fails too). The short recovery part goes first
+    so the 200-character cap only shortens the first cause."""
+    return (f"{then} | first: {why}" if why else then)[:200]
+
+
 @dataclass(frozen=True)
 class Route:
     model_path: str  # as listed by the panel's model list (GPU laptop path)
@@ -903,7 +910,7 @@ class PanelExecutor:
         if status.get("armed") is not True:
             # The panel turned armed off (a stop or an anomaly) or a person did: the Host never
             # moves the arms then, even though the panel's home move does not check armed.
-            detail = f"{error}: armed off, arms not moved"
+            detail = _then(f"{error}: armed off, arms not moved", why)
             return {
                 "state": "failed",
                 "error": "PANEL_NOT_ARMED_FOR_HOME",
@@ -915,7 +922,7 @@ class PanelExecutor:
             # "source": "mqtt" lets the panel refuse it while armed is off (its button stays free)
             self._call("POST", "/api/home/return", {"source": "mqtt"})
         except Exception as exc:  # noqa: BLE001 - no way home: a person takes over (HOLD)
-            detail = f"home return refused: {exc}"[:200]
+            detail = _then(f"home return refused: {exc}"[:120], why)
             return {"state": "failed", "error": error, "arms": live, "detail": detail}
         self._recovery = {"error": error, "since": time.monotonic(), "why": why}
         return {"state": "running", "step": "home_return"}
@@ -925,8 +932,9 @@ class PanelExecutor:
         if (status.get("job") or {}).get("running"):
             if time.monotonic() - since < HOME_RETURN_TIMEOUT_S:
                 return {"state": "running", "step": "home_return"}
+            why = self._recovery.get("why")
             self._recovery = None
-            detail = "home return did not finish"
+            detail = _then("home return did not finish", why)
             return {"state": "failed", "error": error, "arms": {}, "detail": detail}
         why = self._recovery.get("why")
         self._recovery = None

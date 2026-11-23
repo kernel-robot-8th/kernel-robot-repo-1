@@ -608,6 +608,30 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertEqual(self.panel.home_returns, 0)
         self.assertIsNone(self.host.hold)
 
+    def test_home_return_failure_keeps_the_first_cause(self):
+        # #157 review: a failed home return after the wrist camera check must not replace the
+        # check's numbers; the journal keeps both
+        check = {
+            "ok": False,
+            "why": "left move changed both wrist cameras",
+            "change": {"left": {"wrist_left": 0.031, "wrist_right": 0.024}},
+        }
+        self.send(self.inbound())
+        self.panel.arms["OMX 1"] = live("left", home=False)
+        self.panel.finish(
+            exit_ok=False, err={"code": 13, "name": "err_code_13"}, wrist_check=check
+        )
+        self.host.poll()  # the home move starts
+        self.assertEqual(self.panel.home_returns, 1)
+        with patch.object(panel_executor, "HOME_RETURN_TIMEOUT_S", 0.0):
+            events = self.host.poll()
+        p = events[-1]["payload"]
+        self.assertEqual(p["error_code"], "PANEL_WRIST_CHECK")
+        self.assertIn("home return did not finish", p["detail"])
+        self.assertIn("left move changed both wrist cameras", p["detail"])
+        self.assertIn("wrist_left=0.031", p["detail"])
+        self.assertIsNotNone(self.host.hold)
+
     def test_operator_stop_is_reported_without_hold(self):
         # 즉시 중단 can leave a shutdown error behind; the stop is still the cause.
         cases = [
