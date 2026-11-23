@@ -93,6 +93,24 @@ def test_seed_at_close_range_can_propose_same_figure_at_half_scale():
                for box in finder.detect(far))
 
 
+@pytest.mark.parametrize('left', [-8, 376])
+def test_selected_figure_partly_clipped_on_either_side(left):
+    cv2 = pytest.importorskip('cv2')
+    from roport_smartcart.box_detector import SelectedProposals
+    rng = np.random.default_rng(11)
+    crop = cv2.resize(rng.integers(0, 255, (25, 16, 3), dtype=np.uint8), (112, 168))
+    frame = np.zeros((420, 480, 3), dtype=np.uint8)
+    frame[60:228, 80:192] = crop
+    finder = SelectedProposals(frame, (80/480, 60/420, 192/480, 228/420))
+    edge = np.zeros_like(frame)
+    a, c = max(0, left), min(480, left+112)
+    edge[60:228, a:c] = crop[:, a-left:c-left]
+    candidate, = [x for x in finder.detect(edge)
+                  if abs(x['box'][0]-a) <= 2 and abs(x['box'][2]-c) <= 2
+                  and abs(x['box'][1]-60) <= 2]
+    assert candidate['foot_box'] == pytest.approx([left, 60, left+112, 228], abs=2)
+
+
 def test_proximity_notice_waits_for_sustained_loss_or_distance_and_clears_on_confirmation():
     from roport_smartcart.shopping_track import ProximityNotice
     notice = ProximityNotice()
@@ -421,7 +439,7 @@ def make_shop(now):
         shop.track.update(stamp, (.55, 0.))
     shop.observed = now-.1
     shop.proximity, shop.still_since, shop.odom_at = ProximityNotice(), None, now
-    shop.frozen = shop.frame_box = shop.grid = shop.hit = None
+    shop.frozen = shop.frame_box = shop.grid = shop.hit = shop.bypass = shop.miss_reason = None
     shop.hit_at, shop.last_display, shop.display_at = float('-inf'), '', float('-inf')
     shop.display = Mock()
     nav.follow_distance_m, nav.retry_after, nav.fault = .26, 0., None
@@ -616,3 +634,370 @@ def test_shopping_global_cadence_keeps_active_direct_leg_until_grid_expires(jitt
     nav.handle.cancel_goal_async.assert_called_once()
     assert nav.heartbeat.call_args.args[0] is False
     nav.client.send_goal_async.assert_not_called()
+
+
+@pytest.mark.parametrize('case, expected', [
+    ('edge', 'continue'), ('center', 'hold'), ('ambiguous', 'hold'),
+    ('bad_camera', 'hold'), ('blocked_point', 'hold'), ('stale', 'hold'),
+    ('expired', 'hold'), ('cancelled', 'look'), ('lost_too_long', 'hold'),
+    ('accepted_other_goal', 'look'), ('timeout_to_look', 'look'),
+])
+def test_bypass_requires_same_accepted_leg_and_turn_explaining_loss(case, expected):
+    pytest.importorskip('nav2_msgs')
+    shop = make_shop(10.)
+    nav = shop.nav
+    nav.last_reached = None
+    target, via = nav.anchor, nav.destination
+    shop.bypass = via, (0., 0., 0.), -16. if case == 'expired' else 8.
+    info = NS(width=640,k=[0. if case == 'bad_camera' else 575.,0.,320.,0.,575.,240.,0.,0.,1.],d=[])
+    yaw = 0. if case == 'center' else .55
+    c, s = math.cos(yaw/2), math.sin(yaw/2)
+    camera = NS(translation=NS(x=0.,y=0.,z=.1),
+                rotation=NS(x=(-c-s)/2,y=(c-s)/2,z=(-c+s)/2,w=(c+s)/2))
+    shop.packet, shop.floor_z = (10., None, info, camera), 0.
+    stamp = {'lost_too_long': -5., 'timeout_to_look': 1.}.get(case, 9.)
+    shop.track.samples.clear()
+    shop.track.samples.append((stamp, target))
+    shop.track.confirmed = stamp, target
+    shop.track.state = 'AMBIGUOUS' if case == 'ambiguous' else 'SEARCHING'
+    shop.miss_reason = 'no_detection'
+    nav.cancelled = case == 'cancelled'
+    if case == 'accepted_other_goal':
+        nav.destination = (.3, 0.)
+    grid = make_grid()
+    if case == 'blocked_point':
+        grid.data = [100] * len(grid.data)
+    pose = (0., 0., 0. if case == 'center' else .55)
+    drive_target, _, look = shop.bypass_command(10., pose, None, grid, case != 'stale')
+    if expected == 'continue':
+        assert drive_target == target and look is None
+    elif expected == 'look':
+        assert drive_target is None and look == pytest.approx((-.55, stamp))
+    else:
+        assert drive_target is None and look is None
+
+
+
+@pytest.mark.parametrize('hold_reason', [
+    None, 'stale_camera', 'stale_sonar', 'stale_scan', 'stale_grid',
+    'expired', 'ambiguous', 'guard', 'center', 'old_sighting', 'blocked_point',
+])
+def test_successful_bypass_researches_without_new_travel_only_when_safe(
+        hold_reason, monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from concurrent.futures import Future
+    from unittest.mock import Mock
+    from action_msgs.msg import GoalStatus
+    from roport_smartcart import shopping_follow
+
+    now = 10.
+    shop = make_shop(now)
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: now)
+    nav = shop.nav
+    nav.path_failures, nav.goal_yaw, nav.last_reached = 0, .55, None
+    nav.follow_client, nav.spin_client = Mock(), Mock()
+    nav.spin_client.send_goal_async.return_value = Future()
+    original_handle = nav.handle
+    via = nav.destination = (.05, 0.)
+    shop.bypass = via, (0., 0., 0.), 8.
+    shop.grid = (make_grid(), 9.9)
+    shop.track.update(9.95, None)
+    shop.observed, shop.miss_reason = 9.95, 'no_detection'
+    info = NS(width=640, k=[575.,0.,320.,0.,575.,240.,0.,0.,1.], d=[])
+
+    def orient(yaw):
+        c, s = math.cos(yaw/2), math.sin(yaw/2)
+        camera = NS(translation=NS(x=via[0], y=via[1], z=.1),
+                    rotation=NS(x=(-c-s)/2,y=(c-s)/2,z=(-c+s)/2,w=(c+s)/2))
+        shop.packet, shop.floor_z = (now, None, info, camera), 0.
+        transform = shop.tf.lookup_transform.return_value.transform
+        transform.translation.x = via[0]
+        transform.rotation.z, transform.rotation.w = s, c
+
+    orient(.55)
+    nav.result = Future()
+    nav.result.set_result(NS(status=GoalStatus.STATUS_SUCCEEDED))
+    shop.tick()
+    assert nav.last_reached[0] == via and nav.handle is None
+    original_handle.cancel_goal_async.assert_not_called()
+    nav.spin_client.send_goal_async.assert_not_called()
+    nav.heartbeat.assert_called_with(False, now)
+
+    now = 10.05
+    if hold_reason in {'stale_camera', 'stale_sonar', 'stale_scan'}:
+        if hold_reason == 'stale_camera':
+            shop.packet = (now-.51, *shop.packet[1:])
+        else:
+            setattr(shop, hold_reason.removeprefix('stale_')+'_at', now-.51)
+    elif hold_reason == 'stale_grid':
+        shop.grid = (make_grid(8, 0), now)
+    elif hold_reason == 'blocked_point':
+        shop.grid[0].data = [100] * len(shop.grid[0].data)
+    elif hold_reason == 'expired':
+        shop.bypass = via, shop.bypass[1], now-24.01
+    elif hold_reason == 'ambiguous':
+        shop.track.state = 'AMBIGUOUS'
+    elif hold_reason == 'guard':
+        nav.ready = lambda _: False
+    elif hold_reason == 'center':
+        orient(0.)
+    elif hold_reason == 'old_sighting':
+        shop.track.confirmed = now-14.01, shop.track.confirmed[1]
+    shop.tick()
+    nav.client.send_goal_async.assert_not_called()
+    nav.follow_client.send_goal_async.assert_not_called()
+    nav.heartbeat.assert_called_with(False, now)  # Spin remains unaccepted.
+    if hold_reason is not None:
+        nav.spin_client.send_goal_async.assert_not_called()
+        assert shop.drive == 'HOLD'
+    else:
+        nav.spin_client.send_goal_async.assert_called_once()
+        goal = nav.spin_client.send_goal_async.call_args.args[0]
+        assert goal.target_yaw == pytest.approx(-.55)
+        assert goal.time_allowance.sec == 5
+        result = Future()
+        nav.pending.set_result(Mock(accepted=True, get_result_async=lambda: result))
+        now = 10.1
+        shop.tick()
+        assert shop.drive == 'APPROACH'
+        nav.heartbeat.assert_called_with(True, now)
+        result.set_result(NS(status=GoalStatus.STATUS_SUCCEEDED))
+        now = 10.15
+        orient(0.)
+        shop.tick()
+        assert shop.drive == 'HOLD'
+        nav.spin_client.send_goal_async.assert_called_once()
+        nav.client.send_goal_async.assert_not_called()
+        nav.follow_client.send_goal_async.assert_not_called()
+        nav.heartbeat.assert_called_with(False, now)
+
+
+def test_look_cancels_old_action_and_turns_only_once_per_sighting():
+    pytest.importorskip('nav2_msgs')
+    from concurrent.futures import Future
+    from unittest.mock import Mock
+    from action_msgs.msg import GoalStatus
+    nav = make_shop(10.).nav
+    nav.spin_client = Mock()
+    old = nav.handle
+    assert nav.look(10., 2., 7.) == 'HOLD'
+    old.cancel_goal_async.assert_called_once()
+    nav.spin_client.send_goal_async.assert_not_called()
+    nav.handle = nav.pending = None
+    future = Future()
+    nav.spin_client.send_goal_async.return_value = future
+    assert nav.look(10.1, 2., 7.) == 'HOLD'
+    goal = nav.spin_client.send_goal_async.call_args.args[0]
+    assert goal.target_yaw == pytest.approx(math.pi/3) and goal.time_allowance.sec == 5
+    result = Future()
+    future.set_result(Mock(accepted=True, get_result_async=lambda: result))
+    assert nav.look(10.2, 1., 7.) == 'APPROACH'
+    result.set_result(NS(status=GoalStatus.STATUS_SUCCEEDED))
+    assert nav.look(10.3, .1, 7.) == 'HOLD'
+    nav.spin_client.send_goal_async.assert_called_once()
+    nav.heartbeat.assert_called_with(False, 10.3)
+
+
+def test_rotation_prediction_requires_both_appearance_and_map_agreement():
+    from roport_smartcart.session_target import SessionTracker
+    from roport_smartcart.shopping_track import foot_pixel
+    info = NS(k=[500.,0,320.,0,500.,240.,0,0,1.], height=480, width=640, d=[])
+    cam = NS(rotation=NS(x=-.5,y=.5,z=-.5,w=.5), translation=NS(x=1.,y=.2,z=.12))
+    assert foot_pixel((1.6,.2), info, cam, 0.) == pytest.approx((320,340))
+    assert foot_pixel((.6,.2), info, cam, 0.) is None
+    frame = np.zeros((320,480,3), np.uint8)
+    box = [260,115,310,215]
+    class Encoder:
+        def encode(self, crops):
+            return np.tile(self.embedding,(len(crops),1))
+        embedding = [1.,0.]
+    encoder = Encoder()
+    tracker = SessionTracker(encoder,lambda _: [box],frame,(.1,.1,.25,.5))
+    assert tracker.step(frame, near_anchor=lambda _:False, expected_box=box)[2]['state'] == 'LOST'
+    assert tracker.step(frame, near_anchor=lambda _:True, expected_box=box)[2]['state'] == 'MATCH'
+    encoder.embedding = [0.,1.]
+    assert tracker.step(frame, near_anchor=lambda _:True, expected_box=box)[2]['state'] == 'LOST'
+
+
+@pytest.mark.parametrize('side', [-1, 1])
+@pytest.mark.parametrize('geometry', ['template', 'unreliable_yolo'])
+def test_vision_edge_uses_full_foot_for_anchor_and_motion(side, geometry, monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from roport_smartcart import shopping_follow
+    from roport_smartcart.shopping_nav import following_distances
+
+    now = 10.
+    shop = make_shop(now)
+    frame = np.zeros((480, 640, 3), np.uint8)
+    info = NS(k=[500.,0,320,0,500.,240,0,0,1.], height=480, d=[])
+    camera = NS(rotation=NS(x=-.5,y=.5,z=-.5,w=.5),
+                translation=NS(x=-.36,y=side*.2655,z=.12))
+    raw = [544, 200, 656, 340] if side == 1 else [-16, 200, 96, 340]
+    crop = [max(0, raw[0]), raw[1], min(640, raw[2]), raw[3]]
+    original = foot_position(raw, info, camera)
+    clipped = foot_position(crop, info, camera)
+    _, forward = following_distances(.22)
+    assert math.hypot(*clipped) < forward < math.hypot(*original)
+    # True foot is within the existing .18 m map-anchor limit, clipped foot is not.
+    anchor = original[0], original[1] - side*.175
+    assert math.dist(anchor, original) < .18 < math.dist(anchor, clipped)
+    shop.track = Track()
+    for stamp in (now-.5, now-.4, now-.3):
+        shop.track.update(stamp, anchor)
+    shop.packet, shop.floor_z = (now, frame, info, camera), 0.
+    shop.seed, shop.encoder = (frame, (.2,.2,.5,.7)), object()
+    shop.closed = NS(wait=lambda _: next(steps))
+    steps = iter((False, True))
+    projected_anchor = []
+    item = dict(box=crop, foot_box=raw) if geometry == 'template' else dict(box=crop)
+    monkeypatch.setattr(shopping_follow, 'SelectedProposals', lambda *_: NS(
+        detect=lambda _: [item] if geometry == 'template' else []))
+    shop.detector = NS(full_frame=lambda _: [] if geometry == 'template' else [item])
+
+    def tracker(_encoder, detector, *_seed):
+        def step(image, *, near_anchor, expected_box):
+            box, = detector(image)
+            assert box == crop  # Appearance receives only the visible crop.
+            projected_anchor.append(bool(near_anchor(list(box))))
+            return [box], [{'score': .9}], {'state': 'MATCH', 'index': 0}
+        return NS(step=step)
+
+    monkeypatch.setattr(shopping_follow, 'SessionTracker', tracker)
+    shop.vision()
+    if geometry == 'template':
+        assert projected_anchor == [True]
+        assert shop.track.target() == pytest.approx(original)
+        assert math.hypot(*shop.track.target()) > forward
+    else:
+        assert projected_anchor == [False]
+        assert shop.track.state == 'AMBIGUOUS'
+        assert shop.track.target() is None
+
+
+@pytest.mark.parametrize('invalid', [True, False])
+def test_vision_distinguishes_all_invalid_from_empty_for_bypass(invalid, monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from roport_smartcart import shopping_follow
+
+    shop = make_shop(10.)
+    frame = np.zeros((480, 640, 3), np.uint8)
+    info = NS(width=640, height=480, k=[575.,0.,320.,0.,575.,240.,0.,0.,1.], d=[])
+    yaw = .55
+    c, s = math.cos(yaw/2), math.sin(yaw/2)
+    camera = NS(translation=NS(x=0., y=0., z=.1),
+                rotation=NS(x=(-c-s)/2,y=(c-s)/2,z=(-c+s)/2,w=(c+s)/2))
+    shop.packet, shop.floor_z = (10., frame, info, camera), 0.
+    shop.seed = frame, (.2, .2, .5, .7)
+    shop.encoder = NS(encode=lambda crops: np.tile([1., 0.], (len(crops), 1)))
+    steps = iter((False, True))
+    shop.closed = NS(wait=lambda _: next(steps))
+    # 28 of 32 px (87.5%) is a valid template crop, too narrow for the DINO tracker.
+    proposal = dict(box=[0, 200, 28, 340], foot_box=[-4, 200, 28, 340])
+    monkeypatch.setattr(shopping_follow, 'SelectedProposals', lambda *_: NS(
+        detect=lambda _: [proposal] if invalid else []))
+    yolo_calls = []
+    shop.detector = NS(full_frame=lambda _: yolo_calls.append(True) or [])
+    shop.nav.last_reached = None
+    shop.bypass = shop.nav.destination, (0., 0., 0.), 8.
+
+    shop.vision()
+    assert yolo_calls == [True]
+    assert shop.armed and shop.track.target() is None
+    assert (shop.miss_reason, shop.track.state) == (
+        ('processing_error', 'AMBIGUOUS') if invalid else ('no_detection', 'SEARCHING'))
+    target, via, look = shop.bypass_command(10., (0., 0., yaw), None, make_grid(), True)
+    if invalid:
+        assert (target, via, look) == (None, None, None) and shop.bypass is None
+    else:
+        assert (target, via, look) == (shop.nav.anchor, shop.nav.destination, None)
+
+
+@pytest.mark.parametrize('mode', ['template_bad_first', 'template_bad_last',
+                                  'overlap_yolo', 'bad_yolo'])
+def test_vision_valid_sibling_keeps_match_and_candidate_provenance(mode, monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from roport_smartcart import shopping_follow
+
+    now = 10.
+    shop = make_shop(now)
+    frame = np.zeros((480, 640, 3), np.uint8)
+    info = NS(k=[500.,0,320,0,500.,240,0,0,1.], height=480, d=[])
+    camera = NS(rotation=NS(x=-.5,y=.5,z=-.5,w=.5),
+                translation=NS(x=-.36,y=0.,z=.12))
+    crop = [1, 200, 34, 340] if mode == 'overlap_yolo' else [128, 200, 320, 340]
+    visible = [crop[0]/640, crop[1]/480, crop[2]/640, crop[3]/480]
+    valid = dict(box=crop)
+    small = dict(box=[0, 200, 28, 340], foot_box=[-4, 200, 28, 340])
+    tem, yolo = {
+        'template_bad_first': ([small, valid], []),
+        'template_bad_last': ([valid, small], []),
+        'overlap_yolo': ([small], [valid]),
+        'bad_yolo': ([valid], [small]),
+    }[mode]
+    point = foot_position(crop, info, camera)
+    shop.track = Track()
+    for stamp in (now-.5, now-.4, now-.3):
+        shop.track.update(stamp, point)
+    shop.packet, shop.floor_z = (now, frame, info, camera), 0.
+    shop.seed = frame, visible
+    crop_counts, seeds, yolo_calls = [], [], []
+    def encode(crops):
+        crop_counts.append([image.shape[1] for image in crops])
+        return np.tile([1., 0.], (len(crops), 1))
+    def templates(_frame, selected):
+        seeds.append(selected)
+        return NS(detect=lambda _: tem.copy())
+    shop.encoder = NS(encode=encode)
+    shop.detector = NS(full_frame=lambda _: yolo_calls.append(True) or yolo.copy())
+    steps = iter((False, True))
+    shop.closed = NS(wait=lambda _: next(steps))
+    monkeypatch.setattr(shopping_follow, 'SelectedProposals', templates)
+
+    shop.vision()
+    assert yolo_calls == [True]
+    assert crop_counts == [[crop[2]-crop[0]], [crop[2]-crop[0]]]
+    assert shop.armed and shop.track.state == 'FOLLOWING'
+    assert shop.track.target() == pytest.approx(point)
+    assert shop.frame_box == pytest.approx(visible)
+    # Refresh the crop on native YOLO only, even if a template was filtered.
+    assert seeds == [visible] * (2 if mode == 'overlap_yolo' else 1)
+
+
+def test_vision_preserves_interior_fractional_yolo_projection(monkeypatch):
+    pytest.importorskip('nav2_msgs')
+    from roport_smartcart import shopping_follow
+
+    now = 10.
+    shop = make_shop(now)
+    frame = np.zeros((480, 640, 3), np.uint8)
+    info = NS(k=[500.,0,320,0,500.,240,0,0,1.], height=480, d=[])
+    camera = NS(rotation=NS(x=-.5,y=.5,z=-.5,w=.5), translation=NS(x=-.36,y=0.,z=.12))
+    raw = [250.2, 200.2, 362.2, 340.2]
+    rounded = [250, 200, 363, 341]
+    point = foot_position(raw, info, camera)
+    rounded_point = foot_position(rounded, info, camera)
+    anchor = rounded_point[0] - .177, rounded_point[1]
+    assert math.dist(anchor, rounded_point) < .18 < math.dist(anchor, point)
+    shop.track = Track()
+    for stamp in (now-.5, now-.4, now-.3):
+        shop.track.update(stamp, anchor)
+    shop.packet, shop.floor_z = (now, frame, info, camera), 0.
+    shop.seed, shop.encoder = (frame, (.2,.2,.5,.7)), object()
+    steps = iter((False, True))
+    shop.closed = NS(wait=lambda _: next(steps))
+    calls = []
+    monkeypatch.setattr(shopping_follow, 'SelectedProposals',
+                        lambda *_: NS(detect=lambda _: []))
+    shop.detector = NS(full_frame=lambda _: [dict(box=raw)])
+
+    def tracker(_encoder, detector, *_seed):
+        def step(image, *, near_anchor, expected_box):
+            assert detector(image) == [raw]
+            calls.append(bool(near_anchor(rounded)))
+            return [rounded], [{'score': .9}], {'state': 'MATCH', 'index': 0}
+        return NS(step=step)
+
+    monkeypatch.setattr(shopping_follow, 'SessionTracker', tracker)
+    shop.vision()
+    assert calls == [True]
+    assert shop.track.target() == pytest.approx(point)
