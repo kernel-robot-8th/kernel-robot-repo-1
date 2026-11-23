@@ -16,7 +16,7 @@ COMMANDS = ('start', 'stop', 'load_done', 'speed', 'dock')
 SPEED_CAPS = {'base_speed': 0.15, 'rotate_speed': 1.5}   # 형식 검사용(실제 상한은 line_nav 설정)
 
 # 정밀 도킹(FFT1-112, 계약 01_dock_contract.md 1·2절): 상차(LOAD) 노드별 ① 선 따라 ② 반시계 회전 ③ 직진.
-# 대상 = 경로 끝 동작이 LOAD 인 노드(운영 위치 P4·P7 또는 arrival: load). 지금 그래프 v14 기준.
+# 대상 = 경로 끝 동작이 LOAD 인 노드(운영 위치 P4·P7 또는 arrival: load). 지금 그래프 v15 기준.
 # test_route_view 가 배치 yaml 의 LOAD 노드와 같은지 확인한다.
 DOCK_NODES = ('N01', 'N11', 'N21', 'N22')
 LOAD_PLACES = ('P4', 'P7')       # roport_line_nav graph.LOAD_PLACES 와 같게

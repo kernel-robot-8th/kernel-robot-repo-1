@@ -1,5 +1,6 @@
 """Nav2 action adapter: actual map/localization/pose evidence, never a timer success."""
 import hashlib
+from io import BytesIO
 import json
 import math
 import os
@@ -10,17 +11,26 @@ from pathlib import Path
 import yaml
 
 
+def _map_source(path):
+    yaml_bytes = path.read_bytes()
+    cfg = yaml.safe_load(yaml_bytes)
+    image_bytes = (path.parent / cfg['image']).read_bytes()
+    version = hashlib.sha256(yaml_bytes + image_bytes).hexdigest()[:16]
+    return cfg, image_bytes, {'map_id': path.stem, 'map_version': version}
+
+
+def map_profile(path):
+    return _map_source(Path(path))[2]
+
+
 def map_reference(path, profile):
     from PIL import Image
-    path = Path(path).resolve()
-    cfg = yaml.safe_load(path.read_text())
-    img = path.parent / cfg['image']
-    version = hashlib.sha256(path.read_bytes() + img.read_bytes()).hexdigest()[:16]
-    if path.stem != profile['map_id'] or version != profile['map_version']:
+    cfg, image_bytes, local = _map_source(Path(path).resolve())
+    if local['map_id'] != profile['map_id'] or local['map_version'] != profile['map_version']:
         raise ValueError('local_map_version_mismatch')
     if cfg.get('mode', 'trinary') != 'trinary':
         raise ValueError('trial requires trinary map')
-    with Image.open(img) as source:
+    with Image.open(BytesIO(image_bytes)) as source:
         image = source.convert('RGB')
         width, height = image.size
         pixels = list(image.getdata())
@@ -178,7 +188,7 @@ class Nav2Bridge:
             if (ready and amcl and amcl.header.frame_id == 'map' and stamp(amcl) <= now + .1
                     and fresh(self.scan, 1.0) and odom_ok
                     and fresh(tf, .5) and fresh(odom_tf, .5) and fresh(correction, .5, 1.1)
-                    and all(math.isfinite(v) and 0 <= v <= limit
+                    and all(math.isfinite(v) and -1e-9 <= v <= limit
                             for v, limit in zip((covariance[0], covariance[7], covariance[35]),
                                                 (0.04, 0.04, 0.1)))):
                 t = tf.transform
@@ -216,11 +226,21 @@ class Nav2Bridge:
             return {'nav2_ready': False, 'localization_ready': False,
                     'pose': None, 'stopped': False}
 
-    def start(self, payload):
+    def start(self, payload, *, behavior_tree='', stamp=None, max_recoveries=MAX_RECOVERIES):
+        """behavior_tree: per-goal BT file (empty = bt_navigator default). stamp: header time in s.
+
+        max_recoveries: cap on Nav2 feedback number_of_recoveries for this goal. None = no cumulative cap
+        (the BT bounds its own retries; RECOVERY_TIMEOUT_S still applies). Nav2 counts every recovery
+        node tick (clear costmap and wait are one each), cumulatively for the whole goal.
+        """
         from nav2_msgs.action import NavigateToPose
         goal = NavigateToPose.Goal()
+        goal.behavior_tree = behavior_tree
         goal.pose.header.frame_id = payload['frame_id']
         goal.pose.header.stamp = self.node.get_clock().now().to_msg()
+        if stamp is not None:
+            goal.pose.header.stamp.sec = int(math.floor(stamp))
+            goal.pose.header.stamp.nanosec = min(int(round((stamp % 1) * 1e9)), 999_999_999)
         p = payload['pose']
         goal.pose.pose.position.x, goal.pose.pose.position.y = float(p['x']), float(p['y'])
         goal.pose.pose.orientation.z = math.sin(p['yaw'] / 2)
@@ -229,10 +249,11 @@ class Nav2Bridge:
         generation = self.generation
         self.goal, self.handle, self.result = payload, None, None
         self.recovery_started = self.recovery_pose = None
+        self.max_recoveries = max_recoveries
         self.navigation = {
             'phase': 'navigating', 'goal_id': payload['goal_id'],
             'target_pose': dict(p), 'current_pose': None,
-            'recoveries': 0, 'max_recoveries': MAX_RECOVERIES,
+            'recoveries': 0, 'max_recoveries': max_recoveries,
             'recovery_elapsed_s': 0.0, 'recovery_timeout_s': RECOVERY_TIMEOUT_S,
             'nav2_error_code': 0, 'action_status': 0, 'error_code': None,
         }
@@ -305,7 +326,8 @@ class Nav2Bridge:
                     self.recovery_started = time.monotonic()
                     self.recovery_pose = self.snapshot().get('pose')
                 self.navigation.update(phase='recovering', recoveries=count)
-            if count > MAX_RECOVERIES:
+            limit = getattr(self, 'max_recoveries', MAX_RECOVERIES)
+            if limit is not None and count > limit:
                 self._fail('nav2_recovery_limit')
 
     def _check_recovery(self, state):

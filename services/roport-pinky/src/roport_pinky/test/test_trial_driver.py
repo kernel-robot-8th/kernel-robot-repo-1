@@ -84,7 +84,7 @@ class Rig:
 
 def route_cmd(route, heading=SOUTH, maneuver='none', speed=0.1, kind='route.requested'):
     return {'type': kind, 'command_id': 'c-' + route[-1], 'execution_id': 'e-' + route[-1],
-            'payload': {'graph_version': 'line-v14-20261106', 'start_node': route[0],
+            'payload': {'graph_version': 'line-v15-20261116', 'start_node': route[0],
                         'start_heading_rad': heading, 'start_maneuver': maneuver,
                         'route': route, 'speed_limit_mps': speed,
                         'goal': {'node_id': route[-1], 'location_id': None,
@@ -101,7 +101,7 @@ def test_observe_at_start_bay():
     assert s['node_id'] == 'N16' and s['stopped'] and not s['line_enabled']
     assert s['mode'] == 'line' and s['drive_owner'] == 'none' and s['fault'] is None
     assert abs(s['heading_rad'] - SOUTH) < 1e-9            # 칸 바깥(N14 쪽) = 남쪽 + 0.1°
-    assert s['graph_version'] == 'line-v14-20261106'
+    assert s['graph_version'] == 'line-v15-20261116'
     assert s['map_version'] == PROFILE['map_version']
 
 

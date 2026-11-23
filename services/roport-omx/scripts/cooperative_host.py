@@ -8,6 +8,7 @@ fixed. Broker settings come from ROPORT_MQTT_* like the control server; secrets 
 
 import argparse
 import logging
+import math
 import os
 import sys
 import time
@@ -17,6 +18,8 @@ from queue import Empty
 from cooperative_mock import MockExecutor
 
 from roport_omx.cooperative import WORKCELL, CooperativeHost, StorageError
+from roport_omx.mqtt_link import field_wire
+from roport_omx.mqtt_link.host_metrics import host_metrics_message, read_host_metrics
 from roport_omx.mqtt_link.journal import Journal
 from roport_omx.mqtt_link.messages import decode, topic
 from roport_omx.mqtt_link.mqtt import MqttConfig, MqttTransport
@@ -50,7 +53,40 @@ def publish(transport: MqttTransport, site: str, events: list[dict]) -> None:
             )
 
 
-def serve(host: CooperativeHost, transport: MqttTransport, site: str) -> None:
+class HostMetrics:
+    """Display-only shelf-01 host telemetry (QoS0). Never part of delivery ACK or stop paths."""
+
+    def __init__(self, boot_version: str, target: str, period_s: float):
+        self.boot_version, self.target, self.period_s = boot_version, target, period_s
+        self.sequence, self.last = 0, -math.inf
+
+    def tick(self, transport: MqttTransport, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        if now - self.last < self.period_s:
+            return
+        self.last = now
+        try:
+            self.sequence += 1
+            message = host_metrics_message(
+                WORKCELL,
+                self.target,
+                self.boot_version,
+                self.sequence,
+                read_host_metrics(),
+            )
+            transport.publish_host_metrics(
+                field_wire.topic(WORKCELL, "host"), message, self.period_s
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry must never stop the host
+            log.warning("host metrics not sent: %s", type(exc).__name__)
+
+
+def serve(
+    host: CooperativeHost,
+    transport: MqttTransport,
+    site: str,
+    metrics: HostMetrics | None = None,
+) -> None:
     channels = {topic(site, "workcell", WORKCELL, c): c for c in ("cmd", "ack")}
     publish(transport, site, host.pending())
     next_resend = time.monotonic() + RESEND_S
@@ -80,9 +116,18 @@ def serve(host: CooperativeHost, transport: MqttTransport, site: str) -> None:
         if time.monotonic() >= next_resend:
             publish(transport, site, host.pending())
             next_resend = time.monotonic() + RESEND_S
+        if metrics is not None:
+            metrics.tick(transport)
 
 
-def main() -> None:
+def positive_period(text: str) -> float:
+    value = float(text)
+    if not 0 < value < math.inf:
+        raise argparse.ArgumentTypeError("must be a positive finite number")
+    return value
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -109,12 +154,23 @@ def main() -> None:
     parser.add_argument(
         "--mock-unreturned", action="append", default=[], choices=["omx1", "omx2"]
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--host-metrics-period-s",
+        type=positive_period,
+        default=None,
+        help="publish display-only host telemetry every N s; off when omitted",
+    )
+    args = parser.parse_args(argv)
+    if str(args.journal.resolve()).startswith("/tmp/"):
+        parser.error("journal must survive a restart; do not use /tmp")
+    return args
+
+
+def main() -> None:
+    args = parse_args()
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
-    if str(args.journal.resolve()).startswith("/tmp/"):
-        parser.error("journal must survive a restart; do not use /tmp")
 
     executor = MockExecutor(
         args.mock_run_s,
@@ -134,12 +190,16 @@ def main() -> None:
             host.clear_hold()
     except (ValueError, StorageError) as exc:
         journal.close()
-        parser.exit(2, f"{args.journal}: {exc}\n")
+        print(f"{args.journal}: {exc}", file=sys.stderr)
+        sys.exit(2)
     if host.hold:
         log.warning(
             "HOLD on command %s: new tasks are rejected until --clear-hold", host.hold
         )
     log.info("SIMULATED executor; boot_id=%s site=%s", host.boot_id, args.site)
+    metrics = None
+    if args.host_metrics_period_s is not None:
+        metrics = HostMetrics(host.boot_id, args.control, args.host_metrics_period_s)
     subscriptions = [topic(args.site, "workcell", WORKCELL, c) for c in ("cmd", "ack")]
     try:
         while True:
@@ -147,7 +207,7 @@ def main() -> None:
             try:
                 transport.start()
                 log.info("subscribed %s:%s", args.host, args.port)
-                serve(host, transport, args.site)
+                serve(host, transport, args.site, metrics)
             except (ConnectionError, TimeoutError) as exc:
                 log.warning("broker link lost (%s); reconnecting", exc)
                 transport.stop()

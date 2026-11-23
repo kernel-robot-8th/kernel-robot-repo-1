@@ -18,7 +18,7 @@ class RosTrial:
         from lifecycle_msgs.srv import GetState
         from nav2_msgs.action import NavigateToPose
         from nav_msgs.msg import OccupancyGrid, Odometry
-        from rclpy.action import ActionServer, GoalResponse
+        from rclpy.action import ActionServer, CancelResponse, GoalResponse
         from rclpy.executors import SingleThreadedExecutor
         from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
         from sensor_msgs.msg import LaserScan
@@ -73,7 +73,32 @@ class RosTrial:
                             lambda req, res, name=n: active(req, res, name))
                          for n in ('amcl', 'bt_navigator')]
 
-        def execute(handle):
+        self.goals = []           # received NavigateToPose goals
+        self.abort_follow = False
+
+        def pause(seconds):
+            # Coroutine sleep: the single-threaded peer executor keeps publishing TF/odom.
+            from rclpy.task import Future
+            done = Future()
+            timer = None
+
+            def fire():
+                timer.cancel()
+                done.set_result(True)
+            timer = self.node.create_timer(seconds, fire)
+            return done
+
+        async def execute(handle):
+            self.goals.append(handle.request)
+            if handle.request.behavior_tree:
+                # Follow tree never succeeds: it runs until cancelled or a Nav2 failure.
+                while not handle.is_cancel_requested and not self.abort_follow:
+                    await pause(.05)
+                if handle.is_cancel_requested:
+                    handle.canceled()
+                else:
+                    handle.abort()
+                return NavigateToPose.Result()
             if self.place_at_goal:
                 p = handle.request.pose.pose
                 self.pose = {'x': p.position.x, 'y': p.position.y,
@@ -84,7 +109,8 @@ class RosTrial:
                 handle.abort()
             return NavigateToPose.Result()
         self.action = ActionServer(self.node, NavigateToPose, 'navigate_to_pose', execute,
-            goal_callback=lambda _: GoalResponse.ACCEPT if self.accept else GoalResponse.REJECT)
+            goal_callback=lambda _: GoalResponse.ACCEPT if self.accept else GoalResponse.REJECT,
+            cancel_callback=lambda _: CancelResponse.ACCEPT)
 
         def tick():
             for _ in range(10):

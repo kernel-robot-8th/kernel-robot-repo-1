@@ -61,7 +61,12 @@ class ApiExceptionHandler implements ResponseBodyAdvice<Object> {
 
     @ExceptionHandler(ApiException.class)
     ResponseEntity<ProblemDetail> api(ApiException e) {
-        return problem(e.status, e.code, e.getMessage());
+        ResponseEntity<ProblemDetail> res = problem(e.status, e.code, e.getMessage());
+        if (e instanceof VerifyAttemptLimiter.TooManyAttempts t) {
+            return ResponseEntity.status(res.getStatusCode()).header("Retry-After", String.valueOf(t.retryAfterSeconds))
+                    .body(res.getBody());
+        }
+        return res;
     }
 
     @ExceptionHandler({HttpMessageNotReadableException.class, MissingServletRequestParameterException.class,

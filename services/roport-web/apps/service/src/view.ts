@@ -49,3 +49,26 @@ export function boardingNotice(flight: Pick<Flight, 'boardingStart' | 'boardingE
   const left = min >= 60 ? `${Math.floor(min / 60)}시간${min % 60 ? ` ${min % 60}분` : ''}` : `${min}분`;
   return { tone: min <= 30 ? 'warn' : 'info', text: `탑승 시작까지 ${left} 남았습니다.` };
 }
+
+// 예약 QR의 만료 시점을 이 기기의 단조 시계(performance.now, ms)로 바꾼다.
+// - 휴대폰 시계가 서버와 다르거나 표시 중에 바뀌어도 맞도록 벽시계(Date)를 비교하지 않고, 서버가 준 유효 기간
+//   (expiresAt - issuedAt)만 쓴다.
+// - 서버의 유효 기간은 발급 시점부터 흐르므로, 응답 지연이 기간을 늘리지 않게 **발급 요청을 보낸 시점**부터 센다
+//   (서버 만료보다 조금 일찍 만료로 보일 수는 있어도 늦게 보이지는 않는다).
+// 해석할 수 없거나 기간이 0 이하이면 요청 시점에 이미 만료로 본다.
+export function qrDeadline(issuedAt: string, expiresAt: string, requestedAt: number): number {
+  const ttl = Date.parse(expiresAt) - Date.parse(issuedAt);
+  return Number.isFinite(ttl) && ttl > 0 ? requestedAt + ttl : requestedAt;
+}
+
+// 만료까지 남은 초(0 이상, 올림). deadline·now는 같은 단조 시계 값이다.
+export function qrSecondsLeft(deadline: number, now: number): number {
+  const left = Math.ceil((deadline - now) / 1000);
+  return Number.isFinite(left) && left > 0 ? left : 0;
+}
+
+// 남은 시간 표시: 9:41, 0:05
+export function mmss(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}

@@ -87,6 +87,167 @@ def local_owner(tmp_path, single_profile):
         journal.close()
 
 
+def host_receiver(hosts, *items):
+    from test_host_metrics import QueueTransport
+
+    from roport_control_server.adapters.mqtt.host_metrics import HostMetricsReceiver
+
+    return HostMetricsReceiver(QueueTransport(items), hosts, 15)
+
+
+def test_host_metrics_rest_is_read_only_and_never_gates(local_owner):
+    from test_host_metrics import delivery, sample
+
+    client, control, _, transport = local_owner
+    receiver = host_receiver(
+        ["pinky1", "shelf-01"],
+        delivery(sample(cpu_temp_c=None)),
+        delivery(sample(sequence=1), retained=True),
+    )
+    receiver.poll()
+    control.host_metrics = receiver
+    before = deepcopy(control.state)
+    data = client.get("/api/hosts/metrics").json()
+    assert data["receiver"] == "connected"
+    assert data["rejected"]["invalid_delivery"] == 1
+    hosts = {h["host_id"]: h for h in data["hosts"]}
+    assert list(hosts) == ["pinky1", "pinky2", "pinky3", "omx3", "shelf-01"]
+    assert hosts["pinky1"]["status"] == "online" and hosts["pinky1"]["load_1m"] == 0.5
+    assert hosts["pinky1"]["cpu_temp_c"] is None and hosts["pinky1"]["age_s"] >= 0
+    assert hosts["shelf-01"]["status"] == hosts["pinky2"]["status"] == "unknown"
+    snapshot = client.get("/api/snapshot?mode=trial").json()
+    assert snapshot["trial"]["can_start"]
+    assert control.state == before and not transport.sent
+    receiver.transport.ready = False
+    wait_until(
+        lambda: client.get("/api/hosts/metrics").json()["receiver"] == "disconnected"
+    )
+
+
+def test_host_metrics_poll_error_is_isolated_from_control_loop(local_owner, caplog):
+    _, control, _, _ = local_owner
+
+    class Broken:
+        def poll(self):
+            raise RuntimeError("telemetry bug")
+
+    control.host_metrics = Broken()
+    before = deepcopy(control.state)
+    control.poll(0)  # must not raise: display-only metrics never break control
+    assert "host metrics poll failed" in caplog.text
+    assert control.state["statuses"] == before["statuses"]
+
+
+def test_host_metrics_owner_without_profile_key_is_not_configured(local_owner):
+    client, _, channel, _ = local_owner
+    assert view(channel.path).rpc({"action": "snapshot"})["host_metrics_ready"] is None
+    data = client.get("/api/hosts/metrics").json()
+    assert data["receiver"] == "not_configured"
+    assert all(h["status"] == "unknown" for h in data["hosts"])
+
+
+def test_host_metrics_unreachable_owner_is_disconnected(tmp_path):
+    app = create_app(
+        MAP, trial_socket=tmp_path / "none", trial_layout=LAYOUT, trial_token=TOKEN
+    )
+    with TestClient(app) as client:
+        response = client.get("/api/hosts/metrics")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["receiver"] == "disconnected" and data["rejected"] == {}
+    assert all(h["status"] == "unknown" for h in data["hosts"])
+
+
+def test_control_poll_feeds_host_receiver(local_owner):
+    _, control, _, _ = local_owner
+    polled = []
+    control.host_metrics = type("R", (), {"poll": lambda self: polled.append(1)})()
+    control.poll(0)
+    assert polled == [1]
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"hosts": ["pinky1"]},
+        {"hosts": ["omx1"], "stale_after_s": 15},
+        {"hosts": ["pinky1"], "stale_after_s": 0},
+        {"hosts": [], "stale_after_s": 15},
+        {"hosts": ["pinky1"], "stale_after_s": 15, "period_s": 5},
+    ],
+)
+def test_host_metrics_profile_key_is_validated(single_profile, settings):
+    from roport_control_server.executor.pinky_trial import validate_config
+
+    validate_config(
+        {**single_profile, "host_metrics": {"hosts": ["pinky1"], "stale_after_s": 15}}
+    )
+    with pytest.raises(ValueError):
+        validate_config({**single_profile, "host_metrics": settings})
+
+
+def test_host_metrics_subscriber_is_separate_and_optional(
+    single_profile, local_owner, monkeypatch, caplog
+):
+    from roport_control_server.adapters.mqtt.mqtt import MqttConfig
+    from roport_control_server.executor import pinky_trial
+
+    created = []
+    attempted = threading.Event()
+    release = threading.Event()
+    failed = threading.Event()
+
+    class Transport:
+        ready = False
+
+        def __init__(self, config, subscriptions):
+            created.append((config.client_id, subscriptions))
+
+        def start(self):
+            attempted.set()
+            if not release.wait(5):
+                raise TimeoutError("test did not release the subscription attempt")
+            raise ConnectionError("broker unavailable")
+
+        def stop(self):
+            failed.set()
+
+    monkeypatch.setattr(pinky_trial, "MqttTransport", Transport)
+    monkeypatch.setattr(pinky_trial, "HOST_METRICS_RETRY_S", 60)
+    connection = MqttConfig("127.0.0.1", "control-x")
+    assert pinky_trial.start_host_metrics(single_profile, connection) == (None, None)
+    assert created == []
+    profile = {
+        **single_profile,
+        "host_metrics": {"hosts": ["pinky1", "shelf-01"], "stale_after_s": 15},
+    }
+    receiver, stop = pinky_trial.start_host_metrics(profile, connection)
+    client, control, channel, _ = local_owner
+    control.host_metrics = receiver
+    trial_view = view(channel.path)
+    try:
+        assert attempted.wait(2)
+        assert receiver.stale_after_s == 15
+        for phase in ("connecting", "failed"):
+            if phase == "failed":
+                release.set()
+                assert failed.wait(2)
+            assert trial_view.rpc({"action": "snapshot"})["host_metrics_ready"] is False
+            response = client.get("/api/hosts/metrics")
+            assert response.status_code == 200
+            assert response.json()["receiver"] == "disconnected"
+    finally:
+        release.set()
+        stop()
+    assert created == [
+        (
+            "control-x-host",
+            ["roport/robot/pinky1/host", "roport/workcell/shelf-01/host"],
+        )
+    ]
+    assert "Host metrics subscription failed" in caplog.text
+
+
 def test_motion_rejection_diagnostics_reach_ui_without_blocking_start(local_owner):
     from roport_control_server.adapters.mqtt.motion import MotionReceiver
 
@@ -113,7 +274,7 @@ def test_trial_start_auth_reconnect_duplicate_and_stop(local_owner):
     assert client.get("/api/bootstrap?mode=offline").json()["mode"] == "offline"
     assert bootstrap["trial_nodes"]["N16"]
     assert {"N21", "N22", "N23", "N24"} <= bootstrap["trial_nodes"].keys()
-    assert control.config["graph_version"] == "line-v14-20261106"
+    assert control.config["graph_version"] == "line-v15-20261116"
     assert transport.sent == []  # Starting the web app doesn't start a robot.
     with client.websocket_connect("/api/state?mode=trial", headers=HEADERS) as ws:
         first = ws.receive_json()
