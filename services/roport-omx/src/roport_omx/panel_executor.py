@@ -183,9 +183,10 @@ def _hold_code(result: dict) -> str:
 #     (also when the aligner could not read the shelf but the evaluation's placement judge read
 #      this box's own marker in 2B with the hands clear: align_error PANEL_SHELF_UNREADABLE,
 #      2026-11-22)
-#   not loaded, evaluation failed, arms not home  → MISSION_FAILED: arms sent back to the start pose,
+#   evaluation failed, arms not home              → MISSION_FAILED: arms sent back to the start pose,
 #                                                   reported without HOLD once they are home
-#   shelf unreadable, emergency stop, unknown, …  → MISSION_HOLD: a person checks first
+#   not on the shelf (maybe dropped), shelf unreadable, emergency stop, unknown, …
+#                                                 → MISSION_HOLD: a person checks first
 NOT_ALIGNED = "shelf_load_not_aligned"
 # Failures that wait for a person; any other failure first sends the arms home (panel /api/home/return).
 HOLD_ERRORS = {
@@ -206,6 +207,11 @@ HOLD_ERRORS = {
     "PANEL_HANDOVER_STOPPED",
     "PANEL_HANDOVER_HOLD",
     "RESULT_UNAVAILABLE",
+    # TK 2026-11-24: a box that may be on the floor waits for a person, arms left where they are.
+    # Unloading: slot empty but the tray unchanged since the pre-mission photo. Loading: not on
+    # the shelf, and the tray is not checked afterwards, so a drop cannot be ruled out.
+    "PANEL_BOX_DROPPED",
+    "PANEL_BOX_NOT_ON_SHELF",
 }
 HOME_RETURN_TIMEOUT_S = 90.0
 # The panel takes episodes of 3-600 s. A control-tower evaluation ends on its own (end_on_return:
@@ -227,9 +233,9 @@ EPISODE_DEFAULT_S = 180.0
 #                right before this mission (tray_changed >= 0.25; tray_reference_state "ok" and
 #                pre_mission_match true). No marker is stuck on the tray: the unload policy was
 #                trained on a bare tray and does not start when one is there.
-# Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot, or slot empty but the
-# tray unchanged (dropped) → MISSION_FAILED, arms sent home. Anything unread or not confirmed
-# (another slot, no pre-mission photo) → MISSION_HOLD.
+# Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot → MISSION_FAILED, arms
+# sent home. Slot empty but the tray unchanged (dropped, TK 2026-11-24), anything unread or not
+# confirmed (another slot, no pre-mission photo) → MISSION_HOLD.
 PINKY_LOAD = "pinky_load"
 
 
