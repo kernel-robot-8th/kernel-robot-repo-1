@@ -1,3 +1,5 @@
+import hashlib
+from pathlib import Path
 import threading
 import time
 from concurrent.futures import Future
@@ -110,6 +112,26 @@ def test_late_goal_acceptance_is_cancelled_after_stop():
 def test_local_map_hash_must_match_control_version():
     with pytest.raises(ValueError, match='local_map_version_mismatch'):
         map_reference(PINKY / 'maps/airport_map.yaml', {**PROFILE, 'map_version': 'old'})
+
+
+def test_reference_decodes_the_same_image_bytes_it_verified(tmp_path, monkeypatch):
+    path = tmp_path / 'floor.yaml'
+    path.write_text('image: floor.pgm\nnegate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\n')
+    image = tmp_path / 'floor.pgm'
+    white = b'P5\n1 1\n255\n\xff'
+    image.write_bytes(white)
+    version = hashlib.sha256(path.read_bytes() + white).hexdigest()[:16]
+    read_bytes = Path.read_bytes
+
+    def replace_after_read(file):
+        data = read_bytes(file)
+        if file == image:
+            image.write_bytes(white[:-1] + b'\x00')
+        return data
+
+    monkeypatch.setattr(Path, 'read_bytes', replace_after_read)
+    _, width, height, cells = map_reference(path, {'map_id': 'floor', 'map_version': version})
+    assert (width, height, cells) == (1, 1, [0])
 
 
 @pytest.mark.parametrize('variance, ready', [(0., True), (-2.1e-14, True),

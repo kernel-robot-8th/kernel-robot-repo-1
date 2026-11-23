@@ -4,7 +4,6 @@ The caller supplies the reserved bay. This entry point does not infer customer
 receipt or reserve a bay, and never falls back to Nav2 travel inside the line area.
 """
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -502,11 +501,9 @@ def main(argv=None):
     if not options.drive:
         print('Hardware return configuration validated; no ROS node or motion initialized')
         return 0
-    from roport_pinky.trial_nav2 import map_reference
+    from roport_pinky.trial_nav2 import map_profile, map_reference
     path = Path(options.map)
-    cfg = yaml.safe_load(path.read_text())
-    profile = {'map_id': path.stem, 'map_version': hashlib.sha256(
-        path.read_bytes()+(path.parent/cfg['image']).read_bytes()).hexdigest()[:16]}
+    profile = map_profile(path)
     map_reference(path, profile)
     import rclpy
     from rclpy.signals import SignalHandlerOptions

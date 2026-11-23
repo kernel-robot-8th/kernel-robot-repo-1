@@ -26,7 +26,24 @@ from .box_detector import SelectedProposals, ShoppingDetector, proposals
 from .session_target import SessionTracker, _box
 from .shopping_nav import (MIN_FOLLOW_GAP_M, ShoppingNav, costmap_stamp_ns,
                            following_distances, fresh_costmap)
-from .shopping_track import ProximityNotice, Track, bypass_waypoint, foot_position
+from .shopping_track import ProximityNotice, Track, bypass_waypoint, foot_pixel, foot_position, waypoint_cost
+
+
+def projection_box(item, width):
+    """Return full, supported foot geometry, never a truncated crop centre."""
+    left, top, right, bottom = item['box']
+    if 'foot_box' not in item:
+        # YOLO crops give no evidence of the missing side at the frame boundary.
+        return item['box'] if 0 < left and right < width-1 else None
+    box = item['foot_box']
+    if (not isinstance(box, (tuple, list)) or len(box) != 4
+            or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in box)):
+        return None
+    a, b, c, d = box
+    if (a >= c or b != top or d != bottom or max(0, a) != left or min(width, c) != right
+            or right-left < .85*(c-a)):
+        return None
+    return box
 
 
 class OnboardDinoEncoder:
@@ -93,7 +110,8 @@ class Shopping:
         self.still_since = None
         self.odom_at = float('-inf')
         self.close_streak = 0
-        self.grid = self.hit = None
+        self.grid = self.hit = self.bypass = None
+        self.miss_reason = None
         self.grid_source_ns = 0
         self.hit_at = float('-inf')
         node.create_subscription(OccupancyGrid, 'global_costmap/costmap', self.costmap, 1)
@@ -156,6 +174,19 @@ class Shopping:
             self.grid = None
         # Redelivery of the same observation cannot refresh its monotonic receipt.
 
+    def sensor_transform(self, frame_id, stamp):
+        sample = Time.from_msg(stamp)
+        try:
+            return self.tf.lookup_transform('map', frame_id, sample).transform
+        except TransformException:
+            try:
+                nearby = self.tf.lookup_transform('map', frame_id, Time())
+            except TransformException:
+                return None
+            if abs(Time.from_msg(nearby.header.stamp).nanoseconds - sample.nanoseconds) <= 80_000_000:
+                return nearby.transform
+            return None
+
     def sonar(self, msg):
         stamp = self.received(msg)
         if stamp and (msg.min_range <= msg.range <= msg.max_range or msg.range == math.inf):
@@ -163,17 +194,9 @@ class Shopping:
             if msg.range >= .55:
                 self.hit = None
             else:
-                try:
-                    tf = self.tf.lookup_transform('map', msg.header.frame_id, Time.from_msg(msg.header.stamp)).transform
-                except TransformException:
-                    try:
-                        nearby = self.tf.lookup_transform('map', msg.header.frame_id, Time())
-                    except TransformException:
-                        return
-                    if abs(Time.from_msg(nearby.header.stamp).nanoseconds -
-                           Time.from_msg(msg.header.stamp).nanoseconds)>80_000_000:
-                        return
-                    tf = nearby.transform
+                tf = self.sensor_transform(msg.header.frame_id, msg.header.stamp)
+                if tf is None:
+                    return
                 t, q = tf.translation, tf.rotation
                 self.hit_at = stamp
                 self.hit = (t.x+msg.range*(1-2*(q.y*q.y+q.z*q.z)),
@@ -189,23 +212,19 @@ class Shopping:
                 or not self.optical_frame and msg.header.frame_id != info.header.frame_id):
             return
         child = self.optical_frame or info.header.frame_id
-        try:
-            transform = self.tf.lookup_transform('map', child, Time.from_msg(msg.header.stamp)).transform
-        except TransformException:
-            try:
-                nearby = self.tf.lookup_transform('map', child, Time())
-            except TransformException:
-                return
-            skew = abs(Time.from_msg(nearby.header.stamp).nanoseconds-Time.from_msg(msg.header.stamp).nanoseconds)
-            if skew > 80_000_000:
-                return
-            transform = nearby.transform
+        transform = self.sensor_transform(child, msg.header.stamp)
+        if transform is None or not msg.data:
+            return
         if isinstance(msg, CompressedImage):
-            img = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
+            try:
+                img = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
+            except cv2.error:
+                return
             if img is None or img.shape[:2] != (info.height, info.width):
                 return
         else:
-            if (info.width, info.height) != (msg.width, msg.height) or msg.encoding not in ('bgr8', 'rgb8'):
+            if ((info.width, info.height) != (msg.width, msg.height) or msg.encoding not in ('bgr8', 'rgb8')
+                    or not msg.width or msg.step < 3*msg.width or len(msg.data) != msg.height*msg.step):
                 return
             img = np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.step)[:, :msg.width*3].reshape(msg.height, msg.width, 3)
             if msg.encoding == 'rgb8':
@@ -215,6 +234,7 @@ class Shopping:
         return True
 
     def reset(self):
+        self.bypass = self.miss_reason = None
         self.nav.cancel()
         self.nav.path_failures = 0
         self.nav.retry_after = 0.
@@ -231,6 +251,7 @@ class Shopping:
         self.reason = ''
 
     def hold_motion(self, now):
+        self.bypass = None
         self.armed = False
         self.nav.cancel()
         self.nav.heartbeat(False, now)
@@ -396,18 +417,33 @@ class Shopping:
             try:
                 if generation != version:
                     templates = SelectedProposals(*seed)
-                items = templates.detect(frame)
+                invalid_crop = False
+
+                def crop_key(item):
+                    nonlocal invalid_crop
+                    try:
+                        return tuple(_box(item['box'], (h, w)))
+                    except ValueError:
+                        invalid_crop = True
+                        return None
+
+                items = []
+                for item in templates.detect(frame):
+                    key = crop_key(item)
+                    if key is not None:
+                        items.append((item, key))
                 template_count = len(items)
                 scan_interval = 3. if len(items)==1 and self.track.state=='FOLLOWING' else .7
                 if not items or time.monotonic()-last_yolo >= scan_interval:
                     # After selection, one full-frame YOLO pass sees people entering from either side.
-                    detected = self.detector.full_frame(frame)
-                    for item in detected:
-                        if not any(SessionTracker._overlaps(item['box'], other['box']) for other in items):
-                            items.append(item)
+                    for item in self.detector.full_frame(frame):
+                        key = crop_key(item)
+                        if key is not None and not any(
+                                SessionTracker._overlaps(item['box'], other['box']) for other, _ in items):
+                            items.append((item, key))
                     last_yolo = time.monotonic()
                 after_detection = time.monotonic()
-                boxes = [i['box'] for i in items]
+                boxes = [item['box'] for item, _ in items]
                 normalized = [dict(box=[a/w,b/h,c/w,d/h]) for a,b,c,d in boxes]
                 if version != generation:
                     tracker = SessionTracker(self.encoder, lambda _: boxes, *seed)
@@ -416,16 +452,46 @@ class Shopping:
                 if tracker:
                     with self.lock:
                         anchor = self.track.samples[-1][1] if self.track.samples else None
+                        recent_box = (self.frame_box if self.track.state == 'FOLLOWING' and
+                                      0 < stamp-self.observed < .45 else None)
+                    expected = None
+                    if anchor and recent_box:
+                        pixel = foot_pixel(anchor, info, camera, self.floor_z)
+                        if pixel is not None:
+                            a,b,c,d = recent_box
+                            u,v = pixel
+                            half_width = (c-a)*w/2
+                            expected = (u-half_width, v-(d-b)*h, u+half_width, v)
+                    # SessionTracker validates/rounds crop boxes; geometry stays separate.
+                    ground_boxes = {}
+                    for item, key in items:
+                        ground_box = projection_box(item, w)
+                        near_box = key if ground_box == item['box'] else ground_box
+                        geometry = ground_box, near_box
+                        if key not in ground_boxes:
+                            ground_boxes[key] = geometry
+                        elif ground_boxes[key] != geometry:
+                            ground_boxes[key] = None, None
+
+                    def location_of(key, near=False):
+                        ground_box, near_box = ground_boxes.get(key, (None, None))
+                        ground_box = near_box if near else ground_box
+                        if ground_box is not None:
+                            return foot_position(ground_box, info, camera, self.floor_z)
+
                     def near_anchor(box):
-                        location = foot_position(box, info, camera, self.floor_z)
+                        location = location_of(tuple(box), near=True)
                         return anchor and location and math.dist(anchor, location) < .18
-                    _, scores, match = tracker.step(frame, near_anchor=near_anchor)
+                    _, scores, match = tracker.step(frame, near_anchor=near_anchor, expected_box=expected)
+                    if invalid_crop and not items and match.get('reason') == 'no_detection':
+                        # Malformed detections are not clean loss evidence for a bypass turn.
+                        match = {**match, 'reason': 'processing_error'}
                     if match['state'] == 'MATCH':
                         pick = match['index']
-                        if pick >= template_count:
+                        if pick >= template_count and 0 < boxes[pick][0] and boxes[pick][2] < w-1:
                             # Refresh the fast proposal crop; identity still uses the original portrait.
                             templates = SelectedProposals(frame, normalized[pick]['box'])
-                        point = foot_position(boxes[pick], info, camera, self.floor_z)
+                        point = location_of(items[pick][1])
                         uncertain = point is None
                     else:
                         uncertain = match['state']=='AMBIGUOUS' or match.get('reason')=='processing_error'
@@ -435,6 +501,7 @@ class Shopping:
                     if tracker:
                         if not self.track.update(stamp, point, uncertain):
                             continue
+                        self.miss_reason = match.get('reason')
                         cropped = pick is not None and point is None and boxes[pick][3]>=h-2
                         self.close_streak = self.close_streak+1 if cropped else 0
                         if self.close_streak >= 3:
@@ -451,6 +518,62 @@ class Shopping:
                     self.armed = False
                     self.frame_box = None
                 self.node.get_logger().error(str(exc), throttle_duration_sec=3)
+
+    def bypass_command(self, now, pose, target, grid, live):
+        """Remember the approved obstacle waypoint across camera turns, never a new shopper goal."""
+        nav = self.nav
+        if not self.armed or self.track.state in ('AMBIGUOUS', 'CLOSE'):
+            self.bypass = None
+            return None, None, None
+        if not live or grid is None:
+            # A stale input revokes motion immediately. Geometry alone grants no lease.
+            return (target if live and self.bypass is None else None), None, None
+        reached = False
+        if self.bypass is not None:
+            via, origin, began = self.bypass
+            reached = nav.last_reached is not None and nav.last_reached[0] == via
+            if reached and target is not None:
+                self.bypass = None
+                return target, None, None
+            if (now - began > 24. or math.dist(pose[:2], origin[:2]) > .65
+                    or waypoint_cost(grid, *via) >= 99):
+                self.bypass = None
+                nav.cancel()
+                return None, None, None
+        elif target is not None and not nav.pending and not nav.handle and 0 <= now-self.hit_at < .4:
+            via = bypass_waypoint(pose, target, self.hit, grid)
+            if via is not None and math.dist(pose[:2], via) <= .65:
+                self.bypass = via, pose, now
+
+        if self.bypass is None:
+            return target, None, None
+        via, origin, _ = self.bypass
+        # After success the retained context can authorize a guarded turn, never another leg.
+        via = None if reached else via
+        if (target is not None or self.track.state != 'SEARCHING' or not self.track.confirmed
+                or self.miss_reason not in ('no_detection', 'appearance_mismatch', 'position_mismatch')):
+            return target, via, None
+
+        # A fresh frame and ego rotation must explain why the shopper left the frame.
+        # Only the already accepted obstacle action may finish; Nav2 owns collision checking.
+        stamp, seen = self.track.confirmed
+        info, camera = self.packet[2:4]
+        if info.width <= 0 or not math.isfinite(info.k[0]) or info.k[0] <= 0:
+            return None, via, None
+        half_fov = math.atan2(info.width / 2, info.k[0])
+        bearing = math.remainder(math.atan2(seen[1]-pose[1], seen[0]-pose[0])-pose[2], 2*math.pi)
+        turned = math.remainder(pose[2]-origin[2], 2*math.pi)
+        sight_age = now-stamp
+        pixel = foot_pixel(seen, info, camera, self.floor_z)
+        at_edge = (pixel is not None and abs(turned) >= .45*half_fov and
+                   ((turned > 0 and pixel[0] >= .86*info.width) or
+                    (turned < 0 and pixel[0] <= .14*info.width)))
+        if not 0 <= sight_age < 14. or not (at_edge or nav.looking):
+            return None, via, None
+        if (not reached and at_edge and sight_age < 8. and nav.detouring and nav.destination == via
+                and not nav.cancelled and nav.handle and nav.handle.accepted and nav.anchor):
+            return nav.anchor, via, None
+        return None, via, (bearing, stamp)
 
     def tick(self):
         for index in range(len(self.waiting)-1, -1, -1):
@@ -486,15 +609,14 @@ class Shopping:
                     f'following gap {gap:.3f} m; advance at {advance_at:.3f} m')
             fresh_result = 0 <= now-self.observed < .6
             target = self.track.target() if fresh_result else None
-            # No prediction or retained detour can outlive sight of the selected shopper.
-            # Loss, verifying, ambiguity and stale sensors all revoke the lease and cancel.
-            active = bool(self.armed and not self.reason and target is not None)
-            via = None
-            if (active and pose and not self.nav.handle and not self.nav.pending and self.grid is not None
-                    and 0 <= now-self.hit_at < .4):
-                grid = fresh_costmap(self.grid, self.node.get_clock().now().nanoseconds, now)
-                via = bypass_waypoint(pose, target, self.hit, grid)
-            self.drive = self.nav.tick(now, active, pose, target, via, direct_grid=self.grid)
+            grid = fresh_costmap(self.grid, self.node.get_clock().now().nanoseconds, now)
+            live = bool(self.armed and not self.reason and pose and fresh_result)
+            drive_target, via, look = self.bypass_command(now, pose, target, grid, live)
+            if look is not None:
+                self.drive = self.nav.look(now, *look)
+            else:
+                self.drive = self.nav.tick(now, drive_target is not None, pose, drive_target,
+                                           via, allow_new=target is not None, direct_grid=self.grid)
             if self.nav.fault:
                 self.armed = False
                 if self.nav.fault != 'PATH_BLOCKED':
