@@ -35,6 +35,10 @@ def demo_command(body):
                 isinstance(n, str) and NODE.match(n) for n in route):
             raise ValueError('route must be 2..12 node ids like N08')
         return {'op': 'route', 'route': route, 'speed_limit_mps': _num(body, 'speed_limit_mps', 0.06, 0.01, 0.2)}
+    if op == 'alert':                        # 탑승 시간 알림 켜기·끄기(표시·소리만)
+        if not isinstance(body.get('on'), bool):
+            raise ValueError('on must be true or false')
+        return {'op': 'alert', 'on': body['on']}
     if op in ('switch_nav2', 'switch_line', 'stop'):
         return {'op': op}
     if op == 'navigate':
@@ -61,7 +65,7 @@ def demo_command(body):
         if turn:                                     # 제자리 180° 돈 뒤 추종(ARR 에서 고객 쪽으로 돌아섬)
             cmd['turn_first'] = True
         return cmd
-    raise ValueError('op must be route, switch_nav2, switch_line, navigate, follow or stop')
+    raise ValueError('op must be route, switch_nav2, switch_line, navigate, follow, stop or alert')
 
 
 class DemoLink:
