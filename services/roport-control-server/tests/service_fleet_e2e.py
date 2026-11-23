@@ -339,7 +339,7 @@ def exercise(output, pg_port, url, token, case, *, confirm_receipt=False):
             "nav_goal_completion_generated": False,
             "customer_receipt_count": 0,
             "mqtt_cart_command_types": [cmd["type"] for cmd in commands],
-            "omx_boundary": "real FieldOmxHost + actual Warehouse/IndependentArm Runner + PanelFieldExecutor/HTTP PanelExecutor; fake device/vision ports",
+            "omx_boundary": "real FieldOmxHost + actual Warehouse/IndependentArm Runner + CooperativeShelfExecutor/HTTP PanelExecutor; fake device/vision ports",
             "omx_panel_starts": panels[0].panel.starts,
             "omx_device_actions": {
                 target: {

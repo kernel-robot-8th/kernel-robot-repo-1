@@ -19,7 +19,7 @@ from test_omx3_runner import FakeRobot, ScriptPolicy, box_until, make
 
 from roport_omx.field_executors import (
     IndependentArmExecutor,
-    PanelFieldExecutor,
+    CooperativeShelfExecutor,
     WarehouseExecutor,
 )
 from roport_omx.field_host import FieldOmxHost, ReadinessPending
@@ -987,7 +987,7 @@ class FieldHostTest(unittest.TestCase):
             return api.handle(method, path, body)[1]
 
         client._call = call
-        adapter = PanelFieldExecutor(
+        adapter = CooperativeShelfExecutor(
             client,
             model_version="sim-model",
             calibration_version="sim-cal",
@@ -1098,7 +1098,7 @@ class FieldHostTest(unittest.TestCase):
             "placement_confirmed": True,
             "release_confirmed": True,
         }
-        adapter = PanelFieldExecutor(
+        adapter = CooperativeShelfExecutor(
             panel,
             model_version="sim-model",
             calibration_version="sim-cal",
@@ -1149,7 +1149,7 @@ class FieldHostTest(unittest.TestCase):
                 marker_ids={"package-17": 17},
                 **options,
             ),
-            PanelFieldExecutor(
+            CooperativeShelfExecutor(
                 self.executors["shelf-01"],
                 stop=self.executors["shelf-01"].abort,
                 **options,
@@ -1160,7 +1160,7 @@ class FieldHostTest(unittest.TestCase):
                 sample.clear()
                 sample.update(stationary_sample())
                 adapter.abort()
-                if isinstance(adapter, PanelFieldExecutor):
+                if isinstance(adapter, CooperativeShelfExecutor):
                     self.addCleanup(adapter.close)
                     adapter.stop_future.result(timeout=2)
                 self.assertNotEqual(adapter.observe().get("state"), "stopped")
@@ -1380,7 +1380,7 @@ class FieldHostTest(unittest.TestCase):
         panel.cancel = lambda **kwargs: panel.abort()
         panel.cancellation_status = lambda: {"settled": True}
         panel.command_id = None
-        adapter = PanelFieldExecutor(
+        adapter = CooperativeShelfExecutor(
             panel,
             model_version="sim-model",
             calibration_version="sim-cal",
@@ -1431,7 +1431,7 @@ class FieldHostTest(unittest.TestCase):
 
         panel = FakePanel(managed=True)
         try:
-            adapter = PanelFieldExecutor(
+            adapter = CooperativeShelfExecutor(
                 ManagedPanelExecutor(ROUTES, box_marker=16, base_url=panel.url),
                 stop=lambda: None,
                 model_version="sim-model",
