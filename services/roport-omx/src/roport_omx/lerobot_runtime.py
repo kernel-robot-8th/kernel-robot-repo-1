@@ -55,8 +55,21 @@ class DeviceLock:
             raise
         return self
 
-    def mark_unresolved(self):
-        self._write('{"state":"RECONCILING"}')
+    def mark_unresolved(self, request_id=None):
+        # The marker names the run that left the devices unresolved; recovery must present the same run.
+        marker = {"state": "RECONCILING"}
+        if request_id is not None:
+            marker["request_id"] = request_id
+        self._write(json.dumps(marker, separators=(",", ":")))
+
+    def recorded_request_id(self):
+        """The run named in the unresolved marker; None for a marker without one (or no marker)."""
+        self.file.seek(0)
+        try:
+            marker = json.loads(self.file.read() or "null")
+        except ValueError:
+            return None
+        return marker.get("request_id") if isinstance(marker, dict) else None
 
     def confirm_safe(self):
         self._write("")
@@ -338,7 +351,13 @@ def reconcile_evaluation(profile, job, confirmation):
     ):
         raise Rejected("release_torque must be true or false")
     path = str(Path(profile["shared_lock_path"]).resolve())
-    lock = _RECOVERY_LOCKS.get(path) or DeviceLock(path).acquire(recovery=True)
+    held = _RECOVERY_LOCKS.get(path)
+    lock = held or DeviceLock(path).acquire(recovery=True)
+    recorded = lock.recorded_request_id()
+    if recorded is not None and (job.get("result") or {}).get("request_id") != recorded:
+        if held is None:
+            lock.release()  # the marker stays: the run it names is still unresolved
+        raise Rejected("recovery evidence belongs to a different evaluation")
     _RECOVERY_LOCKS[path] = lock
     stop_evidence = stop.get("evidence") or {}
     restored_velocity = stop_evidence.get("alignment_velocity_restore_pending") is True
@@ -376,7 +395,7 @@ def _run(request, profile, devices, operation, body, *, prepare=None):
         if prepare is not None:
             prepare()
             _check_before_start(event)
-        lock.mark_unresolved()
+        lock.mark_unresolved(request["request_id"])
         started = True  # A partially failed start still needs verified physical stop.
         devices.start(profile, operation)
         result = body(hp, event)
@@ -386,6 +405,7 @@ def _run(request, profile, devices, operation, body, *, prepare=None):
         if started and getattr(event, "reason", None):
             result.update(state="FAILED", error=event.reason)
         if started:
+            result["request_id"] = request["request_id"]
             stop = _physical_stop(profile, devices, result.get("error", "job finished"))
             result["physical_stop"] = stop
             if not stop["confirmed"]:
@@ -695,6 +715,11 @@ def evaluate_local_act(request, profile, devices):
                     arm["positions"],
                     action,
                     advance=not isinstance(devices, LeRobotDevices),
+                )
+            if time.monotonic() >= deadline:
+                # The last inference may finish inside its own limit but after the whole evaluation's.
+                raise Rejected(
+                    "evaluation duration reached before action; confirm outcome on site"
                 )
             if (
                 stop_event.is_set()
