@@ -639,14 +639,15 @@ def evaluate_local_act(request, profile, devices):
 
     def prepare():
         nonlocal policy
+        policy = profile.get("act_policy") or PanelAct(checkpoint)
+        policy.reset()
         if plan is not None:
-            # Runs after the device lock is held, so a refused lock leaves no ALIGNING phase behind.
+            # Last step, after the device lock and the policy load: a refusal or a failed load
+            # before device startup must not leave an ALIGNING phase behind.
             stop_event = profile["stop_event"]
             with stop_event.phase_guard:
                 _check_before_start(stop_event)
                 stop_event.alignment_phase = "ALIGNING"
-        policy = profile.get("act_policy") or PanelAct(checkpoint)
-        policy.reset()
 
     def body(hp, stop_event):
         names = hp["feature_names"]
@@ -1325,7 +1326,11 @@ class LeRobotDevices:
 
 
 class LeRobotDatasetWriter:
-    """Use pinned dataset APIs; final success includes metadata and video inspection."""
+    """Use pinned dataset APIs; success requires a complete manifest and the saved files.
+
+    finish() checks meta/info.json (one episode, the recorded frame count), a data file and a
+    video file per camera. It does not decode their contents.
+    """
 
     def __init__(self, profile):
         self.profile = profile

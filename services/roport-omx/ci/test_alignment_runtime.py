@@ -137,6 +137,13 @@ class AlignmentRuntimeTests(unittest.TestCase):
             self.evaluate(continue_model=True)
         self.assertFalse(hasattr(self.event, "alignment_phase"))
 
+    def test_failed_policy_load_leaves_no_alignment_phase(self):
+        del self.profile["act_policy"]  # no checkpoint file: PanelAct refuses to load
+        result = self.evaluate(continue_model=True)
+        self.assertEqual(result["state"], "FAILED", result)
+        self.assertFalse(hasattr(self.event, "alignment_phase"))
+        self.assertEqual(self.devices.started, [])
+
     def test_alignment_setup_io_time_is_not_a_measurement_gap(self):
         # begin_alignment reads registers and writes velocity; that time is not a missed cycle.
         self.profile["start_alignment"]["timeout_s"] = 5
