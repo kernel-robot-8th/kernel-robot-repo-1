@@ -87,9 +87,12 @@ if a.step == "pinky_read":
         a.result,
         {
             "result": {
-                "on_pinky": True,
+                "on_pinky": MODE != "pinky_empty",
                 "on_shelf": False,
+                "slot": a.slot,
+                "slot_empty": True,
                 "tray_reference": "pre_mission",
+                "tray_reference_state": "ok" if a.tray_ref else "no_reference",
                 "reference_at": "2026-11-23T21:00:00+09:00" if a.tray_ref else None,
             },
             "log": "runs/p.json",
