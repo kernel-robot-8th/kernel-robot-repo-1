@@ -1,5 +1,6 @@
 """OMX 3 동작 묶음 정책 검사 (가짜 추론 클라이언트, 표준 라이브러리만)."""
 
+import itertools
 import logging
 import math
 import sys
@@ -195,6 +196,94 @@ class WithRunner(unittest.TestCase):
         self.assertEqual(result[0].error_code, ErrorCode.CANCELED)
         self.assertEqual(robot.sent, 0)
         self.assertGreaterEqual(robot.held, 1)
+
+
+E = Omx3Settings(infer_timeout_s=0.5, ensemble_coeff=0.01)
+
+
+def ensemble_policy(client, settings=E):
+    p = ChunkPolicy(client, settings)
+    p.reset(17)
+    return p
+
+
+class TemporalEnsemble(unittest.TestCase):
+    """패널 "부드럽게 실행"과 같은 계산: 같은 스텝을 가리키는 예측을 exp(-0.01 x 스텝 차이)로 평균."""
+
+    def test_first_chunk_alone_is_used_as_is(self):
+        p = ensemble_policy(FakeClient(chunk(0)))
+        self.assertEqual(pan(tick(p)), 0.0)
+
+    def test_overlapping_predictions_use_act_weights(self):
+        # 스텝 0 관측 → 예측 A(값 0..), 스텝 1 관측 → 예측 B(값 100..).
+        # 스텝 1은 B 요청만 하고 A[1], 스텝 2 = A[2]·B[1] 가중 평균
+        client = FakeClient(chunk(0), chunk(100))
+        p = ensemble_policy(client)
+        self.assertEqual(pan(tick(p)), 0.0)  # 스텝 0: A만
+        self.assertEqual(pan(p.act([1.0] * 6, "f")), 1.0)  # 스텝 1: B는 아직 요청 중
+        settled(p)
+        action = pan(p.act([2.0] * 6, "f"))
+        w_old, w_new = 1.0, math.exp(-0.01 * 1)  # 오래된 예측(A)이 더 무겁다
+        self.assertAlmostEqual(action, (w_old * 2.0 + w_new * 101.0) / (w_old + w_new))
+
+    def test_requests_again_as_soon_as_previous_reply_arrives(self):
+        client = FakeClient(*[chunk(0, 50) for _ in range(10)])
+        p = ensemble_policy(client)
+        for _ in range(6):
+            tick(p)
+            settled(p)
+        self.assertGreaterEqual(len(client.calls), 6)  # 매 스텝(묶음 통째 교체라면 1번)
+
+    def test_ensemble_every_limits_request_rate(self):
+        client = FakeClient(*[chunk(0, 50) for _ in range(10)])
+        p = ensemble_policy(client, Omx3Settings(ensemble_coeff=0.01, ensemble_every=3))
+        for _ in range(6):
+            tick(p)
+            settled(p)
+        self.assertEqual(len(client.calls), 2)  # 스텝 0, 3
+
+    def test_no_jump_where_a_chunk_would_be_replaced(self):
+        # 다른 궤적(0..과 100..)이 섞이면 출력은 두 예측 사이에서 연속으로 움직인다
+        client = FakeClient(chunk(0, 20), *[chunk(100, 20) for _ in range(20)])
+        p = ensemble_policy(client)
+        out = []
+        for _ in range(10):
+            out.append(pan(tick(p)))
+            settled(p)
+        steps = [b - a for a, b in itertools.pairwise(out)]
+        self.assertLess(max(steps), 100)  # 통째 교체였다면 한 번에 약 100 튐
+        self.assertTrue(all(0 <= v <= 120 for v in out))
+
+    def test_failed_request_is_retried_even_before_any_action(self):
+        p = ensemble_policy(FakeClient(OSError("lost"), chunk(0)))
+        self.assertEqual(pan(tick(p)), 0.0)
+
+    def test_finished_predictions_are_dropped_and_starvation_raises(self):
+        client = FakeClient(chunk(0, 2))
+        p = ensemble_policy(client)
+        tick(p)
+        settled(p)
+        client.release.clear()  # 다음 요청은 응답하지 않는다
+        tick(p)
+        with self.assertRaises(PolicyUnavailable):
+            for _ in range(400):
+                p.act([0.0] * 6, "f")
+                time.sleep(0.005)
+        self.assertEqual(p._chunks, [])
+        client.release.set()
+
+    def test_reset_drops_previous_predictions(self):
+        client = FakeClient(chunk(0, 50), chunk(500, 50))
+        p = ensemble_policy(client)
+        tick(p)
+        settled(p)
+        p.reset(17)
+        self.assertEqual(p._chunks, [])
+        self.assertEqual(pan(tick(p)), 500.0)
+
+    def test_ensemble_every_must_be_positive(self):
+        with self.assertRaises(ValueError):
+            Omx3Settings(ensemble_every=0)
 
 
 if __name__ == "__main__":

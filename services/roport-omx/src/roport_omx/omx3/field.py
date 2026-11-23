@@ -231,7 +231,8 @@ def build():
     env = os.environ
     host, _, port = env["ROPORT_OMX3_INFER_SERVER"].rpartition(":")
     model = env["ROPORT_OMX3_MODEL"]
-    settings = Omx3Settings()
+    # 패널 "부드럽게 실행"(시간 앙상블, 기본 켜짐)과 같은 동작: 이 모델은 그 설정으로 평가했다
+    settings = Omx3Settings(ensemble_coeff=0.01)
     # 관제 package_id(문자열) = 상자 ArUco 번호(관제와 합의)
     marker_ids = {str(i): i for i in sorted(settings.package_ids)}
     sizes = package_sizes(env["ROPORT_OMX3_PACKAGE_SIZES"], marker_ids)
