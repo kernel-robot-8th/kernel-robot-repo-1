@@ -483,10 +483,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--report-placement",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=None,
         help="panel: report loading completed the moment the box is placed and both hands are "
         "clear (evidence shelf_placed), then the alignment result as a second report. Default "
-        "off until control accepts the two reports (#156 review); turn on explicitly",
+        "on for v2 (TK 2026-11-24; control stores and ACKs the intermediate report), off for v1",
     )
     parser.add_argument(
         "--end-on-place",
@@ -522,6 +522,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "--no-require-pinky needs --executor mock "
             "(v2 runs the real arms only with the Pinky check)"
         )
+    if args.report_placement is None:
+        args.report_placement = args.protocol == "v2"
     if str(args.journal.resolve()).startswith("/tmp/"):
         parser.error("journal must survive a restart; do not use /tmp")
     if args.executor == "panel" and args.routes is None:
