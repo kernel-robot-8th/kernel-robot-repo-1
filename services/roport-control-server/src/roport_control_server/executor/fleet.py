@@ -317,6 +317,7 @@ class FleetControl:
                 and p.get("active_command_id") is None
                 and not state.get("fault")
                 and self.state_age(robot) <= 3
+                and p.get("observed_at")
             ):
                 self.confirm_follow_pause(robot, p["observed_at"])
             for cid, active in self.data["commands"].items():
