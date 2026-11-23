@@ -1,0 +1,29 @@
+# shelf-01 Host, Panel 없이 실행(--executor direct). 사용자 서비스로 설치한다(README "운영").
+#   cp roport-shelf-direct-host.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now roport-shelf-direct-host
+# 끌 때는 SIGINT: Host가 돌고 있는 미션에 중지를 보내고 팔 착지(최대 90 s)를 기다린 뒤 끝난다.
+[Unit]
+Description=RO:PORT shelf-01 Host (OMX1·2 direct, no panel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/kernel-robot-repo-1/services/roport-omx
+# ROPORT_MQTT_HOST/PORT/TLS/CA_FILE/USERNAME/PASSWORD (KEY=VALUE 줄, export 없이). 저장소에 두지 않는다
+EnvironmentFile=%h/.config/roport/shelf-direct-broker.env
+ExecStart=%h/.local/bin/uv run --locked python scripts/cooperative_host.py \
+    --executor direct \
+    --direct-config %h/.config/roport/shelf-direct.json \
+    --routes %h/.config/roport/shelf-01-routes.json \
+    --journal %h/.local/state/roport/shelf-01-v2.json
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStopSec=150
+# 비정상 종료 뒤 다시 켜면 실행 중이던 작업은 host_restarted_outcome_unknown + 현장 해제 HOLD로 보고되고
+# armed는 꺼진 채 시작한다(사람이 확인 후 다시 켠다)
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

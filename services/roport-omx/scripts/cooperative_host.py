@@ -22,6 +22,7 @@ import json
 import logging
 import math
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -561,6 +562,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def other_hosts() -> list[str]:
+    """이 PC에서 돌고 있는 다른 cooperative_host.py 프로세스(pid)."""
+    out = subprocess.run(
+        ["ps", "-eo", "pid=,args="],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    ).stdout
+    mine = {
+        str(os.getpid()),
+        str(os.getppid()),
+    }  # uv run으로 띄우면 부모(uv)의 인자에도 이름이 있다
+    return [
+        line.split(None, 1)[0]
+        for line in out.splitlines()
+        if "cooperative_host.py" in line and line.split(None, 1)[0] not in mine
+    ]
+
+
 def main() -> None:
     args = parse_args()
     logging.basicConfig(
@@ -577,6 +598,12 @@ def main() -> None:
             place_shadow=args.place_shadow,
         )
     elif args.executor == "direct":
+        others = other_hosts()
+        if others:
+            # 같은 shelf-01·omx1·omx2 엔드포인트를 두 Host가 소유하면 안 된다(규약). Panel의 armed가 띄운 Host 포함
+            sys.exit(
+                f"another cooperative_host is running (pid {', '.join(others)}); stop it first"
+            )
         routes = load_routes(args.routes)
         local = LocalPanel(
             DirectConfig.load(args.direct_config),

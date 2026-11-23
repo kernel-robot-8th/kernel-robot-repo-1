@@ -225,6 +225,21 @@ class LocalPanelTest(unittest.TestCase):
         self.assertEqual(ex.readiness()["armed"], False)
         ex.check(TASK)
 
+    def test_close_waits_for_the_landing(self):
+        self.panel.set_armed(True)
+        self.mode("wait_stop", {"exit_ok": True})
+        self.panel.eval_start({"source": "mqtt", "model_path": MODEL})
+        proc = self.panel.job["proc"]
+        time.sleep(0.3)
+        self.panel.close(wait_s=10)
+        self.assertIsNotNone(
+            proc.poll()
+        )  # 중지 → 착지 → 결과를 남기고 끝날 때까지 기다렸다
+        self.assertEqual(self.panel.last_status["last_result"]["stopped_by"], "중지")
+        self.assertFalse(self.panel.lock.held)
+        with self.assertRaises(PanelRefused):  # 닫힌 뒤에는 요청을 받지 않는다
+            self.panel.request("GET", "/api/status")
+
     def test_link_state_feeds_ai_readiness(self):
         self.panel.link = {
             "ok": False,

@@ -5,6 +5,7 @@ No broker, no panel: the MQTT transport is replaced by one that stops the loop a
 
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -102,18 +103,26 @@ class HostStartTest(unittest.TestCase):
             "python": "/bin/false",
             "state_dir": str(self.dir / "state"), "lock_path": str(self.dir / "robot.lock"),
             "udp_server": ["127.0.0.1", 9], "udp_key_file": str(self.dir / "no.key")}))  # fmt: skip
-        output = self.run_main(
-            "--executor",
-            "direct",
-            "--routes",
-            str(routes),
-            "--direct-config",
-            str(config),
-        )
+        # 이 PC에 실제 Host가 돌고 있어도 시험 결과가 같게
+        with patch.object(ch, "other_hosts", list):
+            output = self.run_main(
+                "--executor", "direct", "--routes", str(routes), "--direct-config", str(config)
+            )  # fmt: skip
         self.assertIn("DIRECT executor no panel (shelf_direct)", output)
         self.assertIn("routes=[INBOUND:2b:COOPERATIVE]", output)
         state = json.loads((self.dir / "state" / "arm-state.json").read_text())
         self.assertEqual((state["on"], state["off_reason"]), (False, "부팅"))
+
+    def test_direct_executor_refuses_a_second_host(self):
+        argv = ["cooperative_host.py", "--journal", str(self.dir / "j.json"), "--executor", "direct",
+                "--routes", "r.json", "--direct-config", "c.json"]  # fmt: skip
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(ch, "other_hosts", lambda: ["4242"]),
+            self.assertRaises(SystemExit) as stop,
+        ):
+            ch.main()
+        self.assertIn("4242", str(stop.exception.code))
 
     def test_direct_executor_options(self):
         argv = ["--journal", str(self.dir / "j.json"), "--executor", "direct"]
@@ -208,3 +217,15 @@ class HostStartTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OtherHostsTest(unittest.TestCase):
+    def test_own_process_and_uv_parent_are_not_other_hosts(self):
+        listing = (
+            f"{os.getpid()} python scripts/cooperative_host.py\n"
+            f"{os.getppid()} uv run python scripts/cooperative_host.py\n"
+            "77 python scripts/cooperative_host.py --executor panel\n"
+        )
+        reply = types.SimpleNamespace(stdout=listing)
+        with patch.object(ch.subprocess, "run", lambda *a, **k: reply):
+            self.assertEqual(ch.other_hosts(), ["77"])

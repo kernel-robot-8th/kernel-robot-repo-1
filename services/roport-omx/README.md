@@ -216,6 +216,20 @@ uv run python scripts/shelf_direct_arm.py --config ~/.config/roport/shelf-direct
 - 도킹 센서 미연결로 실물 이송이 `docking_alignment_unconfirmed`로 막히는 것은 Panel 경로와 같습니다.
 - 확인: `ci/test_shelf_direct_*.py`(가짜 장치·가짜 정렬기·가짜 worker, 미션 결과를 `PanelExecutor._result`에 넣어 Panel 경로와 같은 판정 확인). 실제 정렬기는 임시 복사본에서 `--dry-run`으로 넘겨받기 파일 계약까지 확인했습니다. **실장비(팔·카메라·버스) 검증은 하지 않았습니다.**
 
+### 운영 (systemd 사용자 서비스)
+
+```bash
+cp deploy/systemd/roport-shelf-direct-host.service ~/.config/systemd/user/
+cp deploy/systemd/shelf-direct-broker.env.example ~/.config/roport/shelf-direct-broker.env  # 값 채우고 chmod 600
+systemctl --user daemon-reload && systemctl --user enable --now roport-shelf-direct-host
+journalctl --user -u roport-shelf-direct-host -f
+```
+
+- 끄기(`systemctl --user stop`)는 SIGINT입니다. Host가 돌고 있는 미션에 중지를 보내고 팔 착지·정렬기 되돌리기를 최대 90 s 기다린 뒤 끝납니다(`TimeoutStopSec=150`). 홈 복귀 중이면 끝나기를 기다립니다.
+- 비정상 종료 뒤 자동 재시작(`Restart=on-failure`)하면 실행 중이던 작업은 `host_restarted_outcome_unknown` + 현장 해제 HOLD로 보고되고 armed는 꺼진 채 시작합니다.
+- **같은 PC에서 Host를 둘 띄우지 않습니다.** direct Host는 다른 `cooperative_host.py`가 돌고 있으면 시작하지 않습니다. 이 PC의 Panel에서 armed를 켜면 Panel이 자기 Host(`--executor panel`, `~/.config/roport/omx-host.json`)를 띄우므로, direct로 운영할 때는 Panel armed를 켜지 않거나 그 설정 파일을 치웁니다. Panel을 학습·녹화에 쓰는 동안에는 `robot.lock` 때문에 미션이 시작되지 않습니다.
+- GPU 노트북 쪽은 바꾸지 않습니다. 추론 서버는 GPU 노트북의 Panel이 `~/.config/omx/v3/udp_server.json` 설정으로 켜고 지킵니다(`services/roport-ai-server/README.md`). 이 Host PC의 IP가 그 허용 목록(`peers`)에 있어야 합니다(Host PC Panel로 한 번 연결했다면 이미 들어 있습니다).
+
 ## AI 추론 UDP 클라이언트 (시험 단계, FFT1-154)
 
 `src/roport_omx/infer_link/`는 Host PC가 GPU AI 추론 서버(`services/roport-ai-server`의 `omx_udp`)와 UDP 규약 `RPI1`로 통신하는 클라이언트입니다. 규약 파일 `wire.py`는 AI 서버 쪽 원본을 그대로 복사하며 두 곳을 함께 갱신합니다.

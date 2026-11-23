@@ -44,6 +44,7 @@ HOME_TTL_S = 300.0
 LINK_EVERY_S = 5.0
 START_WAIT_S = 60.0  # 쟁반 확인(20 s)까지 기다린다
 ARM_REQUEST_MAX_AGE_S = 60.0
+CLOSE_WAIT_S = 90.0  # 중지 뒤 착지(홈 복귀·감쇠)와 정렬기 되돌리기를 기다린다
 SRC = Path(__file__).resolve().parents[2]  # roport_omx 패키지가 있는 src
 
 
@@ -519,8 +520,26 @@ class LocalPanel:
                 }
             self._stop.wait(LINK_EVERY_S)
 
-    def close(self) -> None:
+    def close(self, wait_s: float = CLOSE_WAIT_S) -> None:
+        """Host 종료: 돌고 있는 미션에 중지를 보내고 착지가 끝날 때까지 기다린다.
+
+        worker는 자기 세션에서 돌므로 Host가 먼저 끝나면 서비스 관리자가 착지 중인 worker를 강제 종료할 수
+        있다(토크가 켜진 채 멈춤). 홈 복귀 job은 중지하지 않고 끝나기를 기다린다.
+        """
         self._stop.set()
         with self.mu:
-            if self.job is not None and self.job["proc"].poll() is None:
-                os.kill(self.job["proc"].pid, signal.SIGINT)
+            job = self.job
+        if job is None or job["proc"].poll() is not None:
+            return
+        if job["kind"] == "eval":
+            os.kill(job["proc"].pid, signal.SIGINT)
+        try:
+            job["proc"].wait(wait_s)
+        except subprocess.TimeoutExpired:
+            log.error(
+                "worker %s still running after %.0f s; left running",
+                job["proc"].pid,
+                wait_s,
+            )
+        with self.mu:
+            self._reap()
