@@ -137,8 +137,9 @@ Nav2 제한 복구·관제 실패 처리·G2 후보 전송은 [관제 참고 가
 게이트 주차와 같은 `gate_dock_stop_unconfirmed`·`gate_dock_controller_unavailable`·`gate_dock_final_tolerance`). 드라이버의 명령 허용 오차
 재확인은 그대로다. `ROPORT_GATE_DOCK_CONFIG`가 같이 있으면 게이트 주차가 우선이고 FineAlign은 켜지지 않는다(경고 로그).
 `fine_align_*`는 같은 목적지 재시도 대상(`NAV_RETRY_FAULTS`)이 아니다. `trial.launch.py`는 두 환경 변수 중 하나가 있으면
-GateDock 제어기·`gate_dock_goal_checker`(1 cm·0.05 rad)를 넣는다. GateDock 속도는 최소 접근 0.01 m/s·감속 최소 0.015 m/s·
-감속 시작 0.05 m(2026-11-23 d660 N12 20 cm 접근 19 s, 게이트 마커 주차는 이 값으로 실로봇 미확인).
+GateDock 제어기·`gate_dock_goal_checker`(1 cm·0.05 rad)를 넣는다. FineAlign 으로 띄울 때만 GateDock 속도를 최소 접근 0.01 m/s·
+감속 최소 0.015 m/s·감속 시작 0.05 m 로 넣는다(2026-11-23 d660 N12 20 cm 접근 19 s). 게이트 마커 주차로 띄우면 변경 전 값
+(0.005 m/s·0.005 m/s·0.6 m)을 그대로 쓴다.
 `ROPORT_FINE_ALIGN_GOALS`는 `trial.launch.py`를 띄우는 셸과 드라이버(runner)를 띄우는 셸 **둘 다**에 넣는다. 드라이버에만 있으면
 Nav2에 GateDock 제어기·검사기가 없어 마지막 접근이 거절되고 `nav2_goal_failed`로 실패한다(재시도해도 같은 실패).
 `params_file`이 GateDock을 이미 가진 파일(`config/nav2_follow_real.yaml`)이면 launch 쪽 환경 변수가 없어도 제어기는 있다.

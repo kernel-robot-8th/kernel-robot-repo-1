@@ -172,8 +172,13 @@ class DemoRunner:
                 if not isinstance(msg.get('on'), bool):
                     self._event('rejected', op=op, reason='invalid_alert')
                     return
-                self.driver.set_boarding_alert(msg['on'])    # 발행은 드라이버 하나가 한다
-                self.boarding = msg['on']
+                if msg['on']:
+                    # 켜기는 다음 tick 의 heartbeat 뒤에 드라이버로 넘긴다. 드라이버는 heartbeat 가 1 s 넘게 없으면
+                    # 켜자마자 끄므로, 연결 직후 ping → alert 가 tick 사이에 오면 여기서 바로 부르면 상태가 어긋난다.
+                    self.boarding = True
+                else:
+                    self.driver.set_boarding_alert(False)    # 발행은 드라이버 하나가 한다
+                    self.boarding = False
                 self._event('alert', on=self.boarding)
                 return
             if self.console_at is not None and not self.console_alive():
@@ -235,6 +240,8 @@ class DemoRunner:
             alive = self.console_alive()
             if alive:
                 self.driver.heartbeat()
+                if self.boarding and not getattr(self.driver, 'boarding', False):
+                    self.driver.set_boarding_alert(True)    # heartbeat 뒤에 켠다(드라이버가 스스로 끈 뒤에도 다시 맞춤)
             else:
                 self._link_lost()
             for original, phase, details in self.driver.drain_results():

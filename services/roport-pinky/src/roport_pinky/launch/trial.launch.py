@@ -34,11 +34,11 @@ DOCK_CONTROLLER_OVERRIDES = {
     'gate_dock_goal_checker.stateful': True,
     'GateDock.plugin': 'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController',
     'GateDock.desired_linear_vel': .02,
-    # 2026-11-23 d660: .005/.005 + 기본 approach_velocity_scaling_dist(0.6 m)로 20 cm 접근 전체가 감속 구간 →
-    # 25 s 시간 초과. 아래 값으로 19 s 성공(N12 정밀 접근). 게이트 마커 주차는 이 값으로 실로봇 미확인.
-    'GateDock.min_approach_linear_velocity': .01,
-    'GateDock.regulated_linear_scaling_min_speed': .015,
-    'GateDock.approach_velocity_scaling_dist': .05,
+    'GateDock.min_approach_linear_velocity': .005,
+    'GateDock.regulated_linear_scaling_min_speed': .005,
+    # RPP 기본값을 명시한다: params_file 이 FineAlign 용 값(0.05)을 가진 nav2_follow_real.yaml 이어도
+    # 게이트 마커 주차의 감속 거리는 변경 전과 같게 둔다.
+    'GateDock.approach_velocity_scaling_dist': .6,
     'GateDock.lookahead_dist': .05,
     'GateDock.min_lookahead_dist': .03,
     'GateDock.max_lookahead_dist': .10,
@@ -49,11 +49,24 @@ DOCK_CONTROLLER_OVERRIDES = {
 }
 
 
-def _docking_enabled():
-    """GateDock 제어기·gate_dock_goal_checker 를 넣을지: 게이트 마커 주차 또는 마커 없는 정밀 접근(FineAlign).
+# 마커 없는 정밀 접근(FineAlign)에만 쓰는 GateDock 속도. 게이트 마커 주차(ROPORT_GATE_DOCK_CONFIG)에는 넣지 않는다.
+# 2026-11-23 d660: .005/.005 + 감속 거리 0.6 m 로는 20 cm 접근 전체가 감속 구간 → 25 s 시간 초과.
+# 아래 값으로 19 s 성공(N12 정밀 접근 1회).
+FINE_ALIGN_CONTROLLER_OVERRIDES = {
+    'GateDock.min_approach_linear_velocity': .01,
+    'GateDock.regulated_linear_scaling_min_speed': .015,
+    'GateDock.approach_velocity_scaling_dist': .05,
+}
+
+
+def _docking_mode():
+    """GateDock 제어기·gate_dock_goal_checker 를 넣는 방식: 'gate'(게이트 마커 주차), 'fine_align'(마커 없는
+    정밀 접근) 또는 None. 드라이버(trial_nav2)와 같이 ROPORT_GATE_DOCK_CONFIG 가 있으면 게이트 마커 주차가 우선이다.
     ROPORT_FINE_ALIGN_GOALS 해석은 roport_pinky.fine_align.goals_from_env 와 같다(쉼표 구분, 빈 항목 무시)."""
+    if os.environ.get('ROPORT_GATE_DOCK_CONFIG'):
+        return 'gate'
     goals = [g.strip() for g in os.environ.get('ROPORT_FINE_ALIGN_GOALS', '').split(',')]
-    return bool(os.environ.get('ROPORT_GATE_DOCK_CONFIG')) or any(goals)
+    return 'fine_align' if any(goals) else None
 
 
 def _nodes(context):
@@ -111,8 +124,11 @@ def _nodes(context):
             overrides.update(CONTROLLER_OVERRIDES)
             overrides['general_goal_checker.xy_goal_tolerance'] = goal_xy_tolerance
             overrides['FollowPath.desired_linear_vel'] = max_linear
-            if _docking_enabled():
+            docking = _docking_mode()
+            if docking:
                 overrides.update(DOCK_CONTROLLER_OVERRIDES)
+                if docking == 'fine_align':
+                    overrides.update(FINE_ALIGN_CONTROLLER_OVERRIDES)
                 overrides['GateDock.desired_linear_vel'] = min(.02, max_linear)
             overrides['FollowPath.rotate_to_heading_angular_vel'] = max_angular
         if name in ('controller_server', 'behavior_server', 'velocity_smoother'):

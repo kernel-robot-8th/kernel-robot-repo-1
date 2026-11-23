@@ -17,6 +17,7 @@ class Graph:
 class Driver:
     def __init__(self):
         self.calls, self.results, self.reject = [], [], None
+        self.boarding, self.beats = False, 0
 
     def validate_action(self, cmd):
         self.calls.append(('validate', cmd['type']))
@@ -32,9 +33,12 @@ class Driver:
 
     def heartbeat(self):
         self.calls.append(('heartbeat',))
+        self.beats += 1
 
     def set_boarding_alert(self, on):
+        # 실제 드라이버처럼: heartbeat 를 한 번도 못 받았으면 켜자마자 끈다
         self.calls.append(('boarding_alert', on))
+        self.boarding = bool(on) and self.beats > 0
 
     def drain_results(self):
         out, self.results = self.results, []
@@ -191,6 +195,7 @@ def test_alert_only_toggles_boarding_and_never_drives():
     r.handle({'op': 'ping'})
     r.handle({'op': 'alert', 'on': True})
     assert r.state()['boarding'] is True and r.events[-1] == {**r.events[-1], 'kind': 'alert', 'on': True}
+    r.tick()                                            # 켜기는 heartbeat 뒤에 드라이버로 넘어간다
     r.handle({'op': 'alert', 'on': 'yes'})
     assert r.events[-1]['reason'] == 'invalid_alert' and r.state()['boarding'] is True
     r.handle({'op': 'alert', 'on': False})
@@ -198,6 +203,23 @@ def test_alert_only_toggles_boarding_and_never_drives():
     assert not any(x[0] in ('dispatch', 'safe_stop', 'validate') for x in d.calls)
     # 발행은 드라이버 hook 하나로: 잘못된 값은 hook 까지 가지 않는다
     assert [x for x in d.calls if x[0] == 'boarding_alert'] == [('boarding_alert', True), ('boarding_alert', False)]
+
+
+def test_alert_on_right_after_connect_waits_for_the_next_heartbeat():
+    """연결 직후 ping → alert 가 같은 tick 사이에 와도 실행기와 드라이버 상태가 어긋나지 않는다. 드라이버는 heartbeat 를
+    받기 전에는 켜자마자 끄므로, 켜기는 tick 의 heartbeat 뒤에 넘긴다. 드라이버가 스스로 끈 뒤에도 다시 맞춘다."""
+    d, c, r = make()
+    r.handle({'op': 'ping'})
+    r.handle({'op': 'alert', 'on': True})               # 아직 heartbeat 전
+    assert r.state()['boarding'] is True and not any(x[0] == 'boarding_alert' for x in d.calls)
+    r.tick()
+    assert d.calls[-2:] == [('heartbeat',), ('boarding_alert', True)]    # heartbeat 가 먼저
+    assert d.boarding is True and r.state()['boarding'] is True
+    r.tick()
+    assert [x for x in d.calls if x[0] == 'boarding_alert'] == [('boarding_alert', True)]    # 켜진 뒤 다시 부르지 않음
+    d.boarding = False                                  # 드라이버가 스스로 끔(heartbeat 가 잠깐 끊김)
+    r.tick()
+    assert d.boarding is True and d.calls[-1] == ('boarding_alert', True)
 
 
 def test_alert_turns_off_when_console_link_is_lost_after_stopping_drive():

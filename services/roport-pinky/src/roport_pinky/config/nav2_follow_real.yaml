@@ -7,11 +7,11 @@
 # 제어기 min_lookahead_dist 0.12·rotate_to_heading_min_angle 0.52·approach_velocity_scaling_dist 0.15·
 # max_allowed_time_to_collision_up_to_carrot 2.0.
 # 2026-11-22: min_lookahead_dist 0.08 → 0.12(도착 허용 근처 값이면 출발하자마자 목표 방향으로 제자리 회전, d660).
-# GateDock 제어기·gate_dock_goal_checker = trial.launch.py DOCK_CONTROLLER_OVERRIDES 와 같은 값. 마커 없는 정밀 접근
-# (FineAlign: ROPORT_FINE_ALIGN_GOALS 또는 demo_runner --fine-align)이 쓴다. trial.launch 는 ROPORT_GATE_DOCK_CONFIG 나
-# ROPORT_FINE_ALIGN_GOALS 가 있을 때만 같은 값을 덮어 넣는다.
+# GateDock 제어기·gate_dock_goal_checker = 마커 없는 정밀 접근(FineAlign: ROPORT_FINE_ALIGN_GOALS 또는 demo_runner
+# --fine-align) 값. trial.launch.py 의 DOCK_CONTROLLER_OVERRIDES + FINE_ALIGN_CONTROLLER_OVERRIDES 와 같다.
 # 2026-11-23: GateDock min_approach 0.005→0.01·scaling_min 0.005→0.015·approach_velocity_scaling_dist 0.05 추가
 # (d660 20 cm 정밀 접근 25 s 시간 초과 → 19 s 성공).
+# 게이트 마커 주차(ROPORT_GATE_DOCK_CONFIG)로 띄우면 trial.launch 가 변경 전 값(0.005·0.005·감속 거리 0.6 m)을 덮어 넣는다.
 amcl:
   ros__parameters:
     alpha1: 0.2

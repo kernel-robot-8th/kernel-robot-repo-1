@@ -147,12 +147,36 @@ def test_fine_align_goals_also_enable_dock_controller(trial_launch, monkeypatch,
     assert cfg['gate_dock_goal_checker.xy_goal_tolerance'] == .01
     assert cfg['gate_dock_goal_checker.yaw_goal_tolerance'] == .05
     assert cfg['GateDock.desired_linear_vel'] == .02 and cfg['GateDock.use_collision_detection'] is True
+    # 마커 없는 정밀 접근에만 새 속도(2026-11-23 d660: 20 cm 접근 25 s 시간 초과 → 19 s)
+    assert cfg['GateDock.min_approach_linear_velocity'] == .01
+    assert cfg['GateDock.regulated_linear_scaling_min_speed'] == .015
+    assert cfg['GateDock.approach_velocity_scaling_dist'] == .05
 
 
-def test_dock_controller_speeds_match_real_params_yaml(trial_launch):
-    """2026-11-23 d660: 20 cm 정밀 접근 25 s 시간 초과 → 이 값으로 19 s. launch 와 nav2_follow_real.yaml 이 같아야 한다."""
+@pytest.mark.parametrize('fine_align_goals', [None, 'N12_RETURN'])
+def test_gate_marker_docking_keeps_its_previous_speeds(trial_launch, monkeypatch, fine_align_goals):
+    """게이트 마커 주차(ROPORT_GATE_DOCK_CONFIG)는 변경 전 감속 값을 그대로 쓴다. FineAlign 환경 변수가 같이 있어도
+    드라이버처럼 게이트 마커 주차가 우선이라 새 속도를 넣지 않는다. 감속 거리는 RPP 기본값(0.6 m)을 명시해
+    params_file 이 FineAlign 용 값을 가진 파일이어도 바뀌지 않는다."""
+    monkeypatch.setenv('ROPORT_GATE_DOCK_CONFIG', '/unused/local-calibrated.yaml')
+    if fine_align_goals is None:
+        monkeypatch.delenv('ROPORT_FINE_ALIGN_GOALS', raising=False)
+    else:
+        monkeypatch.setenv('ROPORT_FINE_ALIGN_GOALS', fine_align_goals)
+    cfg = {n['executable']: n for n in trial_launch._nodes(context(.15))}['controller_server']['parameters'][1]
+    assert cfg['GateDock.desired_linear_vel'] == .02
+    assert cfg['GateDock.min_approach_linear_velocity'] == .005
+    assert cfg['GateDock.regulated_linear_scaling_min_speed'] == .005
+    assert cfg['GateDock.approach_velocity_scaling_dist'] == .6
+    assert cfg['GateDock.use_collision_detection'] is True and cfg['GateDock.allow_reversing'] is False
+    assert cfg['gate_dock_goal_checker.xy_goal_tolerance'] == .01
+    assert cfg['gate_dock_goal_checker.yaw_goal_tolerance'] == .05
+
+
+def test_fine_align_controller_values_match_real_params_yaml(trial_launch):
+    """nav2_follow_real.yaml 의 GateDock 은 마커 없는 정밀 접근 값이다: launch 의 공통 값 + FineAlign 값과 같아야 한다."""
     import yaml
-    dock = trial_launch.DOCK_CONTROLLER_OVERRIDES
+    dock = {**trial_launch.DOCK_CONTROLLER_OVERRIDES, **trial_launch.FINE_ALIGN_CONTROLLER_OVERRIDES}
     assert dock['GateDock.min_approach_linear_velocity'] == .01
     assert dock['GateDock.regulated_linear_scaling_min_speed'] == .015
     assert dock['GateDock.approach_velocity_scaling_dist'] == .05
