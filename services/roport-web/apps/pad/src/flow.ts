@@ -19,6 +19,7 @@ export type MovingStep = {
   motion: Motion;
   pending: PendingCommand;
   arrived: boolean;
+  boardingAlert: boolean; // 탑승 시간 알림 창 표시 중(카트·관제의 알림 보고로만 켜진다)
 };
 
 export type Step =
@@ -55,7 +56,11 @@ export type Action =
   | { type: 'commandAnswered'; token: number; command: 'PAUSE' | 'RESUME'; res: Accepted }
   | { type: 'receiptAnswered'; token: number; res: Accepted }
   | { type: 'robotState'; motion: 'MOVING' | 'PAUSED' } // 카트 상태 보고(데모: 모의 입력)
-  | { type: 'arrived' }; // 게이트 도착 보고(데모: 모의 입력)
+  | { type: 'arrived' } // 게이트 도착 보고(데모: 모의 입력)
+  // 탑승 시작 15분 전 알림 보고(카트·관제가 보낸 것). 패드가 시간을 재서 만들지 않는다.
+  // 서버 모드에는 관제 → 패드 알림 통로가 아직 없어 이 Action 이 들어오지 않는다(데모의 모의 입력만 있다).
+  | { type: 'boardingAlert' }
+  | { type: 'boardingAlertDismissed' }; // 고객이 「아니오」를 눌러 창만 닫음
 
 export const initialState: PadState = { step: { name: 'idle' }, request: null, stopping: false, notice: null, lastPickup: null };
 
@@ -93,7 +98,7 @@ export function reduce(state: PadState, action: Action): PadState {
       return answer(state, action.token, (s) => {
         if (!action.res) return { ...s, notice: 'ERROR' };
         if (!action.res.accepted) return { ...s, notice: 'SERVICE_REJECTED' };
-        return goTo(s, { name: 'moving', pickup: action.pickup, mode: action.mode, motion: 'WAITING', pending: 'START', arrived: false });
+        return goTo(s, { name: 'moving', pickup: action.pickup, mode: action.mode, motion: 'WAITING', pending: 'START', arrived: false, boardingAlert: false });
       });
     case 'commandAnswered':
       return answer(state, action.token, (s) => {
@@ -117,7 +122,14 @@ export function reduce(state: PadState, action: Action): PadState {
     }
     case 'arrived':
       if (state.step.name !== 'moving') return state;
-      return { ...state, step: { ...state.step, arrived: true, pending: null } };
+      return { ...state, step: { ...state.step, arrived: true, pending: null, boardingAlert: false } };
+    case 'boardingAlert':
+      // 추종 중이고 도착 전일 때만 켠다. 게이트 안내 전환은 새 moving 단계(goTo)라 알림이 꺼진다.
+      if (state.step.name !== 'moving' || state.step.mode !== 'FOLLOW' || state.step.arrived) return state;
+      return { ...state, step: { ...state.step, boardingAlert: true } };
+    case 'boardingAlertDismissed':
+      if (state.step.name !== 'moving') return state;
+      return { ...state, step: { ...state.step, boardingAlert: false } };
   }
 }
 

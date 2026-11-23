@@ -187,3 +187,50 @@ test('기존 카드 FOLLOW는 접수 후 상태 보고를 기다리는 서비스
   assert.equal(movingPhase(moving(pending)), 'START_PENDING');
   assert.equal(movingPhase(moving(reduce(pending, { type: 'robotState', motion: 'MOVING' }))), 'MOVING');
 });
+
+// ── 탑승 시간 알림 ──
+test('추종 중 알림 보고가 오면 창이 켜지고, 아니오로 닫은 뒤 다시 보고가 오면 다시 켜진다', () => {
+  const s = reduce(startedFollow(), { type: 'boardingAlert' });
+  assert.equal(moving(s).boardingAlert, true);
+  const closed = reduce(s, { type: 'boardingAlertDismissed' });
+  assert.equal(moving(closed).boardingAlert, false);
+  assert.equal(moving(closed).mode, 'FOLLOW');
+  assert.equal(moving(reduce(closed, { type: 'boardingAlert' })).boardingAlert, true);
+});
+
+test('알림이 켜진 상태에서도 중지 요청 전이는 그대로다(창을 닫은 뒤 누르는 중지)', () => {
+  const s = reduce(startedFollow(), { type: 'boardingAlert' });
+  assert.equal(bigButton(movingPhase(moving(s))), 'PAUSE');
+  const sent = reduce(s, { type: 'send', token: 2, stop: true });
+  assert.equal(sent.stopping, true);
+  assert.equal(moving(sent).boardingAlert, true);
+});
+
+test('게이트 안내로 전환되면 알림 창이 꺼진다', () => {
+  const alerted = reduce(startedFollow(), { type: 'boardingAlert' });
+  const s = run(
+    [
+      { type: 'send', token: 2 },
+      { type: 'serviceAnswered', token: 2, pickup, mode: 'GATE_GUIDE', res: { accepted: true } },
+    ],
+    alerted,
+  );
+  assert.equal(moving(s).mode, 'GATE_GUIDE');
+  assert.equal(moving(s).boardingAlert, false);
+});
+
+test('게이트 안내 중·FOLLOW 도착 뒤·moving 이 아닌 화면에서는 알림 보고를 무시한다', () => {
+  const guide = run([
+    { type: 'go', step: { name: 'chooseService', pickup } },
+    { type: 'send', token: 1 },
+    { type: 'serviceAnswered', token: 1, pickup, mode: 'GATE_GUIDE', res: { accepted: true } },
+    { type: 'robotState', motion: 'MOVING' },
+  ]);
+  assert.equal(moving(reduce(guide, { type: 'boardingAlert' })).boardingAlert, false);
+  const arrivedFollow = reduce(startedFollow(), { type: 'arrived' });
+  assert.equal(moving(reduce(arrivedFollow, { type: 'boardingAlert' })).boardingAlert, false);
+  const idle = reduce(initialState, { type: 'boardingAlert' });
+  assert.deepEqual(idle.step, { name: 'idle' });
+  const items = reduce(initialState, { type: 'go', step: { name: 'items', pickup } });
+  assert.deepEqual(reduce(items, { type: 'boardingAlert' }), items);
+});
