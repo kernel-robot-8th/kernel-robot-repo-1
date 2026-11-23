@@ -19,9 +19,8 @@ event_stored. Only the MQTT side differs (Confluence "메세지 규약 정리", 
 
 What the Host can observe is reported, nothing else (unknown stays unknown):
 - Pinky docking: the Pinky's own robot_state (fresh observed_at, current boot, stopped at N11
-  with the arrival named in the transfer) and a workcell docking sensor (`alignment`, same
-  contract as field_host.py). Without a sensor docking.alignment is "unknown" and a transfer is
-  refused docking_alignment_unconfirmed unless require_docking is off (simulated executor only).
+  with the arrival named in the transfer). No workcell docking sensor is required (TK 2026-11-23:
+  the docking_alignment check was dropped); docking.alignment is reported "unknown".
 - placement/release: the executor's completion evidence (aligner or placement judge for store,
   the tray check for retrieve) with both arms home and grippers released.
 - model/calibration: a transfer runs only when the executor's route declares exactly the
@@ -157,9 +156,6 @@ class FieldHost:
 
     readiness: optional callable returning (sample, observed_unix_s) from a sampler thread, so a
     slow panel read never delays the MQTT loop; default reads the executor directly.
-    alignment(command, pinky_observation): optional workcell docking sensor (field_host.py's
-    contract) returning {pinky_id, pinky_boot_version, arrival_command_id, observed_at,
-    alignment}; a transfer needs alignment "confirmed" unless require_docking is False.
     """
 
     def __init__(
@@ -170,15 +166,12 @@ class FieldHost:
         control: str,
         require_armed: bool = True,
         require_pinky: bool = True,
-        require_docking: bool = True,
-        alignment=None,
         readiness=None,
         watchdog_s: float = WATCHDOG_S,
     ):
         self.journal, self.executor = journal, executor
         self.control = control
         self.require_armed, self.require_pinky = require_armed, require_pinky
-        self.require_docking, self.alignment = require_docking, alignment
         self.watchdog_s, self.stop_timeout_s = watchdog_s, STOP_TIMEOUT_S
         self._sample = readiness or (lambda: (self._read(), time.time()))
         self.boot_version = "boot-" + str(uuid4())
@@ -681,8 +674,6 @@ class FieldHost:
             raise Rejected("pinky_boot_mismatch")
         if not self._parked(seen, p["arrival_command_id"]):
             raise Rejected("pinky_visit_not_confirmed")
-        if self.require_docking and self._docked(message, seen) is None:
-            raise Rejected("docking_alignment_unconfirmed")
 
     def _visit_lost(self, command: dict) -> str | None:
         """Why the Pinky visit of a running transfer no longer holds, or None."""
@@ -694,8 +685,6 @@ class FieldHost:
             seen, p["arrival_command_id"]
         ):
             return "pinky_left"
-        if self.require_docking and self._docked(command, seen) is None:
-            return "docking_alignment_lost"
         return None
 
     @staticmethod
@@ -712,52 +701,9 @@ class FieldHost:
             and (arrival is None or s.get("arrival_command_id") == arrival)
         )
 
-    def _docked(self, command: dict, seen: dict) -> dict | None:
-        """The docking sensor's fresh confirmation of this visit (field_host.py contract)."""
-        if self.alignment is None:
-            return None
-        p = command["payload"]
-        observation = {
-            "boot_version": seen["boot_version"],
-            "sequence": seen["sequence"],
-            "observed_at": seen["observed_at"],
-            "active_command_id": seen["active_command_id"],
-            "state": deepcopy(seen["state"]),
-            "pinky_id": p["pinky_id"],
-        }
-        try:
-            observed = self.alignment(deepcopy(command), observation)
-        except Exception:  # an unreadable sensor confirms nothing
-            log.exception("docking sensor unavailable")
-            return None
-        if (
-            isinstance(observed, dict)
-            and observed.get("alignment") == "confirmed"
-            and _fresh(observed.get("observed_at"), OBSERVATION_MAX_AGE_S)
-            and observed.get("pinky_id") == p["pinky_id"]
-            and observed.get("pinky_boot_version") == p["expected_pinky_boot_version"]
-            and observed.get("arrival_command_id") == p["arrival_command_id"]
-        ):
-            return observed
-        return None
-
     def _docking(self) -> dict | None:
         active = self._data["active"]
         record = self._data["commands"][active] if active else None
-        if record is not None:
-            seen = self._pinky_seen(record["task"]["pinky_id"])
-            docked = seen and self._docked(record["command"], seen)
-            if docked:
-                return {
-                    k: docked[k]
-                    for k in (
-                        "pinky_id",
-                        "pinky_boot_version",
-                        "arrival_command_id",
-                        "observed_at",
-                        "alignment",
-                    )
-                }
         for pinky in [record["task"]["pinky_id"]] if record else PINKIES:
             seen = self._pinky_seen(pinky)
             if seen and self._parked(seen, None):
@@ -766,7 +712,7 @@ class FieldHost:
                     "pinky_boot_version": seen["boot_version"],
                     "arrival_command_id": seen["state"].get("arrival_command_id"),
                     "observed_at": seen["observed_at"],
-                    "alignment": "unknown",  # no docking sensor confirmed this visit
+                    "alignment": "unknown",  # no workcell docking sensor (check dropped)
                 }
         return None
 

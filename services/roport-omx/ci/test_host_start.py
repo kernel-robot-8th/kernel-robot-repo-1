@@ -88,7 +88,8 @@ class HostStartTest(unittest.TestCase):
         )
         output = self.run_main("--executor", "panel", "--routes", str(routes))
         self.assertIn("protocol v2 (roport-control-v2) control=control-01", output)
-        self.assertIn("require_pinky=on require_docking=on", output)
+        self.assertIn("require_pinky=on", output)
+        self.assertNotIn("require_docking", output)  # check dropped (TK 2026-11-23)
         self.assertNotIn("boot_id=", output)  # the v1 start line
         self.assertIn("protocol v2", self.run_main("--executor", "mock"))
         # v1 only when asked for; its own journal (a v2 journal is refused)

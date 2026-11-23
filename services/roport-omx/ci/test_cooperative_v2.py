@@ -90,21 +90,8 @@ class FieldHostTest(unittest.TestCase):
         self.path = Path(self.dir.name) / "shelf-01-v2.json"
         self.journal = Journal(self.path)
         self.executor = mock.MockExecutor(0.2, evidence=EVIDENCE, versions=VERSIONS)
-        self.docking = "confirmed"  # what the simulated docking sensor reports
-        self.host = FieldHost(
-            self.journal, self.executor, control=CONTROL, alignment=self.dock
-        )
+        self.host = FieldHost(self.journal, self.executor, control=CONTROL)
         self.host.observe_pinky(pinky_state())
-
-    def dock(self, command, pinky):
-        # a workcell docking sensor (field_host.py contract): identity from the observation
-        return {
-            "pinky_id": pinky["pinky_id"],
-            "pinky_boot_version": pinky["boot_version"],
-            "arrival_command_id": pinky["state"]["arrival_command_id"],
-            "observed_at": datetime.now(UTC).isoformat(),
-            "alignment": self.docking,
-        }
 
     def keep_running(self, command_id, *, sent_delay_s=0.0, boot=None):
         # what Fleet's runtime sends about once a second for an active command
@@ -628,29 +615,13 @@ class FieldHostTest(unittest.TestCase):
         (event,) = self.send(self.transfer())
         self.assertEqual(event["payload"]["reason"], "pinky_boot_mismatch")
 
-    def test_docking_needs_the_sensor_confirmation(self):
-        for docking in ("unknown", "misaligned"):
-            with self.subTest(docking=docking):
-                self.docking = docking
-                (event,) = self.send(self.transfer())
-                self.assertEqual(
-                    event["payload"]["reason"], "docking_alignment_unconfirmed"
-                )
-        self.host.alignment = None  # no sensor connected (the panel Host today)
-        (event,) = self.send(self.transfer())
-        self.assertEqual(event["payload"]["reason"], "docking_alignment_unconfirmed")
-        self.assertEqual(self.executor.tasks, [])
-        self.host.require_docking = (
-            False  # simulated runs only (CLI refuses it for panel)
-        )
+    def test_no_docking_sensor_is_needed(self):
+        # TK 2026-11-23: the docking_alignment check was dropped; the Pinky's own state decides
         self.assertEqual(self.statuses(self.send(self.transfer())), ["accepted"])
-
-    def test_docking_lost_during_the_task_stops_the_arms(self):
-        self.executor.run_s = 30
-        self.send(self.transfer())
-        self.docking = "unknown"
-        (failed,) = self.host.poll()
-        self.assertEqual(failed["payload"]["reason"], "docking_alignment_lost")
+        (state,) = self.send(
+            field_wire.build_message("robot_state_request", CONTROL, "shelf-01", {})
+        )
+        self.assertEqual(state["payload"]["state"]["docking"]["alignment"], "unknown")
 
     def test_model_and_calibration_must_match_the_route(self):
         # #135 review: a local route alone accepted any model/calibration control asked for

@@ -322,8 +322,8 @@ GPU 추론 서버 하나를 여러 Host PC(예: OMX1·2 Host, OMX3 Host)가 함�
 가상 Fleet과 연결할 때 모의 팔을 사용하고 경로에 기대하는 모델·보정 버전을 맞춘다.
 
 ```bash
-uv run python scripts/cooperative_host.py --executor mock --no-require-docking \
+uv run python scripts/cooperative_host.py --executor mock \
   --mock-versions sim-model sim-cal --journal ~/.local/state/roport/shelf-v2.json
 ```
 
-실물 v2 제어판 설정은 `config/shelf_routes.example.json`을 기준으로 한다. 실물 이송은 해당 Pinky 방문의 신선한 도킹 관측이 들어올 때만 허용한다. 도킹 센서 연결과 실물 정지 표본 확인은 현장 적용 단계다. 기존 OmxTrial 시험 실행기는 `--protocol v1`과 `episode_s`가 있는 기존 경로 파일을 사용한다(`config/cooperative_routes.example.json`).
+실물 v2 제어판 설정은 `config/shelf_routes.example.json`을 기준으로 한다. 실물 이송은 해당 Pinky의 자체 상태(3초 이내 관측, N11 정차, 도착 ID·boot 일치)로 방문을 확인한다. 작업셀 도킹 센서 확인(`docking_alignment_unconfirmed`)은 쓰지 않으며(2026-11-23 결정, #154) `robot_state`의 `docking.alignment`는 `unknown`이다. 실물 정지 표본 확인은 현장 적용 단계다. 기존 OmxTrial 시험 실행기는 `--protocol v1`과 `episode_s`가 있는 기존 경로 파일을 사용한다(`config/cooperative_routes.example.json`).
