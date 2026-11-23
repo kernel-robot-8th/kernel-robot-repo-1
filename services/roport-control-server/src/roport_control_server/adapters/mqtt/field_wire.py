@@ -16,6 +16,7 @@ COMMANDS = {
     "line_route_command",
     "set_drive_mode_command",
     "nav_goal_command",
+    "follow_target_command",
     "shelf_transfer_command",
     "arm_action_command",
     "warehouse_load_command",
@@ -149,6 +150,13 @@ SCHEMAS = {
         to_mode=choice("line", "nav2"),
         graph_version=ID,
         map_version=ID,
+    ),
+    "follow_target_command": obj(
+        required=[*FENCE, "map_version", "card_id"],
+        **FENCE,
+        map_version=ID,
+        card_id={"type": "integer", "minimum": 35, "maximum": 49},
+        max_duration_s={"type": "number", "minimum": 1, "maximum": 240},
     ),
     "nav_goal_command": obj(
         required=[
@@ -400,7 +408,11 @@ def validate(message):
         not endpoint.startswith("pinky") or p["from_mode"] == p["to_mode"]
     ):
         raise ValueError("invalid mode transition")
-    if kind in {"nav_goal_command", "robot_pose"} and not endpoint.startswith("pinky"):
+    if kind in {
+        "nav_goal_command",
+        "follow_target_command",
+        "robot_pose",
+    } and not endpoint.startswith("pinky"):
         raise ValueError("navigation and motion require Pinky")
     if kind == "shelf_transfer_command" and (
         endpoint != "shelf-01" or {a["robot_id"] for a in p["arms"]} != {"omx1", "omx2"}

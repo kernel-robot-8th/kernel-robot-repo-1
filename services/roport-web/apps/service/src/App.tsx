@@ -16,6 +16,11 @@ function Logo() {
   return <span className="logo">RO<span className="logo-accent">:</span><span className="logo-port">PORT</span></span>;
 }
 
+const FOLLOW_STATUS: Record<string, string> = {
+  follow_pending: '카트 추종 승인 대기', follow_start: '카트 추종 시작 확인 중',
+  following: '카트 추종 중', follow_stopping: '카트 정지 확인 중', follow_paused: '카트 추종 일시 정지',
+};
+
 export function App() {
   const [member, setMember] = useState<Member | null | undefined>(undefined); // undefined: 확인 중
   const [view, setView] = useState<View>({ name: 'orders' });
@@ -468,6 +473,7 @@ function Status({ pickup: p, onTicket }: { pickup: Pickup; onTicket: () => void 
     return () => { active = false; clearTimeout(timer); };
   }, [p.pickupId]);
   const display = progress ? controlProgress(progress) : { index: -1, text: '진행 상태를 확인하고 있습니다' };
+  const followStatus = progress?.stages.map(stage => FOLLOW_STATUS[stage]).find(Boolean);
   const cur = display.index;
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -490,6 +496,7 @@ function Status({ pickup: p, onTicket }: { pickup: Pickup; onTicket: () => void 
       <div className="hero-card">
         <p className="hero-kicker">예약 {p.reservationNo}</p>
         <h2>{display.text}</h2>
+        {followStatus && <p>{followStatus}</p>}
         <p>{progress?.receivedPackages ? `수령한 포장 ${progress.receivedPackages}개` : statusLabel(p.status)}</p>
       </div>
       <ol className="timeline" aria-label="진행 단계">{steps}</ol>

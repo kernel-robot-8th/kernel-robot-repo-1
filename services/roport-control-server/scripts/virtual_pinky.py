@@ -5,6 +5,7 @@ not ROS navigation. Run via tools/run_virtual_trial.py (isolated loopback only).
 """
 
 import math
+import os
 import sys
 import threading
 import time
@@ -106,7 +107,7 @@ class VirtualPinky(TrialDriver):
     def __init__(self, profile, role, *, nav2=True, fault="none", threaded=True):
         if profile["mode"] != "simulation":
             raise ValueError("virtual Pinky requires a simulation profile")
-        if fault not in {"none", "line-loss", "odom-stale"}:
+        if fault not in {"none", "line-loss", "odom-stale", "d660-line-loss"}:
             raise ValueError("unknown virtual fault")
         self.lock = threading.RLock()
         self.graph = Graph.load(str(LAYOUT))
@@ -122,7 +123,9 @@ class VirtualPinky(TrialDriver):
         route = profile["routes"][key]
         start = route["start_node"]
         heading = self.graph.heading(start, self.graph.nodes[start].links[0])
-        self.sim = Sim(self.graph)
+        # Field replay: an IR gap on the observed leg, without an initialized map pose.
+        replay = fault == "d660-line-loss"
+        self.sim = Sim(self.graph, gaps=[("N10", "N18", 24, 6)] if replay else [])
         self.sim.place(start, heading)
         speed = route["speed_limit_mps"]
         config = NavConfig()
@@ -137,20 +140,87 @@ class VirtualPinky(TrialDriver):
         self.guard = {"owner": "none", "blocked": False}
         self.lease_at = None
         self.last = None
+        self.follow = None
+        self.follow_deadline = None
         self.fault = fault
         self.motion_time = 0.0
         self.logic = TrialLogic(
             self.graph, profile, send=self._send, zero=self._zero, start_node=start
         )
         self.nav = SimulatedNav(
-            self.map_pose(), ready=nav2, speed_mps=route["speed_limit_mps"]
+            self.map_pose(),
+            ready=nav2 and not replay,
+            speed_mps=route["speed_limit_mps"],
         )
         self._feed()
         self.done = threading.Event()
         self.thread = None
+        self.ticks_per_frame = int(os.environ.get("PINKY_SIM_TICKS_PER_FRAME", "1"))
+        if not 1 <= self.ticks_per_frame <= 10:
+            raise ValueError("PINKY_SIM_TICKS_PER_FRAME must be between 1 and 10")
         if threaded:
             self.thread = threading.Thread(target=self._run, daemon=True)
             self.thread.start()
+
+    def validate_action(self, command):
+        if command["type"] != "follow.requested":
+            return super().validate_action(command)
+        with self.lock:
+            state = self.observe()
+            if (
+                self.follow
+                or self.nav_command
+                or self.mode != "nav2"
+                or state["fault"]
+                or not state["stopped"]
+                or not state["nav2_ready"]
+                or not state["localization_ready"]
+            ):
+                raise ValueError("follow_not_ready")
+
+    def dispatch(self, command):
+        if command["type"] != "follow.requested":
+            return super().dispatch(command)
+        with self.lock:
+            self.validate_action(command)
+            self.follow = command
+            self.follow_start = dict(self.nav.pose)
+            duration = command["payload"].get("max_duration_s")
+            self.follow_deadline = time.monotonic() + duration if duration else None
+            self.logic.node = None
+            self._lease("nav2")
+
+    def heartbeat(self):
+        with self.lock:
+            if self.follow and not self._guard_fault():
+                self.runner_seen = time.monotonic()
+                self._lease("nav2")
+            else:
+                super().heartbeat()
+
+    def drain_results(self):
+        with self.lock:
+            if (
+                self.follow
+                and self.follow_deadline is not None
+                and time.monotonic() >= self.follow_deadline
+            ):
+                command = self.follow
+                self.safe_stop("follow_max_duration")
+                return [(command, "failed", {"error_code": "follow_max_duration"})]
+            return super().drain_results()
+
+    def safe_stop(self, reason):
+        with self.lock:
+            following = self.follow is not None
+            self.follow = None
+            if reason in {"follow_lost", "follow_max_duration"} or (
+                following and reason == "operator_stop"
+            ):
+                self.nav.cancel()
+                self._lease("none")
+            else:
+                super().safe_stop(reason)
 
     def map_pose(self):
         import yaml
@@ -230,6 +300,13 @@ class VirtualPinky(TrialDriver):
             else:
                 self.sim.cmd = (0.0, 0.0)
                 self.sim.t += self.sim.dt
+                if self.follow and not self._guard_fault():
+                    # A virtual customer walks back and forth within a short aisle.
+                    self.nav.goal = {
+                        **self.follow_start,
+                        "x": self.follow_start["x"] + 0.3 * math.sin(self.sim.t),
+                    }
+                    self.nav.stopped = False
                 self.nav.tick(self.sim.dt)
                 a = math.radians(self.frame["yaw_deg"])
                 x, y = (
@@ -251,7 +328,8 @@ class VirtualPinky(TrialDriver):
             while not self.done.wait(max(0, next_tick - time.monotonic())):
                 if time.monotonic() - next_tick > 0.25:
                     self.halted = "virtual_clock_overrun"
-                self.tick()
+                for _ in range(self.ticks_per_frame):
+                    self.tick()
                 next_tick = (
                     time.monotonic() + self.sim.dt
                     if self.halted
@@ -273,6 +351,7 @@ class VirtualPinky(TrialDriver):
 def main():
     import argparse
     import json
+    import signal
 
     from roport_control_server.adapters.mqtt.trial_runner import run, select_robot
     from roport_control_server.adapters.mqtt.trial_wire import mqtt_config
@@ -283,7 +362,9 @@ def main():
     parser.add_argument("--journal", required=True)
     parser.add_argument("--nav2", choices=("simulated", "off"), default="simulated")
     parser.add_argument(
-        "--fault", choices=("none", "line-loss", "odom-stale"), default="none"
+        "--fault",
+        choices=("none", "line-loss", "odom-stale", "d660-line-loss"),
+        default="none",
     )
     args = parser.parse_args()
     profile = json.loads(Path(args.config).read_text())
@@ -294,7 +375,24 @@ def main():
     driver = VirtualPinky(
         profile, args.role, nav2=args.nav2 == "simulated", fault=args.fault
     )
-    run(profile, args.role, connection, args.journal, driver)
+    if args.fault != "d660-line-loss":
+        run(profile, args.role, connection, args.journal, driver)
+        return
+
+    # A manual placement in the simulator is independent of the operator's Fleet confirmation.
+    placed = threading.Event()
+
+    def place_at_n16(*_):
+        if driver.halted == "line_lost" and driver.observe()["stopped"]:
+            placed.set()
+
+    signal.signal(signal.SIGUSR1, place_at_n16)
+    run(profile, args.role, connection, args.journal, driver, stop_event=placed)
+    if placed.is_set():
+        # Lift to the configured start and remove the gap. Retain the failed command journal.
+        replacement = VirtualPinky(profile, args.role, nav2=False)
+        signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+        run(profile, args.role, connection, args.journal, replacement)
 
 
 if __name__ == "__main__":

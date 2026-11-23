@@ -21,6 +21,8 @@ channels:
         $ref: '#/components/messages/arm_action_command'
       line_route_command:
         $ref: '#/components/messages/line_route_command'
+      follow_target_command:
+        $ref: '#/components/messages/follow_target_command'
       nav_goal_command:
         $ref: '#/components/messages/nav_goal_command'
       robot_state_request:
@@ -1487,6 +1489,69 @@ components:
             - hold_command_id
             - operator
             - confirmed
+            additionalProperties: false
+          command_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          expires_at:
+            type: string
+            format: date-time
+        additionalProperties: false
+
+    follow_target_command:
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        - command_id
+        - expires_at
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: follow_target_command
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              expected_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              map_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              card_id:
+                type: integer
+                minimum: 35
+                maximum: 49
+              max_duration_s:
+                type: number
+                minimum: 1
+                maximum: 240
+            required:
+            - expected_boot_version
+            - map_version
+            - card_id
             additionalProperties: false
           command_id:
             type: string

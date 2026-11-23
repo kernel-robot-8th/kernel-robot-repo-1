@@ -336,6 +336,10 @@ def main():
                     "ROPORT_SERVICE_HTTP_URL": service_url,
                     "VITE_PAD_API": "server",
                     "VITE_PAD_CART_ID": "pinky1" if field else "pinky3",
+                    "VITE_PAD_FOLLOW": "1"
+                    if not field
+                    or field_config.get("verified_follow_robot") == "pinky1"
+                    else "0",
                 },
             )
         control_url = f"http://127.0.0.1:{args.port}"

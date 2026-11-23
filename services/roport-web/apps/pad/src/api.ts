@@ -7,7 +7,8 @@ import { newVerificationRequestId, toVerifyResult } from './verify';
 // 배포 nginx에는 아직 /cart-api 전달이 없어 기본을 데모로 둔다.
 const USE_SERVER = import.meta.env.VITE_PAD_API === 'server';
 
-// 서버 모드에서 안내·추종 버튼은 제공하지 않는다.
+export const FOLLOW_AVAILABLE = USE_SERVER && import.meta.env.VITE_PAD_FOLLOW === '1';
+
 export const IS_DEMO = !USE_SERVER;
 
 // 데모에서만 수령 저장이 가상 응답이다.
@@ -15,7 +16,7 @@ export const RECEIPT_IS_DEMO = !USE_SERVER;
 
 // 이 패드가 붙은 카트(서버 X-Cart-Id, 개발 전용 카트 인증). 비밀값이 아니다.
 export const CART_ID = import.meta.env.VITE_PAD_CART_ID || 'pinky3';
-export const CART_LABEL = '스마트카트 3호기';
+export const CART_LABEL = `스마트카트 · ${CART_ID}`;
 
 // 서비스 서버의 예약번호 문자 집합(0·O·1·I 제외, 8자리).
 export const RESERVATION_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -142,12 +143,12 @@ async function postCart(path: string, body: string): Promise<[number, unknown, s
 
 // 고객의 수령 확인. 서비스 서버가 수령 완료를 기록한다(SR-18-2).
 // 서버가 배정·도착·확인 유효성을 검사한 뒤에만 완료를 표시한다.
-export async function confirmReceipt(pickup: VerifiedPickup): Promise<{ accepted: boolean }> {
+export async function confirmReceipt(pickup: VerifiedPickup, followCard?: number): Promise<{ accepted: boolean }> {
   const { pickupId, verificationId } = pickup;
   if (USE_SERVER) {
     if (!verificationId) return { accepted: false };
     // Stable across response loss, repeated taps and reloads of this verification.
-    const [status, body] = await postCart('/cart-api/receipts', JSON.stringify({ verificationId, confirmationRequestId: `receipt-${verificationId}` }));
+    const [status, body] = await postCart('/cart-api/receipts', JSON.stringify({ verificationId, confirmationRequestId: `receipt-${verificationId}`, followCard }));
     return { accepted: (status === 200 || status === 201) && Boolean(body && typeof body === 'object' && 'receiptId' in body && typeof body.receiptId === 'string' && body.receiptId) };
   }
   await delay(500);

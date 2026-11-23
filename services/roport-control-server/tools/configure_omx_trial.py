@@ -54,6 +54,8 @@ def main():
         "run",
         "python",
         "scripts/cooperative_host.py",
+        "--protocol",
+        "v1",  # OmxTrial (roport-omx-task-v1); the Host's default is v2 (#135)
         "--site",
         profile["site_id"],
         "--control",

@@ -72,8 +72,9 @@ test('customer browser → service WSS → MQTT robots → pad receipt → retur
     await expect(pad.getByRole('alert')).toContainText('수령 확인이 저장되지 않았습니다');
     await expect(customer.getByRole('heading', { name: '카트가 도착했습니다. 패드에서 수령을 확인해 주세요' })).toBeVisible({ timeout: 300_000 });
     await customer.screenshot({ path: testInfo.outputPath(login + '-arrived.png'), fullPage: true });
+    const follow = login === run.accounts[1];
     const receipt = pad.waitForResponse(r => r.url().endsWith('/cart-api/receipts'));
-    await pad.getByRole('button', { name: '수령 확인', exact: true }).click();
+    await pad.getByRole('button', { name: follow ? '수령 확인 및 추종 요청' : '수령 확인', exact: true }).click();
     const response = await receipt;
     expect(response.ok()).toBeTruthy();
     const saved = await response.json();
@@ -82,7 +83,7 @@ test('customer browser → service WSS → MQTT robots → pad receipt → retur
     await expect(customer.getByRole('heading', { name: '수령이 완료되었습니다' })).toBeVisible();
     const repeated = await request.post(run.service_url + '/cart-api/receipts', {
       headers: { 'X-Cart-Id': 'pinky3' },
-      data: { verificationId: verification.verificationId, confirmationRequestId: 'receipt-' + verification.verificationId },
+      data: { verificationId: verification.verificationId, confirmationRequestId: 'receipt-' + verification.verificationId, ...(follow ? {followCard: 35} : {}) },
     });
     expect((await repeated.json()).receiptId).toBe(saved.receiptId);
     const wrongCart = await request.post(run.service_url + '/cart-api/receipts', {
@@ -90,6 +91,24 @@ test('customer browser → service WSS → MQTT robots → pad receipt → retur
       data: { verificationId: verification.verificationId, confirmationRequestId: 'wrong-cart-' + verification.verificationId },
     });
     expect(wrongCart.status()).toBe(409);
+    if (follow) {
+      const control = await context.newPage();
+      await control.goto(run.control_url + '/ui/?mode=fleet');
+      await control.getByLabel('관제 조작 키').fill(readFileSync(run.key_file, 'utf8').trim());
+      const taskStage = async () => Object.values((await snapshot()).tasks)
+        .find((t: any) => t.request.operation === 'outbound' && t.request.package_id === saved.packageIds[0]) as any;
+      await expect.poll(async () => (await taskStage()).stage).toBe('follow_pending');
+      await expect(customer.getByText('카트 추종 승인 대기', {exact: true})).toBeVisible();
+      const pending = await taskStage();
+      expect((await snapshot()).robots[pending.robot].active_command_id).toBeNull();
+      for (const [label, stage] of [
+        ['추종 승인', 'following'], ['추종 정지', 'follow_paused'], ['추종 재개', 'following'],
+        ['추종 정지', 'follow_paused'], ['추종 종료 및 복귀', 'return_nav'],
+      ]) {
+        await control.getByRole('button', {name: label, exact: true}).click();
+        await expect.poll(async () => (await taskStage()).stage, {timeout: 15_000}).toBe(stage);
+      }
+    }
     await expect.poll(async () => {
       const s = await snapshot();
       expect(s.fault).toBeNull();

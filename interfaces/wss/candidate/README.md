@@ -74,7 +74,7 @@ JSON 예시는 공용 파일에 모든 필드를 펼쳐 두었다.
 | `task.completed` | 관제 → 서비스 | 작업 전체 완료. 고객 수령 사실과 별개 |
 | `task.failed` | 관제 → 서비스 | 저장된 작업의 실패. 통신 timeout으로 생성하지 않음 |
 | `task.rejected` | 관제 → 서비스 | 저장된 작업의 업무 거절 |
-| `handover.receipt_recorded` | 서비스 → 관제 | 서비스가 명시적으로 저장한 포장품별 고객 수령 기록 |
+| `handover.receipt_recorded` | 서비스 → 관제 | 서비스가 명시적으로 저장한 포장품별 고객 수령 기록. 카드 추종을 선택한 경우에만 `payload.follow_card`로 번호 35~49를 함께 보낸다. |
 | `message.ack` | 양방향 | `payload.message_id` 메시지의 저장 완료 |
 
 ### 요청 본문

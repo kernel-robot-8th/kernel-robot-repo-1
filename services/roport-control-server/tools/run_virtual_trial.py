@@ -331,6 +331,9 @@ def main():
                 [
                     sys.executable,
                     str(SERVICE.parent / "roport-omx/scripts/cooperative_host.py"),
+                    # OmxTrial speaks v1; the Host's default is the field contract v2 (#135)
+                    "--protocol",
+                    "v1",
                     "--site",
                     profile["site_id"],
                     "--control",

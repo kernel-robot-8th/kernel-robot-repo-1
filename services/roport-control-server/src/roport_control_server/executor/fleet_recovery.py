@@ -1,5 +1,6 @@
 """Explicit operator reconciliation; never fabricates a robot completion."""
 
+import math
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -17,7 +18,7 @@ def stop_current(stop, boot, now):
     )
 
 
-def new_stop(control_id, active, boot):
+def new_stop(control_id, active, boot, *, reason="control_hold"):
     return wire.build_message(
         "robot_stop_command",
         control_id,
@@ -25,7 +26,7 @@ def new_stop(control_id, active, boot):
         {
             "expected_boot_version": boot,
             "target_command_id": active["command_id"],
-            "reason": "control_hold",
+            "reason": reason,
         },
         command_id=str(uuid4()),
         expires_at=(datetime.now(UTC) + timedelta(seconds=3)).isoformat(),
@@ -132,19 +133,84 @@ def request_host_release(control, request_id, hold_command_id, operator, confirm
     control.save(data)
 
 
-def reconcile(control, command_id, outcome, note):
+def _n16_evidence(control, active, task, result, confirmed_boot):
+    robot = active["message"]["target"]
+    if (
+        active["message"]["type"] != "line_route_command"
+        or result["status"] != "failed"
+        or result.get("reason") != "line_lost"
+        or task["stage"] != "warehouse_route"
+        or task["request"]["operation"] != "inbound"
+        or task["robot"] != robot
+        or task.get("slot")
+        or task.get("departure")
+    ):
+        raise ValueError(
+            "상차 전 입고 경로에서 line_lost로 실패한 명령만 복구할 수 있습니다."
+        )
+    report = control.observed[robot]
+    state = report["state"]
+    seen = wire.timestamp(report.get("observed_at"))
+    if (
+        report["boot_version"] != confirmed_boot
+        or seen <= wire.timestamp(result["observed_at"])
+        or not -1 <= (datetime.now(UTC) - seen).total_seconds() <= 3
+        or state.get("mode") != "line"
+        or state.get("node") != "N16"
+        or report.get("active_command_id", True) is not None
+        or state.get("fault", True) is not None
+        or state.get("line_enabled") is not False
+        or any(
+            state.get(k) != control.config[k]
+            or control.data["field_versions"].get(k) != control.config[k]
+            for k in ("map_version", "graph_version")
+        )
+    ):
+        raise ValueError("현재 기동에서 실패 이후의 최신 N16 정차 상태가 필요합니다.")
+    positions = control.config.get("node_positions", {})
+    if not all(n in positions for n in ("N14", "N16")):
+        raise ValueError("N16·N14 지도 좌표가 필요합니다.")
+    x, y = positions["N16"]
+    dx, dy = positions["N14"][0] - x, positions["N14"][1] - y
+    heading = state.get("heading_rad")
+    if (
+        not (dx or dy)
+        or type(heading) not in (int, float)
+        or not math.isfinite(heading)
+        or abs(math.remainder(heading - math.atan2(dy, dx), math.tau)) > 0.35
+    ):
+        raise ValueError("N16에서 N14를 향한 기체 방향을 확인하세요.")
+    if "N16" in control.occupied(robot) or any(
+        control.data["resources"].get(key) not in (None, active["task"])
+        for key in ("node:N16", "parking:N16")
+    ):
+        raise ValueError("N16을 다른 기체가 점유하고 있습니다.")
+    return {
+        "confirmed_boot": confirmed_boot,
+        "node": "N16",
+        "heading_rad": heading,
+        "observed_at": report["observed_at"],
+    }
+
+
+def reconcile(control, command_id, outcome, note, *, confirmed_boot=None):
     if (
         not isinstance(command_id, str)
         or not command_id
         or not isinstance(outcome, str)
-        or outcome not in {"completed", "not_started", "removed"}
+        or outcome not in {"completed", "not_started", "removed", "repositioned_n16"}
+        or (outcome == "repositioned_n16" and not confirmed_boot)
         or not isinstance(note, str)
         or not note.strip()
     ):
         raise ValueError("recovery outcome and operator note required")
     old = control.data.get("recoveries", {}).get(command_id)
     if old:
-        if old["outcome"] != outcome or old["note"] != note:
+        if (
+            old["outcome"] != outcome
+            or old["note"] != note
+            or old.get("confirmed_boot") != confirmed_boot
+        ):
             raise ValueError("command already reconciled differently")
         return
     active = control.data["commands"].get(command_id)
@@ -208,6 +274,10 @@ def reconcile(control, command_id, outcome, note):
             or p.get("active_command_id")
             or s.get("fault")
         ):
+            if outcome == "repositioned_n16":
+                raise ValueError(
+                    f"{robot}의 최신 정지·유휴 상태와 기체 오류 해제를 확인하세요."
+                )
             raise ValueError(robot + ": fresh stopped idle state required")
         if robot in ROLES:
             if s.get("mode") == "line" and (
@@ -229,6 +299,7 @@ def reconcile(control, command_id, outcome, note):
     data = deepcopy(control.data)
     task = data["tasks"][active["task"]]
     p = event["payload"] if event else {}
+    evidence = {}
     if outcome == "completed":
         if p["status"] != "completed":
             raise ValueError("matching completion evidence required")
@@ -254,6 +325,11 @@ def reconcile(control, command_id, outcome, note):
             control.check_completion(active["message"], proof, task, active)
         task["status"] = "RUNNING"
         control.advance(data, task, active["message"], result)
+    elif outcome == "repositioned_n16":
+        if not event:
+            raise ValueError("line loss evidence required")
+        evidence = _n16_evidence(control, active, task, p, confirmed_boot)
+        task.update(status="RUNNING", reason=None)
     elif outcome == "not_started":
         if p["status"] != "rejected":
             raise ValueError("only a device-rejected command can be retried")
@@ -276,6 +352,7 @@ def reconcile(control, command_id, outcome, note):
         "note": note,
         "event_id": event["message_id"] if event else None,
         "fault": data["fault"],
+        **evidence,
     }
     control.save(data)
 

@@ -773,5 +773,28 @@
       "command_id": "release-example",
       "expires_at": "2026-11-11T10:00:05+09:00"
     }
+  },
+  {
+    "label": "Pinky \uace0\uac1d \uce74\ub4dc \ucd94\uc885",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-follow-example",
+      "type": "follow_target_command",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "cmd-follow-example",
+      "payload": {
+        "expected_boot_version": "boot-pinky1-007",
+        "map_version": "map-demo-v1",
+        "card_id": 35,
+        "max_duration_s": 240
+      }
+    }
   }
 ]

@@ -48,6 +48,11 @@ def send(url, key, state, action, **extra):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--d660-line-loss",
+        action="store_true",
+        help="replay the N10 to N18 IR gap on simulated pinky1",
+    )
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
         "--mosquitto",
@@ -65,6 +70,8 @@ def main():
     )
     parser.add_argument("--timeout", type=float, default=900)
     args = parser.parse_args()
+    if args.d660_line_loss and (args.verify or args.service_env):
+        parser.error("use the line-loss replay with a standalone simulation")
     if not args.mosquitto:
         parser.error("Mosquitto required")
     if not 1 <= args.port <= 65535:
@@ -88,6 +95,8 @@ def main():
     ).resolve()
     root.mkdir(parents=True, mode=0o700, exist_ok=False)
     profile, robots = profiles()
+    if args.d660_line_loss:
+        profile["speed_limit_mps"] = 0.06  # d660 field command limit
     service_env = {}
     if args.service_env:
         service_env = json.loads(args.service_env.read_text())
@@ -190,6 +199,11 @@ def main():
                     role,
                     "--journal",
                     str(root / (robot + ".json")),
+                    *(
+                        ["--fault", "d660-line-loss"]
+                        if args.d660_line_loss and robot == "pinky1"
+                        else []
+                    ),
                 ],
             )
         start(
@@ -275,6 +289,12 @@ def main():
                         f"조작 키: {token}",
                         flush=True,
                     )
+                    if args.d660_line_loss:
+                        print(
+                            f"가상 기체 재배치 · line_lost 정지 후 별도 터미널에서 "
+                            f"kill -USR1 {info['pids']['pinky1']}",
+                            flush=True,
+                        )
                     ready_shown = True
                 elif time.monotonic() - began > 20:
                     raise RuntimeError(f"Fleet startup timeout: see {root}")

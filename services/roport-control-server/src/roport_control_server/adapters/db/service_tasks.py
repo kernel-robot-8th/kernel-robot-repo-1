@@ -291,6 +291,11 @@ class ServiceTaskStore:
             raise TypeError("receipt payload must be an object")
         if not isinstance(payload.get("receipt_id"), str) or not payload["receipt_id"]:
             raise ValueError("receipt_id required")
+        if "follow_card" in payload and (
+            type(payload["follow_card"]) is not int
+            or not 35 <= payload["follow_card"] <= 49
+        ):
+            raise ValueError("invalid follow card")
         with self._connection() as conn:
             conn.execute("SELECT pg_advisory_xact_lock(71519004)")
             received = self._received(conn, message)
