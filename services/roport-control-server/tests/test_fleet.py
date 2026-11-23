@@ -286,7 +286,7 @@ def test_two_stage_shelf_store_waits_for_alignment_and_return(fleet, return_firs
 
 
 @pytest.mark.parametrize("evidence", ["shelf_load_not_aligned", None])
-def test_unaligned_shelf_final_is_acked_without_making_stock_available(fleet, evidence):
+def test_stored_stock_is_available_after_safe_return_without_alignment(fleet, evidence):
     request_id, shelf = start_shelf_store(fleet)
     command_id = shelf["command_id"]
     placement = complete(fleet, shelf, broken={"evidence": "shelf_placed"})
@@ -296,12 +296,14 @@ def test_unaligned_shelf_final_is_acked_without_making_stock_available(fleet, ev
         fleet, shelf, broken={"evidence": evidence} if evidence else None, sequence=3
     )
     assert fleet.result(final)
-    assert fleet.data["slots"][shelf["payload"]["slot_id"]]["state"] == "reserved"
-    assert fleet.data["tasks"][request_id]["status"] == "HOLD"
+    assert fleet.data["slots"][shelf["payload"]["slot_id"]]["state"] == "occupied"
+    assert (
+        fleet.data["slots"][shelf["payload"]["slot_id"]]["alignment"] == "unconfirmed"
+    )
+    assert fleet.data["tasks"][request_id]["status"] == "RUNNING"
     assert returning["command_id"] in fleet.data["commands"]
-    assert fleet.next_action() is None
-    with pytest.raises(ValueError, match="matching completion evidence required"):
-        reconcile(fleet, command_id, "completed", "checked shelf")
+    assert fleet.data["fault"] is None
+    assert submit(fleet, "box", "outbound")
 
 
 def test_placement_alone_is_not_a_final_result_for_recovery(fleet):
@@ -312,12 +314,75 @@ def test_placement_alone_is_not_a_final_result_for_recovery(fleet):
         reconcile(fleet, shelf["command_id"], "completed", "checked placement")
 
 
-def test_single_report_unaligned_shelf_store_remains_reserved(fleet):
+def test_single_report_unaligned_shelf_store_can_release_stock(fleet):
     request_id, shelf = start_shelf_store(fleet)
     complete(fleet, shelf, broken={"evidence": "shelf_load_not_aligned"})
-    assert fleet.data["tasks"][request_id]["status"] == "HOLD"
-    assert fleet.data["slots"][shelf["payload"]["slot_id"]]["state"] == "reserved"
-    assert fleet.next_action() is None
+    assert fleet.data["tasks"][request_id]["stage"] == "return_route"
+    assert fleet.data["slots"][shelf["payload"]["slot_id"]]["state"] == "occupied"
+    assert (
+        fleet.data["slots"][shelf["payload"]["slot_id"]]["alignment"] == "unconfirmed"
+    )
+    assert fleet.data["fault"] is None
+
+
+@pytest.mark.parametrize("unsafe", [None, "moving", "old", "active"])
+def test_missing_final_uses_only_fresh_idle_home_evidence(fleet, unsafe):
+    request_id, shelf = start_shelf_store(fleet)
+    command_id = shelf["command_id"]
+    slot = shelf["payload"]["slot_id"]
+    placement = complete(fleet, shelf, broken={"evidence": "shelf_placed"})
+    fleet.shelf_placement_acked(command_id, placement["message_id"])
+    finish(fleet)
+    active = fleet.data["commands"][command_id]
+    assert fleet.data["tasks"][request_id]["stage"] == "await_shelf_alignment"
+    fleet.check_active()
+    assert fleet.data["slots"][slot]["state"] == "reserved"
+
+    now = active["sent_at"] + (fleet.config["command_timeout_s"] if unsafe else 12)
+    fleet.clock = lambda: now
+    at = datetime.fromisoformat(placement["payload"]["observed_at"])
+    fleet.heard.update(dict.fromkeys(TARGETS, now))
+    fleet.observed_since.update(dict.fromkeys(TARGETS, now))
+    for robot in active["participants"]:
+        fleet.observed[robot]["observed_at"] = (at + timedelta(seconds=1)).isoformat()
+    if unsafe == "moving":
+        fleet.observed["omx1"]["state"]["stopped"] = False
+    elif unsafe == "old":
+        fleet.observed["omx1"]["observed_at"] = at.isoformat()
+    elif unsafe == "active":
+        fleet.observed["shelf-01"]["active_command_id"] = command_id
+
+    fleet.check_active()
+    if unsafe:
+        assert fleet.data["slots"][slot]["state"] == "reserved"
+        now += 0.1
+        fleet.check_active()
+        assert fleet.data["fault"] == "command outcome unknown: timeout"
+        assert fleet.data["slots"][slot]["state"] == "reserved"
+        return
+    assert fleet.data["fault"] is None
+    assert fleet.data["slots"][slot]["state"] == "occupied"
+    assert fleet.data["slots"][slot]["alignment"] == "unconfirmed"
+    assert fleet.data["tasks"][request_id]["status"] == "COMPLETE"
+    assert submit(fleet, "box", "outbound")
+    assert dispatch(fleet) is not None
+    assert fleet.data["slots"][slot]["state"] == "reserved"
+    late = wire.build_message(
+        "command_status",
+        "shelf-01",
+        shelf["source"],
+        {
+            "status": "completed",
+            "boot_version": active["participant_boots"]["shelf-01"],
+            "observed_at": (at + timedelta(seconds=1)).isoformat(),
+            "sequence": 3,
+            "result": {"evidence": "shelf_align"},
+        },
+        command_id=command_id,
+    )
+    assert fleet.result(late)
+    assert fleet.result(late)
+    assert fleet.data["slots"][slot]["state"] == "reserved"
 
 
 def finish(c, *, size="small"):

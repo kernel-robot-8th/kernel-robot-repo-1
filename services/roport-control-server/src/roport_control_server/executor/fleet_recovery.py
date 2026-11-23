@@ -314,9 +314,7 @@ def reconcile(control, command_id, outcome, note, *, confirmed_boot=None):
     )
     evidence = {}
     if outcome == "completed":
-        if p["status"] != "completed" or control.alignment_failure(
-            active, p.get("result", {})
-        ):
+        if p["status"] != "completed":
             raise ValueError("matching completion evidence required")
         control.check_completion(active["message"], p.get("result", {}), task, active)
         result = p["result"]
@@ -365,6 +363,7 @@ def reconcile(control, command_id, outcome, note, *, confirmed_boot=None):
             for slot in data["slots"].values():
                 if slot["package_id"] == task["request"]["package_id"]:
                     slot.update(state="empty", package_id=None)
+                    slot.pop("alignment", None)
             task.pop("shelf_alignment_pending", None)
             task.update(stage="done", status="CANCELED", reason=note)
     if other_commands:

@@ -141,7 +141,8 @@ export function renderFleet(data) {
   }
   $('fleet-shelf').replaceChildren(...Object.entries(state.slots ?? {}).map(([slot, value]) => {
     const cell = document.createElement('div');
-    cell.textContent = `${slot} · ${state.slot_definitions[slot].node} · ${shelfStates[value.state] ?? value.state} · ${value.package_id ?? '—'}`;
+    const alignment = value.alignment === 'unconfirmed' ? ' · 정렬 미확인' : '';
+    cell.textContent = `${slot} · ${state.slot_definitions[slot].node} · ${shelfStates[value.state] ?? value.state} · ${value.package_id ?? '—'}${alignment}`;
     return cell;
   }));
   // Keep clickable controls mounted between robot pose updates.

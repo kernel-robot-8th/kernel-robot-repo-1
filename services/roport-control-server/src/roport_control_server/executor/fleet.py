@@ -1006,7 +1006,24 @@ class FleetControl:
             return True
         active = self.data["commands"].get(message["command_id"])
         if not active:
-            return False
+            placement_id = self.data.get("shelf_state_completions", {}).get(
+                message["command_id"]
+            )
+            if not placement_id:
+                return False
+            placement = self.data["events"][placement_id]
+            original, p = placement["payload"], message["payload"]
+            if (
+                message["source"] != placement["source"]
+                or p["boot_version"] != original["boot_version"]
+                or p["sequence"] <= original["sequence"]
+                or p["status"] not in {"completed", "failed", "interrupted"}
+            ):
+                return False
+            data = deepcopy(self.data)
+            data["events"][message["message_id"]] = message
+            self.save(data)
+            return True
         cmd, p = active["message"], message["payload"]
         stop = active.get("stop", {}).get("payload", {})
         # A restarted Pinky may interrupt inherited work only via the recorded STOP.
@@ -1044,11 +1061,6 @@ class FleetControl:
             self.save(data)
             return True
 
-        alignment_failure = (
-            self.alignment_failure(active, result)
-            if p["status"] == "completed"
-            else None
-        )
         pause_interrupted = (
             not data["fault"]
             and cmd["type"] == "follow_target_command"
@@ -1078,19 +1090,15 @@ class FleetControl:
             and p["status"] in {"accepted", "in_progress"}
         ):
             task.update(stage="following")
-        elif (
-            alignment_failure
-            or p["status"] in {"failed", "rejected", "interrupted"}
-            or (cmd["type"] == "follow_target_command" and p["status"] == "completed")
+        elif p["status"] in {"failed", "rejected", "interrupted"} or (
+            cmd["type"] == "follow_target_command" and p["status"] == "completed"
         ):
-            reason = alignment_failure or (
+            reason = (
                 "unexpected_follow_completion"
                 if p["status"] == "completed"
                 else p["status"]
             )
-            task.update(
-                status="HOLD", reason=alignment_failure or p.get("reason", reason)
-            )
+            task.update(status="HOLD", reason=p.get("reason", reason))
             data.update(fault=data["fault"] or task["reason"], enabled=False)
             for other in data["commands"].values():
                 data["tasks"][other["task"]]["status"] = "HOLD"
@@ -1148,21 +1156,6 @@ class FleetControl:
         data["commands"][command_id]["participants"].remove(task["robot"])
         data["resources"] = self.reservations(data)
         self.save(data)
-
-    @staticmethod
-    def alignment_failure(active, result):
-        cmd = active["message"]
-        if (
-            cmd["type"] != "shelf_transfer_command"
-            or cmd["payload"]["operation"] != "store"
-        ):
-            return None
-        evidence = result.get("evidence")
-        if evidence == "shelf_load_not_aligned":
-            return evidence
-        if active.get("placement_message_id") and evidence != "shelf_align":
-            return "shelf_alignment_unconfirmed"
-        return None
 
     def check_completion(self, cmd, result, task, active, *, placement_only=False):
         kind, p = cmd["type"], cmd["payload"]
@@ -1268,6 +1261,12 @@ class FleetControl:
                     else {}
                 ),
             }
+            if (
+                inbound
+                and cmd["type"] == "shelf_transfer_command"
+                and result.get("evidence") != "shelf_align"
+            ):
+                data["slots"][task["slot"]]["alignment"] = "unconfirmed"
             if released:
                 del task["shelf_alignment_pending"]
                 if task["stage"] == "await_shelf_alignment":
@@ -1290,15 +1289,56 @@ class FleetControl:
         data["enabled"] = True
         self.save(data)
 
+    def finish_shelf_from_state(self, active):
+        cmd = active["message"]
+        task = self.data["tasks"][active["task"]]
+        if task.get("shelf_alignment_pending") != cmd["command_id"]:
+            return False
+        placement_id = active["placement_message_id"]
+        placement = self.data["events"][placement_id]["payload"]
+        placed_at = datetime.fromisoformat(placement["observed_at"])
+        for robot in active["participants"]:
+            observed = self.observed.get(robot, {})
+            state = observed.get("state", {})
+            observed_at = observed.get("observed_at")
+            if (
+                not observed_at
+                or datetime.fromisoformat(observed_at) <= placed_at
+                or self.state_age(robot) > 3
+                or observed.get("boot_version") != active["participant_boots"][robot]
+                or observed.get("active_command_id") is not None
+                or state.get("fault")
+                or state.get("stopped") is not True
+                or (
+                    robot != cmd["target"]
+                    and (
+                        state.get("home_reached") is not True
+                        or state.get("holding_state") != "empty"
+                        or state.get("holding_package_id") is not None
+                    )
+                )
+            ):
+                return False
+        data = deepcopy(self.data)
+        self.advance(data, data["tasks"][active["task"]], cmd, placement["result"])
+        del data["commands"][cmd["command_id"]]
+        data.setdefault("shelf_state_completions", {})[cmd["command_id"]] = placement_id
+        data["resources"] = self.reservations(data)
+        self.save(data)
+        return True
+
     def check_active(self):
         if not self.data["enabled"]:
             return
         for active in self.data["commands"].values():
+            if self.finish_shelf_from_state(active):
+                continue
             if (
                 self.clock() - active.get("sent_at", -math.inf)
                 > self.config["command_timeout_s"]
             ):
                 self.hold("command outcome unknown: timeout")
+                return
             elif any(
                 self.state_age(robot)
                 > (
@@ -1330,7 +1370,7 @@ class FleetControl:
             **{
                 k: deepcopy(v)
                 for k, v in self.data.items()
-                if k not in {"events", "host_releases"}
+                if k not in {"events", "host_releases", "shelf_state_completions"}
             },
             "robots": deepcopy(self.observed),
             "poses": deepcopy(self.poses),
