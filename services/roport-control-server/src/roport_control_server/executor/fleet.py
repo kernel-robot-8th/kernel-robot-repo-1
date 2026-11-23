@@ -1022,6 +1022,24 @@ class FleetControl:
                 return False
             data = deepcopy(self.data)
             data["events"][message["message_id"]] = message
+            placed, result = original["result"], p.get("result", {})
+            slot = data["slots"][placed["slot_id"]]
+            if (
+                p["status"] == "completed"
+                and result.get("evidence") == "shelf_align"
+                and slot.get("alignment_command_id") == message["command_id"]
+                and all(
+                    result.get(key) == placed[key]
+                    for key in (
+                        "package_id",
+                        "slot_id",
+                        "pinky_id",
+                        "arrival_command_id",
+                    )
+                )
+            ):
+                slot.pop("alignment", None)
+                slot.pop("alignment_command_id")
             self.save(data)
             return True
         cmd, p = active["message"], message["payload"]
@@ -1266,7 +1284,9 @@ class FleetControl:
                 and cmd["type"] == "shelf_transfer_command"
                 and result.get("evidence") != "shelf_align"
             ):
-                data["slots"][task["slot"]]["alignment"] = "unconfirmed"
+                data["slots"][task["slot"]].update(
+                    alignment="unconfirmed", alignment_command_id=cmd["command_id"]
+                )
             if released:
                 del task["shelf_alignment_pending"]
                 if task["stage"] == "await_shelf_alignment":
