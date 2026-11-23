@@ -189,7 +189,7 @@ class WarehouseExecutor:
             self.runner.robot.hold()
 
 
-class PanelFieldExecutor:
+class CooperativeShelfExecutor:
     """Managed cooperative panel only; missing device observations remain unknown."""
 
     def __init__(
@@ -476,6 +476,10 @@ class PanelFieldExecutor:
                 stop.result(timeout=3)
             except Exception:  # noqa: BLE001 - shutdown cannot certify a failed/timed-out stop
                 getLogger(__name__).warning("Panel shutdown stop remains unconfirmed")
+
+
+# Deprecated alias (renamed from the mechanism-based name); remove once field factories import the new name.
+PanelFieldExecutor = CooperativeShelfExecutor
 
 
 class IndependentArmExecutor:
