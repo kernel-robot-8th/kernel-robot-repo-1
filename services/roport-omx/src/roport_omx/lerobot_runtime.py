@@ -855,6 +855,10 @@ class LeRobotDevices:
         self.profile = None
         self.seq = 0
         self.watchdog_ticks = None
+        self.reset_run_state()
+
+    def reset_run_state(self):
+        """Per-run state: a reused object must not carry the previous run's stop evidence."""
         self.evaluation_armed = False
         self.startup_torque_off_verified = False
         self.applied_actions = 0
@@ -966,8 +970,7 @@ class LeRobotDevices:
 
         self.arms = {key: OmxFollower(config) for key, config in configs.items()}
         self.leader = OmxLeader(profile["leader_config"])
-        self.evaluation_armed = False
-        self.applied_actions = 0
+        self.reset_run_state()
         event = profile.get("stop_event")
         for arm in self.arms.values():
             if event is not None:
@@ -1372,9 +1375,7 @@ class LeRobotDatasetWriter:
                 manifest, camera_devices=dict(self.profile["camera_devices"])
             )
         (root / "manifest.json").write_text(json.dumps(manifest, allow_nan=False))
-        from .learning import inspect_dataset
-
-        return inspect_dataset(root, self.profile["dataset_profile"])
+        return manifest
 
     def abort(self):
         if self.dataset is not None and not self.closed:

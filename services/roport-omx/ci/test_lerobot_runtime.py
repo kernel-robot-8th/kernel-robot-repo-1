@@ -560,9 +560,6 @@ class RuntimeTests(unittest.TestCase):
             "numpy": SimpleNamespace(
                 asarray=lambda data, dtype: data, float32="float32"
             ),
-            "roport_omx.learning": SimpleNamespace(
-                inspect_dataset=lambda root, expected: {"complete": True}
-            ),
         }
         with patch.dict(sys.modules, modules):
             writer = LeRobotDatasetWriter(profile)
