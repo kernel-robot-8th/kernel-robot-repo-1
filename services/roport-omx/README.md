@@ -194,6 +194,28 @@ uv run python scripts/cooperative_host.py --executor panel \
 - `arm_action_command`(A·C열 한 팔)는 `rejected` `unsupported_one_arm_command`입니다(양팔 미션만). 같은 `command_id`의 같은 본문은 저장한 결과를 다시 보내고, 다른 본문은 로그만 남기고 답하지 않습니다(원래 명령의 결과를 덮지 않음).
 - 확인: `ci/test_cooperative_v2.py`(모든 송신 메시지를 `field_wire.validate`로 검사). 관제 `cdf6885`의 가상 Fleet(`run_virtual_fleet.py`와 같은 구성)에서 shelf-01·omx1·omx2를 이 Host(모의 실행부, `--no-require-docking --mock-versions sim-model sim-cal`)로 바꿔 입고·출고 COMPLETE, Fleet STOP → `interrupted`·정지 `completed`·HOLD → `release_workcell`로 해제, 브로커 강제 종료 중 watchdog 정지 → 재연결 뒤 `failed` 전달 → 해제, Host 강제 종료·재시작(`failed` `host_restarted_outcome_unknown`, 현장 해제 전용 HOLD, Fleet HOLD)까지 확인했습니다(2026-11-22). 재시작 뒤의 실패는 새 boot로 보내므로 Fleet이 boot 불일치로 저장하지 않고 HOLD합니다(`field_host.py`도 같음). 현장 확인 뒤 Fleet 쪽 조정이 필요합니다. 실물 팔·제어판·도킹 센서 연결은 별도 현장 확인 대상입니다.
 
+## shelf-01 Panel 없이 실행 (`--executor direct`, 시험 단계, FFT1-158)
+
+OMX 제어판(Panel) 서버 없이 Host가 OMX1·2 양팔을 직접 구동합니다. 구조는 OMX3(`task/omx3`)와 같습니다(Runner → Robot·Policy 포트 → GPU UDP 추론). v2 판정(완료 근거·정지 확인·HOLD·복구)은 `PanelExecutor` 코드를 그대로 쓰고, Panel HTTP API만 같은 PC 안의 `LocalPanel`이 같은 의미로 응답합니다(`src/roport_omx/shelf_direct/`).
+
+```bash
+# 1) 설정: 포트·카메라(/dev/v4l/by-path)·GPU UDP 서버·정렬기 경로
+cp config/shelf_direct.example.json ~/.config/roport/shelf-direct.json
+# 2) Host
+uv run python scripts/cooperative_host.py --executor direct --direct-config ~/.config/roport/shelf-direct.json \
+    --routes ~/.config/roport/shelf-01-routes.json --journal ~/.local/state/roport/shelf-01-v2.json
+# 3) 현장에서 두 팔·상자·Pinky를 눈으로 확인한 뒤 armed (Panel 화면 스위치 대신)
+uv run python scripts/shelf_direct_arm.py --config ~/.config/roport/shelf-direct.json on --checked
+```
+
+- 로봇 구동은 il3 venv(`python` 설정, lerobot·OpenCV·numpy)의 worker 하위 프로세스가 합니다(`shelf_direct/worker.py`). core 환경에는 lerobot을 넣지 않습니다. Panel이 `omx_run.py`를 하위 프로세스로 띄우던 구조와 같습니다.
+- Panel에서 옮긴 현장 규칙: 안전 시작(그리퍼 닫기 → 저속 접근 → 따라잡기), 착지(손끝 4 cm 들기 → 동기 홈 → 그리퍼·손목 → 출력 감쇠), async 추론(threshold·latest_only)과 출력 필터(약·중·강, 양팔 그리퍼에도 적용: Panel이 양팔에서 그리퍼를 찾지 못해 그렇게 운영됨), 복귀 감지, 놓음 판정·넘겨받기, 정렬기·쟁반 확인 감독, 실패 뒤 처음 자세 복귀, armed(부팅·중지·이상 종료·HOLD 때 꺼짐), `robot.lock`(Panel 학습·녹화와 동시 사용 금지).
+- Panel에서 그대로 복사한 판정·계산 모듈은 `shelf_direct/panel_vendor/`(출처 `UPSTREAM.md`)에 있습니다.
+- **Panel 설치 폴더는 지우지 않습니다.** 정렬기(`real_runner.py`, 팀 git 밖)가 `~/il_ws/omx_control_panel_v3/omx_tools`의 `omx_config`·`omx_safe_start`·`omx_bimanual`을 직접 import합니다. Panel 서버는 띄우지 않으며, 정렬기에는 닿지 않는 `OMX_PANEL_URL`을 넘겨 카메라를 직접 열게 합니다.
+- armed는 지금 이 PC의 로컬 명령으로만 켭니다(관제 허가는 다음 단계). HOLD 해제는 v2 `hold_release_command` 또는 journal 옆 `.hold-request.json`(HOLD 해제 채널)입니다.
+- 도킹 센서 미연결로 실물 이송이 `docking_alignment_unconfirmed`로 막히는 것은 Panel 경로와 같습니다.
+- 확인: `ci/test_shelf_direct_*.py`(가짜 장치·가짜 정렬기·가짜 worker, 미션 결과를 `PanelExecutor._result`에 넣어 Panel 경로와 같은 판정 확인). 실제 정렬기는 임시 복사본에서 `--dry-run`으로 넘겨받기 파일 계약까지 확인했습니다. **실장비(팔·카메라·버스) 검증은 하지 않았습니다.**
+
 ## AI 추론 UDP 클라이언트 (시험 단계, FFT1-154)
 
 `src/roport_omx/infer_link/`는 Host PC가 GPU AI 추론 서버(`services/roport-ai-server`의 `omx_udp`)와 UDP 규약 `RPI1`로 통신하는 클라이언트입니다. 규약 파일 `wire.py`는 AI 서버 쪽 원본을 그대로 복사하며 두 곳을 함께 갱신합니다.

@@ -10,7 +10,8 @@ lerobot을 섞지 않는다, roport-omx AGENTS.md).
 - POST /api/eval/start    armed·장치 잠금 확인 → worker mission. 쟁반 확인 거절은 400 {"refused": "tray_check"}
 - POST /api/stop          armed 끔 + worker에 SIGINT(평가는 착지, 정렬은 멈춘 뒤 되돌림)
 - POST /api/home/return   armed·HOLD 확인 → worker home(실행 시작 자세로)
-armed는 사람이 켠다(P5에서 관제 허가로 연결). 정지·오류 결과·부팅 때 꺼진다(Panel과 같음).
+armed는 사람이 켠다. 지금은 이 PC의 로컬 명령(scripts/shelf_direct_arm.py → state_dir/arm-request.json)으로
+켜고 끄며, 관제 허가는 다음 단계에서 연결한다. 정지·오류 결과·HOLD·부팅 때 꺼진다(Panel과 같음).
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ ARMS_TTL_S = 10.0
 HOME_TTL_S = 300.0
 LINK_EVERY_S = 5.0
 START_WAIT_S = 60.0  # 쟁반 확인(20 s)까지 기다린다
+ARM_REQUEST_MAX_AGE_S = 60.0
 SRC = Path(__file__).resolve().parents[2]  # roport_omx 패키지가 있는 src
 
 
@@ -100,6 +102,8 @@ class LocalPanel:
         self.lock = lock or RobotLock(config.lock_path)
         self.mu = threading.RLock()
         self.armed = {"on": False, "since": None, "off_reason": "부팅"}
+        self.last_arm_request: str | None = None
+        self._write_arm_state()  # 부팅: 꺼짐
         self.job: dict | None = (
             None  # {"kind", "proc", "repo_id", "status_path", "started"}
         )
@@ -126,10 +130,55 @@ class LocalPanel:
                     "since": None,
                     "off_reason": reason or "꺼짐",
                 }
+            self._write_arm_state()
             return dict(self.armed)
+
+    def _arm_paths(self) -> tuple[Path, Path]:
+        d = self.c.dir()
+        return d / "arm-request.json", d / "arm-state.json"
+
+    def poll_arm_request(self) -> None:
+        """로컬 명령 파일을 한 번 읽고 지운다. 60 s 넘은 요청은 쓰지 않는다."""
+        req_path, _ = self._arm_paths()
+        try:
+            req = json.loads(req_path.read_text())
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            req = None
+        req_path.unlink(missing_ok=True)
+        if not isinstance(req, dict) or not isinstance(req.get("armed"), bool):
+            return
+        self.last_arm_request = req.get("request_id")
+        if time.time() - float(req.get("requested_at") or 0) > ARM_REQUEST_MAX_AGE_S:
+            self._write_arm_state(refused="request too old")
+            return
+        if req["armed"] and self.job is not None:
+            self._write_arm_state(refused="robot job running")
+            return
+        self.set_armed(req["armed"], f"로컬 명령 ({req.get('by') or 'operator'})")
+
+    def _write_arm_state(self, refused: str | None = None) -> None:
+        _, state_path = self._arm_paths()
+        data = dict(
+            self.armed,
+            request_id=self.last_arm_request,
+            refused=refused,
+            at=time.time(),
+        )
+        tmp = state_path.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False))
+            os.replace(tmp, state_path)
+        except OSError as exc:  # 화면용 파일: 쓰지 못해도 Host는 계속
+            log.warning("arm state not written: %s", exc)
 
     # ------------------------------------------------------------ 요청
     def request(self, method: str, path: str, body: dict | None = None) -> dict:
+        if (
+            self._stop.is_set()
+        ):  # Host가 끝났다: 남은 스레드가 상태 폴더를 다시 만들지 않게
+            raise PanelRefused("local panel closed", {"error": "closed"})
         route, _, query = path.partition("?")
         if method == "GET" and route == "/api/status":
             return self.status()
@@ -153,6 +202,7 @@ class LocalPanel:
     def status(self) -> dict:
         with self.mu:
             self._reap()
+            self.poll_arm_request()
             job = self.job
             st = (
                 self._read_status(job["status_path"])
@@ -223,6 +273,7 @@ class LocalPanel:
             )
         with self.mu:
             self._reap()
+            self.poll_arm_request()
             if not self.armed["on"]:
                 raise PanelRefused("armed off", {"error": "armed 꺼짐"})
             if self.job is not None:

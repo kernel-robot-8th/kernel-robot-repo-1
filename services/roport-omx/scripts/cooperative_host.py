@@ -38,6 +38,8 @@ from roport_omx.mqtt_link.journal import Journal
 from roport_omx.mqtt_link.messages import decode, topic
 from roport_omx.mqtt_link.mqtt import MqttConfig, MqttTransport
 from roport_omx.panel_executor import PanelExecutor, load_routes
+from roport_omx.shelf_direct.executor import DirectExecutor
+from roport_omx.shelf_direct.local_panel import DirectConfig, LocalPanel
 
 RESEND_S = 5.0
 log = logging.getLogger("cooperative_host")
@@ -478,7 +480,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="after checking arms, package and Pinky",
     )
-    parser.add_argument("--executor", choices=["mock", "panel"], default="mock")
+    parser.add_argument(
+        "--executor",
+        choices=["mock", "panel", "direct"],
+        default="mock",
+        help="direct: run the arms without the OMX panel (shelf_direct worker in the il3 venv)",
+    )
+    parser.add_argument(
+        "--direct-config",
+        type=Path,
+        help="direct: ports, cameras, UDP inference server, aligner (config/shelf_direct.example.json)",
+    )
     parser.add_argument("--panel-url", default="http://127.0.0.1:8865")
     parser.add_argument(
         "--routes", type=Path, help="panel: (operation, slot) → model JSON file"
@@ -526,7 +538,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.control = "control-01" if args.protocol == "v2" else "control-test"
     if (
         args.protocol == "v2"
-        and args.executor == "panel"
+        and args.executor in {"panel", "direct"}
         and not (args.require_pinky and args.require_docking)
     ):
         # #135 review: the arms move only with a confirmed visit; bench runs use the mock
@@ -540,8 +552,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
     if str(args.journal.resolve()).startswith("/tmp/"):
         parser.error("journal must survive a restart; do not use /tmp")
-    if args.executor == "panel" and args.routes is None:
-        parser.error("--executor panel needs --routes")
+    if args.executor in {"panel", "direct"} and args.routes is None:
+        parser.error(f"--executor {args.executor} needs --routes")
+    if args.executor == "direct" and (
+        args.direct_config is None or args.protocol != "v2"
+    ):
+        parser.error("--executor direct needs --direct-config and protocol v2")
     return args
 
 
@@ -557,6 +573,18 @@ def main() -> None:
             box_marker=args.box_marker,
             base_url=args.panel_url,
             report_placement=args.report_placement,
+            end_on_place=args.end_on_place,
+            place_shadow=args.place_shadow,
+        )
+    elif args.executor == "direct":
+        routes = load_routes(args.routes)
+        local = LocalPanel(
+            DirectConfig.load(args.direct_config),
+            sorted({route.model_path for route in routes.values()}),
+        )
+        executor = DirectExecutor(
+            routes,
+            local,
             end_on_place=args.end_on_place,
             place_shadow=args.place_shadow,
         )
@@ -606,9 +634,17 @@ def main() -> None:
         log.warning(
             "HOLD on command %s: new tasks are rejected until --clear-hold", host.hold
         )
-    if args.executor == "panel":
+    if args.executor in {"panel", "direct"}:
         routes = ", ".join(":".join(key) for key in executor.routes)
-        log.info("PANEL executor %s routes=[%s]; arms move", args.panel_url, routes)
+        where = (
+            args.panel_url if args.executor == "panel" else "no panel (shelf_direct)"
+        )
+        log.info(
+            "%s executor %s routes=[%s]; arms move",
+            args.executor.upper(),
+            where,
+            routes,
+        )
         episodes = ", ".join(
             f"{':'.join(key[:2])}={route.episode_s:g}s"
             for key, route in executor.routes.items()
@@ -680,6 +716,8 @@ def main() -> None:
         sys.exit(1)
     finally:
         journal.close()
+        if isinstance(executor, DirectExecutor):
+            executor.close()  # 돌고 있는 worker에 중지(착지)를 보낸다
     sys.exit(0)
 
 

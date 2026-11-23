@@ -91,6 +91,41 @@ class HostStartTest(unittest.TestCase):
         )
         self.assertIn("boot_id=", output)
 
+    def test_direct_executor_starts_without_a_panel(self):
+        routes = self.dir / "routes.json"
+        routes.write_text(json.dumps({"routes": [{
+            "slot_id": "2b", "operation": "INBOUND", "model_path": "/models/m",
+            "task": "t {box}", "episode_s": 40, "reset_s": 15}]}))  # fmt: skip
+        config = self.dir / "direct.json"
+        # python /bin/false: 시험에서 실제 worker(장치 접근)를 띄우지 않는다
+        config.write_text(json.dumps({
+            "python": "/bin/false",
+            "state_dir": str(self.dir / "state"), "lock_path": str(self.dir / "robot.lock"),
+            "udp_server": ["127.0.0.1", 9], "udp_key_file": str(self.dir / "no.key")}))  # fmt: skip
+        output = self.run_main(
+            "--executor",
+            "direct",
+            "--routes",
+            str(routes),
+            "--direct-config",
+            str(config),
+        )
+        self.assertIn("DIRECT executor no panel (shelf_direct)", output)
+        self.assertIn("routes=[INBOUND:2b:COOPERATIVE]", output)
+        state = json.loads((self.dir / "state" / "arm-state.json").read_text())
+        self.assertEqual((state["on"], state["off_reason"]), (False, "부팅"))
+
+    def test_direct_executor_options(self):
+        argv = ["--journal", str(self.dir / "j.json"), "--executor", "direct"]
+        for extra in (
+            [],  # routes·config 없음
+            ["--routes", "r.json"],  # config 없음
+            ["--routes", "r.json", "--direct-config", "c.json", "--protocol", "v1"],
+            ["--routes", "r.json", "--direct-config", "c.json", "--no-require-docking"],
+        ):
+            with self.assertRaises(SystemExit), patch("sys.stderr"):
+                ch.parse_args(argv + extra)
+
     def test_start_defaults(self):
         # hand-over (end_on_place) on by default (TK 2026-11-22); one report after the alignment
         # and an episode limit inside the control tower's 300 s task limit (#134 review)

@@ -202,6 +202,29 @@ class LocalPanelTest(unittest.TestCase):
         self.assertEqual(self.panel.arms(MODEL)["source"], "busy")
         self.panel.stop()
 
+    def arm_request(self, armed, age=0.0):
+        req_path, state_path = self.panel._arm_paths()
+        req_path.write_text(json.dumps({"request_id": f"r{armed}{age}", "armed": armed, "by": "tk",
+                                        "requested_at": time.time() - age}))  # fmt: skip
+        self.panel.status()
+        return json.loads(state_path.read_text())
+
+    def test_local_arm_command(self):
+        st = self.arm_request(True)
+        self.assertEqual((st["on"], st["request_id"]), (True, "rTrue0.0"))
+        self.assertTrue(self.ex.readiness()["armed"])
+        st = self.arm_request(False)
+        self.assertEqual((st["on"], st["off_reason"]), (False, "로컬 명령 (tk)"))
+        st = self.arm_request(True, age=120)
+        self.assertEqual((st["on"], st["refused"]), (False, "request too old"))
+
+    def test_direct_executor_routes_calls_to_the_local_panel(self):
+        from roport_omx.shelf_direct.executor import DirectExecutor
+
+        ex = DirectExecutor(ROUTES, self.panel, end_on_place=True)
+        self.assertEqual(ex.readiness()["armed"], False)
+        ex.check(TASK)
+
     def test_link_state_feeds_ai_readiness(self):
         self.panel.link = {
             "ok": False,

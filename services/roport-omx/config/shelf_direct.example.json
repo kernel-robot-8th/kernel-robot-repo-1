@@ -1,0 +1,17 @@
+{
+  "python": "~/venv/il3/bin/python",
+  "ports": {"left": "/dev/omx_follower_2", "right": "/dev/omx_follower_3"},
+  "cameras": {
+    "front": "REPLACE_WITH_/dev/v4l/by-path_OF_FRONT",
+    "front_2": "REPLACE_WITH_/dev/v4l/by-path_OF_FRONT_2",
+    "wrist_left": "REPLACE_WITH_/dev/v4l/by-path_OF_WRIST_LEFT",
+    "wrist_right": "REPLACE_WITH_/dev/v4l/by-path_OF_WRIST_RIGHT"
+  },
+  "calibration_id": "omx_follower_arm",
+  "udp_server": ["REPLACE_WITH_GPU_LAPTOP_ADDRESS", 5600],
+  "udp_key_file": "~/.config/roport/omx-udp.key",
+  "aligner_cmd": ["~/venv/omx_sim/bin/python", "~/il_ws/src/omx_sim_align/real_runner.py"],
+  "aligner_cwd": "~/il_ws/src/lerobot_v0.6.1",
+  "state_dir": "~/.local/state/roport/shelf-direct",
+  "lock_path": "~/omx_data/robot.lock"
+}
