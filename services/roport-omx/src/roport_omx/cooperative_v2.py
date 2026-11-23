@@ -31,6 +31,7 @@ No MQTT, HTTP or motor access here; the executor owns the device.
 import json
 import logging
 import re
+import threading
 import time
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -79,6 +80,9 @@ LOCAL_RELEASE = {
     "physical_stop_failed",
     "physical_stop_not_confirmed",
 }
+START_INLINE_S = (
+    0.2  # wait this long in handle() for a start before leaving it to poll()
+)
 TERMINAL = {"completed", "rejected", "failed", "interrupted"}
 _REASON = re.compile(r"[^A-Za-z0-9_.:-]+")
 
@@ -180,6 +184,12 @@ class FieldHost:
         self.pinkies: dict[str, dict] = {}
         self.retired_boots: dict[str, set[str]] = {}
         self._deadline: float | None = None  # keep-running watchdog of the active task
+        # The executor's start runs off the MQTT loop (a panel start takes seconds): while it waits the
+        # loop keeps reading Pinky states and renewals and publishing robot_state (2026-11-23 field
+        # run: a 3 s blocking start made the Host see its own Pinky observation as stale and stop).
+        self._starting: dict | None = (
+            None  # {"command_id", "thread", "error", "done_at"}
+        )
         self._renewals: set[str] = set()
         self._stop_wall: float | None = None  # wall time of the stop request
         # (bus read time, joints) of reads the panel finished after the stop request
@@ -386,7 +396,10 @@ class FieldHost:
             "events": [],
             "sequence": 0,
             "last_step": None,
+            "timing": {},  # wall-clock marks of this command (journal only, see _mark)
         }
+        self._mark(record, "sent", field_wire.timestamp(message["sent_at"]).timestamp())
+        self._mark(record, "received")
         self._data["commands"][message["command_id"]] = record
         try:
             if datetime.now(UTC) >= field_wire.timestamp(message["expires_at"]):
@@ -425,30 +438,110 @@ class FieldHost:
         self._renewals.clear()
         self._stop_since = self._stop_wall = None
         events = self._status(record, "accepted")  # saved before the executor is called
-        try:
-            if datetime.now(UTC) >= field_wire.timestamp(message["expires_at"]):
-                raise StartRefused("expired_command", hold=False)
-            self.executor.start(task)
-        except StartRefused as exc:  # refused before any motion, with its own reason
-            return events + self._end(
+        self._mark(record, "accepted")
+        if datetime.now(UTC) >= field_wire.timestamp(message["expires_at"]):
+            return events + self._end(record, "failed", "expired_command", hold=False)
+        self._begin_start(record, task)
+        # A quick start (or refusal) is settled here; a slow one is followed up by poll()
+        self._starting["thread"].join(START_INLINE_S)
+        return events + (self._start_outcome(record) or [])
+
+    # --- executor start off the MQTT loop -------------------------------------------------
+    def _begin_start(self, record: dict, task: dict) -> None:
+        starting = {
+            "command_id": record["command"]["command_id"],
+            "error": None,
+            "done_at": None,
+        }
+
+        def run() -> None:
+            try:
+                self.executor.start(task)
+            except BaseException as exc:  # noqa: BLE001 - handed back to the loop in poll()
+                starting["error"] = exc
+            finally:
+                starting["done_at"] = time.time()
+
+        self._mark(record, "start_sent")
+        starting["thread"] = threading.Thread(
+            target=run, name="executor-start", daemon=True
+        )
+        self._starting = starting
+        starting["thread"].start()
+
+    def _start_outcome(self, record: dict) -> list[dict] | None:
+        """None while the start is still on its way; [] once started; events if it was refused."""
+        starting = self._starting
+        if (
+            starting is None
+            or starting["command_id"] != record["command"]["command_id"]
+        ):
+            return []
+        if starting["thread"].is_alive():
+            return None
+        self._starting = None
+        self._mark(record, "start_done", starting["done_at"])
+        exc = starting["error"]
+        if exc is None:
+            return []
+        if isinstance(
+            exc, StartRefused
+        ):  # refused before any motion, with its own reason
+            return self._end(
                 record, "failed", _reason(exc.code), hold=exc.hold, detail=exc.detail
             )
-        except Exception as exc:  # noqa: BLE001 - any refusal ends this execution
-            return events + self._end(
-                record, "failed", "executor_start_failed", detail=str(exc)
+        return self._end(record, "failed", "executor_start_failed", detail=str(exc))
+
+    def _late_start(self) -> None:
+        """A start that returned after its task had already ended (stopped, watchdog, Pinky left):
+        the run it may have begun gets the stop again, so nothing keeps moving unasked."""
+        starting = self._starting
+        if starting is None or starting["thread"].is_alive():
+            return
+        self._starting = None
+        if starting["error"] is None:
+            log.warning(
+                "start of %s returned after the task ended; stopping again",
+                starting["command_id"],
             )
-        return events
+            try:
+                self.executor.stop()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("executor stop failed: %s", exc)
+
+    # --- timing ---------------------------------------------------------------------------
+    def _mark(self, record: dict, name: str, at: float | None = None) -> None:
+        """First time this command reached `name` (unix s). Logged with the time since received."""
+        timing = record.setdefault("timing", {})
+        if name in timing:
+            return
+        timing[name] = round(time.time() if at is None else at, 3)
+        base = timing.get("received")
+        if base is not None and name not in {"sent", "received"}:
+            log.info(
+                "timing %s %s +%.2fs",
+                record["command"]["command_id"][:8],
+                name,
+                timing[name] - base,
+            )
 
     def poll(self) -> list[dict]:
         """Executor observations of the active task → in_progress / completed / failed."""
         self._usable()
         command_id = self._data["active"]
         if command_id is None:
+            self._late_start()
             return self._settle_stop()
         events = self.local_safety()
         if self._data["active"] is None:
+            self._late_start()
             return events
         record = self._data["commands"][command_id]
+        started = self._start_outcome(record)
+        if started is None:  # the panel is still taking the start: keep the loop free
+            return events + self._settle_stop()
+        if started:
+            return events + started
         if record.get(
             "run_ended"
         ):  # stopped run over: only the stop observation is missing
@@ -460,6 +553,7 @@ class FieldHost:
         state = seen.get("state")
         if state in {"running", "placed"}:  # v2 reports once, after the alignment
             step = seen.get("step") if isinstance(seen.get("step"), str) else state
+            self._mark(record, "step:" + step)
             if step != record["last_step"]:
                 record["last_step"] = step
                 events += self._status(record, "in_progress")
@@ -976,6 +1070,8 @@ class FieldHost:
     ) -> list[dict]:
         if not keep_active and self._data["active"] == record["command"]["command_id"]:
             self._data["active"] = None
+        if record.get("task") is not None:
+            self._mark(record, "ended")
         if status != "completed" and hold:
             # a person-only HOLD stays so when another one replaces it
             local = reason in LOCAL_RELEASE or (

@@ -17,6 +17,7 @@ from uuid import uuid4
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from roport_omx.cooperative import StartRefused
 from roport_omx.cooperative_v2 import FieldHost
 from roport_omx.mqtt_link import field_wire
 from roport_omx.mqtt_link.journal import Journal
@@ -763,6 +764,87 @@ class FieldHostTest(unittest.TestCase):
         field_wire.validate(failed)
         self.assertEqual(failed["command_id"], task["command_id"])
         self.assertEqual(failed["payload"]["reason"], "host_restarted_outcome_unknown")
+
+    def slow_start(self, delay_s, error=None):
+        """The mock's start taking delay_s like the panel's /api/eval/start (2026-11-23 field run)."""
+        executor, plain = self.executor, self.executor.start
+        executor.stops = 0
+        plain_stop = executor.stop
+
+        def start(task):
+            time.sleep(delay_s)
+            if error is not None:
+                raise error
+            plain(task)
+
+        def stop():
+            executor.stops += 1
+            plain_stop()
+
+        executor.start, executor.stop = start, stop
+        return executor
+
+    def test_slow_start_keeps_the_loop_free(self):
+        # the field run: a 3 s start blocked the loop, the Pinky state looked stale, the arms stopped
+        self.slow_start(3.5)
+        self.executor.run_s = 0.3
+        task = self.transfer()
+        began = time.monotonic()
+        self.assertEqual(self.statuses(self.send(task)), ["accepted"])
+        self.assertLess(
+            time.monotonic() - began, 1.0
+        )  # handle() did not wait for the panel
+        seq, events = 1, []
+        while time.monotonic() - began < 6:
+            seq += 1
+            self.host.observe_pinky(pinky_state(seq=seq))  # the Pinky keeps reporting
+            self.host.handle(
+                self.keep_running(task["command_id"]),
+                endpoint="shelf-01",
+                channel="cmd",
+            )
+            new = self.host.poll()
+            events += new
+            if any(e["payload"]["status"] in {"completed", "failed"} for e in new):
+                break
+            time.sleep(0.25)
+        self.assertEqual(
+            events[-1]["payload"]["status"], "completed", events[-1]["payload"]
+        )
+        timing = self.host._data["commands"][task["command_id"]]["timing"]
+        order = ["sent", "received", "accepted", "start_sent", "start_done", "ended"]
+        self.assertEqual([k for k in order if k in timing], order)
+        self.assertEqual(sorted(timing[k] for k in order), [timing[k] for k in order])
+        self.assertGreaterEqual(timing["start_done"] - timing["start_sent"], 3.4)
+        self.assertTrue(any(k.startswith("step:") for k in timing))
+
+    def test_slow_start_refusal_ends_the_task_from_poll(self):
+        self.slow_start(0.5, StartRefused("PANEL_TRAY_NOT_EMPTY", "tray", hold=False))
+        self.assertEqual(self.statuses(self.send(self.transfer())), ["accepted"])
+        done = self.run_to_end()[-1]["payload"]
+        self.assertEqual(
+            (done["status"], done["reason"]), ("failed", "panel_tray_not_empty")
+        )
+        self.assertIsNone(self.host.active)
+        self.assertIsNone(self.host.hold)  # hold=False refusal: no motion happened
+
+    def test_start_returning_after_the_task_ended_is_stopped_again(self):
+        self.slow_start(1.0)
+        self.executor.run_s = 30
+        self.send(self.transfer())
+        self.host.observe_pinky(
+            pinky_state(stopped=False, seq=2)
+        )  # the Pinky leaves meanwhile
+        failed = self.run_to_end()[-1]["payload"]
+        self.assertEqual(failed["reason"], "pinky_left")
+        stops = self.executor.stops
+        deadline = time.monotonic() + 3
+        while self.executor.stops == stops and time.monotonic() < deadline:
+            self.host.poll()
+            time.sleep(0.05)
+        self.assertGreater(
+            self.executor.stops, stops
+        )  # the late start got the stop again
 
     def test_v1_journal_is_refused(self):
         self.journal.save({"identity": {"profile": "roport-omx-task-v1"}})
