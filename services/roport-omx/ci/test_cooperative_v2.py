@@ -846,6 +846,49 @@ class FieldHostTest(unittest.TestCase):
             self.executor.stops, stops
         )  # the late start got the stop again
 
+    def test_no_state_fault_during_a_task(self):
+        # 2026-11-23 23:06: a slow arm read while the panel started the run became
+        # fault observation_stale in robot_state, and Fleet held on the participant fault
+        self.executor.run_s = 30
+        self.send(self.transfer())
+        self.host._sample = lambda: (
+            {"armed": True, "busy": False, "error": None, "arms": {}},
+            time.time() - 10,
+        )
+        for endpoint in ("shelf-01", "omx1", "omx2"):
+            msg = self.host.state(endpoint)
+            field_wire.validate(msg)
+            s = msg["payload"]["state"]
+            self.assertIsNone(s["fault"], endpoint)
+            self.assertFalse(s["ready"])
+            self.assertFalse(s["stopped"])
+            age = (
+                datetime.now(UTC) - field_wire.timestamp(msg["payload"]["observed_at"])
+            ).total_seconds()
+            self.assertLess(age, 1.0)  # a current report, not the stale sample's time
+        self.host._sample = lambda: (
+            {"armed": True, "busy": False, "error": "PANEL_DOWN", "arms": {}},
+            time.time(),
+        )
+        self.assertIsNone(self.host.state("shelf-01")["payload"]["state"]["fault"])
+        # idle again: a stale or failing executor is a fault as before
+        self.host._data["active"] = None
+        self.host._sample = lambda: (
+            {"armed": True, "busy": False, "error": None, "arms": {}},
+            time.time() - 10,
+        )
+        self.assertEqual(
+            self.host.state("shelf-01")["payload"]["state"]["fault"],
+            "observation_stale",
+        )
+        self.host._sample = lambda: (
+            {"armed": True, "busy": False, "error": "PANEL_DOWN", "arms": {}},
+            time.time(),
+        )
+        self.assertEqual(
+            self.host.state("omx1")["payload"]["state"]["fault"], "panel_down"
+        )
+
     def test_v1_journal_is_refused(self):
         self.journal.save({"identity": {"profile": "roport-omx-task-v1"}})
         self.journal.close()

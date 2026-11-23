@@ -575,6 +575,13 @@ class FieldHost:
         arms = _arms(ready.get("arms"))
         busy = ready.get("busy") is not False
         active = self._data["active"]
+        if active is not None and stale:
+            # During a task the panel holds the arms (starting the run, loading the model), so a
+            # slow arm read is expected, not a fault (2026-11-23 23:06 field run: Fleet held on a
+            # participant fault while the panel started). Report what is known now - a task is
+            # running, the arms are unknown - with the time of this report, so control keeps
+            # receiving a current state; a real fault still ends the task through observe().
+            busy, observed = True, time.time()
         idle = (
             active is None
             and self._data["hold"] is None
@@ -586,9 +593,13 @@ class FieldHost:
         )
         if self._data["hold"] is not None:
             fault = "host_hold"
+        elif active is not None:
+            fault = (
+                None  # a running task reports through command_status, not a state fault
+            )
         elif stale:
             fault = "observation_stale"
-        elif ready.get("error") and active is None:
+        elif ready.get("error"):
             fault = _reason(ready["error"])
         else:
             fault = None
