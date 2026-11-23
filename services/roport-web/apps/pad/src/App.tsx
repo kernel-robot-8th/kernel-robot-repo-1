@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
+import { BoardingAlert } from './BoardingAlert';
 import { Shopping } from './Shopping';
 import * as api from './api';
 import { bigButton, initialState, movingPhase, reduce, shoppingDemoEnabled, type MovingPhase, type Notice, type Step } from './flow';
@@ -328,6 +329,17 @@ export function App() {
           </div>
         )}
 
+        {step.name === 'moving' && step.boardingAlert && (
+          <BoardingAlert
+            flightNo={step.pickup.flight.flightNo}
+            boardingStartText={formatTime(step.pickup.flight.boardingStart)}
+            gateText={api.gateLabel(step.pickup.flight.gateCode)}
+            busy={busy || movingPhase(step) !== 'MOVING'}
+            onSwitch={() => startService(step.pickup, 'GATE_GUIDE')}
+            onDismiss={() => dispatch({ type: 'boardingAlertDismissed' })}
+          />
+        )}
+
         {notice && <p className="notice" role="alert">{NOTICE_TEXT[notice]}</p>}
       </main>
 
@@ -347,6 +359,9 @@ export function App() {
               <span className="demo-label">모의 카트 상태</span>
               <button className="btn-mini" onClick={() => dispatch({ type: 'robotState', motion: 'MOVING' })}>주행 중</button>
               <button className="btn-mini" onClick={() => dispatch({ type: 'robotState', motion: 'PAUSED' })}>정지됨</button>
+              {step.mode === 'FOLLOW' && (
+                <button className="btn-mini" onClick={() => dispatch({ type: 'boardingAlert' })}>탑승 알림</button>
+              )}
               {step.mode === 'GATE_GUIDE' && step.motion === 'MOVING' && (
                 <button className="btn-mini" onClick={() => dispatch({ type: 'arrived' })}>게이트 도착</button>
               )}
