@@ -131,6 +131,24 @@ Nav2 제한 복구·관제 실패 처리·G2 후보 전송은 [관제 참고 가
 확인한다. 마커가 잘리거나 시야를 벗어나면 `gate_dock_marker_lost`로 정지하므로,
 검출 유지 시간을 늘려 숨기지 말고 카메라·마커 배치를 보정한 뒤 활성화한다.
 
+마커 없는 정밀 접근(`fine_align.py`, 기본 끔): `ROPORT_FINE_ALIGN_GOALS`에 쉼표로 goal_id를 주면(예: `N12_RETURN`)
+그 `navigate.requested`만 Nav2가 목표 20 cm 뒤에 선 뒤 목표 좌표까지 직선 경로를 GateDock 제어기로 보내고
+1.5 cm·0.08 rad 안을 확인한다(실패 코드 `fine_align_no_goal`·`fine_align_timeout`(25 s)·`fine_align_outside_envelope`(0.30 m·0.35 rad),
+게이트 주차와 같은 `gate_dock_stop_unconfirmed`·`gate_dock_controller_unavailable`·`gate_dock_final_tolerance`). 드라이버의 명령 허용 오차
+재확인은 그대로다. `ROPORT_GATE_DOCK_CONFIG`가 같이 있으면 게이트 주차가 우선이고 FineAlign은 켜지지 않는다(경고 로그).
+`fine_align_*`는 같은 목적지 재시도 대상(`NAV_RETRY_FAULTS`)이 아니다. `trial.launch.py`는 두 환경 변수 중 하나가 있으면
+GateDock 제어기·`gate_dock_goal_checker`(1 cm·0.05 rad)를 넣는다. GateDock 속도는 최소 접근 0.01 m/s·감속 최소 0.015 m/s·
+감속 시작 0.05 m(2026-11-23 d660 N12 20 cm 접근 19 s, 게이트 마커 주차는 이 값으로 실로봇 미확인).
+`ROPORT_FINE_ALIGN_GOALS`는 `trial.launch.py`를 띄우는 셸과 드라이버(runner)를 띄우는 셸 **둘 다**에 넣는다. 드라이버에만 있으면
+Nav2에 GateDock 제어기·검사기가 없어 마지막 접근이 거절되고 `nav2_goal_failed`로 실패한다(재시도해도 같은 실패).
+`params_file`이 GateDock을 이미 가진 파일(`config/nav2_follow_real.yaml`)이면 launch 쪽 환경 변수가 없어도 제어기는 있다.
+19 s 실측은 시험 실행기 `demo_runner --fine-align`(`demo_RET_N12`) 경로 결과다. 드라이버 환경 변수 경로(관제 `N12_RETURN`)는 실로봇 미확인이다.
+
+탑승 시간 알림(선택 hook `set_boarding_alert(on)`, bool 아니면 `invalid_alert`): 켜진 동안 드라이버 노드가
+`smartcart/boarding_alert`(std_msgs/Bool, depth 1)에 0.5 s 마다 True, 끌 때 False 한 번을 낸다. `close()`나 runner
+가 `heartbeat()`를 1 s 넘게 부르지 않을 때 스스로 끈다(halted·guard 고장으로 구동권이 막혀도 runner 가 부르는 동안은 유지). `safe_stop`은 끄지 않는다(표시는 STOPPED 가 우선). `observe()`에는 넣지 않는다.
+관제 번들·fleet·패드 쪽에 필요한 것은 [스마트카트 관제 시나리오 전달 문서](../../docs/smartcart-control-handover.md)에 적었다.
+
 `ROPORT_NAV_DIAGNOSTICS=1`일 때 취소한 Nav2 goal의 종료 결과가 없거나 결과 수신이
 예외·취소로 끝나면 `navigation.error_code=nav2_cancel_result_unknown`을 보고한다.
 원래 실패 이벤트·fault와 종료 증거는 유지하며 동일 목적지 재시도도 계속 차단한다.

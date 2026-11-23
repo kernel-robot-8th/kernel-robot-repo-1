@@ -34,8 +34,11 @@ DOCK_CONTROLLER_OVERRIDES = {
     'gate_dock_goal_checker.stateful': True,
     'GateDock.plugin': 'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController',
     'GateDock.desired_linear_vel': .02,
-    'GateDock.min_approach_linear_velocity': .005,
-    'GateDock.regulated_linear_scaling_min_speed': .005,
+    # 2026-11-23 d660: .005/.005 + 기본 approach_velocity_scaling_dist(0.6 m)로 20 cm 접근 전체가 감속 구간 →
+    # 25 s 시간 초과. 아래 값으로 19 s 성공(N12 정밀 접근). 게이트 마커 주차는 이 값으로 실로봇 미확인.
+    'GateDock.min_approach_linear_velocity': .01,
+    'GateDock.regulated_linear_scaling_min_speed': .015,
+    'GateDock.approach_velocity_scaling_dist': .05,
     'GateDock.lookahead_dist': .05,
     'GateDock.min_lookahead_dist': .03,
     'GateDock.max_lookahead_dist': .10,
@@ -44,6 +47,13 @@ DOCK_CONTROLLER_OVERRIDES = {
     'GateDock.use_collision_detection': True,
     'GateDock.allow_reversing': False,
 }
+
+
+def _docking_enabled():
+    """GateDock 제어기·gate_dock_goal_checker 를 넣을지: 게이트 마커 주차 또는 마커 없는 정밀 접근(FineAlign).
+    ROPORT_FINE_ALIGN_GOALS 해석은 roport_pinky.fine_align.goals_from_env 와 같다(쉼표 구분, 빈 항목 무시)."""
+    goals = [g.strip() for g in os.environ.get('ROPORT_FINE_ALIGN_GOALS', '').split(',')]
+    return bool(os.environ.get('ROPORT_GATE_DOCK_CONFIG')) or any(goals)
 
 
 def _nodes(context):
@@ -101,7 +111,7 @@ def _nodes(context):
             overrides.update(CONTROLLER_OVERRIDES)
             overrides['general_goal_checker.xy_goal_tolerance'] = goal_xy_tolerance
             overrides['FollowPath.desired_linear_vel'] = max_linear
-            if os.environ.get('ROPORT_GATE_DOCK_CONFIG'):
+            if _docking_enabled():
                 overrides.update(DOCK_CONTROLLER_OVERRIDES)
                 overrides['GateDock.desired_linear_vel'] = min(.02, max_linear)
             overrides['FollowPath.rotate_to_heading_angular_vel'] = max_angular

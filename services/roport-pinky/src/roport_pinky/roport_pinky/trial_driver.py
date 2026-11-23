@@ -5,6 +5,7 @@ create_driver(profile, role) 로 만들고 observe·validate_action·dispatch·s
 MQTT·스키마·이력·재전송은 키트 모듈이 맡고, 여기서는 line_nav 상태를 관측값으로 바꾸고 명령을 넘긴다.
 
 지원: route(start_maneuver=none), N12 mode_switch, Nav2 navigate, follow(고객 카드 추종, trial_follow.py), status.
+선택 hook: set_boarding_alert(on) = 탑승 시간 알림(smartcart/boarding_alert). 정밀 접근: ROPORT_FINE_ALIGN_GOALS(fine_align.py).
 출발 노드: 처음에는 ROPORT_PINKY_START_NODE(예: N16, 운영자가 놓은 칸). 그 뒤로는 line_nav 가
   마지막으로 확인한 노드. 정지·오류 뒤에는 모름(null) → 다음 route 는 관제 쪽에서 거부된다.
 방향: 칸 노드(이웃 1개)는 칸 바깥 방향, 주행 뒤에는 line_nav 화면용 추정(pose_est). map = layout + frame.yaw.
@@ -271,6 +272,7 @@ NAV_RETRY_FAULTS = frozenset(('nav2_goal_failed', 'nav2_recovery_limit',
 NAV2_COMMANDS = ('navigate.requested', 'follow.requested')
 FOLLOW_BT = 'follow_target.xml'
 FOLLOW_PERIOD = 0.1     # s, 추종 판정·goal_update 주기(ROS spin 스레드)
+BOARDING_PERIOD = 0.5   # s, 탑승 알림 True 재발행 주기(status_indicator stale_sec 2 s 보다 짧게)
 
 class TrialDriver:
     """rclpy 연결부. 별도 스레드에서 spin, 키트의 MQTT 스레드는 hook 만 부른다."""
@@ -312,6 +314,7 @@ class TrialDriver:
         self.node.create_subscription(String, 'line_nav/state', self._on_state, 10)
         self.node.create_subscription(Odometry, 'odom', self._on_odom, 10)
         self._init_follow()
+        self._init_boarding()
         self._ex = SingleThreadedExecutor()
         self._ex.add_node(self.node)
         self.thread = threading.Thread(target=self._ex.spin, daemon=True)
@@ -336,6 +339,47 @@ class TrialDriver:
         # Nav2 GoalUpdater(BT) 입력: bt_navigator 의 goal_updater_topic 기본값 goal_update.
         self.goal_update_pub = self.node.create_publisher(PoseStamped, 'goal_update', 1)
         self.follow_timer = self.node.create_timer(FOLLOW_PERIOD, self._follow_tick)
+
+    def _init_boarding(self):
+        """탑승 시간 알림 출력(표시·소리만, 주행과 무관). 발행자는 이 노드 하나.
+        smartcart/boarding_alert std_msgs/Bool, QoS reliable·volatile depth 1 → roport_line_nav status_indicator
+        (smartcart:=true, 마지막 수신 2 s 뒤 스스로 끔)."""
+        from std_msgs.msg import Bool
+        self._Bool = Bool
+        self.boarding = False
+        # 알림 전용 runner 생존 시각: heartbeat() 맨 앞에서 갱신(guard 고장·halted 와 무관). 구동권용 runner_seen 과 따로 둔다.
+        self.boarding_runner_at = None
+        self.boarding_pub = self.node.create_publisher(Bool, 'smartcart/boarding_alert', 1)
+        self.boarding_timer = self.node.create_timer(BOARDING_PERIOD, self._boarding_tick)
+
+    def set_boarding_alert(self, on):
+        """선택 hook: 탑승 시간 알림 켜기·끄기. 진행 중 명령과 상관없이 부를 수 있다. observe() 에는 넣지 않는다.
+        켜져 있는 동안 BOARDING_PERIOD 마다 True, 끌 때 False 한 번. safe_stop 은 알림을 끄지 않는다.
+        runner 가 heartbeat() 를 부르고 있어야 한다: 1 s 넘게 없으면 켜자마자(또는 켜진 뒤) 스스로 꺼진다."""
+        if not isinstance(on, bool):
+            raise ValueError('invalid_alert')
+        with self.lock:
+            if on:
+                self.boarding = True
+                self._boarding_tick()
+            else:
+                self._boarding_off()
+
+    def _boarding_off(self):
+        self.boarding = False
+        self.boarding_pub.publish(self._Bool(data=False))
+
+    def _boarding_tick(self):
+        """ROS 스레드 2 Hz(켤 때 한 번 바로). runner 가 heartbeat() 를 1 s 넘게 부르지 않으면 알림을 끈다:
+        알림을 켠 쪽이 끊겨 끌 방법이 없다. halted·guard 고장(구동 불가)만으로는 끄지 않는다(safe_stop 과 같음)."""
+        with self.lock:
+            if not self.boarding:
+                return
+            seen = getattr(self, 'boarding_runner_at', None)
+            if seen is None or time.monotonic() - seen > 1:
+                self._boarding_off()
+                return
+            self.boarding_pub.publish(self._Bool(data=True))
 
     def _on_follow_status(self, msg):
         from .trial_follow import parse_status
@@ -459,6 +503,7 @@ class TrialDriver:
 
     def heartbeat(self):
         with self.lock:
+            self.boarding_runner_at = time.monotonic()      # 탑승 알림 전용(구동권 판단 전)
             if self._guard_fault(navigation_retry=self.failed_navigation is not None):
                 return
             self.runner_seen = time.monotonic()
@@ -732,6 +777,14 @@ class TrialDriver:
 
     def close(self):
         import rclpy
+        if getattr(self, 'boarding_pub', None) is not None:
+            with self.lock:
+                if self.boarding:
+                    self.boarding = False
+                    try:
+                        self.boarding_pub.publish(self._Bool(data=False))
+                    except Exception:  # noqa: BLE001 — context 가 이미 끝났어도 아래 정리는 해야 한다
+                        pass
         self._ex.shutdown(timeout_sec=2)
         self.thread.join(timeout=2)
         self.node.destroy_node()

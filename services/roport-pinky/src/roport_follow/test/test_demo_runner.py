@@ -33,6 +33,9 @@ class Driver:
     def heartbeat(self):
         self.calls.append(('heartbeat',))
 
+    def set_boarding_alert(self, on):
+        self.calls.append(('boarding_alert', on))
+
     def drain_results(self):
         out, self.results = self.results, []
         return out
@@ -193,6 +196,8 @@ def test_alert_only_toggles_boarding_and_never_drives():
     r.handle({'op': 'alert', 'on': False})
     assert r.state()['boarding'] is False
     assert not any(x[0] in ('dispatch', 'safe_stop', 'validate') for x in d.calls)
+    # 발행은 드라이버 hook 하나로: 잘못된 값은 hook 까지 가지 않는다
+    assert [x for x in d.calls if x[0] == 'boarding_alert'] == [('boarding_alert', True), ('boarding_alert', False)]
 
 
 def test_alert_turns_off_when_console_link_is_lost_after_stopping_drive():
@@ -203,6 +208,7 @@ def test_alert_turns_off_when_console_link_is_lost_after_stopping_drive():
     r.tick()
     assert ('safe_stop', 'control_link_lost') in d.calls and r.state()['boarding'] is False
     assert [e['kind'] for e in r.events][-2:] == ['stopped', 'alert']
+    assert d.calls[-1] == ('boarding_alert', False)                 # 드라이버 알림도 끔
 
 
 def test_fine_align_returns_the_commanded_pose_inside_the_envelope_only():
@@ -229,6 +235,28 @@ def test_install_fine_align_leaves_configured_gate_docking_alone():
     logs = []
     d = SimpleNamespace(nav=SimpleNamespace(docking=object(), dock_action=None), node=None)
     assert install_fine_align(d, log=logs.append) is False and logs and d.nav.dock_action is None
+
+
+def test_fine_align_is_the_driver_class():
+    from roport_follow.demo_runner import FineAlign
+    from roport_pinky.fine_align import FineAlign as DriverFineAlign
+    assert FineAlign is DriverFineAlign             # 중복 정의 없음
+
+
+def test_install_fine_align_adds_demo_goal_to_driver_fine_align():
+    """드라이버가 ROPORT_FINE_ALIGN_GOALS 로 FineAlign 을 켰으면 그 목표에 demo_RET_N12 를 더하고 슬롯은 그대로 둔다."""
+    import threading
+    from types import SimpleNamespace
+    from roport_follow.demo_runner import FINE_ALIGN_GOALS, install_fine_align
+    from roport_pinky.fine_align import FineAlign
+    existing, action = FineAlign(('N12_RETURN',)), object()
+    logs = []
+    d = SimpleNamespace(nav=SimpleNamespace(docking=existing, dock_action=action), node=None,
+                        lock=threading.RLock())
+    assert install_fine_align(d, log=logs.append) is True and logs
+    assert d.nav.docking is existing and d.nav.dock_action is action
+    assert existing.goals == frozenset(('N12_RETURN',) + FINE_ALIGN_GOALS)
+    assert existing.enabled('N12_RETURN') and existing.enabled('demo_RET_N12')
 
 
 def test_follow_turn_first_turns_in_place_then_follows_after_settle():
@@ -422,6 +450,7 @@ def test_reconnect_ping_after_expiry_also_turns_the_boarding_alert_off():
     assert ('safe_stop', 'control_link_lost') in d.calls             # 주행 정지
     assert st['active'] is None and st['pending'] is None            # 돌기 뒤 추종도 취소
     assert st['boarding'] is False                                   # 탑승 알림 해제
+    assert ('boarding_alert', False) in d.calls                      # 드라이버 hook 으로 끔
     kinds = [(e['kind'], e.get('reason')) for e in r.events]
     assert ('alert', 'control_link_lost') in kinds and ('stopped', 'control_link_lost') in kinds
     r.tick()                                            # 다음 tick: 다시 살아 있음, 알림은 꺼진 채
