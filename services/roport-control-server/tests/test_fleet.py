@@ -273,6 +273,13 @@ def test_two_stage_shelf_store_waits_for_alignment_and_return(fleet, return_firs
     assert fleet.data["slots"][slot]["state"] == "occupied"
     if not return_first:
         assert fleet.data["tasks"][request_id]["status"] == "RUNNING"
+        outbound = submit(fleet, "box", "outbound")
+        approach = dispatch(fleet)
+        assert approach["target"] != returning["target"]
+        assert "N11" not in approach["payload"]["route"]
+        assert fleet.data["resources"]["slot:" + slot] == outbound
+        assert returning["command_id"] in fleet.data["commands"]
+        complete(fleet, approach)
         complete(fleet, returning)
         finish(fleet)
     assert fleet.data["tasks"][request_id]["status"] == "COMPLETE"

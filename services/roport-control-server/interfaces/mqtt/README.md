@@ -55,6 +55,7 @@ npx @asyncapi/cli@latest generate fromTemplate services/roport-control-server/in
 ### OMX 실행 제약
 
 - 양팔 입고에서 `completed / shelf_placed`는 1차 결과다. 검증·저장하고 `event_stored` 발행이 성공하면 해당 Pinky의 복귀를 배차한다. 선반·양팔·칸·진입 노드 예약과 Host의 `keep_running`은 유지한다. 같은 명령 ID의 `completed / shelf_align`에서 양팔 정차·홈 복귀를 확인해 재고를 확정한다. 정렬 실패나 1차 이후 정렬 성공 근거가 없는 응답은 HOLD로 남겨 해당 칸을 출고 불가로 유지한다.
+- 확정된 재고의 출고 요청은 Pinky 복귀 도중에도 접수한다. 남은 복귀 경로와 충돌하는 노드는 통행 예약이 풀릴 때까지 진입하지 않는다.
 - 단일 완료를 보내는 기존 Host도 지원한다. 두 단계 보고 도입 시에는 Host가 1차 생략 경로에서도 정렬 성공·실패 근거를 구분해 보내야 한다. 양팔 이송 중 관제가 허용하는 선반·양팔의 상태 공백은 8초이며 Pinky는 3초다.
 - OMX 새 이송 명령은 `sent_at` 나이 −0.5~3초와 `expires_at`을 검사합니다. `robot_stop_command`는 지연된 정지를 차단하지 않도록 `sent_at` 신선도만 제외하며, 만료·현재 boot·정지할 명령/대상 일치는 검사합니다. 정지 성공은 abort 이후 실제 정지 관측으로 확인하고 HOLD를 유지합니다. 동일 명령 재전송은 저장된 결과만 돌려줍니다. 이 예외는 OMX에만 적용하며 위 Pinky 판정은 유지합니다.
 - `(pinky_id, arrival_command_id)` 하나당 이송 접수는 한 번입니다. 접수 후 성공/실패·ACK·재시작과 무관하게 소모되며, 새 명령으로 재사용하면 `arrival_already_used`입니다. 사전 거절은 소모하지 않습니다. 재시도는 현장 조정 후 새 이동으로 확인된 도착이 필요합니다.

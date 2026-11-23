@@ -36,6 +36,10 @@ FOLLOW_SOFT_STOPS = {
 }
 
 
+def is_inbound_return(task):
+    return task["stage"] == "return_route" and task["request"]["operation"] == "inbound"
+
+
 class FleetControl:
     def __init__(self, config, store, *, clock=monotonic):
         self.config, self.store, self.clock = config, store, clock
@@ -171,6 +175,12 @@ class FleetControl:
         if any(
             t["request"]["package_id"] == request["package_id"]
             and t["status"] not in {"COMPLETE", "CANCELED"}
+            and not (
+                request["operation"] == "outbound"
+                and is_inbound_return(t)
+                and t["status"] == "RUNNING"
+                and "shelf_alignment_pending" not in t
+            )
             for t in self.data["tasks"].values()
         ):
             raise ValueError("package already has an active task")
@@ -502,8 +512,7 @@ class FleetControl:
             returning = (
                 previous
                 and role == "logistics"
-                and previous["request"]["operation"] == "inbound"
-                and previous["stage"] == "return_route"
+                and is_inbound_return(previous)
                 and previous["status"] == "RUNNING"
                 and "departure" not in previous
                 and "shelf_alignment_pending" not in previous
@@ -884,7 +893,7 @@ class FleetControl:
             }
         }
         resources.add("parking:" + task["parking"])
-        if task.get("slot"):
+        if task.get("slot") and not is_inbound_return(task):
             resources.add("slot:" + task["slot"])
         if route := payload.get("route"):
             resources.update(
