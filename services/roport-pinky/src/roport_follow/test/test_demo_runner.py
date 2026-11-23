@@ -427,3 +427,24 @@ def test_reconnect_ping_after_expiry_also_turns_the_boarding_alert_off():
     r.tick()                                            # 다음 tick: 다시 살아 있음, 알림은 꺼진 채
     assert r.state()['boarding'] is False and r.console_alive() is True
     assert all(x[1] != 'follow.requested' for x in d.calls if x[0] == 'dispatch')
+
+
+def test_turn_op_turns_in_place_and_waits():
+    """turn: 지금 AMCL 자리에서 반대 방향 Nav2 목표(demo_TURN)만 보내고 추종은 보내지 않는다(ARR 도착 뒤 대기)."""
+    from types import SimpleNamespace
+    from roport_follow.demo_runner import TURN_GOAL_ID
+    d, c, r = make()
+    d.nav = SimpleNamespace(snapshot=lambda: {'pose': {'x': 2.6, 'y': -0.02, 'yaw': 0.0}})
+    r.handle({'op': 'turn'})
+    kind, typ, p = d.calls[-1]
+    assert (kind, typ) == ('dispatch', 'navigate.requested') and p['goal_id'] == TURN_GOAL_ID
+    assert (p['pose']['x'], p['pose']['y']) == (2.6, -0.02) and abs(p['pose']['yaw']) == pytest.approx(math.pi)
+    d.results.append((d.last, 'completed', {}))
+    c.t += 5
+    r.handle({'op': 'ping'})
+    r.tick()
+    assert r.state()['active'] is None and r.state()['pending'] is None
+    assert all(x[1] != 'follow.requested' for x in d.calls if x[0] == 'dispatch')
+    d.nav = SimpleNamespace(snapshot=lambda: {'pose': None})
+    r.handle({'op': 'turn'})
+    assert r.events[-1]['reason'] == 'turn_pose_unavailable'

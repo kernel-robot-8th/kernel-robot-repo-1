@@ -85,3 +85,8 @@ def test_navigate_position_tolerance_is_optional_and_bounded():
     assert demo_command({**base, 'position_tolerance_m': 0.3})['position_tolerance_m'] == 0.3
     with pytest.raises(ValueError):
         demo_command({**base, 'position_tolerance_m': 0.5})
+
+
+def test_turn_op_passes_through():
+    from roport_follow.demo_link import demo_command
+    assert demo_command({'op': 'turn', 'x': 1}) == {'op': 'turn'}

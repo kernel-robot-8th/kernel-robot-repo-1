@@ -10,6 +10,7 @@ TrialDriver·trial_guard(구동권 문지기)는 그대로 쓰고, 관제 키트
                  | follow {"card_id", "standoff_m", "max_duration_s", "lost_after_s", "turn_first"} | stop
                    turn_first = true 면 지금 자리에서 180° 돈 뒤 추종을 시작한다(ARR 에서 마커를 보고 선 카트가
                    뒤에 있는 고객 쪽으로 돌아섬).
+                 | turn (지금 자리에서 180° 돌기 = 같은 위치·반대 방향 Nav2 목표 demo_TURN. ARR 도착 뒤 고객 쪽으로 돌아서서 대기)
                  | alert {"on": bool} (탑승 시간 알림 켜기·끄기. 주행 명령이 아님)
   ROS 출력  demo/state std_msgs/String JSON 2 Hz: 드라이버 관측·진행 중 명령·최근 결과·콘솔 연결
             smartcart/boarding_alert std_msgs/Bool 2 Hz → roport_line_nav status_indicator(smartcart:=true)가
@@ -33,7 +34,7 @@ import time
 import uuid
 from pathlib import Path
 
-OPS = ('ping', 'route', 'switch_nav2', 'switch_line', 'navigate', 'follow', 'stop', 'alert')
+OPS = ('ping', 'route', 'switch_nav2', 'switch_line', 'navigate', 'turn', 'follow', 'stop', 'alert')
 PATIENT_BT = Path(__file__).parent / 'bt' / 'navigate_patient.xml'
 # Nav2 목표 도착 판정(드라이버). Nav2 goal checker(xy 0.08 m)보다 넉넉히: 시험 목표 좌표가 실측 전 후보값이라
 NAV_POSITION_TOL_M = 0.12
@@ -134,6 +135,8 @@ class DemoRunner:
             return self._base('mode_switch.requested', {'to_mode': 'line', **self._maps()})
         if op == 'navigate':
             return self._navigate(msg)
+        if op == 'turn':
+            return self._turn()
         if op == 'follow':
             p = {'card_id': int(msg['card_id']), 'standoff_m': float(msg.get('standoff_m', 0.5)), **self._maps()}
             if msg.get('max_duration_s') is not None:

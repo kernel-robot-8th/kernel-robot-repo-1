@@ -123,7 +123,7 @@ ros2 run roport_follow demo_runner --map <지도.yaml> --layout <레이아웃.ya
   `roport_line_nav status_indicator`(smartcart:=true)가 맡는다(같은 LCD 를 쓰는 다른 표시 프로그램과 함께 켜지 않음). 주행 명령이 아니다. 화면(콘솔) 신호가 끊기면 알림도 끈다.
 - `demo_runner` 의 Nav2 목표 도착 허용은 기본 0.12 m. `navigate` 에 `position_tolerance_m`(0.05~0.30)을 주면 그 값을 쓴다(ARR·Gate 처럼 목표가 인형·고객 둘레에 걸려 플래너가 0.3 m 안에서 경로를 끝낼 수 있는 목표만 넓힘).
   추종 명령에 `turn_first: true` 를 주면 지금 자리에서 180° 돈 뒤(`demo_TURN`, 같은 위치·반대 방향 Nav2 목표) 1.5 s 기다렸다가
-  추종을 보낸다. ARR 에서 마커를 보고 선 카트가 뒤의 고객 쪽으로 돌아서는 용도다. 위치를 모르면 `turn_pose_unavailable`. 정지·새 명령·콘솔 끊김이면 기다리던 추종도 버린다(기다리는 동안 상태 `pending: follow_after_turn`).
+  추종을 보낸다. ARR 에서 마커를 보고 선 카트가 뒤의 고객 쪽으로 돌아서는 용도다. 돌기만 하고 기다리려면 `turn` 명령(같은 `demo_TURN` 목표, 추종은 보내지 않음). 위치를 모르면 `turn_pose_unavailable`. 정지·새 명령·콘솔 끊김이면 기다리던 추종도 버린다(기다리는 동안 상태 `pending: follow_after_turn`).
 - `demo_runner --fine-align`(기본 끔): N12 복귀 자세(`demo_RET_N12`)에서 Nav2 가 20 cm 뒤에 선 뒤 직선 정밀 접근(GateDock 2 cm/s,
   1.5 cm·0.08 rad 확인)을 한 번 더 한다(드라이버의 게이트 마커 정밀 접근 단계를 마커 대신 목표 좌표로 씀). Nav2 설정에 GateDock 제어기·
   `gate_dock_goal_checker` 가 있어야 하므로 `config/nav2_follow_real.yaml` 로 띄운 경우에만 켠다. 옵션이 없으면 기존 N12 복귀 그대로다.

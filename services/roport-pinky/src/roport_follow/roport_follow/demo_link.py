@@ -39,7 +39,7 @@ def demo_command(body):
         if not isinstance(body.get('on'), bool):
             raise ValueError('on must be true or false')
         return {'op': 'alert', 'on': body['on']}
-    if op in ('switch_nav2', 'switch_line', 'stop'):
+    if op in ('switch_nav2', 'switch_line', 'stop', 'turn'):
         return {'op': op}
     if op == 'navigate':
         goal_id = body.get('goal_id')
@@ -65,7 +65,7 @@ def demo_command(body):
         if turn:                                     # 제자리 180° 돈 뒤 추종(ARR 에서 고객 쪽으로 돌아섬)
             cmd['turn_first'] = True
         return cmd
-    raise ValueError('op must be route, switch_nav2, switch_line, navigate, follow, stop or alert')
+    raise ValueError('op must be route, switch_nav2, switch_line, navigate, turn, follow, stop or alert')
 
 
 class DemoLink:
