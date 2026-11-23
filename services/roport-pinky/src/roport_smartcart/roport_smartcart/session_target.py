@@ -144,7 +144,7 @@ class SessionTracker:
         union = (a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - intersection
         return intersection >= .5 * union
 
-    def step(self, frame, targetignored=None, *, near_anchor=None):
+    def step(self, frame, targetignored=None, *, near_anchor=None, expected_box=None):
         lost = {'state': 'LOST', 'index': None}
         try:
             if _frame(frame) != self.shape:
@@ -159,7 +159,9 @@ class SessionTracker:
                         selection['reason'] = 'appearance_mismatch' if boxes else 'no_detection'
                     return boxes, matches, selection
                 box = boxes[index]
-                if not self.preview and not self._overlaps(box, self.last_verified_box):
+                continuous = (expected_box is not None and self._overlaps(box, expected_box)
+                              and near_anchor is not None and near_anchor(box))
+                if not self.preview and not continuous and not self._overlaps(box, self.last_verified_box):
                     candidate = self.reacquisition
                     # A distant box must be a stronger, consistent match before it can replace the last position.
                     self.reacquisition = None

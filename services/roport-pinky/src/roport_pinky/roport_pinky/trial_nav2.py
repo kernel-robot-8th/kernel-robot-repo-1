@@ -1,5 +1,6 @@
 """Nav2 action adapter: actual map/localization/pose evidence, never a timer success."""
 import hashlib
+from io import BytesIO
 import json
 import math
 import os
@@ -10,17 +11,26 @@ from pathlib import Path
 import yaml
 
 
+def _map_source(path):
+    yaml_bytes = path.read_bytes()
+    cfg = yaml.safe_load(yaml_bytes)
+    image_bytes = (path.parent / cfg['image']).read_bytes()
+    version = hashlib.sha256(yaml_bytes + image_bytes).hexdigest()[:16]
+    return cfg, image_bytes, {'map_id': path.stem, 'map_version': version}
+
+
+def map_profile(path):
+    return _map_source(Path(path))[2]
+
+
 def map_reference(path, profile):
     from PIL import Image
-    path = Path(path).resolve()
-    cfg = yaml.safe_load(path.read_text())
-    img = path.parent / cfg['image']
-    version = hashlib.sha256(path.read_bytes() + img.read_bytes()).hexdigest()[:16]
-    if path.stem != profile['map_id'] or version != profile['map_version']:
+    cfg, image_bytes, local = _map_source(Path(path).resolve())
+    if local['map_id'] != profile['map_id'] or local['map_version'] != profile['map_version']:
         raise ValueError('local_map_version_mismatch')
     if cfg.get('mode', 'trinary') != 'trinary':
         raise ValueError('trial requires trinary map')
-    with Image.open(img) as source:
+    with Image.open(BytesIO(image_bytes)) as source:
         image = source.convert('RGB')
         width, height = image.size
         pixels = list(image.getdata())

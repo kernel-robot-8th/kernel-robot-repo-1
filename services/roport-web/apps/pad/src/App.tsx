@@ -43,6 +43,9 @@ function progressOf(step: Step, arrival: boolean): { labels: string[]; current: 
 function movingText(phase: MovingPhase, mode: ServiceMode, gate: string): { label: string; title: string; lead: string; icon: IconName; warn: boolean } {
   switch (phase) {
     case 'START_PENDING':
+      if (SHOW_SHOPPING_DEMO && mode === 'FOLLOW') {
+        return { label: '화면 데모', title: '카드 추종 화면을 체험 중입니다', lead: '이 화면에서는 핑키가 움직이지 않습니다. 아래 데모 조작으로 상태를 바꿀 수 있습니다.', icon: 'follow', warn: false };
+      }
       return { label: '출발 확인 중', title: '출발 요청을 보냈습니다', lead: '카트가 움직이기 시작하면 화면이 바뀝니다. 카트 앞을 비워 주세요.', icon: mode === 'FOLLOW' ? 'follow' : 'gate', warn: false };
     case 'MOVING':
       return mode === 'FOLLOW'
@@ -238,8 +241,8 @@ export function App() {
               <button className="choice" disabled={busy} onClick={() => startService(step.pickup, 'FOLLOW')}>
                 <span className="choice-icon"><Icon name="follow" /></span>
                 <span className="choice-text">
-                  <b>짐 운반·추종</b>
-                  <span>마커 카드를 들고 걸으면 카트가 뒤따라옵니다. 면세점을 둘러보는 동안에도 쓸 수 있습니다.</span>
+                  <b>짐 운반·추종{SHOW_SHOPPING_DEMO && ' · 화면 데모'}</b>
+                  <span>{SHOW_SHOPPING_DEMO ? '카드 추종의 화면 흐름을 체험합니다. 이 시험에서 핑키를 움직이려면 외형 추종을 선택해 주세요.' : '마커 카드를 들고 걸으면 카트가 뒤따라옵니다. 면세점을 둘러보는 동안에도 쓸 수 있습니다.'}</span>
                 </span>
                 <span className="choice-arrow"><Icon name="arrow" /></span>
               </button>
