@@ -1,7 +1,7 @@
 import { newRequestId } from './scenario.js';
 
 // Requests go to the single owner; roles, shelf stock and tasks share its saved state.
-const stages = {queued:'배차 대기', warehouse_route:'창고로 이동', warehouse_load:'창고 상차', choose_slot:'선반 배정 대기', shelf_route:'인도장으로 이동', transfer:'선반 상하차', return_route:'대기 장소로 복귀', switch_route:'N12로 이동', switch_nav:'Nav2 전환', navigate:'고객에게 이동', await_receipt:'고객 수령 대기', follow_pending:'추종 승인 대기', follow_start:'추종 시작 확인 중', following:'추종 중', follow_stopping:'추종 정지 확인 중', follow_paused:'추종 정지', return_nav:'N12로 복귀', switch_line:'라인 주행 전환', done:'완료'};
+const stages = {queued:'배차 대기', warehouse_route:'창고로 이동', warehouse_load:'창고 상차', choose_slot:'선반 배정 대기', shelf_route:'인도장으로 이동', transfer:'선반 상하차', return_route:'대기 장소로 복귀', await_shelf_alignment:'선반 정렬 완료 대기', switch_route:'N12로 이동', switch_nav:'Nav2 전환', navigate:'고객에게 이동', await_receipt:'고객 수령 대기', follow_pending:'추종 승인 대기', follow_start:'추종 시작 확인 중', following:'추종 중', follow_stopping:'추종 정지 확인 중', follow_paused:'추종 정지', return_nav:'N12로 복귀', switch_line:'라인 주행 전환', done:'완료'};
 const shelfStates = {empty:'빈 칸', occupied:'보관 중', reserved:'작업 예약'};
 const $ = id => document.getElementById(id);
 let state, online = false, busy = false, request;
