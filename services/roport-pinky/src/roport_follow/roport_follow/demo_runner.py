@@ -157,6 +157,8 @@ class DemoRunner:
             if op not in OPS:
                 self._event('rejected', op=op, reason='unknown_op')
                 return
+            if self.console_at is not None and not self.console_alive():
+                self._link_lost()           # 만료된 뒤(다음 tick 전)에 온 신호: 끊김 처리를 먼저 한다
             self.console_at = self.now()
             self.link_stopped = False
             if op == 'ping':
@@ -189,6 +191,17 @@ class DemoRunner:
         self.driver.dispatch(cmd)
         self._event('accepted', op=cmd['type'], command_id=cmd['command_id'])
 
+    def _link_lost(self):
+        """콘솔 신호가 끊김(lock 안에서 부름): 기다리던 추종을 버리고 진행 중 명령을 멈춘다."""
+        if self.after_turn is not None:     # 돈 뒤 기다리던 추종: 끊기면 새 구동을 내지 않음
+            self._event('stopped', op='follow.requested', reason='control_link_lost')
+            self.after_turn = self.turned_at = None
+        if self.active is not None and not self.link_stopped:
+            # 노트북 끊김: 구동권 갱신을 멈추고(guard 가 1 s 뒤 닫음) 진행 중 명령도 멈춘다
+            self.driver.safe_stop('control_link_lost')
+            self._event('stopped', op=self.active['type'], reason='control_link_lost')
+            self.active, self.link_stopped = None, True
+
     def console_alive(self):
         return self.console_at is not None and self.now() - self.console_at <= self.timeout
 
@@ -199,14 +212,7 @@ class DemoRunner:
             if alive:
                 self.driver.heartbeat()
             else:
-                if self.after_turn is not None:     # 돈 뒤 기다리던 추종: 끊기면 새 구동을 내지 않음
-                    self._event('stopped', op='follow.requested', reason='control_link_lost')
-                    self.after_turn = self.turned_at = None
-                if self.active is not None and not self.link_stopped:
-                    # 노트북 끊김: 구동권 갱신을 멈추고(guard 가 1 s 뒤 닫음) 진행 중 명령도 멈춘다
-                    self.driver.safe_stop('control_link_lost')
-                    self._event('stopped', op=self.active['type'], reason='control_link_lost')
-                    self.active, self.link_stopped = None, True
+                self._link_lost()
             for original, phase, details in self.driver.drain_results():
                 self._event(phase, op=original.get('type'), **{k: v for k, v in details.items()
                                                                 if isinstance(v, (str, int, float, bool, type(None)))})
@@ -298,8 +304,9 @@ FINE_ALIGN_GOALS = ('demo_RET_N12',)
 
 
 def install_fine_align(driver, log=print):
-    """드라이버의 Nav2 어댑터에 FineAlign 을 끼운다. 게이트 마커 정밀 접근이 이미 켜져 있으면(ROPORT_GATE_DOCK_CONFIG)
-    건드리지 않는다. 제어기 GateDock·검사기 gate_dock_goal_checker 는 params_file 에 있어야 한다."""
+    """드라이버의 Nav2 어댑터에 FineAlign 을 끼운다(--fine-align 을 줬을 때만 부른다). 게이트 마커 정밀 접근이 이미
+    켜져 있으면(ROPORT_GATE_DOCK_CONFIG) 건드리지 않는다. 제어기 GateDock·검사기 gate_dock_goal_checker 가 Nav2
+    설정(params_file)에 없으면 20 cm 뒤에서 마지막 접근 요청이 거절되므로, 그 설정으로 띄운 경우에만 켠다."""
     nav = driver.nav
     if getattr(nav, 'docking', None) is not None:
         log('fine align: gate docking already configured; N12 fine align not installed')
@@ -332,6 +339,9 @@ def main(argv=None):
     ap.add_argument('--console-timeout-s', type=float, default=1.0)
     ap.add_argument('--start-mode', choices=('line', 'nav2'), default='line',
                     help='nav2 = 로봇을 N12 에 손으로 놓고 Nav2 모드로 바로 시작(시험 편의, ①·② 건너뜀)')
+    ap.add_argument('--fine-align', action='store_true',
+                    help='N12 복귀 자세(demo_RET_N12)에서 직선 정밀 접근을 켠다. Nav2 설정에 GateDock 제어기·'
+                         'gate_dock_goal_checker 가 있어야 한다(roport_pinky config/nav2_follow_real.yaml). 기본 끔')
     ap.add_argument('--keep-nav-recovery-cap', action='store_true',
                     help='Nav2 목표의 누적 복구 상한(2번)을 그대로 둠. 기본은 시험용으로 상한 없음(30 s 무진행이면 멈춤)')
     a = ap.parse_args(argv)
@@ -347,7 +357,8 @@ def main(argv=None):
     apply_start_mode(driver, a.start_mode)
     if not a.keep_nav_recovery_cap:
         lift_nav_recovery_cap(driver)
-    install_fine_align(driver, log=lambda text: print(text, flush=True))
+    if a.fine_align:
+        install_fine_align(driver, log=lambda text: print(text, flush=True))
     runner = DemoRunner(driver, profile, graph, console_timeout_s=a.console_timeout_s)
     node = driver.node                      # 드라이버의 spin 스레드가 콜백을 돌린다
 

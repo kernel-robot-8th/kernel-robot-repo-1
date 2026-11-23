@@ -291,3 +291,79 @@ def test_navigate_position_tolerance_default_and_explicit_range():
     r.active = None
     r.handle({'op': 'navigate', 'goal_id': 'g', 'x': 1.0, 'y': 2.0, 'yaw': 0.0, 'position_tolerance_m': 0.5})
     assert r.events[-1]['reason'] == 'invalid_position_tolerance'
+
+
+def test_expired_link_is_handled_before_a_reconnect_ping_is_recorded():
+    """돈 뒤 추종 대기 중 신호가 만료되고, 다음 tick 전에 다시 ping 이 와도 기다리던 추종은 나가지 않는다."""
+    from types import SimpleNamespace
+    from roport_follow.demo_runner import TURN_SETTLE_S
+    d, c, r = make()
+    d.nav = SimpleNamespace(snapshot=lambda: {'pose': {'x': 0.0, 'y': 0.0, 'yaw': 0.0}})
+    r.handle({'op': 'follow', 'card_id': 35, 'turn_first': True})
+    d.results.append((d.last, 'completed', {}))
+    r.tick()
+    assert r.state()['pending'] == 'follow_after_turn'
+    c.t += 1.2                                          # 만료(1 s). tick 이 돌기 전에
+    r.handle({'op': 'ping'})                            # 재연결 ping 이 먼저 도착
+    assert r.state()['pending'] is None and r.events[-1]['reason'] == 'control_link_lost'
+    c.t += TURN_SETTLE_S
+    r.handle({'op': 'ping'})
+    r.tick()
+    assert all(x[1] != 'follow.requested' for x in d.calls if x[0] == 'dispatch')
+    # 진행 중 주행도 같다: 만료 뒤 ping 이 먼저 와도 멈춘다
+    r.handle({'op': 'route', 'route': ['N08', 'N12']})
+    c.t += 1.2
+    r.handle({'op': 'ping'})
+    assert ('safe_stop', 'control_link_lost') in d.calls and r.state()['active'] is None
+
+
+def test_fine_align_is_opt_in_so_default_n12_return_is_unchanged(monkeypatch):
+    """--fine-align 없이는 드라이버 Nav2 어댑터에 아무것도 끼우지 않는다(GateDock 없는 기본 Nav2 설정에서 기존 복귀 유지)."""
+    import sys
+    import types
+    from types import SimpleNamespace
+    import roport_follow.demo_runner as dr
+
+    made = {}
+
+    class FakeDriver:
+        def __init__(self, *a, **k):
+            self.nav = SimpleNamespace(docking=None, dock_action=None, start=lambda *a, **k: None)
+            self.node = SimpleNamespace(create_subscription=lambda *a, **k: None,
+                                        create_publisher=lambda *a, **k: SimpleNamespace(publish=lambda m: None))
+            self.lock, self.mode, self.logic = __import__('threading').Lock(), 'line', SimpleNamespace(node='N12')
+            made['driver'] = self
+
+        def heartbeat(self):
+            raise KeyboardInterrupt                     # 주 루프 첫 바퀴에서 끝냄
+
+        def drain_results(self):
+            return []
+
+        def safe_stop(self, reason):
+            pass
+
+        def close(self):
+            pass
+
+    calls = []
+    monkeypatch.setitem(sys.modules, 'std_msgs', types.ModuleType('std_msgs'))
+    msg = types.ModuleType('std_msgs.msg')
+    msg.String = msg.Bool = lambda data=None: SimpleNamespace(data=data)
+    monkeypatch.setitem(sys.modules, 'std_msgs.msg', msg)
+    graph = types.ModuleType('roport_line_nav.graph')
+    graph.Graph = SimpleNamespace(load=lambda path: Graph())
+    monkeypatch.setitem(sys.modules, 'roport_line_nav', types.ModuleType('roport_line_nav'))
+    monkeypatch.setitem(sys.modules, 'roport_line_nav.graph', graph)
+    drv = types.ModuleType('roport_pinky.trial_driver')
+    drv.TrialDriver = FakeDriver
+    monkeypatch.setitem(sys.modules, 'roport_pinky', types.ModuleType('roport_pinky'))
+    monkeypatch.setitem(sys.modules, 'roport_pinky.trial_driver', drv)
+    monkeypatch.setattr(dr, 'make_profile', lambda m, l: dict(PROFILE))
+    monkeypatch.setattr(dr, 'install_fine_align', lambda driver, log=print: calls.append(driver) or True)
+    monkeypatch.setattr(dr.DemoRunner, 'console_alive', lambda self: True)
+    base = ['--map', 'm.yaml', '--layout', 'l.yaml', '--start-node', 'N12']
+    dr.main(base)
+    assert calls == [] and made['driver'].nav.docking is None
+    dr.main(base + ['--fine-align'])
+    assert calls == [made['driver']]
