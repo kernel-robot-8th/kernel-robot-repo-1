@@ -582,6 +582,32 @@ class PanelExecutorTest(unittest.TestCase):
         self.assertEqual(self.panel.home_returns, 0)  # a frozen arm waits for a person
         self.assertIsNotNone(self.host.hold)
 
+    def test_wrist_check_refusal_is_reported_with_its_numbers(self):
+        # panel 3.22.0: the wrist cameras could not be told apart, the policy never started and the
+        # arms wait at home: PANEL_WRIST_CHECK with the check's numbers, no home move, no HOLD
+        check = {
+            "ok": False,
+            "why": "left move changed both wrist cameras",
+            "change": {
+                "left": {"wrist_left": 0.031, "wrist_right": 0.024},
+                "right": {"wrist_left": 0.002, "wrist_right": 0.041},
+            },
+        }
+        self.send(self.inbound())
+        self.panel.finish(
+            exit_ok=False,
+            err={"code": 13, "name": "err_code_13", "detail": "ambiguous"},
+            wrist_check=check,
+        )
+        (failed,) = self.host.poll()
+        p = failed["payload"]
+        self.assertEqual(p["error_code"], "PANEL_WRIST_CHECK")
+        self.assertEqual(p["mission_result"], "MISSION_FAILED")
+        self.assertIn("left move changed both wrist cameras", p["detail"])
+        self.assertIn("wrist_left=0.031", p["detail"])
+        self.assertEqual(self.panel.home_returns, 0)
+        self.assertIsNone(self.host.hold)
+
     def test_operator_stop_is_reported_without_hold(self):
         # 즉시 중단 can leave a shutdown error behind; the stop is still the cause.
         cases = [

@@ -395,6 +395,39 @@ def _judge_placed(result: dict, slot: str | None, box: int | None) -> bool:
     )
 
 
+WRIST_CHECK_ERROR = 13  # panel 3.22.0 omx_errors: "손목 카메라 좌우 확인 실패"
+
+
+def _wrist_check_refused(err: dict) -> bool:
+    names = {str(WRIST_CHECK_ERROR), f"err_code_{WRIST_CHECK_ERROR}"}
+    return str(err.get("code")) in names or err.get("name") in names
+
+
+def _wrist_check_detail(err: dict, check) -> str:
+    """Why the wrist check refused, with its numbers: the share of changed pixels each wrist camera
+    saw while the left and then the right gripper moved."""
+    parts = []
+    check = check if isinstance(check, dict) else {}
+    if check.get("why") or err.get("detail"):
+        parts.append(str(check.get("why") or err.get("detail")))
+    change = check.get("change")
+    if isinstance(change, dict):
+        moved = []
+        for arm, seen in change.items():
+            if isinstance(seen, dict):
+                cams = ",".join(f"{cam}={value}" for cam, value in seen.items())
+                moved.append(f"{arm} moved: {cams}")
+        if moved:
+            parts.append("; ".join(moved))
+    return " | ".join(parts) or "wrist camera check failed"
+
+
+def _with_detail(observation: dict, why: str | None) -> dict:
+    if why:
+        observation["detail"] = why[:200]
+    return observation
+
+
 @dataclass(frozen=True)
 class Route:
     model_path: str  # as listed by the panel's model list (GPU laptop path)
@@ -846,7 +879,9 @@ class PanelExecutor:
                 return observation
             if observation.get("operator_stop") or observation["error"] in HOLD_ERRORS:
                 return observation
-            return self._recover(observation["error"], status)
+            return self._recover(
+                observation["error"], status, observation.get("detail")
+            )
         # Between the job ending and last_result appearing; give up only after a grace period.
         now = time.monotonic()
         self._missing_since = self._missing_since or now
@@ -854,11 +889,17 @@ class PanelExecutor:
             return {"state": "running", "step": "finishing"}
         return {"state": "failed", "error": "RESULT_UNAVAILABLE", "arms": {}}
 
-    def _recover(self, error: str, status: dict) -> dict:
-        """Mission failed: send both arms back to the start pose, then report it without HOLD."""
+    def _recover(self, error: str, status: dict, why: str | None = None) -> dict:
+        """Mission failed: send both arms back to the start pose, then report it without HOLD.
+
+        why: the failure's own explanation (e.g. the wrist camera check's numbers), kept in every
+        report of this failure."""
         live = self._arms_now()
         if _home_and_released(live):
-            return {"state": "failed", "error": error, "arms": live, "recovered": True}
+            return _with_detail(
+                {"state": "failed", "error": error, "arms": live, "recovered": True},
+                why,
+            )
         if status.get("armed") is not True:
             # The panel turned armed off (a stop or an anomaly) or a person did: the Host never
             # moves the arms then, even though the panel's home move does not check armed.
@@ -876,7 +917,7 @@ class PanelExecutor:
         except Exception as exc:  # noqa: BLE001 - no way home: a person takes over (HOLD)
             detail = f"home return refused: {exc}"[:200]
             return {"state": "failed", "error": error, "arms": live, "detail": detail}
-        self._recovery = {"error": error, "since": time.monotonic()}
+        self._recovery = {"error": error, "since": time.monotonic(), "why": why}
         return {"state": "running", "step": "home_return"}
 
     def _recovering(self, status: dict) -> dict:
@@ -887,10 +928,14 @@ class PanelExecutor:
             self._recovery = None
             detail = "home return did not finish"
             return {"state": "failed", "error": error, "arms": {}, "detail": detail}
+        why = self._recovery.get("why")
         self._recovery = None
         live = self._arms_now()  # only the motors tell whether the arms are home now
         recovered = _home_and_released(live)
-        return {"state": "failed", "error": error, "arms": live, "recovered": recovered}
+        return _with_detail(
+            {"state": "failed", "error": error, "arms": live, "recovered": recovered},
+            why,
+        )
 
     @staticmethod
     def _result(
@@ -1017,6 +1062,13 @@ class PanelExecutor:
                 "operator_stop": True,
             }
         err = result.get("err") or {}
+        if _wrist_check_refused(err):
+            # panel 3.22.0: the left/right wrist cameras could not be told apart by a small
+            # gripper move, so the policy never started; the arms wait at home (no HOLD)
+            return _with_detail(
+                {"state": "failed", "error": "PANEL_WRIST_CHECK", "arms": arms},
+                _wrist_check_detail(err, result.get("wrist_check")),
+            )
         code = err.get("code") or err.get("name")
         error = (
             "PANEL_" + re.sub(r"[^A-Za-z0-9]+", "_", str(code)).strip("_").upper()
