@@ -274,7 +274,7 @@ def test_trial_start_auth_reconnect_duplicate_and_stop(local_owner):
     assert client.get("/api/bootstrap?mode=offline").json()["mode"] == "offline"
     assert bootstrap["trial_nodes"]["N16"]
     assert {"N21", "N22", "N23", "N24"} <= bootstrap["trial_nodes"].keys()
-    assert control.config["graph_version"] == "line-v14-20261106"
+    assert control.config["graph_version"] == "line-v15-20261116"
     assert transport.sent == []  # Starting the web app doesn't start a robot.
     with client.websocket_connect("/api/state?mode=trial", headers=HEADERS) as ws:
         first = ws.receive_json()

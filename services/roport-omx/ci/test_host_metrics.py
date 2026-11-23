@@ -94,6 +94,22 @@ class HostMetricsTest(unittest.TestCase):
         args = ch.parse_args(["--journal", "/var/x.json"])
         self.assertIsNone(args.host_metrics_period_s)
 
+    def test_panel_cli_with_metrics_requires_routes(self):
+        args = [
+            "--journal",
+            "/var/x.json",
+            "--executor",
+            "panel",
+            "--host-metrics-period-s",
+            "5",
+        ]
+        with self.assertRaises(SystemExit) as error:
+            ch.parse_args(args)
+        self.assertEqual(error.exception.code, 2)
+        self.assertEqual(
+            ch.parse_args(args + ["--routes", "routes.json"]).host_metrics_period_s, 5
+        )
+
     def test_cli_rejects_non_positive_period(self):
         for bad in ("0", "-1", "nan", "inf"):
             with self.assertRaises(SystemExit):

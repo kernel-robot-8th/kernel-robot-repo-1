@@ -13,7 +13,7 @@ KINDS = MOTION | {"gate", "request"}
 
 
 def stop_nodes(config):
-    # Current v14 stops are terminal nodes; compatibility test checks the team layout.
+    # Current v15 stops are terminal nodes; compatibility test checks the team layout.
     return {node for node, links in config["nodes"].items() if len(links) == 1}
 
 

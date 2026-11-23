@@ -89,7 +89,8 @@ from roport_smartcart import doll_recognition, doll_follow_demo
 class Detector:
     references = [('A', 'front', (100, 100))]
     def __init__(self, path): pass
-    def detect(self, frame):
+    def detect(self, frame, *, label=None):
+        assert label == 'A'
         h = int(frame[0, 0, 0])
         return [dict(label='A', view='front', quad=[[300,10],[340,10],[340,10+h],[300,10+h]])]
 doll_recognition.DollRecognizer = Detector

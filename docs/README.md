@@ -19,7 +19,8 @@ Confluence의 상세 문서를 찾아볼 수 있는 안내입니다. 원문 전�
 - [OMX HW Spec](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/8519691)
 - [Interface Specification](https://fp-team1.atlassian.net/wiki/spaces/MFS/pages/2752522)
 
-- [현장 MQTT 계약(AsyncAPI)](../interfaces/mqtt/README.md): 관제↔Pinky·OMX 토픽·메시지·JSON 예시. 코드 검사 정본은 관제 서버 `field_wire.py`
+- [현장 MQTT 계약(AsyncAPI)](../services/roport-control-server/interfaces/mqtt/README.md): 관제↔Pinky·OMX 토픽·메시지·JSON 예시. 코드 검사 정본은 관제 서버 `field_wire.py`
+
 - [ArUco 마커 ID 표와 인쇄 파일](aruco/README.md): 위치·게이트·선반·포장물품·트레이 마커 (FFT1-74)
 
 2026-10-24 확인 시 Interface Specification 본문은 비어 있습니다.

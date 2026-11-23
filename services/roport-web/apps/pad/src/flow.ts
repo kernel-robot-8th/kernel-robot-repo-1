@@ -25,9 +25,10 @@ export type Step =
   | { name: 'idle' }
   | { name: 'keypad' }
   | { name: 'verifying' }
-  | { name: 'verifyFailed'; reason: VerifyFailure | 'ERROR' }
+  | { name: 'verifyFailed'; reason: VerifyFailure | 'ERROR'; retryAfterS?: number }
   | { name: 'items'; pickup: VerifiedPickup }
   | { name: 'chooseService'; pickup: VerifiedPickup }
+  | { name: 'shopping'; pickup: VerifiedPickup }
   | MovingStep
   | { name: 'receipt'; pickup: VerifiedPickup }
   | { name: 'returning' };
@@ -85,7 +86,8 @@ export function reduce(state: PadState, action: Action): PadState {
       return answer(state, action.token, (s) => {
         const r = action.result;
         if (!r) return goTo(s, { name: 'verifyFailed', reason: 'ERROR' });
-        return goTo(s, r.ok ? { name: 'items', pickup: r.pickup } : { name: 'verifyFailed', reason: r.reason });
+        if (r.ok) return goTo(s, { name: 'items', pickup: r.pickup });
+        return goTo(s, { name: 'verifyFailed', reason: r.reason, ...(r.retryAfterS !== undefined && { retryAfterS: r.retryAfterS }) });
       });
     case 'serviceAnswered':
       return answer(state, action.token, (s) => {
@@ -133,4 +135,18 @@ export function movingPhase(step: MovingStep): MovingPhase {
 export function bigButton(phase: MovingPhase): 'PAUSE' | 'RESUME' | null {
   if (phase === 'ARRIVED') return null;
   return phase === 'PAUSED' ? 'RESUME' : 'PAUSE';
+}
+
+/** A person at the centre can be selected when only clipped edge fragments compete. */
+export function automaticShopper(boxes: number[][]): number | null {
+  if (boxes.length === 1) return 0;
+  const visible = boxes.map(([left,,right], index) => ({left, right, index, center: (left + right) / 2}))
+    .filter(b => !((b.left <= .01 && b.center < .20) || (b.right >= .99 && b.center > .80)));
+  if (visible.length === 1 && Math.abs(visible[0].center - .5) <= .15) return visible[0].index;
+  return null;
+}
+
+/** 외형 추종은 명시적으로 켠 단독 시험 빌드의 데모 예약 화면에서만 열 수 있다. */
+export function shoppingDemoEnabled(flag: string | undefined, apiMode: string | undefined): boolean {
+  return flag === 'true' && apiMode !== 'server';
 }

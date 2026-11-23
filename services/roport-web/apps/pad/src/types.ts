@@ -1,6 +1,6 @@
 // 화면에서 쓰는 타입. 필드 이름은 서비스 서버 첫 슬라이스(FFT1-166) 응답을 따른다.
 // VerifiedPickup은 카트 예약 확인 API(FFT1-178) 응답의 pickup과 같다.
-// 수령 확인·서비스 선택 API는 아직 없어 그 형태는 제안이며 확정 규격이 아니다.
+// 수령 확인은 서비스 API를 사용한다. 안내·추종은 데모에만 제공한다.
 
 export type Location = { locationId: string; name: string };
 
@@ -15,6 +15,7 @@ export type OrderItem = { itemId: string; productName: string; quantity: number 
 
 // 인도 승인된 예약. 서비스 서버가 QR·예약번호를 확인한 결과로만 만든다.
 export interface VerifiedPickup {
+  verificationId?: string; // 서버 확인 결과. 데모에는 없음.
   pickupId: string;
   reservationNo: string;
   orderNo: string;
@@ -29,6 +30,7 @@ export interface VerifiedPickup {
 export type ServiceMode = 'GATE_GUIDE' | 'FOLLOW';
 
 // NOT_ACTIVE: 취소됐거나 주문이 확정되지 않아 수령할 수 없는 예약(서버 PICKUP_NOT_ACTIVE).
-export type VerifyFailure = 'NOT_FOUND' | 'WRONG_CART' | 'ALREADY_RECEIVED' | 'NOT_ACTIVE';
+// TOO_MANY_ATTEMPTS: 이 카트의 확인 실패가 많아 서버가 잠시 막음(429, FFT1-182). retryAfterS는 서버가 알려 준 남은 초.
+export type VerifyFailure = 'NOT_FOUND' | 'WRONG_CART' | 'ALREADY_RECEIVED' | 'NOT_ACTIVE' | 'TOO_MANY_ATTEMPTS';
 
-export type VerifyResult = { ok: true; pickup: VerifiedPickup } | { ok: false; reason: VerifyFailure };
+export type VerifyResult = { ok: true; pickup: VerifiedPickup } | { ok: false; reason: VerifyFailure; retryAfterS?: number };

@@ -2,6 +2,8 @@
 
 **상태: 팀 합의 전 제안이다.** 양쪽 모두 아직 구현하지 않았고 Jira FFT1-183에서 합의한다. 이 문서의 type·필드·규칙은 합의 뒤에 바뀔 수 있다. 시험이 통과해도 실장비·실서버 연동 검증을 뜻하지 않는다.
 
+별도 로컬 구현의 [계약 비교·공용 예시](candidate/README.md)가 있다. S1 구현이 아니며, 두 계약의 필드·중복 처리·업무 범위가 다르다. 합의 전 운영 연결에 혼용하지 않는다.
+
 - [AsyncAPI](roport-wss.yaml): S1 type 5종의 envelope·payload 스키마.
 - [JSON 예시](examples.json): 세션 시작, 요청, 저장 확인, 거부, 충돌, 전송 거부와 `request_sha256` 벡터.
 - 예시 검증: `services/roport-control-server/tests/test_wss_contract_examples.py`. 서비스 서버와 관제 코덱은 같은 예시를 재사용한다(아직 없음).

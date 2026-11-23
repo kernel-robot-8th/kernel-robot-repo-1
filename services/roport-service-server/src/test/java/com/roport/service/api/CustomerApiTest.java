@@ -242,6 +242,23 @@ class CustomerApiTest {
     }
 
     @Test
+    void progressRequiresOwnerAndUsesControlProjection() throws Exception {
+        login(alice, "alice" + s);
+        login(bob, "bob" + s);
+        var p = call(alice, "POST", "/api/pickups", pickupBody("oa" + s, "2030-01-01T01:30:00Z"));
+        String id = p.body().path("pickupId").asString();
+        String path = "/api/pickups/" + id + "/progress";
+        problem(call(bob, "GET", path, null), 404, "PICKUP_NOT_FOUND");
+        assertThat(call(alice, "GET", path, null).body().path("state").asString()).isEqualTo("PENDING");
+        db.sql("INSERT INTO control_task_views(task_ref,pickup_id,site_id,task_revision,state,progress_payload,observed_at,synced_at) VALUES(?,?,'DEV-SITE',1,'RUNNING',?::jsonb,now(),now())")
+                .param("task" + s).param(id).param("{\"progress\":{\"stages\":[\"await_receipt\"]}}").update();
+        var progress = call(alice, "GET", path, null);
+        assertThat(progress.body().path("stages").get(0).asString()).isEqualTo("await_receipt");
+        assertThat(progress.body().path("orderComplete").asBoolean()).isFalse();
+        assertThat(progress.body().path("receivedPackages").asInt()).isZero();
+    }
+
+    @Test
     void createPickup() throws Exception {
         login(alice, "alice" + s);
         login(bob, "bob" + s);
@@ -314,11 +331,11 @@ class CustomerApiTest {
     void candidateTimesBoundary() {
         Instant boarding = Instant.parse("2030-01-01T03:00:00Z");
         // 현재+60분이 정확히 슬롯이면 포함, 1ns라도 지나면 다음 슬롯. boarding_start 자체는 제외.
-        assertThat(new PickupService(null, Clock.fixed(Instant.parse("2030-01-01T00:30:00Z"), ZoneOffset.UTC), null)
+        assertThat(new PickupService(null, Clock.fixed(Instant.parse("2030-01-01T00:30:00Z"), ZoneOffset.UTC), null, null)
                 .candidateTimes(boarding)).first().isEqualTo(Instant.parse("2030-01-01T01:30:00Z"));
-        assertThat(new PickupService(null, Clock.fixed(Instant.parse("2030-01-01T00:30:00.000000001Z"), ZoneOffset.UTC), null)
+        assertThat(new PickupService(null, Clock.fixed(Instant.parse("2030-01-01T00:30:00.000000001Z"), ZoneOffset.UTC), null, null)
                 .candidateTimes(boarding)).first().isEqualTo(Instant.parse("2030-01-01T02:00:00Z"));
-        assertThat(new PickupService(null, Clock.fixed(Instant.parse("2030-01-01T02:00:00Z"), ZoneOffset.UTC), null)
+        assertThat(new PickupService(null, Clock.fixed(Instant.parse("2030-01-01T02:00:00Z"), ZoneOffset.UTC), null, null)
                 .candidateTimes(boarding)).isEmpty();
     }
 

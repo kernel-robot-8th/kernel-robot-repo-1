@@ -610,6 +610,7 @@ Nav2 성공 결과·실제 연속 정지 0.5초·N12 자세(5cm/0.1rad 이내)�
 IR 판정을 생략하거나 선을 찾을 때까지 무한 전진하지 않는다.
 IR 0.3초/odom 0.5초 초과 지연, 센서 오류, 구동권 충돌, guard 재시작, 취소는 주행을 중단한다.
 주차 완료는 기존 라인 실행부의 180도 회전·후진·실제 IR 가로선 감지와 실제 정지로 판정한다.
+N12에서 시작하는 라인 구간은 `confirmed_start`로 출발하며 `roport_line_nav`의 옆선 켜짐 확인(`side_rise_only`, 기본 켬)이 적용된다. 출발할 때부터 옆 IR이 본선 가장자리를 계속 밟고 그 run이 N08 옆선까지 이어지면 N08을 노드로 보지 않고 `node_missed`로 정지한다(안전 정지). 조건은 [roport_line_nav README](../roport_line_nav/README.md) 「옆선 켜짐 확인」 절에 있다. 실물 복귀에서의 빈도는 아직 재지 않았다.
 라인 속도는 기본 0.03m/s(`--line-speed 0.06` 선택 가능), 회전 상한은 0.15rad/s다.
 N12·N08은 물류 Pinky와 공유하는 구간이다. 감독 시험에서는 다른 기체를 해당 구간 밖에 정지시키고,
 관제 통합 시에는 구간 점유·예약을 별도로 연결해야 한다.
@@ -668,6 +669,8 @@ JSON 결과는 프레임마다 파일에 기록해 메모리에 쌓지 않는다
 
 `doll_follow_demo`는 위 A/B/C 그림 중 **한 종류만** 카메라에서 찾아 저속으로 따라가는
 30초짜리 현장 시험이다. 배송·관제·Nav2 기능과 연결되지 않는다.
+특징점 매칭은 선택한 종류의 앞·뒷면만 수행한다. 저장 영상용 `doll_recognition`은
+기존처럼 A/B/C 전체를 검사하며, 두 경로의 검출 판정 기준은 같다.
 임시 브라우저 UI·SSH·bringup 버튼은 포함하지 않는다. 사용자 UI는 아래 ROS 토픽에 연결한다.
 
 핑키와 PC의 `ROS_DOMAIN_ID`를 같게 하고, **두 기기의 NTP/chrony 시계 동기화**를 확인한다.
@@ -721,6 +724,7 @@ ros2 topic pub --once /doll_follow/control std_msgs/msg/String '{data: stop}'
 종료는 실행 터미널에서 Ctrl+C를 누른다. 다른 인형을 고르려면 로봇을 정지시킨 뒤 데모를 종료하고,
 **로봇의 `trial_guard`도 재시작**한 다음 `--target B` 또는 `C`로 실행해 다시 기준 저장한다.
 데모 재실행은 새 session을 만들며 이전 session을 받은 guard는 재시작 전까지 차단된다.
+데모를 마치고 관제 trial(`trial_driver`·MQTT runner)로 넘어갈 때도 같은 이유로 로봇의 `trial_guard`를 먼저 재시작한다.
 
 그림을 놓치면 즉시 속도 0, 2초 넘게 보이지 않으면 다시 `start`해야 한다.
 영상·라이다·초음파 취득 시각이 0.4초 넘게 오래되거나 초음파가 전방 5cm 이하,
@@ -763,3 +767,26 @@ Smac2D 선택 시 `cost_travel_multiplier=10`으로 모서리에 붙는 경로�
 관제의 실패 보고·현장 대조 후 동일 목적지 재시도와 선택형 ArUco 주차 설정은
 [관제 시험 가이드](../../../roport-control-server/docs/pinky-trial.md)의 마지막 두 절을 따른다.
 마커 주차는 앞면–벽 5cm를 목표로 하며 실물 보정 전에는 비활성 상태다.
+
+### 쇼핑 추종
+
+핑키에서 실물 추종을 실행할 때는 PC에서 `scripts/export_shopping_encoder.py DINO_SOURCE WEIGHTS dino140.onnx`로 외형 모델을 한 번 변환한다. 변환 환경에는 PyTorch, ONNX, ONNX Runtime이 필요하다. 실기 실행부의 `--encoder-source`와 `--weights`를 `--encoder-onnx dino140.onnx`로 바꾸면 핑키의 ONNX Runtime이 YOLO와 외형 대조를 모두 처리한다. 카메라의 보정된 광학 TF도 핑키에서 발행한다. 서버는 루프백에서만 열리므로 PC에서 `ssh -NT -L 127.0.0.1:8182:127.0.0.1:8182 pinky@<로봇주소>`로 같은 포트를 연결한다. 단독 시험 메뉴에서 카메라를 켠 뒤 대상을 선택하고 시작한다. 영상은 현재 카메라를 소유한 세션에만 제공한다. 유효한 하트비트가 마지막으로 온 뒤 1.5초가 지나면 쇼핑 실행부가 주행을 해제하고 가드가 정지 출력을 낸다. 이 감시 시간 동안에는 다른 조건이 정지를 요구하지 않으면 주행할 수 있으며, 2초에 세션을 해제한다. 실제 감속에 걸리는 시간은 별도로 확인한다.
+
+실물 기본 추종 간격은 카트 중심(`base_footprint`)에서 대상 발 위치까지 22cm다. 대상을 처음 선택한 거리는 로그에 남기고, 25cm 이상 벌어지면 전진 목표를 보낸다. 다른 간격이 필요하면 `--follow-distance-m`로 지정한다. 지정한 간격보다 3cm 멀어질 때 전진하고, 쇼핑 전용 Nav2의 위치 도착 허용 오차는 최대 1.5cm다. 실물 시험에서는 정지 후 실제 간격도 별도로 측정한다.
+
+PC에서 도연님 카트 패드와 카메라 대상 선택 API를 같은 로컬 주소로 연다. 자동 후보는 기존 YOLO ONNX로 찾고, 직접 선택은 현재 화면의 사각형을 기준으로 등록한다. 등록한 모습과의 DINO 유사도 및 2순위와의 차이를 확인한다. 산타·바비 이름이나 마커는 필요 없다. 비슷한 후보가 겹치거나 위치가 크게 뛰면 멈춰 다시 확인한다. 일반 추종은 대상을 놓치면 정지한다. 저상 장애물 우회에서는 산타·바비 등 선택한 대상이 보일 때 정한 우회 지점을 기억한다. 카트 자체 회전으로 마지막 대상 위치가 카메라 가장자리 방향이 되었을 때만, 이미 수락된 해당 우회 목표를 마지막 확인 후 최대 8초간 이어갈 수 있다. 미확인 상태에서 새 전진 목표를 보내지는 않는다. 동일한 지점은 최대 24초, 출발점 기준 반경 65cm 안에서만 사용한다. 필요한 경우 Nav2의 충돌 검사로 마지막 확인 방향을 향해 제자리에서 최대 60° 돌아본다. 후보가 모호하거나 주행 가드·센서가 끊기면 멈춘다. 처리된 영상이 0.6초 이상 오래돼도 멈춘다. 같은 대상을 3프레임 연속으로 다시 확인해야 이어서 이동한다. 이 기준은 외형 기반 단독 시험의 값이며 카드 추종 기준을 변경하지 않는다. 이동 명령은 Nav2와 기존 trial_guard를 거친다.
+
+1. `services/roport-web`에서 Node 24로 `npm ci` 후 `VITE_PAD_SHOPPING_DEMO=true npm run build --workspace @roport/pad -- --outDir .cache/dist-shopping-demo`를 실행한다. `PAD_DIST`는 별도로 생성한 `apps/pad/.cache/dist-shopping-demo`의 절대 경로다. 일반 패드의 FOLLOW 서비스 버튼과는 별도인 「외형 추종 단독 시험」으로 진입한다.
+2. 현장 시험 스택은 `field_trial.launch.py`의 `shopping_follow:=true`로 로컬·글로벌 비용지도에 라이다와 12초 만료 초음파 레이어를 구성한다. 단독 쇼핑 동안 trial_guard 하나가 구동 출력을 맡고, 쇼핑 실행부 하나가 lease를 발행해야 한다. 대기 중에도 쇼핑 실행부가 lease를 발행하므로, 같은 가드에 관제 `trial_driver`나 카드 추종 실행부를 함께 띄우지 않는다.
+3. ROS Jazzy 워크스페이스를 source한 PC에 ONNX Runtime, PyTorch, Pillow, NumPy와 OpenCV, 신뢰할 수 있는 로컬 DINOv2 소스·가중치, 팀의 adult/child/human ONNX 검출기를 준비한다. 다음은 브라우저에서 직접 시작하는 시뮬레이션용 예다.
+
+```bash
+ros2 run roport_smartcart shopping_follow --sim --pad-dist "$PAD_DIST" \
+  --onnx "$DETECTOR_ONNX" --encoder-source "$DINO_SOURCE" --weights "$DINO_WEIGHTS"
+```
+
+`http://127.0.0.1:8182`를 연다. Gazebo에서는 실기와 구분된 ROS 도메인, localhost discovery, 카메라 영상·CameraInfo·광학 TF, 지도 위치 추정이 필요하다. Gazebo가 `camera/image_raw/compressed`를 발행하면 `--compressed`로 실물과 같은 JPEG 입력을 사용할 수 있다. 현장 단독 시험에서는 `--field-standalone --calibration "$CAMERA_YAML" --optical-frame "$OPTICAL_FRAME"`을 사용한다. 이 모드는 실측한 광학 TF와 180도 회전된 실물 영상에 맞춘 보정 파일을 사용하고, 실물 카메라의 compressed 토픽을 받는다. 발끝 또는 인형 바닥이 보이는 범위에서 지도상 대상 위치를 계산한다. 관제와 명령 소유권을 공유하는 모드는 별도 연동 대상이다.
+
+쇼핑 전용 글로벌 비용지도는 갱신·발행 목표 3 Hz로 설정한다. 짧은 직선 경로와 초음파 우회 판단은 지도 원본 시각과 수신 시각이 모두 1초 이내일 때만 사용한다. 직선 주행 중 지도가 오래되거나 경로가 막히면 취소하고, 새 목표에는 일반 Nav2 계획 경로를 사용한다. 현장에서는 CPU 부하와 비용지도 실제 발행 간격, `SHOP_HOLD`·`SHOP_GOAL` 빈도(특히 전체 YOLO 실행 직후), 재확인 뒤 안내가 풀리는 시간을 확인한다. 이 설정의 실물 성능은 별도 검증 대상이다.
+
+쇼핑 중 패드 안내와 본체 안내는 같은 판정을 사용한다. 본체의 기존 `status_indicator`를 스마트카트 모드로 실행하면 얼굴·쇼핑 모드·재접근 요청과 경로 막힘이 LCD와 LED에 반영된다. [본체 실행 방법과 색상](../roport_line_nav/README.md#상태-표시-lcdled-status_indicator)

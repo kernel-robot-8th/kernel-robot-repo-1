@@ -103,11 +103,14 @@ def test_shared_driver_mqtt_full_scenario(broker, tmp_path, scenario, common_pro
             assert control.state["phase"] != "HOLD", control.state["fault"]
             if control.state["phase"] == "READY" and not control.start_error():
                 control.start()
-            if control.state["gate"]:
+            if control.state["gate"] and not control.approval_error("gate"):
                 control.dummy(control.state["gate"]["stop_session_id"])
             if control.state["phase"] == "WAIT_REQUEST" and not control.request_error():
                 control.request([{"package_id": profile["package_id"], "quantity": 1}])
-        assert control.state["phase"] == "COMPLETE", control.state["phase"]
+        assert control.state["phase"] == "COMPLETE", (
+            control.state["phase"],
+            control.state["statuses"],
+        )
         assert all(len(points) > 1 for points in positions.values()), positions
         assert "navigate" in control.state["completed"]
         # Preserve the old 100 s lower bound, scaled from the 0.03 m/s preset.

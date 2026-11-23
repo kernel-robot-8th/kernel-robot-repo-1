@@ -36,13 +36,17 @@ class DollRecognizer:
                 raise ValueError('reference needs at least 12 features')
             self.references.append((row['label'], row['view'], image.shape, points, descriptors))
 
-    def detect(self, frame):
+    def detect(self, frame, *, label=None):
+        if label is not None and label not in ('A', 'B', 'C'):
+            raise ValueError('label must be A, B or C')
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         points, descriptors = self.sift.detectAndCompute(gray, None)
         if descriptors is None or len(points) < 12:
             return []
         found = []
-        for label, view, (height, width), ref_points, ref_desc in self.references:
+        for ref_label, view, (height, width), ref_points, ref_desc in self.references:
+            if label is not None and ref_label != label:
+                continue
             pairs = self.matcher.knnMatch(ref_desc, descriptors, k=2)
             matches = [a for pair in pairs if len(pair) == 2
                        for a, b in [pair] if a.distance < .7 * b.distance]
@@ -76,7 +80,7 @@ class DollRecognizer:
             if (quad[:, 0].max() < 0 or quad[:, 1].max() < 0
                     or quad[:, 0].min() >= fw or quad[:, 1].min() >= fh):
                 continue
-            found.append({'label': label, 'view': view, 'inliers': count,
+            found.append({'label': ref_label, 'view': view, 'inliers': count,
                           'quad': quad.tolist()})
         # shortcut: one physical doll per class; duplicate prints require instance tracking.
         best = {}

@@ -3,10 +3,12 @@ on:
   push:
     paths:
       - 'services/roport-service-server/**'
+      - 'interfaces/wss/candidate/**'
       - '.github/workflows/service-server-ci.yml'
   pull_request:
     paths:
       - 'services/roport-service-server/**'
+      - 'interfaces/wss/candidate/**'
       - '.github/workflows/service-server-ci.yml'
   workflow_dispatch:
 permissions:

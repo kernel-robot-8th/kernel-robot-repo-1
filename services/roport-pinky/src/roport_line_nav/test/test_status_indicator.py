@@ -130,3 +130,236 @@ def test_battery_bar():
     assert any(p != STYLES['MOVING'][1] for p in bottom)      # 맨 아래에 배터리 그림
     assert all(plain.getpixel((x, 210)) == STYLES['MOVING'][1] for x in range(320))
     assert render(Status('READY'), battery=None).size == (320, 240)
+
+
+def test_passenger_screen_priorities_and_recovery():
+    from roport_line_nav.status_indicator import cart_status
+    line = st('idle')
+    def display(shop=None, trip=None, navigation=None):
+        return cart_status(shop, trip, navigation, line)
+    assert display().name == 'CART_READY'
+    assert display('SHOPPING').name == 'SHOPPING'
+    assert display('COME_CLOSER').led == (255, 140, 0)
+    assert display('INACTIVE', {'goal':'G1','phase':'NAV2_G1'}).detail == 'G1으로 이동 중'
+    assert display('INACTIVE', {'goal':'G1','direction':'RETURN','phase':'LINE'}).detail == 'H1으로 이동 중'
+    retry = {'phase':'recovering','goal_id':'G2','recoveries':1}
+    assert display(navigation=retry).name == 'GATE'
+    halted = dict(retry, phase='failed', error_code='nav2_recovery_limit')
+    assert display('COME_CLOSER', navigation=halted).led == (255, 0, 0)
+    assert display(navigation=dict(halted, error_code='nav2_cancel_result_unknown')).name == 'UNAVAILABLE'
+    assert display('BLOCKED').name == 'BLOCKED'
+
+
+def test_cart_lcd_and_led_share_the_report_and_recover_after_failed_led_ack():
+    rclpy = pytest.importorskip('rclpy')
+    from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.parameter import Parameter
+    from std_msgs.msg import String
+    pinky = pytest.importorskip('pinky_interfaces.srv')
+    from roport_line_nav.status_indicator import make_node
+
+    ctx = Context()
+    rclpy.init(context=ctx, domain_id=194)
+    peer = rclpy.create_node('fake_cart_led', context=ctx, namespace='/cart_display_test')
+    node = make_node(context=ctx, namespace='/cart_display_test', parameter_overrides=[
+        Parameter('lcd',value=False), Parameter('smartcart',value=True)])
+    ex = SingleThreadedExecutor(context=ctx)
+    ex.add_node(node)
+    ex.add_node(peer)
+    calls = []
+    red, amber, blue = (255,0,0), (255,140,0), (0,90,255)
+    def led(req, res):
+        color = req.r, req.g, req.b
+        calls.append(color)
+        res.success = color != red or calls.count(red) >= 2
+        return res
+    peer.create_service(pinky.SetLed,'set_led',led)
+    pub = peer.create_publisher(String,'smartcart/shopping_indicator',1)
+    try:
+        for name,color,count in [('COME_CLOSER',amber,1),('BLOCKED',red,2),('SHOPPING',blue,1)]:
+            end = time.monotonic() + 4.
+            while time.monotonic() < end and calls.count(color) < count:
+                pub.publish(String(data=name))
+                ex.spin_once(timeout_sec=.025)
+            assert calls.count(color) >= count and node.status.name == name, (calls,node.status)
+    finally:
+        ex.shutdown()
+        node.destroy_node()
+        peer.destroy_node()
+        rclpy.shutdown(context=ctx)
+
+
+@pytest.mark.parametrize('backend', ['led', 'lamp'])
+def test_default_logistics_does_not_retry_failed_indicator_ack(monkeypatch, backend):
+    """A failed acknowledgement does not stall the next non-cart status change."""
+    from types import SimpleNamespace
+
+    rospy = pytest.importorskip('rclpy.node')
+    pytest.importorskip('pinky_interfaces.srv')
+    from std_msgs.msg import String
+    from roport_line_nav.status_indicator import make_node
+
+    calls = []
+
+    class FakeClient:
+        def service_is_ready(self):
+            return True
+
+        def call_async(self, request):
+            if backend == 'led':
+                calls.append((request.r, request.g, request.b))
+            else:
+                calls.append(tuple(round(v * 255) for v in (
+                    request.color.r, request.color.g, request.color.b)))
+            return SimpleNamespace(done=lambda: True, result=lambda: SimpleNamespace(
+                success=False, result=False))
+
+    class FakeNode:
+        def __init__(self, _name, **kwargs):
+            pass
+
+        def declare_parameter(self, name, value):
+            return SimpleNamespace(value={'lcd': False, 'led_backend': backend}.get(name, value))
+
+        def create_client(self, *_args):
+            return FakeClient()
+
+        def create_subscription(self, *_args):
+            pass
+
+        def create_timer(self, *_args):
+            pass
+
+        def get_logger(self):
+            return SimpleNamespace(info=lambda *_a, **_kw: None, warn=lambda *_a, **_kw: None)
+
+    monkeypatch.setattr(rospy, 'Node', FakeNode)
+    node = make_node()
+    assert not node.cart
+    now = 12.0
+    monkeypatch.setattr(node, '_now', lambda: now)
+    node.on_state(String(data=json.dumps(st('idle'))))
+    node.tick()
+    assert calls == [Status('READY').led]
+    now += .05
+    node.tick()
+    assert calls == [Status('READY').led]
+    now += .05
+    node.on_state(String(data=json.dumps(st('stopped'))))
+    node.tick()
+    assert calls == [Status('READY').led, Status('STOPPED').led]
+
+
+def test_cart_boarding_alert_card_follow_and_demo_goals():
+    from roport_line_nav.status_indicator import cart_status
+    line = st('idle')
+    following = {'phase': 'navigating', 'goal_id': 'follow', 'recoveries': 0}
+    assert cart_status(None, None, following, line).name == 'SHOPPING'          # 고객 카드 추종
+    assert cart_status(None, None, dict(following, phase='completed'), line).name == 'CART_READY'
+    boarding = cart_status(None, None, following, line, True)
+    assert boarding.name == 'BOARDING' and boarding.blink_hz == 2.0 and boarding.led == (255, 140, 0)
+    assert cart_status('BLOCKED', None, following, line, True).name == 'BLOCKED'   # 막힘이 먼저
+    assert cart_status(None, None, {'phase': 'navigating', 'goal_id': 'demo_ARR'}, line).detail == 'ARR로 이동 중'
+
+
+def test_boarding_beep_schedule():
+    from roport_line_nav.status_indicator import BeepSchedule
+    b = BeepSchedule(every_s=5.0)
+    assert [b.due(t, True) for t in (0.0, 1.0, 4.9, 5.0, 6.0)] == [True, False, False, True, False]
+    assert b.due(7.0, False) is False and b.due(7.5, True) is True              # 다시 켜면 바로 울림
+
+
+def test_cart_boarding_topic_shows_alert_and_beeps_until_cleared():
+    rclpy = pytest.importorskip('rclpy')
+    from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.parameter import Parameter
+    from std_msgs.msg import Bool
+    from roport_line_nav.status_indicator import make_node
+
+    ctx = Context()
+    rclpy.init(context=ctx, domain_id=195)
+    peer = rclpy.create_node('fake_boarding', context=ctx, namespace='/cart_boarding_test')
+    node = make_node(context=ctx, namespace='/cart_boarding_test', parameter_overrides=[
+        Parameter('lcd', value=False), Parameter('smartcart', value=True), Parameter('led_backend', value='none')])
+    beeps = []
+    node.beeper = lambda: beeps.append(time.monotonic())
+    ex = SingleThreadedExecutor(context=ctx)
+    ex.add_node(node)
+    ex.add_node(peer)
+    pub = peer.create_publisher(Bool, 'smartcart/boarding_alert', 1)
+    try:
+        for on in (True, False):                        # 끄면 다른 입력이 없으니 기존 규칙대로 NO_SIGNAL
+            end = time.monotonic() + 4.
+            while time.monotonic() < end and (node.status is None or (node.status.name == 'BOARDING') != on):
+                pub.publish(Bool(data=on))
+                ex.spin_once(timeout_sec=.025)
+            assert (node.status.name == 'BOARDING') == on
+        assert len(beeps) == 1                          # 켜질 때 한 번(5 s 안에 끔)
+    finally:
+        ex.shutdown()
+        node.destroy_node()
+        peer.destroy_node()
+        rclpy.shutdown(context=ctx)
+
+
+@pytest.mark.parametrize('smartcart,buzzer', [(True, False), (False, True)])
+def test_boarding_ignored_without_buzzer_or_outside_cart_mode_and_expires(smartcart, buzzer):
+    """buzzer:=false 면 표시만, 물류 모드는 탑승 알림을 받지 않고, 값이 끊기면(stale) 알림이 꺼진다."""
+    rclpy = pytest.importorskip('rclpy')
+    from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.parameter import Parameter
+    from std_msgs.msg import Bool
+    from roport_line_nav.status_indicator import make_node
+
+    ctx = Context()
+    rclpy.init(context=ctx, domain_id=196)
+    peer = rclpy.create_node('fake_boarding2', context=ctx, namespace='/cart_boarding_test2')
+    node = make_node(context=ctx, namespace='/cart_boarding_test2', parameter_overrides=[
+        Parameter('lcd', value=False), Parameter('smartcart', value=smartcart), Parameter('led_backend', value='none'),
+        Parameter('buzzer', value=buzzer), Parameter('stale_sec', value=0.3)])
+    beeps = []
+    node.beeper = lambda: beeps.append(1)
+    ex = SingleThreadedExecutor(context=ctx)
+    ex.add_node(node)
+    ex.add_node(peer)
+    pub = peer.create_publisher(Bool, 'smartcart/boarding_alert', 1)
+    try:
+        end = time.monotonic() + 1.5
+        while time.monotonic() < end:
+            pub.publish(Bool(data=True))
+            ex.spin_once(timeout_sec=.025)
+            if smartcart and node.status is not None and node.status.name == 'BOARDING':
+                break
+        if smartcart:
+            assert node.status.name == 'BOARDING'
+            end = time.monotonic() + 1.0                # 보내기를 멈추면 stale_sec 뒤 꺼짐
+            while time.monotonic() < end and node.status.name == 'BOARDING':
+                ex.spin_once(timeout_sec=.025)
+            assert node.status.name != 'BOARDING'
+        else:
+            assert 'boarding' not in node.inputs and (node.status is None or node.status.name != 'BOARDING')
+        assert beeps == []
+    finally:
+        ex.shutdown()
+        node.destroy_node()
+        peer.destroy_node()
+        rclpy.shutdown(context=ctx)
+
+
+def test_boarding_alert_never_hides_stops_or_faults():
+    from roport_line_nav.status_indicator import cart_status
+    idle, following = st('idle'), {'phase': 'navigating', 'goal_id': 'follow', 'recoveries': 0}
+    shown = lambda shop=None, trip=None, nav=None, line=idle: cart_status(shop, trip, nav, line, True).name
+    assert shown('PAUSED', nav=following) == 'PAUSED'                    # 추종 일시정지
+    assert shown('UNAVAILABLE') == 'UNAVAILABLE'
+    assert shown(trip={'phase': 'STOPPED', 'goal': 'G1'}) == 'UNAVAILABLE'   # 복귀 중 정지
+    assert shown(nav={'phase': 'failed', 'goal_id': 'G1', 'error_code': 'nav2_cancel_result_unknown'}) == 'UNAVAILABLE'
+    assert shown(line=st('error', reason='line_lost')) == 'ERROR'        # 라인 오류
+    assert shown(line=st('stopped', reason='stop')) == 'STOPPED'
+    assert shown('BLOCKED') == 'BLOCKED'
+    # 알림이 이기는 상태: 대기·쇼핑·이동·가까이 와 주세요
+    assert shown() == shown('SHOPPING') == shown('COME_CLOSER') == shown(nav=following) == 'BOARDING'
+    assert shown(nav={'phase': 'navigating', 'goal_id': 'G1'}) == 'BOARDING'

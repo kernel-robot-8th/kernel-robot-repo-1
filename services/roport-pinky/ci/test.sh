@@ -4,10 +4,17 @@ cd "$(dirname "$0")/.."
 source /opt/ros/jazzy/setup.bash
 set -u
 python3 -m unittest discover -s ci -p 'test_*.py' -v
+node ci/test_field_roundtrip_browser.js
+# Build the range-layer test explicitly without enabling vendor package tests.
+# Keep a missing/renamed CTest entry from silently passing CI.
+colcon build --packages-ignore pinky_gz_sim --packages-select roport_range_layer \
+  --event-handlers console_direct+ --cmake-args -DBUILD_TESTING=ON
+ctest --test-dir build/roport_range_layer -R '^range_clear$' --output-on-failure --no-tests=error
+
 # Build Python console/world resources too; smartcart launch depends on them.
 # Exclude Gazebo discovery so this no-simulator job does not require its C++ stack.
 colcon build --packages-ignore pinky_gz_sim \
-  --packages-select roport_range_layer roport_pinky roport_pinky_line roport_line_nav roport_smartcart pinky_interfaces pinky_description pinky_navigation pinky_test_console roport_gz_world \
+  --packages-select roport_pinky roport_pinky_line roport_line_nav roport_smartcart roport_follow pinky_interfaces pinky_description pinky_navigation pinky_test_console roport_gz_world \
   --event-handlers console_direct+ --cmake-args -DBUILD_TESTING=OFF
 set +u
 source install/setup.bash
@@ -39,3 +46,5 @@ python3 -m pytest src/roport_line_nav/test -q -p no:cacheprovider
 # 관제 trial-v1 판정부·ROS Nav2 모의 피어·독립 watchdog (실장비·MQTT 없음).
 python3 -m pytest src/roport_pinky/test -q -p no:cacheprovider
 python3 -m pytest -q src/roport_smartcart/test
+# 스마트카트 카드 추종·인형 우회(FFT1-185) 0단계: 바닥 기하·체스보드·MPJPEG·카드 거리(하드웨어·YOLO 없음).
+python3 -m pytest -q -p no:cacheprovider src/roport_follow/test

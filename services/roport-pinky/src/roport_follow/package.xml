@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>roport_follow</name>
+  <version>0.1.0</version>
+  <description>RO:PORT smart cart: follow the customer ArUco card and avoid dolls (YOLO on the laptop, floor geometry). Stage 0 calibration and measurement tools.</description>
+  <maintainer email="102033640+minjee92@users.noreply.github.com">GATE CREW</maintainer>
+  <license>LicenseRef-Proprietary</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <!-- 인형 장애물 발행(publish-obstacles 옵션)·Nav2 덮어쓰기 생성(nav2_doll) -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <!-- demo_runner(로봇, 시험용)만 씀 -->
+  <exec_depend>roport_pinky</exec_depend>
+  <exec_depend>roport_line_nav</exec_depend>
+  <!-- YOLO(ultralytics)는 노트북 전용 가상환경(~/dev_ws/roport/venvs/follow)에서만 쓰고 의존으로 적지 않는다 -->
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

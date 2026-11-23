@@ -178,3 +178,17 @@ def test_short_tracking_candidate_is_simulation_only():
         assert {key: follower[key] for key in expected} == expected
     assert RPP_TRACKING['min_lookahead_dist'] == .15
     assert SIM_RPP_TRACKING['min_lookahead_dist'] == .08
+
+
+def test_shopping_overlay_has_headroom_without_changing_shared_costmap_rates():
+    shopping = yaml.safe_load((ROOT / 'config/shopping_costmaps.yaml').read_text())
+    global_rates = shopping['global_costmap']['global_costmap']['ros__parameters']
+    assert (global_rates['update_frequency'], global_rates['publish_frequency']) == (3., 3.)
+    assert global_rates['always_send_full_costmap'] is True
+    local_overlay = shopping['local_costmap']['local_costmap']['ros__parameters']
+    assert not {'update_frequency', 'publish_frequency'} & local_overlay.keys()
+    for params in (profile(), profile(
+            'real', footprint=FOOTPRINT, max_linear=.08, max_angular=.4)):
+        for name, rates in (('local_costmap', (5., 2.)), ('global_costmap', (1., 1.))):
+            grid = params[name][name]['ros__parameters']
+            assert (grid['update_frequency'], grid['publish_frequency']) == rates
