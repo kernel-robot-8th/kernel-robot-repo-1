@@ -1,6 +1,5 @@
 """Operator-requested restart of this trial's stack; never sends driving goals."""
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -139,13 +138,9 @@ def main():
     else:
         raise RuntimeError('Stack restarted but console/pose restoration not confirmed; check logs')
     import threading
-    import yaml
-    from roport_pinky.trial_nav2 import Nav2Bridge
+    from roport_pinky.trial_nav2 import Nav2Bridge, map_profile
     path = Path(os.environ['ROPORT_PINKY_MAP'])
-    data = yaml.safe_load(path.read_text())
-    profile = {'map_id': path.stem, 'map_version': hashlib.sha256(
-        path.read_bytes()+(path.parent/data['image']).read_bytes()).hexdigest()[:16]}
-    bridge = Nav2Bridge(node, profile, str(path), threading.RLock())
+    bridge = Nav2Bridge(node, map_profile(path), str(path), threading.RLock())
     end, since = time.monotonic()+12, None
     while time.monotonic() < end:
         rclpy.spin_once(node, timeout_sec=.02)

@@ -6,11 +6,13 @@ from uuid import uuid4
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
-from nav2_msgs.action import FollowPath, NavigateToPose
+from nav2_msgs.action import FollowPath, NavigateToPose, Spin
 from rclpy.action import ActionClient
 from rclpy.parameter_client import AsyncParameterClient
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
+
+from .shopping_track import bypass_segment_costs
 
 
 MIN_FOLLOW_GAP_M = .22
@@ -91,10 +93,15 @@ def straight_follow_goal(start, end, heading, stamp):
 
 
 class ShoppingNav:
+    looking = False
+    last_look = None
+    look_completed = False
+
     def __init__(self, node, follow_distance_m=.34):
         self.node = node
         self.follow_distance_m = follow_distance_m
         self.client = ActionClient(node, NavigateToPose, 'navigate_to_pose')
+        self.spin_client = ActionClient(node, Spin, 'spin')
         self.follow_client = ActionClient(node, FollowPath, 'follow_path')
         self.lease = node.create_publisher(String, 'trial/lease', 1)
         node.create_subscription(String, 'trial/guard_state', self.guard_state, 1)
@@ -194,7 +201,12 @@ class ShoppingNav:
                 self.fault = 'NAV_REJECTED'
         if self.result and self.result.done():
             response = self.result.result()
-            if not self.cancelled and response.status == GoalStatus.STATUS_SUCCEEDED:
+            if self.looking:
+                self.looking = False
+                self.look_completed = not self.cancelled
+                if not self.cancelled and response.status != GoalStatus.STATUS_SUCCEEDED:
+                    self.node.get_logger().warning(f'SHOP_LOOK stopped code={response.result.error_code}')
+            elif not self.cancelled and response.status == GoalStatus.STATUS_SUCCEEDED:
                 self.last_reached = (self.destination, self.goal_yaw)
                 if not self.turn_only:
                     self.path_failures = 0
@@ -221,9 +233,38 @@ class ShoppingNav:
                         seq=self.sequence, sent_at=self.guard['sent_at']+now-self.guard_at)
             self.lease.publish(String(data=json.dumps(data)))
 
+    def look(self, now, bearing, stamp):
+        """One collision-checked turn in place per last sighting, sharing the Nav2 lease."""
+        if not self.looking:
+            self.cancel()
+        self.poll()
+        if not self.ready(now) or self.fault or now < self.retry_after:
+            self.cancel()
+            self.heartbeat(False, now)
+            return 'HOLD'
+        if self.last_look != stamp:
+            self.last_look, self.look_completed = stamp, False
+            self.look_until, self.look_attempts = now + 5., 0
+        if self.looking and now >= self.look_until:
+            self.cancel()
+        if (not self.pending and not self.handle and self.boot is not None and not self.look_completed
+                and now < self.look_until and self.look_attempts < 3 and abs(bearing) > .08
+                and self.spin_client.server_is_ready()):
+            goal = Spin.Goal()
+            goal.target_yaw = max(-math.pi/3, min(math.pi/3, bearing))
+            goal.time_allowance.sec = 5
+            self.looking, self.cancelled = True, False
+            self.look_attempts += 1
+            self.anchor = None
+            self.pending = self.spin_client.send_goal_async(goal)
+            self.node.get_logger().info(f'SHOP_LOOK yaw={math.degrees(goal.target_yaw):.0f}deg')
+        turning = bool(self.looking and self.handle and self.handle.accepted and not self.cancelled)
+        self.heartbeat(turning, now)
+        return 'APPROACH' if turning else 'HOLD'
+
     def tick(self, now, enabled, pose, target, via=None, allow_new=True, direct_grid=None):
         # Latch cancellation before consuming a just-arrived goal acceptance.
-        if not enabled or pose is None or target is None:
+        if self.looking or not enabled or pose is None or target is None:
             self.cancel()
         self.poll()
         ready = self.ready(now)
@@ -241,11 +282,17 @@ class ShoppingNav:
         bearing = math.remainder(math.atan2(dy,dx)-pose[2], 2*math.pi)
         grid = (fresh_costmap(direct_grid, self.node.get_clock().now().nanoseconds, now)
                 if direct_grid is not None else None)
-        if (self.anchor and self.direct_path and not self.cancelled
-                and (grid is None or not clear_short_leg(grid, pose[:2], self.destination))):
-            self.node.get_logger().info(
-                'SHOP_HOLD reason=costmap_stale' if grid is None else 'SHOP_HOLD reason=costmap_blocked')
-            self.cancel()
+        if self.anchor and self.direct_path and not self.cancelled:
+            clear = False
+            if grid is not None:
+                if self.detouring:
+                    clear = max(bypass_segment_costs(grid, pose, self.destination)) < 99
+                else:
+                    clear = clear_short_leg(grid, pose[:2], self.destination)
+            if not clear:
+                self.node.get_logger().info(
+                    'SHOP_HOLD reason=costmap_stale' if grid is None else 'SHOP_HOLD reason=costmap_blocked')
+                self.cancel()
         if self.anchor and (now-self.began > 60 or math.dist(pose[:2], self.origin) > .95):
             self.fault = 'NAV_LIMIT'
             self.cancel()
@@ -261,6 +308,7 @@ class ShoppingNav:
                     not self.detouring and math.dist(pose[:2], self.destination) < .015):
                 self.cancel()
         if allow_new and not self.pending and not self.handle and not self.fault:
+            self.looking = False
             self.cancelled = False
             travel = min(.8, separation-gap)
             advance = separation >= advance_at - 1e-9
@@ -275,7 +323,8 @@ class ShoppingNav:
                     self.destination = via
                     yaw = math.atan2(target[1]-via[1], target[0]-via[0])
                     self.node.get_logger().info(f'SONAR_BYPASS via={via} target={target}')
-                direct = False
+                direct = (via is not None and grid is not None and self.follow_client.server_is_ready()
+                          and max(bypass_segment_costs(grid, pose, via)) < 99)
                 if (advance and grid is not None and via is None and not self.path_failures
                         and self.follow_client.server_is_ready()):
                     step = min(.25, travel)
