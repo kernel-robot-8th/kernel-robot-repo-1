@@ -933,6 +933,15 @@ class FieldHostTest(unittest.TestCase):
 
         self.executor.observe = run
 
+    def ack(self, event):
+        message = field_wire.build_message(
+            "event_stored",
+            CONTROL,
+            "shelf-01",
+            {"acked_message_id": event["message_id"]},
+        )
+        self.host.handle(message, endpoint="shelf-01", channel="ack")
+
     def drain(self, seconds):
         events, end = [], time.monotonic() + seconds
         while time.monotonic() < end:
@@ -969,9 +978,10 @@ class FieldHostTest(unittest.TestCase):
             {a["home_reached"] for a in r["arms"]}, {False}
         )  # still aligning
         self.assertEqual(self.host.active, task["command_id"])  # busy until aligned
-        self.host.observe_pinky(
-            pinky_state(stopped=False, node="N19", seq=5)
-        )  # it leaves
+        self.ack(
+            first[0]
+        )  # control stored the placement report: now the Pinky may leave
+        self.host.observe_pinky(pinky_state(stopped=False, node="N19", seq=5))
         later = [e for e in self.drain(1.0) if e["command_id"] == task["command_id"]]
         self.assertEqual([e["payload"]["status"] for e in later], ["completed"])
         r = later[0]["payload"]["result"]
@@ -1003,6 +1013,41 @@ class FieldHostTest(unittest.TestCase):
         )
         self.assertEqual(events[-1]["payload"]["reason"], "panel_align_hold")
         self.assertEqual(self.host.hold, task["command_id"])
+
+    def test_broker_cut_right_after_the_placement_report_stops_the_arms(self):
+        # #156 review: no control renewal (and no ACK) after the intermediate report still stops
+        # the arms through the watchdog, reported as the command's second report
+        self.host.report_placement = True
+        self.host.watchdog_s = 0.6
+        self.placed_then(lambda seen: {"state": "running", "step": "정렬 중"})
+        self.executor.run_s = 30
+        task = self.transfer()
+        self.send(task)
+        events = [e for e in self.drain(1.5) if e["command_id"] == task["command_id"]]
+        statuses = [
+            e["payload"]["status"]
+            for e in events
+            if e["payload"]["status"] != "in_progress"
+        ]
+        self.assertEqual(statuses[:2], ["completed", "failed"])
+        self.assertEqual(events[-1]["payload"]["reason"], "control_watchdog_expired")
+        self.assertEqual(self.host.hold, task["command_id"])
+
+    def test_pinky_leaving_before_the_placement_report_is_stored_stops_the_arms(self):
+        # #156 review: until control stored the placement report the Pinky check stays on
+        self.host.report_placement = True
+        self.placed_then(lambda seen: {"state": "running", "step": "정렬 중"})
+        self.executor.run_s = 30
+        task = self.transfer()
+        self.send(task)
+        first = [e for e in self.drain(0.2) if e["payload"]["status"] == "completed"]
+        self.assertEqual(len(first), 1)
+        self.host.observe_pinky(
+            pinky_state(stopped=False, node="N19", seq=5)
+        )  # no ACK yet
+        events = [e for e in self.drain(0.5) if e["command_id"] == task["command_id"]]
+        self.assertEqual(events[-1]["payload"]["status"], "failed")
+        self.assertEqual(events[-1]["payload"]["reason"], "pinky_left")
 
     def test_outbound_never_completes_at_placement(self):
         self.host.report_placement = True

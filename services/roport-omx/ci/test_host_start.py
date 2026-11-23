@@ -164,13 +164,13 @@ class HostStartTest(unittest.TestCase):
         self.assertIn("boot_id=", v1)
         self.assertNotIn("protocol v2", v1)
 
-    def test_report_placement_defaults_on_for_v2_only(self):
-        # TK 2026-11-24: v2 reports completed at placement by default; v1 keeps one report
+    def test_report_placement_is_off_unless_asked(self):
+        # #156 review: off by default until control accepts the two reports; explicit on works
         journal = ["--journal", str(self.dir / "j.json")]
-        self.assertTrue(ch.parse_args(journal).report_placement)
+        self.assertFalse(ch.parse_args(journal).report_placement)
         self.assertFalse(ch.parse_args(["--protocol", "v1", *journal]).report_placement)
-        self.assertFalse(
-            ch.parse_args([*journal, "--no-report-placement"]).report_placement
+        self.assertTrue(
+            ch.parse_args([*journal, "--report-placement"]).report_placement
         )
         self.assertTrue(
             ch.parse_args(

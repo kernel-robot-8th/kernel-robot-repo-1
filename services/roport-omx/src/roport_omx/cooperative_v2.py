@@ -706,13 +706,12 @@ class FieldHost:
         if command_id is None or self._data["stop"] is not None:
             return []
         record = self._data["commands"][command_id]
-        if record.get("placed_reported"):
-            # completed at placement: control no longer renews it and the Pinky leaves; the
-            # alignment's own safety stays with the executor
-            return []
+        # #156 review: the renewal watchdog stays on through the alignment (control keeps the
+        # command open until the final report); the Pinky check too, until control has stored
+        # the placement report - only then may the Pinky leave while the arms still align
         if self._deadline is None or time.monotonic() > self._deadline:
             reason = "control_watchdog_expired"
-        elif self.require_pinky:
+        elif self.require_pinky and not record.get("placed_stored"):
             reason = self._visit_lost(record["command"])
         else:
             reason = None
@@ -1198,8 +1197,19 @@ class FieldHost:
 
     def _ack(self, acked: str) -> None:
         outbox = self._data["outbox"]
-        if not any(e["message_id"] == acked for e in outbox):
+        event = next((e for e in outbox if e["message_id"] == acked), None)
+        if event is None:
             return
+        result = event["payload"].get("result") or {}
+        if (
+            event["type"] == "command_status"
+            and result.get("evidence") == "shelf_placed"
+        ):
+            record = self._data["commands"].get(event.get("command_id"))
+            if record is not None:
+                record["placed_stored"] = (
+                    True  # control stored it: the Pinky may now leave
+                )
         self._data["outbox"] = [e for e in outbox if e["message_id"] != acked]
         self._save()
 
