@@ -31,6 +31,17 @@ class ReviewFollowupTests(unittest.TestCase):
         self.assertIsNone(devices._alignment_velocity)
         self.assertFalse(devices.startup_torque_off_verified)
 
+    def test_failed_start_validation_does_not_report_previous_run_state(self):
+        devices = LeRobotDevices()
+        devices.applied_actions = 7
+        devices.applied_alignment_actions = 3
+        devices.alignment_fault = {"reason": "old"}
+        with self.assertRaises(Rejected):
+            devices.start({"device_mode": "mock"}, "evaluate")
+        self.assertEqual(devices.applied_actions, 0)
+        self.assertEqual(devices.applied_alignment_actions, 0)
+        self.assertIsNone(devices.alignment_fault)
+
     def test_non_dict_policy_is_rejected_not_attribute_error(self):
         data = deepcopy(synthetic_profile())
         operation = next(iter(data["policies"]))

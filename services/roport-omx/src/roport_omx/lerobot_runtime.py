@@ -881,6 +881,8 @@ class LeRobotDevices:
             raise Rejected("DYNAMIXEL Bus Watchdog tripped or readback mismatch")
 
     def start(self, profile, operation):
+        # Before any validation: a rejected start must not report the previous run's state.
+        self.reset_run_state()
         if (
             profile.get("device_mode") != "hardware"
             or profile.get("authorization", {}).get("hardware") is not True
@@ -975,7 +977,6 @@ class LeRobotDevices:
 
         self.arms = {key: OmxFollower(config) for key, config in configs.items()}
         self.leader = OmxLeader(profile["leader_config"])
-        self.reset_run_state()
         event = profile.get("stop_event")
         for arm in self.arms.values():
             if event is not None:
@@ -1380,8 +1381,27 @@ class LeRobotDatasetWriter:
             manifest = dict(
                 manifest, camera_devices=dict(self.profile["camera_devices"])
             )
+        self._check_saved(root)
         (root / "manifest.json").write_text(json.dumps(manifest, allow_nan=False))
         return manifest
+
+    def _check_saved(self, root):
+        """The manifest is the callback's claim; completion also needs the files LeRobot wrote."""
+        try:
+            info = json.loads((root / "meta/info.json").read_text())
+        except (OSError, ValueError):
+            raise Rejected("saved dataset has no readable meta/info.json") from None
+        if info.get("total_episodes") != 1 or info.get("total_frames") != len(
+            self.frames
+        ):
+            raise Rejected(
+                "saved dataset episode or frame count differs from recording"
+            )
+        if not any((root / "data").glob("**/*.parquet")):
+            raise Rejected("saved dataset has no data file")
+        for key in self.profile["camera_mapping"]:
+            if not any((root / "videos" / key).glob("**/*.mp4")):
+                raise Rejected(f"saved dataset has no video for {key}")
 
     def abort(self):
         if self.dataset is not None and not self.closed:
