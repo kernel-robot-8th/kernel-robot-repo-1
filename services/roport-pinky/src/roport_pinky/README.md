@@ -139,10 +139,11 @@ Nav2 제한 복구·관제 실패 처리·G2 후보 전송은 [관제 참고 가
 `fine_align_*`는 같은 목적지 재시도 대상(`NAV_RETRY_FAULTS`)이 아니다. `trial.launch.py`는 두 환경 변수 중 하나가 있으면
 GateDock 제어기·`gate_dock_goal_checker`(1 cm·0.05 rad)를 넣는다. FineAlign 으로 띄울 때만 GateDock 속도를 최소 접근 0.01 m/s·
 감속 최소 0.015 m/s·감속 시작 0.05 m 로 넣는다(2026-11-23 d660 N12 20 cm 접근 19 s). 게이트 마커 주차로 띄우면 변경 전 값
-(0.005 m/s·0.005 m/s·0.6 m)을 그대로 쓴다.
+(0.005 m/s·0.005 m/s)을 그대로 쓰고, 감속 시작 거리는 launch 가 넣지 않아 `params_file`에 적은 값(없으면 RPP 기본값 0.6 m)이 쓰인다.
 `ROPORT_FINE_ALIGN_GOALS`는 `trial.launch.py`를 띄우는 셸과 드라이버(runner)를 띄우는 셸 **둘 다**에 넣는다. 드라이버에만 있으면
 Nav2에 GateDock 제어기·검사기가 없어 마지막 접근이 거절되고 `nav2_goal_failed`로 실패한다(재시도해도 같은 실패).
 `params_file`이 GateDock을 이미 가진 파일(`config/nav2_follow_real.yaml`)이면 launch 쪽 환경 변수가 없어도 제어기는 있다.
+다만 그 파일의 GateDock 속도는 게이트 주차 값(0.005 m/s·0.005 m/s, 감속 거리 없음)이라, FineAlign 속도는 launch 쪽 환경 변수가 있어야 들어간다(없으면 20 cm 접근이 25 s 를 넘길 수 있다).
 19 s 실측은 시험 실행기 `demo_runner --fine-align`(`demo_RET_N12`) 경로 결과다. 드라이버 환경 변수 경로(관제 `N12_RETURN`)는 실로봇 미확인이다.
 
 탑승 시간 알림(선택 hook `set_boarding_alert(on)`, bool 아니면 `invalid_alert`): 켜진 동안 드라이버 노드가

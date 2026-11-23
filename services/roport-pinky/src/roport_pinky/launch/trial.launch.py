@@ -36,9 +36,8 @@ DOCK_CONTROLLER_OVERRIDES = {
     'GateDock.desired_linear_vel': .02,
     'GateDock.min_approach_linear_velocity': .005,
     'GateDock.regulated_linear_scaling_min_speed': .005,
-    # RPP 기본값을 명시한다: params_file 이 FineAlign 용 값(0.05)을 가진 nav2_follow_real.yaml 이어도
-    # 게이트 마커 주차의 감속 거리는 변경 전과 같게 둔다.
-    'GateDock.approach_velocity_scaling_dist': .6,
+    # 감속 거리(approach_velocity_scaling_dist)는 여기서 넣지 않는다: 게이트 마커 주차는 params_file 에 적은 값을
+    # 그대로 쓰고, 없으면 RPP 기본값이다(변경 전과 같음).
     'GateDock.lookahead_dist': .05,
     'GateDock.min_lookahead_dist': .03,
     'GateDock.max_lookahead_dist': .10,
@@ -50,6 +49,7 @@ DOCK_CONTROLLER_OVERRIDES = {
 
 
 # 마커 없는 정밀 접근(FineAlign)에만 쓰는 GateDock 속도. 게이트 마커 주차(ROPORT_GATE_DOCK_CONFIG)에는 넣지 않는다.
+# 이 값은 여기에만 둔다(params_file 에 적으면 같은 파일로 띄운 게이트 마커 주차의 감속 거리까지 바뀐다).
 # 2026-11-23 d660: .005/.005 + 감속 거리 0.6 m 로는 20 cm 접근 전체가 감속 구간 → 25 s 시간 초과.
 # 아래 값으로 19 s 성공(N12 정밀 접근 1회).
 FINE_ALIGN_CONTROLLER_OVERRIDES = {

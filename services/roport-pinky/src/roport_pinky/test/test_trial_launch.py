@@ -156,8 +156,8 @@ def test_fine_align_goals_also_enable_dock_controller(trial_launch, monkeypatch,
 @pytest.mark.parametrize('fine_align_goals', [None, 'N12_RETURN'])
 def test_gate_marker_docking_keeps_its_previous_speeds(trial_launch, monkeypatch, fine_align_goals):
     """게이트 마커 주차(ROPORT_GATE_DOCK_CONFIG)는 변경 전 감속 값을 그대로 쓴다. FineAlign 환경 변수가 같이 있어도
-    드라이버처럼 게이트 마커 주차가 우선이라 새 속도를 넣지 않는다. 감속 거리는 RPP 기본값(0.6 m)을 명시해
-    params_file 이 FineAlign 용 값을 가진 파일이어도 바뀌지 않는다."""
+    드라이버처럼 게이트 마커 주차가 우선이라 새 속도를 넣지 않는다. 감속 거리는 launch 가 넣지 않아
+    params_file 에 적은 값(없으면 RPP 기본값)이 그대로 쓰인다."""
     monkeypatch.setenv('ROPORT_GATE_DOCK_CONFIG', '/unused/local-calibrated.yaml')
     if fine_align_goals is None:
         monkeypatch.delenv('ROPORT_FINE_ALIGN_GOALS', raising=False)
@@ -167,21 +167,25 @@ def test_gate_marker_docking_keeps_its_previous_speeds(trial_launch, monkeypatch
     assert cfg['GateDock.desired_linear_vel'] == .02
     assert cfg['GateDock.min_approach_linear_velocity'] == .005
     assert cfg['GateDock.regulated_linear_scaling_min_speed'] == .005
-    assert cfg['GateDock.approach_velocity_scaling_dist'] == .6
+    assert 'GateDock.approach_velocity_scaling_dist' not in cfg
     assert cfg['GateDock.use_collision_detection'] is True and cfg['GateDock.allow_reversing'] is False
     assert cfg['gate_dock_goal_checker.xy_goal_tolerance'] == .01
     assert cfg['gate_dock_goal_checker.yaw_goal_tolerance'] == .05
 
 
-def test_fine_align_controller_values_match_real_params_yaml(trial_launch):
-    """nav2_follow_real.yaml 의 GateDock 은 마커 없는 정밀 접근 값이다: launch 의 공통 값 + FineAlign 값과 같아야 한다."""
+def test_real_params_yaml_keeps_gate_values_and_no_fine_align_speeds(trial_launch):
+    """nav2_follow_real.yaml 의 GateDock 은 launch 의 게이트 공통 값과 같고, FineAlign 감속 거리는 갖지 않는다
+    (적으면 같은 파일로 띄운 게이트 마커 주차의 감속 거리가 바뀐다). FineAlign 값은 launch 에만 있다."""
     import yaml
-    dock = {**trial_launch.DOCK_CONTROLLER_OVERRIDES, **trial_launch.FINE_ALIGN_CONTROLLER_OVERRIDES}
-    assert dock['GateDock.min_approach_linear_velocity'] == .01
-    assert dock['GateDock.regulated_linear_scaling_min_speed'] == .015
-    assert dock['GateDock.approach_velocity_scaling_dist'] == .05
+    fine = trial_launch.FINE_ALIGN_CONTROLLER_OVERRIDES
+    assert fine == {'GateDock.min_approach_linear_velocity': .01,
+                    'GateDock.regulated_linear_scaling_min_speed': .015,
+                    'GateDock.approach_velocity_scaling_dist': .05}
+    dock = trial_launch.DOCK_CONTROLLER_OVERRIDES
+    assert 'GateDock.approach_velocity_scaling_dist' not in dock
     params = yaml.safe_load((Path(__file__).parents[1] / 'config/nav2_follow_real.yaml').read_text())
     controller = params['controller_server']['ros__parameters']
+    assert 'approach_velocity_scaling_dist' not in controller['GateDock']
     for key, value in dock.items():
         if key.startswith('GateDock.'):
             assert controller['GateDock'][key.split('.', 1)[1]] == value, key

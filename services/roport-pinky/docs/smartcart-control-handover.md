@@ -129,7 +129,7 @@ Gate 좌표 후보(`roport_smartcart/config/places_sim.yaml`, map 좌표, yaw �
 ## 6. 로봇 실행 설정
 
 - `ROPORT_FINE_ALIGN_GOALS=N12_RETURN` (2절).
-- Nav2 설정에 GateDock 제어기가 있어야 한다. `trial.launch.py` 는 위 환경 변수가 있으면 넣는다. `config/nav2_follow_real.yaml` 에는 이미 있다.
+- Nav2 설정에 GateDock 제어기가 있어야 한다. `trial.launch.py` 는 위 환경 변수가 있으면 넣는다. `config/nav2_follow_real.yaml` 에는 제어기가 이미 있지만 정밀 접근 속도는 없다. 속도는 환경 변수가 있을 때 `trial.launch.py` 가 넣으므로 launch 쪽에도 꼭 넣는다.
 - 표시: `ros2 run pinky_led led_server`, `ros2 run roport_line_nav status_indicator --ros-args -p smartcart:=true`.
 - 노트북 인식 도구(`roport_follow tool`)가 같은 ROS 도메인에서 켜져 있어야 한다. 관제는 놓침 기준을 보내지 않으므로 노트북도 기본값(1초)으로 켠다.
 

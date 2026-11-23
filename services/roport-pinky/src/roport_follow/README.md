@@ -127,6 +127,7 @@ ros2 run roport_follow demo_runner --map <지도.yaml> --layout <레이아웃.ya
 - `demo_runner --fine-align`(기본 끔): N12 복귀 자세(`demo_RET_N12`)에서 Nav2 가 20 cm 뒤에 선 뒤 직선 정밀 접근(GateDock 2 cm/s,
   1.5 cm·0.08 rad 확인)을 한 번 더 한다(`roport_pinky.fine_align.FineAlign`, 드라이버의 게이트 마커 정밀 접근 단계를 마커 대신 목표 좌표로 씀). Nav2 설정에 GateDock 제어기·
   `gate_dock_goal_checker` 가 있어야 하므로 `config/nav2_follow_real.yaml` 로 띄운 경우에만 켠다. 옵션이 없으면 기존 N12 복귀 그대로다.
+  정밀 접근 속도(최소 접근 0.01 m/s·감속 거리 0.05 m)는 `trial.launch.py` 를 띄우는 셸에 `ROPORT_FINE_ALIGN_GOALS`(예: `N12_RETURN`)가 있어야 들어간다. 없으면 20 cm 접근이 25 s 시간 초과될 수 있다(2026-11-23 d660).
   드라이버가 `ROPORT_FINE_ALIGN_GOALS` 로 이미 켰으면 그 목표에 `demo_RET_N12` 를 더하고, `ROPORT_GATE_DOCK_CONFIG` 가 있으면 건드리지 않는다.
 - `--torch-threads 4`: YOLO CPU 스레드 수(노트북 8코어에서 기본값보다 빠름, 실로봇에서 비교할 것).
 - 로봇 쪽 추종(`follow.requested`, Nav2 동적 따라가기 BT)은 `roport_pinky` README 의 「고객 카드 추종」 절.
