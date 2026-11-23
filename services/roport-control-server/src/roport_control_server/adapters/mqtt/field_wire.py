@@ -152,9 +152,11 @@ SCHEMAS = {
         map_version=ID,
     ),
     "follow_target_command": obj(
+        required=[*FENCE, "map_version", "card_id"],
         **FENCE,
         map_version=ID,
         card_id={"type": "integer", "minimum": 35, "maximum": 49},
+        max_duration_s={"type": "number", "minimum": 1, "maximum": 240},
     ),
     "nav_goal_command": obj(
         required=[

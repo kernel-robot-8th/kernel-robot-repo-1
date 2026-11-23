@@ -5,6 +5,7 @@ Robot completion, stock placement and customer receipt remain separate facts.
 
 import math
 from copy import deepcopy
+from datetime import datetime
 from time import monotonic
 
 from .fleet_traffic import clear_prefix, edge_key, route_resources, validate_clearance
@@ -23,6 +24,15 @@ PARKING = {"logistics": ("N16", "N17"), "smartcart": ("H1", "H2")}
 ROLES = {"pinky1": "logistics", "pinky2": "logistics", "pinky3": "smartcart"}
 TARGETS = (*ROLES, "omx1", "omx2", "omx3", "shelf-01")
 OMX3_PACKAGE_MARKERS = frozenset({"15", "16", "17", "21", "22"})
+# Pinky trial_follow.SOFT_STOPS are retryable without unlocking the driver.
+FOLLOW_SOFT_STOPS = {
+    "follow_lost",
+    "follow_status_stale",
+    "follow_target_stale",
+    "follow_max_duration",
+    "follow_not_tracking",
+    "follow_card_mismatch",
+}
 
 
 class FleetControl:
@@ -83,8 +93,9 @@ class FleetControl:
     def save(self, data):
         self.store.save(data)
 
-    def hold(self, reason):
-        data = deepcopy(self.data)
+    def hold(self, reason, *, data=None):
+        if data is None:
+            data = deepcopy(self.data)
         data.update(enabled=False, fault=data["fault"] or reason)
         for active in data["commands"].values():
             data["tasks"][active["task"]]["status"] = "HOLD"
@@ -299,6 +310,15 @@ class FleetControl:
         ):
             self.hold(f"{robot}: {p['state']['fault']}")
         if not self.data["fault"]:
+            if (
+                robot in ROLES
+                and state.get("mode") == "nav2"
+                and state.get("stopped") is True
+                and p.get("active_command_id") is None
+                and not state.get("fault")
+                and self.state_age(robot) <= 3
+            ):
+                self.confirm_follow_pause(robot, p["observed_at"])
             for cid, active in self.data["commands"].items():
                 if active["message"]["target"] == robot and (
                     p.get("active_command_id") == cid
@@ -391,6 +411,8 @@ class FleetControl:
             raise ValueError(
                 "현장에서 추종 시작·정지 보고를 확인한 스마트카트만 승인할 수 있습니다."
             )
+        if self.config["command_timeout_s"] < 9:
+            raise ValueError("추종에는 9초 이상의 관제 명령 제한 시간이 필요합니다.")
 
     def follow_control(self, request_id, operation):
         data = deepcopy(self.data)
@@ -743,6 +765,8 @@ class FleetControl:
                     **base,
                     "map_version": self.config["map_version"],
                     "card_id": task["follow_card"],
+                    # Leave time for delivery and the terminal report before Fleet times out.
+                    "max_duration_s": min(240, self.config["command_timeout_s"] - 8),
                 },
             )
         if stage in {"navigate", "return_nav"}:
@@ -915,6 +939,28 @@ class FleetControl:
         data["resources"] = self.reservations(data)
         self.save(data)  # Persist exact command before MQTT publish.
 
+    def pause_follow(self, data, command_id, observed_at, reason=None):
+        active = data["commands"][command_id]
+        active["follow_stopped_at"] = observed_at
+        data["tasks"][active["task"]].update(stage="follow_stopping", reason=reason)
+
+    def confirm_follow_pause(self, robot, observed_at):
+        for cid, active in self.data["commands"].items():
+            stopped_at = active.get("follow_stopped_at")
+            if (
+                active["message"]["target"] == robot
+                and self.data["tasks"][active["task"]]["stage"] == "follow_stopping"
+                and stopped_at
+                and datetime.fromisoformat(observed_at)
+                > datetime.fromisoformat(stopped_at)
+            ):
+                data = deepcopy(self.data)
+                data["tasks"][active["task"]].update(stage="follow_paused")
+                del data["commands"][cid]
+                data["resources"] = self.reservations(data)
+                self.save(data)
+                return
+
     def result(self, message):
         prior = self.data["events"].get(message["message_id"])
         if prior:
@@ -944,29 +990,48 @@ class FleetControl:
         if p["sequence"] <= active["sequence"]:
             return False
         data = deepcopy(self.data)
-        data["commands"][message["command_id"]]["sequence"] = p["sequence"]
+        current = data["commands"][message["command_id"]]
+        current["sequence"] = p["sequence"]
         data["events"][message["message_id"]] = message
         task = data["tasks"][active["task"]]
-        follow_paused = (
+        pause_interrupted = (
             not data["fault"]
+            and cmd["type"] == "follow_target_command"
             and task["stage"] == "follow_stopping"
             and stop.get("reason") == "follow_pause"
             and p["status"] == "interrupted"
             and p.get("reason") == "follow_pause"
             and p.get("result", {}).get("stopped") is True
         )
-        if follow_paused:
-            task.update(stage="follow_paused", reason=None)
-            del data["commands"][message["command_id"]]
-            data["resources"] = self.reservations(data)
+        if pause_interrupted:
+            current["pause_interrupted"] = True
+            if stopped_at := current.get("pause_stop_completed_at"):
+                self.pause_follow(data, message["command_id"], stopped_at)
+        elif (
+            not data["fault"]
+            and cmd["type"] == "follow_target_command"
+            and task["stage"] in {"follow_start", "following"}
+            and p["status"] in {"rejected", "failed"}
+            and p.get("reason") in FOLLOW_SOFT_STOPS
+        ):
+            self.pause_follow(
+                data, message["command_id"], p["observed_at"], p["reason"]
+            )
         elif (
             cmd["type"] == "follow_target_command"
             and task["stage"] == "follow_start"
             and p["status"] in {"accepted", "in_progress"}
         ):
             task.update(stage="following")
-        elif p["status"] in {"failed", "rejected", "interrupted"}:
-            task.update(status="HOLD", reason=p.get("reason", p["status"]))
+        elif p["status"] in {"failed", "rejected", "interrupted"} or (
+            cmd["type"] == "follow_target_command" and p["status"] == "completed"
+        ):
+            reason = (
+                "unexpected_follow_completion"
+                if p["status"] == "completed"
+                else p["status"]
+            )
+            task.update(status="HOLD", reason=p.get("reason", reason))
             data.update(fault=data["fault"] or task["reason"], enabled=False)
             for other in data["commands"].values():
                 data["tasks"][other["task"]]["status"] = "HOLD"
@@ -993,7 +1058,7 @@ class FleetControl:
                 "command_id": cmd["command_id"],
             }
         self.save(data)
-        if follow_paused or (pinky_completed and cmd["type"] != "line_route_command"):
+        if pinky_completed and cmd["type"] != "line_route_command":
             self.awaiting_state.add(cmd["target"])
         if p["status"] == "in_progress" and not data["fault"]:
             self.route_progress(message["command_id"], p.get("result", {}).get("node"))

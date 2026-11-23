@@ -1,5 +1,7 @@
 """Executor that runs shelf-01 COOPERATIVE tasks through the local OMX control panel (v3.14+).
 
+Copied from c27da61's panel_executor.py; consolidate when task/omx-cooperative is integrated.
+
 The panel owns the arms, cameras and safety stop. This adapter only calls its HTTP API on this PC:
 the panel runs the robot loop and sends each observation to the GPU AI inference server over UDP
 (wire RPI1, panel 3.13+), so the Host reports ready only while the panel says that link is up.

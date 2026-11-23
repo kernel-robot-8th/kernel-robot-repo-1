@@ -134,17 +134,41 @@ class FleetRuntime:
         if stop is None:
             stop = c.data.get("follow_stops", {}).get(event["command_id"])
         if stop:
+            p = event["payload"]
             if (
                 event["source"] != stop["target"]
-                or event["payload"]["boot_version"]
-                != stop["payload"]["expected_boot_version"]
+                or p["boot_version"] != stop["payload"]["expected_boot_version"]
             ):
                 raise ValueError("stop response source/boot mismatch")
+            previous = c.data["events"].get(event["message_id"])
+            if previous:
+                if previous != event:
+                    raise ValueError("conflicting stop event")
+                return True
             data = deepcopy(c.data)
-            previous = data["events"].get(event["message_id"])
-            if previous and previous != event:
-                raise ValueError("conflicting stop event")
             data["events"][event["message_id"]] = event
+            cid = stop["payload"]["target_command_id"]
+            command = data["commands"].get(cid)
+            if (
+                not data["fault"]
+                and command
+                and command.get("stop") == stop
+                and stop["payload"]["reason"] == "follow_pause"
+            ):
+                status = p["status"]
+                if status in {"rejected", "failed", "interrupted"}:
+                    c.hold("follow_stop_" + status, data=data)
+                    return True
+                if status == "completed":
+                    if p.get("result", {}).get("stopped") is not True:
+                        c.hold("follow_stop_unconfirmed", data=data)
+                        return True
+                    if not stop_current(stop, p["boot_version"], datetime.now(UTC)):
+                        c.hold("follow_stop_expired", data=data)
+                        return True
+                    command["pause_stop_completed_at"] = p["observed_at"]
+                    if command.get("pause_interrupted"):
+                        c.pause_follow(data, cid, p["observed_at"])
             c.save(data)
             return True
         return c.result(event)
@@ -156,6 +180,20 @@ class FleetRuntime:
                 not c.data["fault"]
                 and c.data["tasks"][command["task"]]["stage"] == "follow_stopping"
             )
+            stop = command.get("stop")
+            if pause and command.get("follow_stopped_at"):
+                continue  # Terminal result received; keep the reservation until fresh idle state.
+            if (
+                pause
+                and stop
+                and not stop_current(
+                    stop,
+                    c.observed.get(stop["target"], {}).get("boot_version"),
+                    datetime.now(UTC),
+                )
+            ):
+                c.hold("follow_stop_expired")
+                continue
             if (
                 (not c.data["fault"] and not pause)
                 or command.get("stop_published")
@@ -166,7 +204,6 @@ class FleetRuntime:
             target = active["target"]
             boot = active["payload"]["expected_boot_version"]
             observed_boot = c.observed.get(target, {}).get("boot_version", boot)
-            stop = command.get("stop")
             if stop is None:
                 if active["target"] in ROLES and any(
                     e.get("command_id") == cid
@@ -241,6 +278,7 @@ class FleetRuntime:
                 {
                     a["message"]["target"]: a["message"]
                     for a in c.data["commands"].values()
+                    if c.data["tasks"][a["task"]]["stage"] != "follow_stopping"
                 }
                 if c.data["enabled"]
                 else {}

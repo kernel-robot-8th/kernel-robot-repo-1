@@ -306,4 +306,4 @@ uv run python scripts/cooperative_host.py --executor mock --no-require-docking \
   --mock-versions sim-model sim-cal --journal ~/.local/state/roport/shelf-v2.json
 ```
 
-실물 제어판 설정은 `config/shelf_routes.example.json`을 기준으로 한다. 실물 이송은 해당 Pinky 방문의 신선한 도킹 관측이 들어올 때만 허용한다. 도킹 센서 연결과 실물 정지 표본 확인은 현장 적용 단계다. 기존 OmxTrial 시험 실행기는 `--protocol v1`을 지정한다.
+실물 v2 제어판 설정은 `config/shelf_routes.example.json`을 기준으로 한다. 실물 이송은 해당 Pinky 방문의 신선한 도킹 관측이 들어올 때만 허용한다. 도킹 센서 연결과 실물 정지 표본 확인은 현장 적용 단계다. 기존 OmxTrial 시험 실행기는 `--protocol v1`과 `episode_s`가 있는 기존 경로 파일을 사용한다(`config/cooperative_routes.example.json`).

@@ -141,7 +141,7 @@ class VirtualPinky(TrialDriver):
         self.lease_at = None
         self.last = None
         self.follow = None
-        self.follow_progress = False
+        self.follow_deadline = None
         self.fault = fault
         self.motion_time = 0.0
         self.logic = TrialLogic(
@@ -185,7 +185,8 @@ class VirtualPinky(TrialDriver):
             self.validate_action(command)
             self.follow = command
             self.follow_start = dict(self.nav.pose)
-            self.follow_progress = True
+            duration = command["payload"].get("max_duration_s")
+            self.follow_deadline = time.monotonic() + duration if duration else None
             self.logic.node = None
             self._lease("nav2")
 
@@ -199,16 +200,23 @@ class VirtualPinky(TrialDriver):
 
     def drain_results(self):
         with self.lock:
-            if self.follow and self.follow_progress and not self.nav.stopped:
-                self.follow_progress = False
-                return [(self.follow, "progress", {})]
+            if (
+                self.follow
+                and self.follow_deadline is not None
+                and time.monotonic() >= self.follow_deadline
+            ):
+                command = self.follow
+                self.safe_stop("follow_max_duration")
+                return [(command, "failed", {"error_code": "follow_max_duration"})]
             return super().drain_results()
 
     def safe_stop(self, reason):
         with self.lock:
             following = self.follow is not None
             self.follow = None
-            if following and reason == "operator_stop":
+            if reason in {"follow_lost", "follow_max_duration"} or (
+                following and reason == "operator_stop"
+            ):
                 self.nav.cancel()
                 self._lease("none")
             else:

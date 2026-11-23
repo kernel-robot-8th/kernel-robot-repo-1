@@ -65,4 +65,4 @@ npx @asyncapi/cli@latest generate fromTemplate services/roport-control-server/in
 관제는 `roport/workcell/shelf-01/cmd` 채널로 `hold_release_command`를 보낸다. 현재 Host 기동과 보류된 공동 작업의 명령 ID, 운영자, 팔·물품·Pinky 확인이 필요하다. Host가 `command_status`로 보류 명령 ID를 반환하면 관제는 저장 후 `event_stored`를 보낸다. 동일 명령 재전달은 기존 결과를 반환한다. 해제는 Fleet 출발 승인과 별개다.
 
 
-카드 추종의 `follow_target_command`는 현재 기동, 지도 버전과 카드 번호 35~49를 바인딩한다. 관제의 일시 정지는 활성 추종 명령을 대상으로 `robot_stop_command`를 보낸다. 새 추종 명령을 승인하기 전에 Pinky의 최신 정차 상태를 확인한다.
+카드 추종의 `follow_target_command`는 현재 기동, 지도 버전과 카드 번호 35~49를 바인딩한다. 관제는 회당 최대 추종 시간 `max_duration_s`(1~240초)를 자체 명령 제한 시간보다 짧게 내려보낸다. 일시정지 요청 시 기존 추종 명령의 실행 허가를 끊고 `robot_stop_command`를 보낸다. 정지 응답이 거절되거나 만료되면 HOLD로 전환한다. 추종 재개와 복귀는 종료 결과보다 새로운 정지 상태를 확인한 뒤에 허용한다.

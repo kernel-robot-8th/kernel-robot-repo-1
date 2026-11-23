@@ -792,7 +792,8 @@
       "payload": {
         "expected_boot_version": "boot-pinky1-007",
         "map_version": "map-demo-v1",
-        "card_id": 35
+        "card_id": 35,
+        "max_duration_s": 240
       }
     }
   }

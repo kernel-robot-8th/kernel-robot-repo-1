@@ -577,8 +577,7 @@ def test_robot_restart_recovers_inherited_command_without_automatic_motion(
         assert not env.executors["omx3"].tasks
 
 
-def test_follow_wait_pause_resume_and_return_over_mqtt(fleet_mqtt):
-    env = fleet_mqtt
+def prepare_follow(env):
     control = env.control
     inbound = env.submit("follow-box", "inbound")
     env.pump(lambda: control.data["tasks"][inbound]["status"] == "COMPLETE")
@@ -593,6 +592,14 @@ def test_follow_wait_pause_resume_and_return_over_mqtt(fleet_mqtt):
     cart = next(
         c for c in env.clients if c.robot == control.data["tasks"][key]["robot"]
     )
+    env.pump(lambda: cart.robot not in control.awaiting_state)
+    return key, stage, cart
+
+
+def test_follow_wait_pause_resume_and_return_over_mqtt(fleet_mqtt):
+    env = fleet_mqtt
+    control = env.control
+    key, stage, cart = prepare_follow(env)
 
     def stopped():
         return (
@@ -606,6 +613,11 @@ def test_follow_wait_pause_resume_and_return_over_mqtt(fleet_mqtt):
         control.follow_control(key, operation)
         env.pump(lambda: stage() == "following")
         assert cart.driver.follow["payload"]["card_id"] == 42
+        assert (
+            0
+            < cart.driver.follow["payload"]["max_duration_s"]
+            < control.config["command_timeout_s"]
+        )
         first_pose = cart.driver.nav.pose.copy()
         env.pump(lambda first_pose=first_pose: first_pose != cart.driver.nav.pose)
         control.follow_control(key, "pause")
@@ -614,3 +626,121 @@ def test_follow_wait_pause_resume_and_return_over_mqtt(fleet_mqtt):
     control.follow_control(key, "return")
     env.pump(lambda: stage() == "done")
     assert control.observed[cart.robot]["state"]["node"] in {"H1", "H2"}
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["follow_card_mismatch", "follow_lost", "follow_max_duration", "nav2_not_ready"],
+)
+def test_follow_outcomes_over_mqtt(fleet_mqtt, monkeypatch, reason):
+    env = fleet_mqtt
+    control = env.control
+    key, stage, cart = prepare_follow(env)
+    parallel = None
+    send = cart._send
+    block_state = False
+
+    def send_result(message):
+        if not block_state or message["type"] != "robot_state":
+            send(message)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cart, "_send", send_result)
+        if reason == "follow_card_mismatch":
+            validate = cart.driver.validate_action
+
+            def reject(command):
+                if command["type"] == "follow.requested":
+                    raise ValueError(reason)
+                validate(command)
+
+            patch.setattr(cart.driver, "validate_action", reject)
+            block_state = True
+        control.follow_control(key, "approve")
+        if reason != "follow_card_mismatch":
+            env.pump(lambda: stage() == "following")
+            command = cart.driver.follow
+            if reason == "follow_lost":
+                parallel = env.submit("parallel-box", "inbound")
+                env.pump(
+                    lambda: any(
+                        c["task"] == parallel for c in control.data["commands"].values()
+                    )
+                )
+            block_state = reason != "nav2_not_ready"
+            if reason == "follow_max_duration":
+                patch.setattr(cart.driver, "follow_deadline", time.monotonic())
+            else:
+                cart.driver.safe_stop(reason)
+                assert cart.report(command, "failed", error_code=reason)
+            if reason == "nav2_not_ready":
+                env.pump(lambda: control.data["fault"] == reason, expected_fault=reason)
+                assert not control.data["enabled"] and control.data["commands"]
+                return
+        env.pump(lambda: stage() == "follow_stopping")
+        assert control.data["resources"]["public:follow"] == key
+        for operation in ("resume", "return"):
+            with pytest.raises(ValueError, match="현재 작업 단계"):
+                control.follow_control(key, operation)
+    env.pump(lambda: stage() == "follow_paused")
+    assert control.data["tasks"][key]["reason"] == reason
+    assert control.data["enabled"] and control.data["fault"] is None
+    if parallel:
+        assert control.data["tasks"][parallel]["status"] in {"RUNNING", "COMPLETE"}
+    control.follow_control(key, "resume")
+    env.pump(lambda: stage() == "following")
+
+
+@pytest.mark.parametrize("failure", ["rejected", "expired"])
+def test_follow_stop_without_confirmation_holds_over_mqtt(
+    fleet_mqtt, monkeypatch, failure
+):
+    env = fleet_mqtt
+    control = env.control
+    key, stage, cart = prepare_follow(env)
+    control.follow_control(key, "approve")
+    env.pump(lambda: stage() == "following")
+    cid = cart.driver.follow["command_id"]
+    handle = cart.handle
+    publish = env.transport.publish
+    heartbeats = []
+    initial_seq = control.observed[cart.robot]["sequence"]
+
+    def handle_stop(delivery):
+        msg = wire.decode(delivery.payload)
+        if msg["type"] == "robot_stop_command":
+            # Keep reporting fresh state while STOP proof is rejected or lost.
+            cart.driver.safe_stop("operator_stop")
+            if failure == "rejected":
+                cart._save_event(
+                    msg, cart._event(msg, "rejected", 1, reason="stop_target_mismatch")
+                )
+            else:
+                data = dict(cart.journal.data, active=None)
+                cart.journal.save(data)
+            return
+        return handle(delivery)
+
+    def record_poll(topic, message):
+        if message["type"] == "robot_state_request" and message["target"] == cart.robot:
+            heartbeats.append(message["payload"])
+        return publish(topic, message)
+
+    monkeypatch.setattr(cart, "handle", handle_stop)
+    monkeypatch.setattr(env.transport, "publish", record_poll)
+    control.follow_control(key, "pause")
+    fault = "follow_stop_" + failure
+    env.pump(
+        lambda: (
+            control.data["fault"] == fault
+            and any(p == {} for p in heartbeats)
+            and control.observed[cart.robot]["sequence"] > initial_seq
+        ),
+        expected_fault=fault,
+    )
+    assert not any(p.get("keep_running_command_id") == cid for p in heartbeats)
+    assert control.data["tasks"][key]["status"] == "HOLD"
+    assert stage() == "follow_stopping" and cid in control.data["commands"]
+    for operation in ("resume", "return"):
+        with pytest.raises(ValueError, match="현재 작업 단계"):
+            control.follow_control(key, operation)
