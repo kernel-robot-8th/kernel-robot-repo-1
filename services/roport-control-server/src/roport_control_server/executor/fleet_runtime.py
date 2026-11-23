@@ -95,6 +95,10 @@ class FleetRuntime:
             self.publish(
                 "event_stored", source, {"acked_message_id": event["message_id"]}
             )
+            if p.get("result", {}).get("evidence") == "shelf_placed":
+                self.control.shelf_placement_acked(
+                    event["command_id"], event["message_id"]
+                )
 
     def stored_result(self, event):
         c = self.control

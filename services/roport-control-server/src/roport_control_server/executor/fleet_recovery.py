@@ -223,6 +223,7 @@ def reconcile(control, command_id, outcome, note, *, confirmed_boot=None):
         e
         for e in events
         if e["payload"]["status"] in {"completed", "rejected", "failed", "interrupted"}
+        and e["payload"].get("result", {}).get("evidence") != "shelf_placed"
     ]
     stop = active.get("stop")
     stop_event = next(
@@ -238,11 +239,19 @@ def reconcile(control, command_id, outcome, note, *, confirmed_boot=None):
     )
     ended_before_stop = (
         bool(terminal)
-        and active["message"]["target"] in ROLES
         and any(
             e.get("command_id") == stop["command_id"]
             and e["payload"]["status"] == "rejected"
-            and e["payload"].get("reason") == "stop_target_mismatch"
+            and (
+                (
+                    active["message"]["target"] in ROLES
+                    and e["payload"].get("reason") == "stop_target_mismatch"
+                )
+                or (
+                    active["message"]["type"] == "shelf_transfer_command"
+                    and e["payload"].get("reason") == "target_command_not_active"
+                )
+            )
             for e in control.data["events"].values()
         )
         if stop
@@ -299,6 +308,10 @@ def reconcile(control, command_id, outcome, note, *, confirmed_boot=None):
     data = deepcopy(control.data)
     task = data["tasks"][active["task"]]
     p = event["payload"] if event else {}
+    other_commands = any(
+        cid != command_id and command["task"] == active["task"]
+        for cid, command in data["commands"].items()
+    )
     evidence = {}
     if outcome == "completed":
         if p["status"] != "completed":
@@ -339,11 +352,22 @@ def reconcile(control, command_id, outcome, note, *, confirmed_boot=None):
         role = data["roles"][task["robot"]]
         if current.get("mode") != "line" or current.get("node") not in PARKING[role]:
             raise ValueError("return the cleared robot to a parking node first")
-        # Operator confirms removal of this package; never edits unrelated shelf stock.
-        for slot in data["slots"].values():
-            if slot["package_id"] == task["request"]["package_id"]:
-                slot.update(state="empty", package_id=None)
-        task.update(stage="done", status="CANCELED", reason=note)
+        if other_commands:
+            if active["message"]["target"] != task["robot"]:
+                raise ValueError(
+                    "reconcile the Pinky return before removing shelf stock"
+                )
+            task["stage"] = "await_shelf_alignment"
+        else:
+            # Operator confirms removal of this package; never edits unrelated shelf stock.
+            for slot in data["slots"].values():
+                if slot["package_id"] == task["request"]["package_id"]:
+                    slot.update(state="empty", package_id=None)
+                    slot.pop("alignment", None)
+            task.pop("shelf_alignment_pending", None)
+            task.update(stage="done", status="CANCELED", reason=note)
+    if other_commands:
+        task["status"] = "HOLD"
     task["robot_boot"] = control.observed[task["robot"]]["boot_version"]
     del data["commands"][command_id]
     data["resources"] = control.reservations(data)
