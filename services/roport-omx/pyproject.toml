@@ -13,3 +13,5 @@ dev = ["ruff==0.17.2"]
 
 [tool.ruff]
 target-version = "py312"
+# Panel에서 그대로 가져온 판정·계산 모듈(출처: src/roport_omx/shelf_direct/panel_vendor/UPSTREAM.md)
+extend-exclude = ["src/roport_omx/shelf_direct/panel_vendor"]
