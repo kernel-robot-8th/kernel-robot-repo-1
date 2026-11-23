@@ -119,6 +119,8 @@ ros2 run roport_follow demo_runner --map <지도.yaml> --layout <레이아웃.ya
 - `--demo` + 로봇 `demo_runner`: 화면 「① N08 → N12 라인 출발 · ② Nav2 전환 · ③ 추종 시작 · ■ 정지」를 로봇 TrialDriver 에
   관제 trial-v1 과 같은 모양의 명령으로 넣음. 브라우저가 3 s 넘게 화면을 안 보면 살아 있음 신호가 끊기고 로봇이 멈춤
   (시험 탭을 앞에 둘 것). 관제에 추종 명령이 생기면 빼는 시험용 지름길이며, 최종 구조는 폰·패드 → 서비스 서버 → 관제 → 로봇.
+- `demo_runner` 의 `alert {"on": true|false}`: 탑승 시간 알림을 `smartcart/boarding_alert`(Bool, 2 Hz)로 내보낸다. 로봇 LCD·LED·부저는
+  `roport_line_nav status_indicator`(smartcart:=true)가 맡는다(같은 LCD 를 쓰는 다른 표시 프로그램과 함께 켜지 않음). 주행 명령이 아니다. 화면(콘솔) 신호가 끊기면 알림도 끈다.
 - `--torch-threads 4`: YOLO CPU 스레드 수(노트북 8코어에서 기본값보다 빠름, 실로봇에서 비교할 것).
 - 로봇 쪽 추종(`follow.requested`, Nav2 동적 따라가기 BT)은 `roport_pinky` README 의 「고객 카드 추종」 절.
 - 주행 중에는 노트북·로봇에서 ROS 프로그램을 켜고 끄지 않는다(구동 감시 상태가 0.3 s 끊기면 로봇이 멈추고 잠김). 노트북 도구를 다시 켰으면 로봇 trial.launch → demo_runner 순서로 다시 켠다.

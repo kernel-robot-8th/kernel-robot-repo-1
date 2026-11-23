@@ -249,3 +249,101 @@ def test_default_logistics_does_not_retry_failed_indicator_ack(monkeypatch, back
     node.on_state(String(data=json.dumps(st('stopped'))))
     node.tick()
     assert calls == [Status('READY').led, Status('STOPPED').led]
+
+
+def test_cart_boarding_alert_card_follow_and_demo_goals():
+    from roport_line_nav.status_indicator import cart_status
+    line = st('idle')
+    following = {'phase': 'navigating', 'goal_id': 'follow', 'recoveries': 0}
+    assert cart_status(None, None, following, line).name == 'SHOPPING'          # 고객 카드 추종
+    assert cart_status(None, None, dict(following, phase='completed'), line).name == 'CART_READY'
+    boarding = cart_status(None, None, following, line, True)
+    assert boarding.name == 'BOARDING' and boarding.blink_hz == 2.0 and boarding.led == (255, 140, 0)
+    assert cart_status('BLOCKED', None, following, line, True).name == 'BLOCKED'   # 막힘이 먼저
+    assert cart_status(None, None, {'phase': 'navigating', 'goal_id': 'demo_ARR'}, line).detail == 'ARR로 이동 중'
+
+
+def test_boarding_beep_schedule():
+    from roport_line_nav.status_indicator import BeepSchedule
+    b = BeepSchedule(every_s=5.0)
+    assert [b.due(t, True) for t in (0.0, 1.0, 4.9, 5.0, 6.0)] == [True, False, False, True, False]
+    assert b.due(7.0, False) is False and b.due(7.5, True) is True              # 다시 켜면 바로 울림
+
+
+def test_cart_boarding_topic_shows_alert_and_beeps_until_cleared():
+    rclpy = pytest.importorskip('rclpy')
+    from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.parameter import Parameter
+    from std_msgs.msg import Bool
+    from roport_line_nav.status_indicator import make_node
+
+    ctx = Context()
+    rclpy.init(context=ctx, domain_id=195)
+    peer = rclpy.create_node('fake_boarding', context=ctx, namespace='/cart_boarding_test')
+    node = make_node(context=ctx, namespace='/cart_boarding_test', parameter_overrides=[
+        Parameter('lcd', value=False), Parameter('smartcart', value=True), Parameter('led_backend', value='none')])
+    beeps = []
+    node.beeper = lambda: beeps.append(time.monotonic())
+    ex = SingleThreadedExecutor(context=ctx)
+    ex.add_node(node)
+    ex.add_node(peer)
+    pub = peer.create_publisher(Bool, 'smartcart/boarding_alert', 1)
+    try:
+        for on in (True, False):                        # 끄면 다른 입력이 없으니 기존 규칙대로 NO_SIGNAL
+            end = time.monotonic() + 4.
+            while time.monotonic() < end and (node.status is None or (node.status.name == 'BOARDING') != on):
+                pub.publish(Bool(data=on))
+                ex.spin_once(timeout_sec=.025)
+            assert (node.status.name == 'BOARDING') == on
+        assert len(beeps) == 1                          # 켜질 때 한 번(5 s 안에 끔)
+    finally:
+        ex.shutdown()
+        node.destroy_node()
+        peer.destroy_node()
+        rclpy.shutdown(context=ctx)
+
+
+@pytest.mark.parametrize('smartcart,buzzer', [(True, False), (False, True)])
+def test_boarding_ignored_without_buzzer_or_outside_cart_mode_and_expires(smartcart, buzzer):
+    """buzzer:=false 면 표시만, 물류 모드는 탑승 알림을 받지 않고, 값이 끊기면(stale) 알림이 꺼진다."""
+    rclpy = pytest.importorskip('rclpy')
+    from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.parameter import Parameter
+    from std_msgs.msg import Bool
+    from roport_line_nav.status_indicator import make_node
+
+    ctx = Context()
+    rclpy.init(context=ctx, domain_id=196)
+    peer = rclpy.create_node('fake_boarding2', context=ctx, namespace='/cart_boarding_test2')
+    node = make_node(context=ctx, namespace='/cart_boarding_test2', parameter_overrides=[
+        Parameter('lcd', value=False), Parameter('smartcart', value=smartcart), Parameter('led_backend', value='none'),
+        Parameter('buzzer', value=buzzer), Parameter('stale_sec', value=0.3)])
+    beeps = []
+    node.beeper = lambda: beeps.append(1)
+    ex = SingleThreadedExecutor(context=ctx)
+    ex.add_node(node)
+    ex.add_node(peer)
+    pub = peer.create_publisher(Bool, 'smartcart/boarding_alert', 1)
+    try:
+        end = time.monotonic() + 1.5
+        while time.monotonic() < end:
+            pub.publish(Bool(data=True))
+            ex.spin_once(timeout_sec=.025)
+            if smartcart and node.status is not None and node.status.name == 'BOARDING':
+                break
+        if smartcart:
+            assert node.status.name == 'BOARDING'
+            end = time.monotonic() + 1.0                # 보내기를 멈추면 stale_sec 뒤 꺼짐
+            while time.monotonic() < end and node.status.name == 'BOARDING':
+                ex.spin_once(timeout_sec=.025)
+            assert node.status.name != 'BOARDING'
+        else:
+            assert 'boarding' not in node.inputs and (node.status is None or node.status.name != 'BOARDING')
+        assert beeps == []
+    finally:
+        ex.shutdown()
+        node.destroy_node()
+        peer.destroy_node()
+        rclpy.shutdown(context=ctx)

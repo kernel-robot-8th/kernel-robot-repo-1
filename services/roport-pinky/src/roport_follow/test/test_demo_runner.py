@@ -181,3 +181,24 @@ def test_lift_nav_recovery_cap_keeps_explicit_arguments():
     names = [n.tag for n in tree.iter()]
     assert 'ClearEntireCostmap' not in names and 'Spin' not in names and 'BackUp' not in names
     assert names.count('Wait') == 1 and 'FollowPath' in names
+
+
+def test_alert_only_toggles_boarding_and_never_drives():
+    d, c, r = make()
+    r.handle({'op': 'alert', 'on': True})
+    assert r.state()['boarding'] is True and r.events[-1] == {**r.events[-1], 'kind': 'alert', 'on': True}
+    r.handle({'op': 'alert', 'on': 'yes'})
+    assert r.events[-1]['reason'] == 'invalid_alert' and r.state()['boarding'] is True
+    r.handle({'op': 'alert', 'on': False})
+    assert r.state()['boarding'] is False
+    assert not any(x[0] in ('dispatch', 'safe_stop', 'validate') for x in d.calls)
+
+
+def test_alert_turns_off_when_console_link_is_lost_after_stopping_drive():
+    d, c, r = make()
+    r.handle({'op': 'route', 'route': ['N08', 'N12']})
+    r.handle({'op': 'alert', 'on': True})
+    c.t += 1.5
+    r.tick()
+    assert ('safe_stop', 'control_link_lost') in d.calls and r.state()['boarding'] is False
+    assert [e['kind'] for e in r.events][-2:] == ['stopped', 'alert']

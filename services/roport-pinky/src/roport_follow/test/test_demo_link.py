@@ -59,3 +59,12 @@ def test_follow_lost_after_is_explicit_and_bounded():
     for bad in (0.5, 8, True):
         with pytest.raises(ValueError):
             demo_command({'op': 'follow', 'card_id': 35, 'lost_after_s': bad})
+
+
+def test_alert_is_on_or_off_only():
+    from roport_follow.demo_link import demo_command
+    assert demo_command({'op': 'alert', 'on': True}) == {'op': 'alert', 'on': True}
+    assert demo_command({'op': 'alert', 'on': False, 'title': 'x'}) == {'op': 'alert', 'on': False}
+    for bad in ({'op': 'alert'}, {'op': 'alert', 'on': 1}):
+        with pytest.raises(ValueError):
+            demo_command(bad)

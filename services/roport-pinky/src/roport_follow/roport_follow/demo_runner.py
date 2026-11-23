@@ -8,7 +8,10 @@ TrialDriver·trial_guard(구동권 문지기)는 그대로 쓰고, 관제 키트
             op = ping | route {"route": [...], "speed_limit_mps"} | switch_nav2 | switch_line(N12 에서 라인 복귀)
                  | navigate {"goal_id", "x", "y", "yaw"} (map 좌표 m·rad, Nav2 모드)
                  | follow {"card_id", "standoff_m", "max_duration_s", "lost_after_s"} | stop
+                 | alert {"on": bool} (탑승 시간 알림 켜기·끄기. 주행 명령이 아님)
   ROS 출력  demo/state std_msgs/String JSON 2 Hz: 드라이버 관측·진행 중 명령·최근 결과·콘솔 연결
+            smartcart/boarding_alert std_msgs/Bool 2 Hz → roport_line_nav status_indicator(smartcart:=true)가
+            LCD·LED·부저로 알림. 언제 켤지(탑승 시각 기준)는 명령을 보내는 쪽이 정한다.
 안전: 콘솔 신호(ping 또는 명령)가 console_timeout_s(1 s) 넘게 없으면 heartbeat 를 멈추고(구동권이 1 s 뒤 닫힘)
       진행 중 명령이 있으면 safe_stop('control_link_lost'). 모터 bringup·Nav2 실행은 하지 않는다(사람이 함).
 
@@ -28,7 +31,7 @@ import time
 import uuid
 from pathlib import Path
 
-OPS = ('ping', 'route', 'switch_nav2', 'switch_line', 'navigate', 'follow', 'stop')
+OPS = ('ping', 'route', 'switch_nav2', 'switch_line', 'navigate', 'follow', 'stop', 'alert')
 PATIENT_BT = Path(__file__).parent / 'bt' / 'navigate_patient.xml'
 # Nav2 목표 도착 판정(드라이버). Nav2 goal checker(xy 0.08 m)보다 넉넉히: 시험 목표 좌표가 실측 전 후보값이라
 NAV_POSITION_TOL_M = 0.12
@@ -62,6 +65,7 @@ class DemoRunner:
         self.active = None              # 진행 중 명령 dict
         self.events = collections.deque(maxlen=20)
         self.link_stopped = False
+        self.boarding = False           # 탑승 시간 알림(표시·소리만, 주행과 무관)
         self.lock = threading.Lock()
 
     # ---- 명령 만들기(관제 trial-v1 과 같은 모양)
@@ -138,6 +142,13 @@ class DemoRunner:
             self.link_stopped = False
             if op == 'ping':
                 return
+            if op == 'alert':
+                if not isinstance(msg.get('on'), bool):
+                    self._event('rejected', op=op, reason='invalid_alert')
+                    return
+                self.boarding = msg['on']
+                self._event('alert', on=self.boarding)
+                return
             if op == 'stop':
                 if self.active is not None:
                     self.driver.safe_stop('operator_stop')
@@ -170,6 +181,9 @@ class DemoRunner:
                 self.driver.safe_stop('control_link_lost')
                 self._event('stopped', op=self.active['type'], reason='control_link_lost')
                 self.active, self.link_stopped = None, True
+            if self.boarding and not self.console_alive():  # 알림을 켠 화면이 끊김: 끌 방법이 없으니 끈다
+                self.boarding = False
+                self._event('alert', on=False, reason='control_link_lost')
             for original, phase, details in self.driver.drain_results():
                 self._event(phase, op=original.get('type'), **{k: v for k, v in details.items()
                                                                 if isinstance(v, (str, int, float, bool, type(None)))})
@@ -186,7 +200,7 @@ class DemoRunner:
             return {'observed': {k: v for k, v in obs.items() if isinstance(v, (str, int, float, bool, type(None)))},
                     'active': None if self.active is None else {'type': self.active['type'],
                                                                 'command_id': self.active['command_id']},
-                    'console_alive': self.console_alive(), 'events': list(self.events),
+                    'console_alive': self.console_alive(), 'boarding': self.boarding, 'events': list(self.events),
                     'map_version': self.profile['map_version'], 'stamp': time.time()}
 
 
@@ -227,7 +241,7 @@ def main(argv=None):
     ap.add_argument('--keep-nav-recovery-cap', action='store_true',
                     help='Nav2 목표의 누적 복구 상한(2번)을 그대로 둠. 기본은 시험용으로 상한 없음(30 s 무진행이면 멈춤)')
     a = ap.parse_args(argv)
-    from std_msgs.msg import String
+    from std_msgs.msg import Bool, String
 
     from roport_line_nav.graph import Graph
     from roport_pinky.trial_driver import TrialDriver
@@ -252,6 +266,7 @@ def main(argv=None):
 
     node.create_subscription(String, 'demo/cmd', on_cmd, 10)
     pub = node.create_publisher(String, 'demo/state', 5)
+    boarding_pub = node.create_publisher(Bool, 'smartcart/boarding_alert', 1)
     print(f'demo_runner: map {profile["map_id"]} {profile["map_version"]}, start {a.start_node}. '
           '시험용(관제 대신). 콘솔 신호가 끊기면 멈춤.'
           + (' [Nav2 모드로 바로 시작: 로봇이 N12 에 있고 처음 위치를 넣었는지 확인]' if a.start_mode == 'nav2' else ''),
@@ -262,7 +277,9 @@ def main(argv=None):
             runner.tick()
             if time.monotonic() - last >= 0.5:
                 last = time.monotonic()
-                pub.publish(String(data=json.dumps(runner.state(), ensure_ascii=False)))
+                state = runner.state()
+                pub.publish(String(data=json.dumps(state, ensure_ascii=False)))
+                boarding_pub.publish(Bool(data=bool(state['boarding'])))
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass
