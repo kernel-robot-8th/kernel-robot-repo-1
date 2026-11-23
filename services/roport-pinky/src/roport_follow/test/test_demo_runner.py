@@ -405,3 +405,25 @@ def test_fine_align_is_opt_in_so_default_n12_return_is_unchanged(monkeypatch):
     assert calls == [] and made['driver'].nav.docking is None
     dr.main(base + ['--fine-align'])
     assert calls == [made['driver']]
+
+
+def test_reconnect_ping_after_expiry_also_turns_the_boarding_alert_off():
+    """탑승 알림을 켠 채 연결이 만료되고 다음 tick 전에 ping 이 와도 주행 정지·추종 취소·알림 해제가 모두 된다."""
+    from types import SimpleNamespace
+    d, c, r = make()
+    d.nav = SimpleNamespace(snapshot=lambda: {'pose': {'x': 0.0, 'y': 0.0, 'yaw': 0.0}})
+    r.handle({'op': 'ping'})
+    r.handle({'op': 'alert', 'on': True})
+    r.handle({'op': 'follow', 'card_id': 35, 'turn_first': True})     # 돌기 진행 중(active)
+    assert r.state()['boarding'] is True and r.state()['active']['type'] == 'navigate.requested'
+    c.t += 1.2                                          # 만료. tick 이 돌기 전에
+    r.handle({'op': 'ping'})                            # 재연결 ping 이 먼저 도착
+    st = r.state()
+    assert ('safe_stop', 'control_link_lost') in d.calls             # 주행 정지
+    assert st['active'] is None and st['pending'] is None            # 돌기 뒤 추종도 취소
+    assert st['boarding'] is False                                   # 탑승 알림 해제
+    kinds = [(e['kind'], e.get('reason')) for e in r.events]
+    assert ('alert', 'control_link_lost') in kinds and ('stopped', 'control_link_lost') in kinds
+    r.tick()                                            # 다음 tick: 다시 살아 있음, 알림은 꺼진 채
+    assert r.state()['boarding'] is False and r.console_alive() is True
+    assert all(x[1] != 'follow.requested' for x in d.calls if x[0] == 'dispatch')

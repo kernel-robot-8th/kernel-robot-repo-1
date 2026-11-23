@@ -204,7 +204,8 @@ class DemoRunner:
         self._event('accepted', op=cmd['type'], command_id=cmd['command_id'])
 
     def _link_lost(self):
-        """콘솔 신호가 끊김(lock 안에서 부름): 기다리던 추종을 버리고 진행 중 명령을 멈춘다."""
+        """콘솔 신호가 끊김(lock 안에서 부름): 기다리던 추종을 버리고 진행 중 명령을 멈추고 탑승 알림을 끈다.
+        tick() 과, 만료 뒤 다음 tick 전에 온 신호(handle)가 같이 부른다 — 어느 쪽이 먼저든 셋 다 처리된다."""
         if self.after_turn is not None:     # 돈 뒤 기다리던 추종: 끊기면 새 구동을 내지 않음
             self._event('stopped', op='follow.requested', reason='control_link_lost')
             self.after_turn = self.turned_at = None
@@ -213,6 +214,9 @@ class DemoRunner:
             self.driver.safe_stop('control_link_lost')
             self._event('stopped', op=self.active['type'], reason='control_link_lost')
             self.active, self.link_stopped = None, True
+        if self.boarding:                   # 알림을 켠 화면이 끊김: 끌 방법이 없으니 끈다
+            self.boarding = False
+            self._event('alert', on=False, reason='control_link_lost')
 
     def console_alive(self):
         return self.console_at is not None and self.now() - self.console_at <= self.timeout
@@ -225,9 +229,6 @@ class DemoRunner:
                 self.driver.heartbeat()
             else:
                 self._link_lost()
-            if self.boarding and not self.console_alive():  # 알림을 켠 화면이 끊김: 끌 방법이 없으니 끈다
-                self.boarding = False
-                self._event('alert', on=False, reason='control_link_lost')
             for original, phase, details in self.driver.drain_results():
                 self._event(phase, op=original.get('type'), **{k: v for k, v in details.items()
                                                                 if isinstance(v, (str, int, float, bool, type(None)))})
