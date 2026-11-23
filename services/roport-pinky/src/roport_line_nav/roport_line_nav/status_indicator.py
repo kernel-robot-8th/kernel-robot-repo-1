@@ -119,8 +119,20 @@ def classify(state):
 SHOPPING_STATES = ('SHOPPING', 'COME_CLOSER', 'BLOCKED', 'PAUSED', 'UNAVAILABLE')
 
 
+# 탑승 시간 알림보다 먼저 보여 줄 상태: 막힘과 명시적인 정지·이상(알림이 정지·오류를 가리지 않게)
+BOARDING_YIELDS_TO = ('BLOCKED', 'PAUSED', 'UNAVAILABLE', 'STOPPED', 'ERROR')
+
+
 def cart_status(shop, trip, navigation, line, boarding=False):
-    """Prefer active missions over idle telemetry. A verified terminal blockage wins, then the boarding alert."""
+    """Passenger display. Stops and faults win over the boarding alert; the alert wins over the rest."""
+    status = _cart_base(shop, trip, navigation, line)
+    if boarding is True and status.name not in BOARDING_YIELDS_TO:
+        return Status('BOARDING')
+    return status
+
+
+def _cart_base(shop, trip, navigation, line):
+    """Prefer active missions over idle telemetry. A verified terminal blockage wins."""
     trip = trip or {}
     nav = navigation or {}
     recovery_exhausted = (nav.get('error_code') in ('nav2_recovery_timeout', 'nav2_recovery_limit')
@@ -129,8 +141,6 @@ def cart_status(shop, trip, navigation, line, boarding=False):
     if shop == 'BLOCKED' or trip.get('path_blocked') is True or (
             nav.get('phase') == 'failed' and (recovery_exhausted or no_path)):
         return Status('BLOCKED', '카트가 멈춰 있어요')
-    if boarding is True:
-        return Status('BOARDING')
     if shop in SHOPPING_STATES:
         return Status(shop, '카트 앞에 서 주세요' if shop == 'COME_CLOSER' else '')
     if nav.get('goal_id') == FOLLOW_GOAL_ID and nav.get('phase') in ('navigating', 'recovering'):

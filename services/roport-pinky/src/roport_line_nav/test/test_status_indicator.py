@@ -347,3 +347,19 @@ def test_boarding_ignored_without_buzzer_or_outside_cart_mode_and_expires(smartc
         node.destroy_node()
         peer.destroy_node()
         rclpy.shutdown(context=ctx)
+
+
+def test_boarding_alert_never_hides_stops_or_faults():
+    from roport_line_nav.status_indicator import cart_status
+    idle, following = st('idle'), {'phase': 'navigating', 'goal_id': 'follow', 'recoveries': 0}
+    shown = lambda shop=None, trip=None, nav=None, line=idle: cart_status(shop, trip, nav, line, True).name
+    assert shown('PAUSED', nav=following) == 'PAUSED'                    # 추종 일시정지
+    assert shown('UNAVAILABLE') == 'UNAVAILABLE'
+    assert shown(trip={'phase': 'STOPPED', 'goal': 'G1'}) == 'UNAVAILABLE'   # 복귀 중 정지
+    assert shown(nav={'phase': 'failed', 'goal_id': 'G1', 'error_code': 'nav2_cancel_result_unknown'}) == 'UNAVAILABLE'
+    assert shown(line=st('error', reason='line_lost')) == 'ERROR'        # 라인 오류
+    assert shown(line=st('stopped', reason='stop')) == 'STOPPED'
+    assert shown('BLOCKED') == 'BLOCKED'
+    # 알림이 이기는 상태: 대기·쇼핑·이동·가까이 와 주세요
+    assert shown() == shown('SHOPPING') == shown('COME_CLOSER') == shown(nav=following) == 'BOARDING'
+    assert shown(nav={'phase': 'navigating', 'goal_id': 'G1'}) == 'BOARDING'

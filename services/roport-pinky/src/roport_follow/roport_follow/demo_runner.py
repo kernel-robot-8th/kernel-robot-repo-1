@@ -138,16 +138,17 @@ class DemoRunner:
             if op not in OPS:
                 self._event('rejected', op=op, reason='unknown_op')
                 return
-            self.console_at = self.now()
-            self.link_stopped = False
-            if op == 'ping':
-                return
             if op == 'alert':
+                # 표시 전용: 주행 연결의 살아 있음 신호로 세지 않는다(alert 만 계속 와도 연결 유실 정지가 동작해야 함)
                 if not isinstance(msg.get('on'), bool):
                     self._event('rejected', op=op, reason='invalid_alert')
                     return
                 self.boarding = msg['on']
                 self._event('alert', on=self.boarding)
+                return
+            self.console_at = self.now()
+            self.link_stopped = False
+            if op == 'ping':
                 return
             if op == 'stop':
                 if self.active is not None:
