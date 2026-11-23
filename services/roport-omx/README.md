@@ -92,13 +92,19 @@ HOLD하고 Pinky의 다음 주행을 발행하지 않습니다. OMX3만 실행�
 반환할 수 있습니다. 이 기준은 학습된 N01 도킹 위치·보정값이 현장에 적용된 것을 전제로 합니다.
 
 OMX3 factory는 `--factory roport_omx.omx3.field:build`입니다. `ROPORT_OMX3_INFER_SERVER`
-(`host:port`)와 `ROPORT_OMX3_MODEL`(GPU PC 체크포인트 경로)이 필요합니다. 포트·카메라·키 파일은
+(`host:port`), `ROPORT_OMX3_MODEL`(GPU PC 체크포인트 경로), `ROPORT_OMX3_PACKAGE_SIZES`(상자 크기
+JSON, 형식: `{"15": "small", "16": "large", ...}`. 값은 관제와 합의한 상자별 크기)가 필요합니다.
+크기 파일은 학습한 마커 15·16·17·21·22를 빠짐없이 `small`·`large`로 담아야 하며, 아니면 GPU·팔을
+쓰기 전에 시작을 거절합니다(관제 선반 배정이 이 값을 씁니다). 포트·카메라·키 파일은
 `ROPORT_OMX3_PORT`·`ROPORT_OMX3_CAMERA`·`ROPORT_OMX3_KEY_FILE`로 바꿀 수 있습니다. 모델을
 GPU 서버에 먼저 올린 뒤 팔을 연결하며, 연결할 때 토크를 씁니다. `stopped`는 Runner와 상태 조회가
-이미 읽은 관절 값으로 판정합니다. 0.5초 넘게 모든 관절 변화가 0.3 이하이면 정지이며, 실측한 정지
-떨림은 최대 0.049였습니다. `model_version`은 체크포인트 폴더 이름이고 `calibration_version`은
-`robot_id-캘리브레이션 파일 sha256 앞 8자리`입니다. lerobot·OpenCV·paho-mqtt가 함께 있는 장비
-환경이 필요하며, 실물 팔과 실브로커로는 아직 검증하지 않았습니다.
+이미 읽은 관절 값으로 판정합니다. 자세 유지(`hold`) 이후 0.5초 넘게 모든 관절 변화가 0.3 이하이면
+정지이며, 정지 요청 전 관측은 쓰지 않습니다. 실측한 정지 떨림은 최대 0.049였습니다. 종료할 때
+`close()`가 Runner를 취소하고 끝날 때까지(최대 5초) 기다린 뒤 정지를 확인하고(최대 3초) 연결을
+닫습니다. 토크는 끄지 않으며, Runner가 끝나지 않으면 연결을 그대로 둡니다. `model_version`은
+체크포인트 폴더 이름이고 `calibration_version`은 `robot_id-캘리브레이션 파일 sha256 앞 8자리`입니다.
+lerobot·OpenCV·paho-mqtt가 함께 있는 장비 환경이 필요하며, 실물 팔과 실브로커로는 아직 검증하지
+않았습니다.
 
 아래 정렬 센서 계약은 **OMX1·2 개별 이송과 `shelf-01` 공동 이송**에 적용합니다.
 

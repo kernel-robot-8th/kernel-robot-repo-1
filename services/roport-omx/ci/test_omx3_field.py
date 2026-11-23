@@ -1,8 +1,10 @@
 """OMX 3 field factory 검사: 가짜 어댑터 모듈로 장비·GPU·cv2·lerobot 없이."""
 
+import json
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -90,6 +92,32 @@ class StopWatchTest(unittest.TestCase):
         self.assertEqual(robot.calls, [("send", [1] * 6), "hold"])
         self.assertIsNone(watch.ready())
 
+    def test_hold_drops_samples_before_stop_request(self):
+        # #149 리뷰 재현: 정지 요청 전 0.6 s 정지 표본 + 요청 0.01 s 뒤 표본 1개는 정지가 아니다
+        robot, clock = FakeRobot(), Clock()
+        watch = field.StopWatch(robot, clock, clock.wall)
+        for _ in range(7):
+            watch.observe()
+            clock.t += 0.1
+        self.assertTrue(watch.status()["stopped"])
+        watch.hold()
+        clock.t += 0.01
+        watch.observe()
+        self.assertFalse(watch.status()["stopped"])
+        for _ in range(5):
+            clock.t += 0.1
+            watch.observe()
+        self.assertTrue(watch.status()["stopped"])  # hold 뒤 0.5 s 모이면 정지
+
+    def test_hold_failure_still_drops_samples(self):
+        robot = FakeRobot()
+        robot.hold = mock.Mock(side_effect=OSError("bus"))
+        watch = watch_samples([INIT] * 7)
+        watch.robot = robot
+        with self.assertRaises(OSError):
+            watch.hold()
+        self.assertEqual(watch.status()["observed_at"], None)
+
 
 class FakeLeRobotOmx(FakeRobot):
     instances: ClassVar[list] = []
@@ -106,6 +134,9 @@ class FakeLeRobotOmx(FakeRobot):
         if self.fail:
             raise ConnectionError("no arm")
         self.connected = True
+
+    def disconnect(self):
+        EVENTS.append("disconnect")
 
     fail_next = False
 
@@ -148,12 +179,15 @@ class BuildTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         CAL = Path(tmp.name) / "omx_follower_arm.json"
         CAL.write_text('{"shoulder_pan": {}}')
+        self.sizes = Path(tmp.name) / "sizes.json"
+        self.sizes.write_text(json.dumps(SIZES))
         EVENTS.clear()
         FakeLeRobotOmx.fail_next = False
         model = "/srv/il/checkpoints/me/marker_act_x/pretrained_model"
         env = {
             "ROPORT_OMX3_INFER_SERVER": "192.0.2.10:5600",
             "ROPORT_OMX3_MODEL": model,
+            "ROPORT_OMX3_PACKAGE_SIZES": str(self.sizes),
         }
         for patch in (
             mock.patch.dict(sys.modules, fake_modules()),
@@ -172,6 +206,7 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(
             executor.marker_ids, {"15": 15, "16": 16, "17": 17, "21": 21, "22": 22}
         )
+        self.assertEqual(executor.package_sizes, SIZES)
         self.assertEqual(executor.versions["model_version"], "marker_act_x")
         self.assertRegex(
             executor.versions["calibration_version"], r"^omx_follower_arm-[0-9a-f]{8}$"
@@ -192,8 +227,108 @@ class BuildTest(unittest.TestCase):
             field.build()
         self.assertEqual(EVENTS, ["load", "connect", "close"])
 
+    def test_package_sizes_must_cover_trained_markers_before_connect(self):
+        for sizes in (
+            {k: v for k, v in SIZES.items() if k != "22"},  # 빠진 상자
+            {**SIZES, "22": "unknown"},  # 관제가 배정하지 못하는 크기
+            {**SIZES, "18": "small"},  # 학습하지 않은 마커
+        ):
+            self.sizes.write_text(json.dumps(sizes))
+            with self.assertRaises(ValueError):
+                field.build()
+        self.assertEqual(EVENTS, [])  # GPU·팔 모두 건드리기 전에 거절
+
     def test_model_version_without_pretrained_suffix(self):
         self.assertEqual(field.model_version("/a/b/model_x"), "model_x")
+
+
+class SlowRobot(FakeRobot):
+    """관측 한 번에 시간이 걸리는 팔: 종료가 Runner의 hold를 기다리는지 본다."""
+
+    def observe(self):
+        time.sleep(0.02)
+        return super().observe()
+
+    def send(self, action):
+        super().send(action)
+        self.state = list(action)
+
+    def disconnect(self):
+        self.calls.append("disconnect")
+
+
+class FakeMarker:
+    def __init__(self, marker_id):
+        pass
+
+    def reset(self):
+        pass
+
+    def find(self, frame):
+        return (100.0, 300.0)  # 쟁반 밖: 완료되지 않고 정책이 계속 돈다
+
+    def mark(self, frame):
+        return frame, (100.0, 300.0)
+
+
+class FakePolicy:
+    def reset(self, marker_id):
+        pass
+
+    def act(self, state, frame):
+        return [INIT[0] + 20, *INIT[1:]]  # init을 벗어난 채 머문다: 종료 전까지 실행 중
+
+
+class CloseTest(unittest.TestCase):
+    def make(self):
+        robot, client = SlowRobot(), mock.Mock()
+        watch = field.StopWatch(robot)
+        runner = field.Runner(watch, FakePolicy(), FakeMarker)
+        executor = field.FieldWarehouseExecutor(
+            runner,
+            devices=(client, robot),
+            marker_ids={"15": 15},
+            model_version="m",
+            calibration_version="c",
+            package_sizes={"15": "small"},
+            stop_status=watch.status,
+        )
+        return executor, robot, client
+
+    def test_close_during_run_waits_for_hold_then_disconnects(self):
+        executor, robot, client = self.make()
+        expires = (datetime.now(UTC) + timedelta(seconds=60)).isoformat()
+        executor.start({"command_id": "c1", "package_id": "15", "expires_at": expires})
+        deadline = time.monotonic() + 3
+        while not any(c[0] == "send" for c in robot.calls if c != "hold"):
+            self.assertLess(time.monotonic(), deadline, "runner never started moving")
+            time.sleep(0.01)
+        executor.close(runner_s=3, stop_s=3)
+        self.assertIsNone(executor.host.status()["active"])
+        self.assertIn("hold", robot.calls)
+        self.assertEqual(robot.calls[-1], "disconnect")
+        self.assertLess(robot.calls.index("hold"), robot.calls.index("disconnect"))
+        client.close.assert_called_once()
+        self.assertTrue(executor.observe()["stopped"])  # 정지 근거를 확인한 뒤 정리
+
+    def test_close_leaves_devices_open_while_runner_still_active(self):
+        executor, robot, client = self.make()
+        executor.host.wait = lambda timeout: None
+        executor.host.status = lambda: {"active": "c1"}
+        executor.host.abort = lambda: None
+        executor.close(runner_s=0, stop_s=0)
+        self.assertNotIn("disconnect", robot.calls)
+        client.close.assert_not_called()
+
+    def test_idle_close_holds_and_disconnects(self):
+        executor, robot, _ = self.make()
+        executor.close(runner_s=1, stop_s=3)
+        self.assertEqual(robot.calls[0], "hold")
+        self.assertEqual(robot.calls[-1], "disconnect")
+        self.assertTrue(executor.observe()["stopped"])
+
+
+SIZES = {"15": "small", "16": "small", "17": "large", "21": "large", "22": "small"}
 
 
 if __name__ == "__main__":
