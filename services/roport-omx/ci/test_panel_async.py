@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from test_field_host import wait_until
 from test_panel_executor import ROUTES, FakePanel
 
-from roport_omx.field_executors import PanelFieldExecutor
+from roport_omx.field_executors import CooperativeShelfExecutor
 from roport_omx.panel_executor import PanelExecutor, PanelHTTPError
 from roport_omx.managed_panel import ManagedPanelExecutor, PanelStartRejected
 
@@ -24,7 +24,7 @@ class AsyncPanelTest(unittest.TestCase):
         self.gates = []
         self.stops = 0
         self.sample = self.stationary()
-        self.adapter = PanelFieldExecutor(
+        self.adapter = CooperativeShelfExecutor(
             ManagedPanelExecutor(ROUTES, box_marker=16, base_url=self.panel.url),
             model_version="test-model",
             calibration_version="test-cal",
@@ -275,7 +275,7 @@ class AsyncPanelTest(unittest.TestCase):
 
     def test_legacy_client_is_rejected_before_connection(self):
         with self.assertRaisesRegex(ValueError, "managed_panel_required"):
-            PanelFieldExecutor(
+            CooperativeShelfExecutor(
                 PanelExecutor(ROUTES, box_marker=16),
                 model_version="test",
                 calibration_version="test",

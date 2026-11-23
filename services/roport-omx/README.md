@@ -122,7 +122,7 @@ Host가 정차·도착·boot·최신성을 검증한 뒤, 해당 Pinky의 `robot
 작업 중 확인이 끊기면 정지 요청·HOLD로 처리합니다. MQTT 메시지나 Pinky 코드는 변경하지 않습니다.
 
 `WarehouseExecutor`와 `IndependentArmExecutor`에는 실제 Robot/Policy/Vision 포트와
-확정된 모델·캘리브레이션 버전이 필요합니다. 공동 `PanelFieldExecutor`는 실제 중지
+확정된 모델·캘리브레이션 버전이 필요합니다. 공동 `CooperativeShelfExecutor`는 실제 중지
 콜백·ManagedPanelExecutor와, command/package/slot/arrival에 일치하는 최신 안착·해제 센서 콜백이 추가로
 필요합니다. 패널의 `arm_return_only`/`shelf_align`만으로 재고 확정은 불가능합니다.
 개별 `return_home`은 스키마에 예약된 동작이며 현재 Host는 항상 `unsupported_operation`으로 거절합니다.
@@ -136,8 +136,8 @@ Host가 정차·도착·boot·최신성을 검증한 뒤, 해당 Pinky의 `robot
 ### 정지 관측과 실물 적용 전 남은 조건
 
 - 모든 실물 어댑터의 `stop_status()`는 모터 관측에서 `{"observed_at": "ISO-8601 UTC", "stopped": true/false}`를 반환합니다. 공동 작업은 양팔 모두 정지한 값이어야 합니다. 어댑터 PC와 같은 시각 기준의 관측만 받으며 허용 나이는 0~3초입니다. 정지 완료는 **해당 abort 요청 이후** 관측이어야 합니다. 콜백은 최신 센서 캐시를 짧게 읽고, 홈 위치·HTTP 성공·명령 접수를 정지 근거로 만들지 않습니다. 누락·오류·오래된 값은 준비/정지 확인으로 인정하지 않습니다.
-- `WarehouseExecutor`는 진행 중 Runner에 취소를 전달하고, 재시작 등 Runner가 없으면 기존 Robot 포트의 `hold()`를 호출합니다. `IndependentArmExecutor`도 같은 경로를 사용합니다. `PanelFieldExecutor`는 현장 `stop` 콜백을 호출합니다. 관측이 없으면 `physical_stop_not_confirmed` + HOLD이며, 정지 관측 연결 전에는 실물 준비 상태가 되지 않습니다.
-- v2 `PanelFieldExecutor`는 준비 조회·시작·결과 조회를 MQTT owner 밖에서 직렬 실행하고, 정지는 별도 작업자로 전달합니다. 모델 목록은 15초부터 갱신하고 기존 캐시는 최대 30초까지 허용합니다. 초기 준비가 끝나기 전에는 준비 완료로 표시하지 않습니다. 팔 준비도 먼저 조회하며, owner는 캐시만 읽고, 실제 POST 직전에는 worker가 팔 준비·정지·만료를 다시 확인합니다. 읽기 시작 시각부터 3초가 지난 관측은 준비/완료 근거로 재발행하지 않습니다. `stop_status`와 `completion`은 현장의 최신 센서 캐시를 짧게 읽는 콜백이어야 합니다. 작업 중 패널이 생략하는 팔 관측은 미확인으로 표시하며, 실제 조회 실패/장치 오류와 구분합니다. 생략된 관측으로 준비·정지·복귀를 확정하지 않습니다. v1 `--executor panel`의 직접 HTTP 경로는 그대로입니다.
+- `WarehouseExecutor`는 진행 중 Runner에 취소를 전달하고, 재시작 등 Runner가 없으면 기존 Robot 포트의 `hold()`를 호출합니다. `IndependentArmExecutor`도 같은 경로를 사용합니다. `CooperativeShelfExecutor`는 현장 `stop` 콜백을 호출합니다. 관측이 없으면 `physical_stop_not_confirmed` + HOLD이며, 정지 관측 연결 전에는 실물 준비 상태가 되지 않습니다.
+- v2 `CooperativeShelfExecutor`는 준비 조회·시작·결과 조회를 MQTT owner 밖에서 직렬 실행하고, 정지는 별도 작업자로 전달합니다. 모델 목록은 15초부터 갱신하고 기존 캐시는 최대 30초까지 허용합니다. 초기 준비가 끝나기 전에는 준비 완료로 표시하지 않습니다. 팔 준비도 먼저 조회하며, owner는 캐시만 읽고, 실제 POST 직전에는 worker가 팔 준비·정지·만료를 다시 확인합니다. 읽기 시작 시각부터 3초가 지난 관측은 준비/완료 근거로 재발행하지 않습니다. `stop_status`와 `completion`은 현장의 최신 센서 캐시를 짧게 읽는 콜백이어야 합니다. 작업 중 패널이 생략하는 팔 관측은 미확인으로 표시하며, 실제 조회 실패/장치 오류와 구분합니다. 생략된 관측으로 준비·정지·복귀를 확정하지 않습니다. v1 `--executor panel`의 직접 HTTP 경로는 그대로입니다.
 - 정지/종료가 대기 중인 시작보다 먼저 처리되면 POST를 보내지 않습니다. 이미 POST 중이면 같은 command_id의 취소를 독립 경로로 요청합니다. 취소 기록과 실제 정지 관측이 확인되면 시작 HTTP 응답을 기다리지 않고 정지 완료를 보고합니다. 늦은 POST는 기록된 취소로 거절됩니다. 시작 응답이 유실되면 `panel_start_unconfirmed`로 HOLD하며, 정지 센서가 true여도 미확인 시작을 정지 완료로 덮어쓰지 않습니다. 자동 재시작·재전송은 없습니다.
 - **패널 기반 v2 실물 factory는 아직 운영에 연결하지 않습니다.** 기존 패널 API는 클라이언트 timeout 뒤 늦은 시작을 취소한다고 보장하지 않습니다. 로컬 지연 시험에서도 이 경우를 재현했으며, 스레드 분리는 원격 취소 보장이 아닙니다. 아래 임시 HTTP 계약과 송수신 모듈을 준비했습니다. 외부 패널 담당자가 실제 프로세스 시작 경계에 수신부를 붙여야 하며, 현재 공개 패널에 이 API가 구현됐다는 의미가 아닙니다. MQTT 필드와 실물 factory의 장치 경계는 유지했습니다. 센서·모터·실물 캘리브레이션도 별도 검증 대상입니다.
 - OMX의 새 이송 명령은 Pinky와 동일하게 `sent_at` 나이 −0.5~3초를 검사하고 벗어나면 `stale_message`로 거절합니다. `robot_stop_command`는 지연된 정지를 거절하지 않도록 `sent_at` 신선도만 제외하고 만료·현재 boot·정지 대상 명령/로봇 일치는 검사합니다. 기록된 명령의 동일 본문 재전송은 신선도 검사 전에 저장 결과를 반환합니다. 만료는 수신 PC의 `expires_at` 절대시각 기준입니다. 유지 확인은 `sent_at`의 나이 −1~1초, Pinky/정렬 관측은 −1~3초, 로컬 정지 관측은 0~3초를 검사합니다. 명령과 센서의 허용 창이 다르므로 관제·로봇 NTP와 센서 timestamp 기준을 맞춰야 합니다.
@@ -170,7 +170,7 @@ OMX3 소스(`src/roport_omx/omx3/`)와 `ci/test_omx3*.py`는 팀원의 `task/omx
 2. 새 요청을 `submit`으로 저장한 뒤 실제 장비 프로세스 생성 직전에 `start(id, begin)`을 호출합니다. `begin(payload)`는 잠금 안에서 로컬 프로세스만 생성하고 즉시 반환해야 합니다. 모델 로딩·모터 연결은 생성된 작업자에서 수행하고 원격 큐에 위임하지 않습니다. 이 짧은 생성 경계를 잠금 밖으로 옮기면 취소 완료 뒤 늦은 시작이 가능하므로 잠금을 유지합니다. 만료를 다시 확인하고, 취소된 ID나 동일 ID 재전송으로 두 번 실행하지 않습니다. 다른 내용의 ID 재사용은 충돌로 응답합니다.
 3. 실행 결과는 기존 센서 결과를 `finish(id, observation)`으로 저장합니다. 완료는 `state=finished`, 실패는 `state=failed`이고 arms 등 기존 결과 구조를 보존합니다. `completed/failed` 조회는 이 저장 관측을 반환합니다.
 4. 취소 요청은 running을 stopping으로 저장하고 실제 stop을 호출합니다. 이후 `confirm_stopped(id, {observed_at, stopped})`에 **취소 이후 0~3초 이내 실제 모터 정지 관측**이 들어와야 cancelled가 됩니다. 재시작 후 unknown 명령을 다시 취소하면 정지 기준 시각도 새로 기록합니다. pending/미접수 ID는 즉시 cancelled로 보존합니다. 늦은 start/finish는 취소를 되돌리지 않습니다.
-5. 재시작 시 미종료 명령은 unknown이며 자동 재실행하지 않습니다. 같은 ID 취소와 정지 관측을 완료해야 다음 작업을 받습니다. `PanelFieldExecutor`는 명령별 취소/조회를 제공하는 `ManagedPanelExecutor`가 필요하며 구형 client는 생성 단계에서 거절합니다. HTTP 취소가 지연되어도 현장 정지 콜백을 먼저 호출합니다. 원격 취소 확정과 로컬 정지 관측을 모두 만족해야 정지 완료입니다. Host 재시작 시 journal의 미종료 명령 ID를 복원해 같은 ID를 취소하며, 이전 시작을 재전송하지 않습니다. v1 `--executor panel` 시험 경로는 유지되지만 v2 현장 연결에 대신 사용할 수 없습니다.
+5. 재시작 시 미종료 명령은 unknown이며 자동 재실행하지 않습니다. 같은 ID 취소와 정지 관측을 완료해야 다음 작업을 받습니다. `CooperativeShelfExecutor`는 명령별 취소/조회를 제공하는 `ManagedPanelExecutor`가 필요하며 구형 client는 생성 단계에서 거절합니다. HTTP 취소가 지연되어도 현장 정지 콜백을 먼저 호출합니다. 원격 취소 확정과 로컬 정지 관측을 모두 만족해야 정지 완료입니다. Host 재시작 시 journal의 미종료 명령 ID를 복원해 같은 ID를 취소하며, 이전 시작을 재전송하지 않습니다. v1 `--executor panel` 시험 경로는 유지되지만 v2 현장 연결에 대신 사용할 수 없습니다.
 
 시작 응답은 같은 command_id와 pending/running 상태를 확인합니다. 확정 거절(4xx·cancelled·expired)과 timeout/5xx 결과 불명을 구분하며, 잘못된 요청은 400, ID/점유 충돌은 409입니다. 취소 조회는 시작 I/O 잠금을 사용하지 않습니다. 로컬 정지 후 취소 POST는 1회 최대 1초, 총 3초 안에서 최대 3회 시도하고 실패 로그를 남깁니다. 확인하지 못한 정지는 HOLD를 유지합니다.
 
