@@ -91,6 +91,15 @@ Pinky의 최신 N01 정차·도착·boot·라인 비활성·주행 소유권 해
 HOLD하고 Pinky의 다음 주행을 발행하지 않습니다. OMX3만 실행하는 factory는 `(executors, None)`을
 반환할 수 있습니다. 이 기준은 학습된 N01 도킹 위치·보정값이 현장에 적용된 것을 전제로 합니다.
 
+OMX3 factory는 `--factory roport_omx.omx3.field:build`입니다. `ROPORT_OMX3_INFER_SERVER`
+(`host:port`)와 `ROPORT_OMX3_MODEL`(GPU PC 체크포인트 경로)이 필요합니다. 포트·카메라·키 파일은
+`ROPORT_OMX3_PORT`·`ROPORT_OMX3_CAMERA`·`ROPORT_OMX3_KEY_FILE`로 바꿀 수 있습니다. 모델을
+GPU 서버에 먼저 올린 뒤 팔을 연결하며, 연결할 때 토크를 씁니다. `stopped`는 Runner와 상태 조회가
+이미 읽은 관절 값으로 판정합니다. 0.5초 넘게 모든 관절 변화가 0.3 이하이면 정지이며, 실측한 정지
+떨림은 최대 0.049였습니다. `model_version`은 체크포인트 폴더 이름이고 `calibration_version`은
+`robot_id-캘리브레이션 파일 sha256 앞 8자리`입니다. lerobot·OpenCV·paho-mqtt가 함께 있는 장비
+환경이 필요하며, 실물 팔과 실브로커로는 아직 검증하지 않았습니다.
+
 아래 정렬 센서 계약은 **OMX1·2 개별 이송과 `shelf-01` 공동 이송**에 적용합니다.
 
 센서 호출은 `alignment_sensor(command, pinky_observation)`입니다. 기존 한 인자 센서는
