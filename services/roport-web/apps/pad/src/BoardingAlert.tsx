@@ -16,6 +16,7 @@ type Props = {
 export function BoardingAlert({ flightNo, boardingStartText, gateText, busy, onSwitch, onDismiss }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const dismissBtn = useRef<HTMLButtonElement>(null);
+  const switchBtn = useRef<HTMLButtonElement>(null);
 
   // 열릴 때 명령을 보내지 않는 「아니오」에 포커스를 두고, 닫히면 원래 포커스로 돌려준다.
   useEffect(() => {
@@ -23,6 +24,15 @@ export function BoardingAlert({ flightNo, boardingStartText, gateText, busy, onS
     dismissBtn.current?.focus();
     return () => before?.focus?.();
   }, []);
+
+  // 「예」가 막히면(전환 요청 대기 등) 그 버튼에 있던 포커스가 body 로 빠져 Esc·Tab 이 창에 닿지 않는다.
+  // 그때는 명령을 보내지 않는 「아니오」로 포커스를 옮긴다. 브라우저가 포커스를 빼기 전에 이 효과가 먼저 돌 수 있어
+  // 「예」에 포커스가 남아 있는 경우도 함께 본다.
+  useEffect(() => {
+    if (!busy) return;
+    const active = document.activeElement;
+    if (active === switchBtn.current || !root.current?.contains(active)) dismissBtn.current?.focus();
+  }, [busy]);
 
   // Esc = 아니오, Tab 은 창 안에서만 돈다.
   function onKeyDown(e: React.KeyboardEvent) {
@@ -58,7 +68,7 @@ export function BoardingAlert({ flightNo, boardingStartText, gateText, busy, onS
             : '게이트 안내로 전환할까요? 전환하면 카트가 추종을 멈추고 게이트까지 앞에서 안내합니다.'}
         </p>
         <div className="actions">
-          <button className="btn btn-primary btn-big" disabled={busy} onClick={onSwitch}>예, 게이트 안내로 전환</button>
+          <button className="btn btn-primary btn-big" ref={switchBtn} disabled={busy} onClick={onSwitch}>예, 게이트 안내로 전환</button>
           <button className="btn btn-secondary" ref={dismissBtn} onClick={onDismiss}>아니오, 계속 따라오게 할게요</button>
         </div>
       </div>

@@ -229,6 +229,27 @@ test('게이트 안내 중·FOLLOW 도착 뒤·moving 이 아닌 화면에서는
   assert.equal(moving(reduce(guide, { type: 'boardingAlert' })).boardingAlert, false);
   const arrivedFollow = reduce(startedFollow(), { type: 'arrived' });
   assert.equal(moving(reduce(arrivedFollow, { type: 'boardingAlert' })).boardingAlert, false);
+  // 출발 확인 전(첫 주행 보고 전)에는 무시한다
+  const startPending = run([
+    { type: 'go', step: { name: 'chooseService', pickup } },
+    { type: 'send', token: 1 },
+    { type: 'serviceAnswered', token: 1, pickup, mode: 'FOLLOW', res: { accepted: true } },
+  ]);
+  assert.equal(movingPhase(moving(startPending)), 'START_PENDING');
+  assert.equal(moving(reduce(startPending, { type: 'boardingAlert' })).boardingAlert, false);
+  // 일시정지 중에는 무시하고, 다시 주행 보고가 온 뒤의 알림은 켠다
+  const paused = reduce(startedFollow(), { type: 'robotState', motion: 'PAUSED' });
+  assert.equal(movingPhase(moving(paused)), 'PAUSED');
+  assert.equal(moving(reduce(paused, { type: 'boardingAlert' })).boardingAlert, false);
+  const resumed = reduce(paused, { type: 'robotState', motion: 'MOVING' });
+  assert.equal(moving(reduce(resumed, { type: 'boardingAlert' })).boardingAlert, true);
+  // 중지 요청을 보낸 뒤 접수를 기다리는 동안에도 무시한다
+  const pausePending = run([
+    { type: 'send', token: 2, stop: true },
+    { type: 'commandAnswered', token: 2, command: 'PAUSE', res: { accepted: true } },
+  ], startedFollow());
+  assert.equal(movingPhase(moving(pausePending)), 'PAUSE_PENDING');
+  assert.equal(moving(reduce(pausePending, { type: 'boardingAlert' })).boardingAlert, false);
   const idle = reduce(initialState, { type: 'boardingAlert' });
   assert.deepEqual(idle.step, { name: 'idle' });
   const items = reduce(initialState, { type: 'go', step: { name: 'items', pickup } });

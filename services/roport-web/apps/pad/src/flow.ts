@@ -124,8 +124,9 @@ export function reduce(state: PadState, action: Action): PadState {
       if (state.step.name !== 'moving') return state;
       return { ...state, step: { ...state.step, arrived: true, pending: null, boardingAlert: false } };
     case 'boardingAlert':
-      // 추종 중이고 도착 전일 때만 켠다. 게이트 안내 전환은 새 moving 단계(goTo)라 알림이 꺼진다.
-      if (state.step.name !== 'moving' || state.step.mode !== 'FOLLOW' || state.step.arrived) return state;
+      // 카트가 추종 주행 중이라고 보고된 동안에만 켠다(출발 확인 전·중지 대기·일시정지·도착 뒤에는 무시).
+      // 게이트 안내 전환은 새 moving 단계(goTo)라 알림이 꺼진다.
+      if (state.step.name !== 'moving' || state.step.mode !== 'FOLLOW' || movingPhase(state.step) !== 'MOVING') return state;
       return { ...state, step: { ...state.step, boardingAlert: true } };
     case 'boardingAlertDismissed':
       if (state.step.name !== 'moving') return state;
