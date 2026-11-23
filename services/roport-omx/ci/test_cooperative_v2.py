@@ -1158,6 +1158,34 @@ class FieldHostTest(unittest.TestCase):
         statuses = self.statuses(self.run_to_end())
         self.assertEqual(statuses[-1], "completed")
 
+    def test_wrist_check_refusal_reaches_control_as_its_reason(self):
+        # panel 3.22.0 refused before the policy (err 13): the executor reports PANEL_WRIST_CHECK
+        # with the arms home; control gets failed panel_wrist_check and the Host keeps no HOLD
+        observe = self.executor.observe
+
+        def refused():
+            seen = observe()
+            if seen.get("state") == "finished":
+                return {
+                    "state": "failed",
+                    "error": "PANEL_WRIST_CHECK",
+                    "arms": seen["arms"],
+                    "recovered": True,
+                    "detail": "left move changed both wrist cameras",
+                }
+            return seen
+
+        self.executor.observe = refused
+        task = self.transfer()
+        self.send(task)
+        done = self.run_to_end()[-1]["payload"]
+        self.assertEqual(
+            (done["status"], done["reason"]), ("failed", "panel_wrist_check")
+        )
+        self.assertIsNone(self.host.hold)
+        record = self.host._data["commands"][task["command_id"]]
+        self.assertIn("wrist cameras", record["detail"])
+
     def test_v1_journal_is_refused(self):
         self.journal.save({"identity": {"profile": "roport-omx-task-v1"}})
         self.journal.close()
