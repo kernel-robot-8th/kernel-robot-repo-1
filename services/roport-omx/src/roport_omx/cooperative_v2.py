@@ -86,6 +86,9 @@ LOCAL_RELEASE = {
 ACCEPT_SAMPLE_MAX_AGE_S = (
     2.0  # a sampler reading this recent stands for "now" when accepting
 )
+ACCEPT_WAIT_S = (
+    3.0  # a transfer waits this long for a recent readiness sample, then is rejected
+)
 START_INLINE_S = (
     0.2  # wait this long in handle() for a start before leaving it to poll()
 )
@@ -97,6 +100,10 @@ def _iso(at: float | None = None) -> str:
     return datetime.fromtimestamp(time.time() if at is None else at, UTC).isoformat(
         timespec="milliseconds"
     )
+
+
+class NotYet(Exception):
+    """No recent readiness sample: decide the transfer from poll() once one arrives."""
 
 
 def _reason(code) -> str:
@@ -189,6 +196,10 @@ class FieldHost:
         self.report_placement = report_placement
         self.watchdog_s, self.stop_timeout_s = watchdog_s, STOP_TIMEOUT_S
         self._sample = readiness or (lambda: (self._read(), time.time()))
+        # with a sampler thread a stale reading never turns into a panel read in the MQTT loop
+        # (#156 review): the transfer waits (in memory, nothing answered) for the next sample
+        self._sampled = readiness is not None
+        self._waiting: dict | None = None
         self.boot_version = "boot-" + str(uuid4())
         self.failed = False
         self.state_sequence = 0
@@ -391,6 +402,16 @@ class FieldHost:
             return [self.state(endpoint)]
         if "command_id" not in message:
             raise ValueError(f"{kind} is not a command")
+        waiting = self._waiting["record"] if self._waiting else None
+        if (
+            waiting is not None
+            and waiting["command"]["command_id"] == message["command_id"]
+        ):
+            if waiting["fingerprint"] == _fingerprint(message):
+                return []  # still waiting for a readiness sample: decided from poll()
+            raise ValueError(
+                "idempotency_conflict: command_id reused with another body"
+            )
         record = self._data["commands"].get(message["command_id"])
         if record is not None:
             if record["fingerprint"] == _fingerprint(message):
@@ -436,12 +457,50 @@ class FieldHost:
             if kind == "hold_release_command":
                 return self._hold_release(record)
             task = self._check_transfer(message)
+        except NotYet:
+            return self._defer(record)
         except Rejected as exc:
             return self._status(record, "rejected", reason=_reason(exc.args[0]))
         except ValueError as exc:
             record["detail"] = str(exc)[:200]
             return self._status(record, "rejected", reason="invalid_command")
+        return self._accept(record, task)
 
+    def _defer(self, record: dict) -> list[dict]:
+        command_id = record["command"]["command_id"]
+        del self._data["commands"][
+            command_id
+        ]  # nothing journaled or answered for it yet
+        self._waiting = {"record": record, "since": time.monotonic()}
+        log.info(
+            "%s: readiness sample not recent; deciding on the next one", command_id
+        )
+        return []
+
+    def _retry_waiting(self) -> list[dict]:
+        waiting, self._waiting = self._waiting, None
+        record = waiting["record"]
+        message = record["command"]
+        self._data["commands"][message["command_id"]] = record
+        try:
+            if datetime.now(UTC) >= field_wire.timestamp(message["expires_at"]):
+                raise Rejected("expired_command")
+            task = self._check_transfer(message)
+        except NotYet:
+            if time.monotonic() - waiting["since"] < ACCEPT_WAIT_S:
+                del self._data["commands"][message["command_id"]]
+                self._waiting = waiting
+                return []
+            return self._status(record, "rejected", reason="executor_state_stale")
+        except Rejected as exc:
+            return self._status(record, "rejected", reason=_reason(exc.args[0]))
+        except ValueError as exc:
+            record["detail"] = str(exc)[:200]
+            return self._status(record, "rejected", reason="invalid_command")
+        return self._accept(record, task)
+
+    def _accept(self, record: dict, task: dict) -> list[dict]:
+        message = record["command"]
         self._mark(record, "checked")
         record["task"] = task
         record["arrival_consumed"] = True  # one transfer per Pinky arrival (contract)
@@ -540,6 +599,8 @@ class FieldHost:
     def poll(self) -> list[dict]:
         """Executor observations of the active task → in_progress / completed / failed."""
         self._usable()
+        if self._waiting is not None:  # nothing is active while a transfer waits
+            return self._retry_waiting()
         command_id = self._data["active"]
         if command_id is None:
             self._late_start()
@@ -568,6 +629,8 @@ class FieldHost:
             and self.report_placement
             and record["task"]["operation"] == "INBOUND"
             and not record.get("placed_reported")
+            and self._data["stop"]
+            is None  # stopping: the stop's own result only (#156 review)
         ):
             events += self._report_placed(record, seen)
         if state in {"running", "placed"}:
@@ -730,7 +793,11 @@ class FieldHost:
             raise Rejected("cooperative_slot_mismatch")
         if self._data["hold"] is not None:
             raise Rejected("host_hold")
-        if self._data["active"] is not None or self._data["stop"] is not None:
+        if (
+            self._data["active"] is not None
+            or self._data["stop"] is not None
+            or self._waiting is not None
+        ):
             raise Rejected("resource_busy")
         for other in self._data["commands"].values():
             q = other["command"]["payload"]
@@ -863,7 +930,9 @@ class FieldHost:
         if seen["state"] == "finished" and all(_home(a) for a in arms.values()):
             evidence = seen.get("evidence")
             if evidence in PLACED[task["operation"]]:
-                extra = {"evidence": evidence} if record.get("placed_reported") else {}
+                # always named (#156 review): control tells an aligned load from a placed but
+                # crooked one (shelf_load_not_aligned holds the slot) with or without a first report
+                extra = {"evidence": evidence}
                 return self._end(
                     record,
                     "completed",
@@ -952,6 +1021,15 @@ class FieldHost:
         target = p["target_command_id"]
         if target == record["command"]["command_id"]:
             raise Rejected("invalid_stop_target")
+        waiting = self._waiting["record"] if self._waiting else None
+        if waiting is not None and waiting["command"]["command_id"] == target:
+            # a stop for a transfer that waits for its readiness sample: it never starts
+            self._waiting = None
+            self._data["commands"][target] = waiting
+            events = self._status(waiting, "rejected", reason="stop_requested")
+            return events + self._status(
+                record, "rejected", reason="target_command_not_active"
+            )
         if target != self._data["active"]:
             raise Rejected("target_command_not_active")
         if not callable(getattr(self.executor, "stop", None)):
@@ -1214,16 +1292,21 @@ class FieldHost:
         self._save()
 
     def _recent_ready(self) -> dict:
-        """The sampler's reading if it is recent, else a direct read.
+        """The sampler's reading if it is recent; NotYet with a sampler (the caller waits for the
+        next one), a direct read without one (tests, one-shot use).
 
         A transfer's checks run inside the MQTT loop; a direct panel read there (status plus the
         arms of every routed model) can take seconds, and while it waits no Pinky state is read
         (2026-11-23 23:41 field run: 2.8 s of checks, then pinky_observation_stale at once)."""
         try:
             sample, observed = self._sample()
-        except Exception:  # noqa: BLE001 - no sample yet: read directly
+        except Exception:  # noqa: BLE001 - no sample yet
+            if self._sampled:
+                raise NotYet from None
             return self._read()
         if not 0 <= time.time() - observed <= ACCEPT_SAMPLE_MAX_AGE_S:
+            if self._sampled:
+                raise NotYet
             return self._read()
         return self._normalize(sample)
 

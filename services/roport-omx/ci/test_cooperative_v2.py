@@ -12,11 +12,13 @@ import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from roport_omx import cooperative_v2
 from roport_omx.cooperative import StartRefused
 from roport_omx.cooperative_v2 import FieldHost
 from roport_omx.mqtt_link import field_wire
@@ -1048,6 +1050,106 @@ class FieldHostTest(unittest.TestCase):
         events = [e for e in self.drain(0.5) if e["command_id"] == task["command_id"]]
         self.assertEqual(events[-1]["payload"]["status"], "failed")
         self.assertEqual(events[-1]["payload"]["reason"], "pinky_left")
+
+    def test_final_report_names_the_alignment_without_a_first_report(self):
+        # #156 review: no placement report (judge missed it, or the option is off) must not
+        # turn a crooked load into a plain completed: the evidence is always named
+        self.host.report_placement = False
+        self.placed_then(
+            lambda seen: {
+                "state": "finished",
+                "evidence": "shelf_load_not_aligned",
+                "arms": self.executor._arms(moving=False),
+            }
+        )
+        task = self.transfer()
+        self.send(task)
+        done = [
+            e
+            for e in self.drain(1.0)
+            if e["command_id"] == task["command_id"]
+            and e["payload"]["status"] == "completed"
+        ]
+        self.assertEqual(len(done), 1)
+        self.assertEqual(
+            done[0]["payload"]["result"]["evidence"], "shelf_load_not_aligned"
+        )
+        self.assertIsNone(
+            self.host.hold
+        )  # control holds the slot (#158), the arms are home
+
+    def test_no_placement_report_while_a_stop_is_pending(self):
+        # #156 review: control lets the Pinky leave on shelf_placed; a stop that is not yet
+        # confirmed must not be overtaken by it
+        self.host.report_placement = True
+        self.executor.run_s = 30
+        task = self.transfer()
+        self.send(task)
+        self.assertEqual(
+            self.statuses(self.send(self.stop_command(task["command_id"]))),
+            ["accepted"],
+        )
+        self.executor.observe = lambda: {
+            "state": "placed",
+            "grasp_released": True,
+            "placement": {"slot": "2B"},
+        }
+        events = [e for e in self.drain(0.3) if e["command_id"] == task["command_id"]]
+        self.assertNotIn("completed", self.statuses(events))
+
+    def stale_sampler(self):
+        fresh = self.executor.readiness()
+        self.host._sampled = True
+        self.host._sample = lambda: (
+            fresh,
+            time.time() - 5,
+        )  # sampler stuck on a slow read
+        calls = []
+        plain = self.executor.readiness
+
+        def slow():
+            calls.append(1)
+            time.sleep(3)
+            return plain()
+
+        self.executor.readiness = slow
+        return fresh, calls
+
+    def test_stale_sample_defers_acceptance_without_a_panel_read(self):
+        # #156 review: an old readiness sample made handle() read the panel inside the MQTT loop
+        fresh, calls = self.stale_sampler()
+        task = self.transfer()
+        began = time.monotonic()
+        self.assertEqual(self.send(task), [])  # nothing answered yet
+        self.assertEqual(self.send(task), [])  # a redelivery while waiting
+        self.assertLess(time.monotonic() - began, 0.5)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.host.poll(), [])  # still old: keeps waiting
+        self.host._sample = lambda: (fresh, time.time())  # the next sample arrives
+        self.assertEqual(self.statuses(self.host.poll())[:1], ["accepted"])
+        self.assertEqual(calls, [])
+
+    def test_stale_sample_for_too_long_rejects_the_transfer(self):
+        self.stale_sampler()
+        task = self.transfer()
+        with patch.object(cooperative_v2, "ACCEPT_WAIT_S", 0.2):
+            self.assertEqual(self.send(task), [])
+            events = self.drain(0.4)
+        self.assertEqual(self.statuses(events), ["rejected"])
+        self.assertEqual(events[0]["payload"]["reason"], "executor_state_stale")
+        self.assertEqual(self.executor.tasks, [])
+
+    def test_stop_for_a_waiting_transfer_keeps_it_from_starting(self):
+        fresh, _ = self.stale_sampler()
+        task = self.transfer()
+        self.assertEqual(self.send(task), [])
+        events = self.send(self.stop_command(task["command_id"]))
+        by_id = {e["command_id"]: e["payload"] for e in events}
+        self.assertEqual(by_id[task["command_id"]]["status"], "rejected")
+        self.assertEqual(by_id[task["command_id"]]["reason"], "stop_requested")
+        self.host._sample = lambda: (fresh, time.time())
+        self.drain(0.3)
+        self.assertEqual(self.executor.tasks, [])
 
     def test_outbound_never_completes_at_placement(self):
         self.host.report_placement = True
