@@ -68,3 +68,25 @@ def test_alert_is_on_or_off_only():
     for bad in ({'op': 'alert'}, {'op': 'alert', 'on': 1}):
         with pytest.raises(ValueError):
             demo_command(bad)
+
+
+def test_follow_turn_first_is_passed_only_when_true():
+    from roport_follow.demo_link import demo_command
+    assert demo_command({'op': 'follow', 'card_id': 35, 'turn_first': True})['turn_first'] is True
+    assert 'turn_first' not in demo_command({'op': 'follow', 'card_id': 35, 'turn_first': False})
+    with pytest.raises(ValueError):
+        demo_command({'op': 'follow', 'card_id': 35, 'turn_first': 'yes'})
+
+
+def test_navigate_position_tolerance_is_optional_and_bounded():
+    from roport_follow.demo_link import demo_command
+    base = {'op': 'navigate', 'goal_id': 'demo_ARR', 'x': 2.6, 'y': 0.0, 'yaw': 0.0}
+    assert 'position_tolerance_m' not in demo_command(base)
+    assert demo_command({**base, 'position_tolerance_m': 0.3})['position_tolerance_m'] == 0.3
+    with pytest.raises(ValueError):
+        demo_command({**base, 'position_tolerance_m': 0.5})
+
+
+def test_turn_op_passes_through():
+    from roport_follow.demo_link import demo_command
+    assert demo_command({'op': 'turn', 'x': 1}) == {'op': 'turn'}

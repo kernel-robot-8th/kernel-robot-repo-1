@@ -39,24 +39,33 @@ def demo_command(body):
         if not isinstance(body.get('on'), bool):
             raise ValueError('on must be true or false')
         return {'op': 'alert', 'on': body['on']}
-    if op in ('switch_nav2', 'switch_line', 'stop'):
+    if op in ('switch_nav2', 'switch_line', 'stop', 'turn'):
         return {'op': op}
     if op == 'navigate':
         goal_id = body.get('goal_id')
         if not isinstance(goal_id, str) or not GOAL_ID.match(goal_id):
             raise ValueError('goal_id must be 1..24 letters, digits or _')
-        return {'op': 'navigate', 'goal_id': goal_id, 'x': _num(body, 'x', None, *MAP_X),
-                'y': _num(body, 'y', None, *MAP_Y), 'yaw': _num(body, 'yaw', None, -math.pi, math.pi)}
+        cmd = {'op': 'navigate', 'goal_id': goal_id, 'x': _num(body, 'x', None, *MAP_X),
+               'y': _num(body, 'y', None, *MAP_Y), 'yaw': _num(body, 'yaw', None, -math.pi, math.pi)}
+        if 'position_tolerance_m' in body:       # 도착 허용(로봇 기본 0.12 m, 고객이 있는 목표만 0.30 까지)
+            cmd['position_tolerance_m'] = _num(body, 'position_tolerance_m', None, 0.05, 0.30)
+        return cmd
     if op == 'follow':
         card = body.get('card_id')
         if isinstance(card, bool) or not isinstance(card, int) or card not in CARD_IDS:
             raise ValueError('card_id must be 35..49')
-        return {'op': 'follow', 'card_id': card, 'standoff_m': _num(body, 'standoff_m', 0.5, 0.2, 1.2),
-                # 관제 기본 명령 마감 300 s 와 맞춤
-                'max_duration_s': _num(body, 'max_duration_s', 120, 1, 300),
-                # 놓침 기준: 기본 1 s(SR-22), 4 s 까지는 명시했을 때만(시연값). 노트북 --follow-lost-s 와 같은 값으로
-                'lost_after_s': _num(body, 'lost_after_s', 1.0, 1.0, 4.0)}
-    raise ValueError('op must be route, switch_nav2, switch_line, navigate, follow, stop or alert')
+        cmd = {'op': 'follow', 'card_id': card, 'standoff_m': _num(body, 'standoff_m', 0.5, 0.2, 1.2),
+               # 관제 기본 명령 마감 300 s 와 맞춤
+               'max_duration_s': _num(body, 'max_duration_s', 120, 1, 300),
+               # 놓침 기준: 기본 1 s(SR-22), 4 s 까지는 명시했을 때만(시연값). 노트북 --follow-lost-s 와 같은 값으로
+               'lost_after_s': _num(body, 'lost_after_s', 1.0, 1.0, 4.0)}
+        turn = body.get('turn_first', False)
+        if not isinstance(turn, bool):
+            raise ValueError('turn_first must be true or false')
+        if turn:                                     # 제자리 180° 돈 뒤 추종(ARR 에서 고객 쪽으로 돌아섬)
+            cmd['turn_first'] = True
+        return cmd
+    raise ValueError('op must be route, switch_nav2, switch_line, navigate, turn, follow, stop or alert')
 
 
 class DemoLink:
