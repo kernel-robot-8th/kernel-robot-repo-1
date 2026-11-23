@@ -21,8 +21,8 @@ for path in (OMX / "src", OMX / "scripts", OMX / "ci"):
 
 from field_host import serve
 from roport_omx.field_executors import (
+    CooperativeShelfExecutor,
     IndependentArmExecutor,
-    PanelFieldExecutor,
     WarehouseExecutor,
 )
 from roport_omx.field_host import FieldOmxHost
@@ -139,7 +139,7 @@ def panel_device_executor(
             "release_confirmed": True,
         }
 
-    executor = PanelFieldExecutor(
+    executor = CooperativeShelfExecutor(
         actual,
         **(versions or VERSIONS),
         completion=placement,
