@@ -176,12 +176,17 @@ class FieldHost:
         control: str,
         require_armed: bool = True,
         require_pinky: bool = True,
+        report_placement: bool = False,
         readiness=None,
         watchdog_s: float = WATCHDOG_S,
     ):
         self.journal, self.executor = journal, executor
         self.control = control
         self.require_armed, self.require_pinky = require_armed, require_pinky
+        # Shelf store reported completed the moment the box is placed and both hands are clear
+        # (the executor's "placed", panel hand-over judge); the alignment then runs on without
+        # further reports for this command (TK 2026-11-24, control asked to accept it).
+        self.report_placement = report_placement
         self.watchdog_s, self.stop_timeout_s = watchdog_s, STOP_TIMEOUT_S
         self._sample = readiness or (lambda: (self._read(), time.time()))
         self.boot_version = "boot-" + str(uuid4())
@@ -558,12 +563,22 @@ class FieldHost:
         except Exception:  # noqa: BLE001 - keep waiting; the device keeps its own safety
             return events + self._settle_stop()
         state = seen.get("state")
-        if state in {"running", "placed"}:  # v2 reports once, after the alignment
+        if (
+            state == "placed"
+            and self.report_placement
+            and record["task"]["operation"] == "INBOUND"
+            and not record.get("placed_reported")
+        ):
+            events += self._report_placed(record, seen)
+        if state in {"running", "placed"}:
             step = seen.get("step") if isinstance(seen.get("step"), str) else state
             self._mark(record, "step:" + step)
             if step != record["last_step"]:
                 record["last_step"] = step
-                events += self._status(record, "in_progress")
+                if not record.get(
+                    "placed_reported"
+                ):  # completed is control's last word
+                    events += self._status(record, "in_progress")
             return events + self._settle_stop()
         if state not in {"finished", "failed"}:
             return events + self._settle_stop()
@@ -691,6 +706,10 @@ class FieldHost:
         if command_id is None or self._data["stop"] is not None:
             return []
         record = self._data["commands"][command_id]
+        if record.get("placed_reported"):
+            # completed at placement: control no longer renews it and the Pinky leaves; the
+            # alignment's own safety stays with the executor
+            return []
         if self._deadline is None or time.monotonic() > self._deadline:
             reason = "control_watchdog_expired"
         elif self.require_pinky:
@@ -845,10 +864,12 @@ class FieldHost:
         if seen["state"] == "finished" and all(_home(a) for a in arms.values()):
             evidence = seen.get("evidence")
             if evidence in PLACED[task["operation"]]:
+                extra = {"evidence": evidence} if record.get("placed_reported") else {}
                 return self._end(
                     record,
                     "completed",
-                    result={
+                    result=extra
+                    | {
                         "package_id": task["package_id"],
                         "slot_id": task["slot_id"],
                         "pinky_id": task["pinky_id"],
@@ -1106,7 +1127,46 @@ class FieldHost:
         record.update(
             {k: v for k, v in extra.items() if isinstance(v, str)}
         )  # journal only
+        if record.get("placed_reported"):
+            # second report of a store completed at placement: the alignment's outcome
+            # (completed shelf_align / shelf_load_not_aligned with the arms home, or failed);
+            # control sends the next shelf command after it (TK 2026-11-24)
+            record["after_placed"] = {"status": status, "reason": reason}
         return self._status(record, status, reason=reason, result=result)
+
+    def _report_placed(self, record: dict, seen: dict) -> list[dict]:
+        """completed at placement: the box sits in its slot, both hands clear (judge), the arms
+        are still working (the aligner takes them over), so they are reported as they are."""
+        task = record["task"]
+        record["placed_reported"] = True
+        record["evidence"] = "shelf_placed"
+        self._mark(record, "placed")
+        return self._status(
+            record,
+            "completed",
+            result={
+                "package_id": task["package_id"],
+                "slot_id": task["slot_id"],
+                "pinky_id": task["pinky_id"],
+                "arrival_command_id": task["arrival_command_id"],
+                "placement_confirmed": True,
+                "release_confirmed": seen.get("grasp_released") is True,
+                "evidence": "shelf_placed",
+                "arms": [
+                    {
+                        "robot_id": name,
+                        "boot_version": self.boot_version,
+                        "stopped": False,
+                        "home_reached": False,
+                        "holding_package_id": None,
+                        "holding_state": "empty"
+                        if seen.get("grasp_released") is True
+                        else "unknown",
+                    }
+                    for name in ARMS
+                ],
+            },
+        )
 
     def _status(
         self, record: dict, status: str, *, reason=None, result=None

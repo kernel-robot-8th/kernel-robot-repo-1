@@ -914,6 +914,103 @@ class FieldHostTest(unittest.TestCase):
         timing = self.host._data["commands"][task["command_id"]]["timing"]
         self.assertLess(timing["checked"] - timing["received"], 1.0)
 
+    def placed_then(self, outcome):
+        """The executor reports placed once, keeps aligning a moment, then ends with outcome."""
+        observe, state = self.executor.observe, {"placed_at": None}
+
+        def run():
+            seen = observe()
+            if state["placed_at"] is None:
+                state["placed_at"] = time.monotonic()
+                return {
+                    "state": "placed",
+                    "grasp_released": True,
+                    "placement": {"slot": "2B"},
+                }
+            if time.monotonic() - state["placed_at"] < 0.3:
+                return {"state": "running", "step": "정렬 중"}
+            return outcome(seen)
+
+        self.executor.observe = run
+
+    def drain(self, seconds):
+        events, end = [], time.monotonic() + seconds
+        while time.monotonic() < end:
+            new = self.host.poll()
+            for e in new:
+                field_wire.validate(e)
+            events += new
+            time.sleep(0.05)
+        return events
+
+    def test_store_completes_at_placement_then_reports_the_alignment(self):
+        # TK 2026-11-24: completed (shelf_placed) the moment the box is placed so the Pinky may
+        # leave; after the alignment a second completed (shelf_align, arms home) tells control
+        # the shelf is free for the next command. No renewal or Pinky check in between.
+        self.host.report_placement = True
+        self.executor.run_s = 0.2
+        self.placed_then(
+            lambda seen: {
+                "state": "finished",
+                "evidence": "shelf_align",
+                "arms": self.executor._arms(moving=False),
+            }
+        )
+        task = self.transfer()
+        self.send(task)
+        first = [e for e in self.drain(0.2) if e["payload"]["status"] == "completed"]
+        self.assertEqual(len(first), 1)
+        r = first[0]["payload"]["result"]
+        self.assertEqual(
+            (r["evidence"], r["placement_confirmed"], r["release_confirmed"]),
+            ("shelf_placed", True, True),
+        )
+        self.assertEqual(
+            {a["home_reached"] for a in r["arms"]}, {False}
+        )  # still aligning
+        self.assertEqual(self.host.active, task["command_id"])  # busy until aligned
+        self.host.observe_pinky(
+            pinky_state(stopped=False, node="N19", seq=5)
+        )  # it leaves
+        later = [e for e in self.drain(1.0) if e["command_id"] == task["command_id"]]
+        self.assertEqual([e["payload"]["status"] for e in later], ["completed"])
+        r = later[0]["payload"]["result"]
+        self.assertEqual(r["evidence"], "shelf_align")
+        self.assertEqual({a["home_reached"] for a in r["arms"]}, {True})
+        seqs = [e["payload"]["sequence"] for e in first + later]
+        self.assertEqual(seqs, sorted(seqs))
+        self.assertIsNone(self.host.active)
+        self.assertIsNone(self.host.hold)
+        self.assertIn(
+            "placed", self.host._data["commands"][task["command_id"]]["timing"]
+        )
+
+    def test_alignment_failure_after_placement_is_reported_and_holds(self):
+        self.host.report_placement = True
+        self.placed_then(
+            lambda seen: {"state": "failed", "error": "PANEL_ALIGN_HOLD", "arms": {}}
+        )
+        task = self.transfer()
+        self.send(task)
+        events = [e for e in self.drain(1.0) if e["command_id"] == task["command_id"]]
+        self.assertEqual(
+            [
+                e["payload"]["status"]
+                for e in events
+                if e["payload"]["status"] != "in_progress"
+            ],
+            ["completed", "failed"],
+        )
+        self.assertEqual(events[-1]["payload"]["reason"], "panel_align_hold")
+        self.assertEqual(self.host.hold, task["command_id"])
+
+    def test_outbound_never_completes_at_placement(self):
+        self.host.report_placement = True
+        self.executor.run_s = 0.2
+        self.send(self.transfer("retrieve"))
+        statuses = self.statuses(self.run_to_end())
+        self.assertEqual(statuses[-1], "completed")
+
     def test_v1_journal_is_refused(self):
         self.journal.save({"identity": {"profile": "roport-omx-task-v1"}})
         self.journal.close()
