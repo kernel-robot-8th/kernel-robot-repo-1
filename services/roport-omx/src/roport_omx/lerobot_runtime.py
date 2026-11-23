@@ -526,13 +526,15 @@ def record(request, profile, devices):
 def _align_local_act(profile, devices, plan, capture, stop_event):
     arm_id = profile["arm_id"]
     period = 1 / profile["fps"]
+    # Deliberately half the hardware watchdog (20 ms per tick): measurements must arrive well before it fires.
     max_gap = min(
         profile["bus_watchdog_ticks"] * 0.01,
         profile["host_profile"]["timing"]["observation_max_age"],
     )
-    previous_cycle = time.monotonic()
-    plan.begin(capture()["arms"][arm_id]["positions"], previous_cycle)
+    plan.begin(capture()["arms"][arm_id]["positions"], time.monotonic())
     devices.begin_alignment()
+    # After the register reads and velocity write, so setup I/O is not counted as a missed cycle.
+    previous_cycle = time.monotonic()
 
     def measured_cycle():
         nonlocal previous_cycle
@@ -637,6 +639,12 @@ def evaluate_local_act(request, profile, devices):
 
     def prepare():
         nonlocal policy
+        if plan is not None:
+            # Runs after the device lock is held, so a refused lock leaves no ALIGNING phase behind.
+            stop_event = profile["stop_event"]
+            with stop_event.phase_guard:
+                _check_before_start(stop_event)
+                stop_event.alignment_phase = "ALIGNING"
         policy = profile.get("act_policy") or PanelAct(checkpoint)
         policy.reset()
 
@@ -738,9 +746,6 @@ def evaluate_local_act(request, profile, devices):
         raise Rejected("evaluation frame limit reached before verified completion")
 
     if plan is not None:
-        with event.phase_guard:
-            _check_before_start(event)
-            event.alignment_phase = "ALIGNING"
         profile["_start_alignment"] = plan
     if guard is not None:
         profile["_demonstration_guard"] = guard
@@ -1213,7 +1218,8 @@ class LeRobotDevices:
                     ):
                         raise Rejected("ACT target exceeds step limit at motor write")
                     if guard is not None:
-                        guard.check(measured, values)
+                        # Re-check against the fresh reading without consuming another candidate frame.
+                        guard.check(measured, values, advance=False)
             if event is not None and event.is_set():
                 raise Rejected("supervisor stop before motor write")
             self._check_evaluation_cameras()

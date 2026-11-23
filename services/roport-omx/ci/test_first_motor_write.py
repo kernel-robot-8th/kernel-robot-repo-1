@@ -65,6 +65,17 @@ class FirstMotorWriteTests(unittest.TestCase):
         self.assertEqual(len(goal_writes(bus)), 1)
         self.assertEqual(devices.applied_actions, 1)
 
+    def test_first_write_advances_the_demonstration_guard_once(self):
+        devices, _ = adapter([START, START])
+        guard = Mock()
+        devices.profile["_demonstration_guard"] = guard
+        self.send(devices, [3.0, 0.0, 0.0, 0.0, 0.0, 50.0])
+        advancing = [
+            c for c in guard.check.call_args_list if c.kwargs.get("advance", True)
+        ]
+        self.assertEqual(len(guard.check.call_args_list), 2)
+        self.assertEqual(len(advancing), 1)
+
     def test_later_actions_do_not_read_the_position_a_second_time(self):
         devices, bus = adapter([START, START, START])
         self.send(devices, [3.0, 0.0, 0.0, 0.0, 0.0, 50.0])

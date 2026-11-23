@@ -131,6 +131,19 @@ class AlignmentRuntimeTests(unittest.TestCase):
         self.devices.finish_alignment.assert_called_once_with()
         self.profile["act_policy"].select_action.assert_called_once()
 
+    def test_refused_device_lock_leaves_no_alignment_phase(self):
+        Path(self.profile["shared_lock_path"]).write_text('{"state":"RECONCILING"}')
+        with self.assertRaises(Rejected):
+            self.evaluate(continue_model=True)
+        self.assertFalse(hasattr(self.event, "alignment_phase"))
+
+    def test_alignment_setup_io_time_is_not_a_measurement_gap(self):
+        # begin_alignment reads registers and writes velocity; that time is not a missed cycle.
+        self.profile["start_alignment"]["timeout_s"] = 5
+        self.devices.begin_alignment.side_effect = lambda: self.clock.advance(1.0)
+        result = self.evaluate(continue_model=True)
+        self.assertEqual(result["state"], "SUCCEEDED", result)
+
     def test_waiting_times_out_without_model_calls(self):
         result = self.evaluate()
         self.assertEqual(result["state"], "FAILED", result)
