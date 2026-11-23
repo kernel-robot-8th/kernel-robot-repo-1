@@ -148,6 +148,8 @@ def save_safe_pose(path, arm, pose, basis=None):
     try:
         with os.fdopen(descriptor, "w") as handle:
             json.dump(current, handle, indent=1)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)

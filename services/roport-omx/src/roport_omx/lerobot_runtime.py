@@ -526,13 +526,15 @@ def record(request, profile, devices):
 def _align_local_act(profile, devices, plan, capture, stop_event):
     arm_id = profile["arm_id"]
     period = 1 / profile["fps"]
+    # Deliberately half the hardware watchdog (20 ms per tick): measurements must arrive well before it fires.
     max_gap = min(
         profile["bus_watchdog_ticks"] * 0.01,
         profile["host_profile"]["timing"]["observation_max_age"],
     )
-    previous_cycle = time.monotonic()
-    plan.begin(capture()["arms"][arm_id]["positions"], previous_cycle)
+    plan.begin(capture()["arms"][arm_id]["positions"], time.monotonic())
     devices.begin_alignment()
+    # After the register reads and velocity write, so setup I/O is not counted as a missed cycle.
+    previous_cycle = time.monotonic()
 
     def measured_cycle():
         nonlocal previous_cycle
@@ -639,6 +641,13 @@ def evaluate_local_act(request, profile, devices):
         nonlocal policy
         policy = profile.get("act_policy") or PanelAct(checkpoint)
         policy.reset()
+        if plan is not None:
+            # Last step, after the device lock and the policy load: a refusal or a failed load
+            # before device startup must not leave an ALIGNING phase behind.
+            stop_event = profile["stop_event"]
+            with stop_event.phase_guard:
+                _check_before_start(stop_event)
+                stop_event.alignment_phase = "ALIGNING"
 
     def body(hp, stop_event):
         names = hp["feature_names"]
@@ -738,9 +747,6 @@ def evaluate_local_act(request, profile, devices):
         raise Rejected("evaluation frame limit reached before verified completion")
 
     if plan is not None:
-        with event.phase_guard:
-            _check_before_start(event)
-            event.alignment_phase = "ALIGNING"
         profile["_start_alignment"] = plan
     if guard is not None:
         profile["_demonstration_guard"] = guard
@@ -855,6 +861,10 @@ class LeRobotDevices:
         self.profile = None
         self.seq = 0
         self.watchdog_ticks = None
+        self.reset_run_state()
+
+    def reset_run_state(self):
+        """Per-run state: a reused object must not carry the previous run's stop evidence."""
         self.evaluation_armed = False
         self.startup_torque_off_verified = False
         self.applied_actions = 0
@@ -872,6 +882,8 @@ class LeRobotDevices:
             raise Rejected("DYNAMIXEL Bus Watchdog tripped or readback mismatch")
 
     def start(self, profile, operation):
+        # Before any validation: a rejected start must not report the previous run's state.
+        self.reset_run_state()
         if (
             profile.get("device_mode") != "hardware"
             or profile.get("authorization", {}).get("hardware") is not True
@@ -966,8 +978,6 @@ class LeRobotDevices:
 
         self.arms = {key: OmxFollower(config) for key, config in configs.items()}
         self.leader = OmxLeader(profile["leader_config"])
-        self.evaluation_armed = False
-        self.applied_actions = 0
         event = profile.get("stop_event")
         for arm in self.arms.values():
             if event is not None:
@@ -1210,7 +1220,8 @@ class LeRobotDevices:
                     ):
                         raise Rejected("ACT target exceeds step limit at motor write")
                     if guard is not None:
-                        guard.check(measured, values)
+                        # Re-check against the fresh reading without consuming another candidate frame.
+                        guard.check(measured, values, advance=False)
             if event is not None and event.is_set():
                 raise Rejected("supervisor stop before motor write")
             self._check_evaluation_cameras()
@@ -1315,7 +1326,11 @@ class LeRobotDevices:
 
 
 class LeRobotDatasetWriter:
-    """Use pinned dataset APIs; final success includes metadata and video inspection."""
+    """Use pinned dataset APIs; success requires a complete manifest and the saved files.
+
+    finish() checks meta/info.json (one episode, the recorded frame count), a data file and a
+    video file per camera. It does not decode their contents.
+    """
 
     def __init__(self, profile):
         self.profile = profile
@@ -1371,10 +1386,27 @@ class LeRobotDatasetWriter:
             manifest = dict(
                 manifest, camera_devices=dict(self.profile["camera_devices"])
             )
+        self._check_saved(root)
         (root / "manifest.json").write_text(json.dumps(manifest, allow_nan=False))
-        from .learning import inspect_dataset
+        return manifest
 
-        return inspect_dataset(root, self.profile["dataset_profile"])
+    def _check_saved(self, root):
+        """The manifest is the callback's claim; completion also needs the files LeRobot wrote."""
+        try:
+            info = json.loads((root / "meta/info.json").read_text())
+        except (OSError, ValueError):
+            raise Rejected("saved dataset has no readable meta/info.json") from None
+        if info.get("total_episodes") != 1 or info.get("total_frames") != len(
+            self.frames
+        ):
+            raise Rejected(
+                "saved dataset episode or frame count differs from recording"
+            )
+        if not any((root / "data").glob("**/*.parquet")):
+            raise Rejected("saved dataset has no data file")
+        for key in self.profile["camera_mapping"]:
+            if not any((root / "videos" / key).glob("**/*.mp4")):
+                raise Rejected(f"saved dataset has no video for {key}")
 
     def abort(self):
         if self.dataset is not None and not self.closed:

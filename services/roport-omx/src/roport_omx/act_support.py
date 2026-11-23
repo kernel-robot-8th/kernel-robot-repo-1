@@ -210,6 +210,8 @@ class Profile:
         for operation in roles:
             if set(policies[operation]) != set(PHASES):
                 raise Rejected("four phase policies required")
+            if not all(isinstance(p, dict) for p in policies[operation].values()):
+                raise Rejected("policy/model identity required")
             if len({p.get("policy_id") for p in policies[operation].values()}) != 4:
                 raise Rejected("four separate phase policy registrations required")
             for policy in policies[operation].values():

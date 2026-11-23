@@ -133,23 +133,33 @@ class RuntimeTests(unittest.TestCase):
         from roport_omx.lerobot_runtime import evaluate_local_act
 
         reference = self.root / "reference.json"
-        reference.write_text(json.dumps([
-            {"state": [0, 0, 0, 0, 0, 50], "action": [1, 0, 0, 0, 0, 50]},
-            {"state": [2, 0, 0, 0, 0, 50], "action": [3, 0, 0, 0, 0, 50]},
-        ]))
+        reference.write_text(
+            json.dumps(
+                [
+                    {"state": [0, 0, 0, 0, 0, 50], "action": [1, 0, 0, 0, 0, 50]},
+                    {"state": [2, 0, 0, 0, 0, 50], "action": [3, 0, 0, 0, 0, 50]},
+                ]
+            )
+        )
         self.profile.update(
             act_checkpoint=str(self.root / "checkpoint"),
             shelf_level=1,
             camera_mapping={},
             supervise_local_act=lambda _: "run",
             demonstration_guard={
-                "path": str(reference), "state_tolerance": [0.5] * 6,
-                "action_tolerance": [0.5] * 6, "lookahead_frames": 2,
+                "path": str(reference),
+                "state_tolerance": [0.5] * 6,
+                "action_tolerance": [0.5] * 6,
+                "lookahead_frames": 2,
             },
         )
         with patch("roport_omx.panel_act.PanelAct") as factory:
-            factory.return_value.select_action.return_value = SimpleNamespace(tolist=lambda: [3, 0, 0, 0, 0, 50])
-            result = evaluate_local_act(self.request("evaluate"), self.profile, self.devices)
+            factory.return_value.select_action.return_value = SimpleNamespace(
+                tolist=lambda: [3, 0, 0, 0, 0, 50]
+            )
+            result = evaluate_local_act(
+                self.request("evaluate"), self.profile, self.devices
+            )
         self.assertEqual(self.devices.actions, [])
         self.assertIn("leaves the reviewed demonstration path", result["error"])
         self.assertTrue(result["physical_stop"]["confirmed"])
@@ -321,7 +331,10 @@ class RuntimeTests(unittest.TestCase):
         from roport_omx.lerobot_runtime import reconcile_evaluation
 
         adapter = LeRobotDevices()
-        adapter.profile = {"arm_id": "omx1", "shared_lock_path": str(self.root / "arm.lock")}
+        adapter.profile = {
+            "arm_id": "omx1",
+            "shared_lock_path": str(self.root / "arm.lock"),
+        }
         adapter.watchdog_ticks = 25
         adapter.evaluation_armed = True
         hold = {"joint": 123}
@@ -329,7 +342,9 @@ class RuntimeTests(unittest.TestCase):
         bus.motors = {"joint": object()}
         bus.is_connected = True
         bus.sync_read.side_effect = [{"joint": 25}, hold, hold]
-        bus.disconnect.side_effect = lambda **kwargs: setattr(bus, "is_connected", False)
+        bus.disconnect.side_effect = lambda **kwargs: setattr(
+            bus, "is_connected", False
+        )
         adapter.arms = {"omx1": SimpleNamespace(bus=bus, cameras={})}
         stop = adapter.stop("panel request")
         bus.sync_write.assert_called_once_with("Goal_Position", hold, normalize=False)
@@ -344,7 +359,11 @@ class RuntimeTests(unittest.TestCase):
         job = {"result": {"physical_stop": {"evidence": stop}}}
         with self.assertRaises(Rejected):
             reconcile_evaluation(adapter.profile, job, None)
-        self.assertTrue(reconcile_evaluation(adapter.profile, job, {"stopped_and_supported": True})["confirmed"])
+        self.assertTrue(
+            reconcile_evaluation(adapter.profile, job, {"stopped_and_supported": True})[
+                "confirmed"
+            ]
+        )
         self.assertEqual(Path(adapter.profile["shared_lock_path"]).read_text(), "")
 
     def hardware_profile(self):
@@ -410,10 +429,17 @@ class RuntimeTests(unittest.TestCase):
             def sync_read(self, register, *, normalize=True):
                 if normalize:
                     assert register == "Present_Position"
-                    return dict(zip([key.removesuffix(".pos") for key in OMX_FEATURES], [0, 0, 0, 0, 0, 50]))
+                    return dict(
+                        zip(
+                            [key.removesuffix(".pos") for key in OMX_FEATURES],
+                            [0, 0, 0, 0, 0, 50],
+                        )
+                    )
                 return {
                     "Bus_Watchdog": dict(self.motors),
-                    "Torque_Enable": dict.fromkeys(self.motors, int(self.torque_enabled)),
+                    "Torque_Enable": dict.fromkeys(
+                        self.motors, int(self.torque_enabled)
+                    ),
                     "Operating_Mode": {"joint": 4, "gripper": 5},
                     "Present_Position": {"joint": 123, "gripper": 456},
                     "Goal_Position": self.goal,
@@ -521,7 +547,8 @@ class RuntimeTests(unittest.TestCase):
             ):
                 LeRobotDevices().start(profile, "record")
 
-    def test_actual_dataset_writer_uses_pinned_save_finalize_and_inspection_api(self):
+    def finish_fake_recording(self, *, frames=1, artifacts=("data", "video", "info")):
+        """Run the real writer over a fake dataset that leaves only the named artifacts."""
         calls, payloads = [], []
 
         class Dataset:
@@ -529,6 +556,7 @@ class RuntimeTests(unittest.TestCase):
             def create(cls, **kwargs):
                 calls.append("create")
                 Path(kwargs["root"]).mkdir()
+                cls.root = Path(kwargs["root"])
                 return cls()
 
             def add_frame(self, payload):
@@ -540,10 +568,23 @@ class RuntimeTests(unittest.TestCase):
 
             def finalize(self):
                 calls.append("finalize")
+                root = self.root
+                if "data" in artifacts:
+                    (root / "data/chunk-000").mkdir(parents=True)
+                    (root / "data/chunk-000/file-000.parquet").write_bytes(b"x")
+                if "video" in artifacts:
+                    video = root / "videos/observation.images.side/chunk-000"
+                    video.mkdir(parents=True)
+                    (video / "file-000.mp4").write_bytes(b"x")
+                if "info" in artifacts:
+                    (root / "meta").mkdir()
+                    (root / "meta/info.json").write_text(
+                        json.dumps({"total_frames": frames, "total_episodes": 1})
+                    )
 
         profile = {
             **self.profile,
-            "dataset_path": str(self.root / "dataset"),
+            "dataset_path": tempfile.mkdtemp(dir=self.root) + "/dataset",
             "dataset_profile": {"explicit": "fake"},
             "repo_id": "fake/dataset",
             "dataset_features": {},
@@ -560,9 +601,6 @@ class RuntimeTests(unittest.TestCase):
             "numpy": SimpleNamespace(
                 asarray=lambda data, dtype: data, float32="float32"
             ),
-            "roport_omx.learning": SimpleNamespace(
-                inspect_dataset=lambda root, expected: {"complete": True}
-            ),
         }
         with patch.dict(sys.modules, modules):
             writer = LeRobotDatasetWriter(profile)
@@ -573,10 +611,29 @@ class RuntimeTests(unittest.TestCase):
             writer.add_frame(
                 {"sample": sample, "actual_action": actual, "action_ns": 123}
             )
-            self.assertTrue(writer.finish()["complete"])
+            result = writer.finish()
+        return result, calls, payloads
+
+    def test_actual_dataset_writer_uses_pinned_save_finalize_and_inspection_api(self):
+        result, calls, payloads = self.finish_fake_recording()
+        self.assertTrue(result["complete"])
         self.assertEqual(calls, ["create", "save_episode", "finalize"])
         self.assertEqual(payloads[0]["action"][0], 0.5)
         self.assertEqual(payloads[0]["observation.images.side"], "fake-rgb-array")
+
+    def test_recording_is_not_complete_when_saved_artifacts_are_missing(self):
+        for artifacts, frames in (
+            ((), 1),
+            (("video", "info"), 1),
+            (("data", "info"), 1),
+            (("data", "video"), 1),
+            (("data", "video", "info"), 2),
+        ):
+            with (
+                self.subTest(artifacts=artifacts, frames=frames),
+                self.assertRaises(Rejected),
+            ):
+                self.finish_fake_recording(frames=frames, artifacts=artifacts)
 
 
 if __name__ == "__main__":
