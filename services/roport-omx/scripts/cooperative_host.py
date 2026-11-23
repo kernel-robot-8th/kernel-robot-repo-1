@@ -10,7 +10,7 @@ control panel (v3.14+, armed switch on the panel screen) with the model routed f
 arms move, so a person stays by them. Broker settings come from ROPORT_MQTT_* like the control
 server; secrets stay in the env.
 
-  uv run python scripts/cooperative_host.py --executor mock --no-require-docking \
+  uv run python scripts/cooperative_host.py --executor mock \
       --mock-versions model-demo-v1 calibration-demo-v1 --journal ~/.local/state/roport/shelf-01-v2.json
   uv run python scripts/cooperative_host.py --executor panel --routes ~/.config/roport/shelf-01-routes.json \
       --journal ~/.local/state/roport/shelf-01-v2.json
@@ -456,14 +456,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "(simulated executor only)",
     )
     parser.add_argument(
-        "--require-docking",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="v2: a transfer also needs a docking sensor's fresh confirmation of the visit; "
-        "none is connected yet, so the panel executor refuses every transfer "
-        "(docking_alignment_unconfirmed). --no-require-docking: simulated executor only",
-    )
-    parser.add_argument(
         "--mock-versions",
         nargs=2,
         metavar=("MODEL_VERSION", "CALIBRATION_VERSION"),
@@ -527,12 +519,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if (
         args.protocol == "v2"
         and args.executor == "panel"
-        and not (args.require_pinky and args.require_docking)
+        and not args.require_pinky
     ):
-        # #135 review: the arms move only with a confirmed visit; bench runs use the mock
+        # #135 review: the arms move only with a confirmed Pinky visit; bench runs use the mock
         parser.error(
-            "--no-require-pinky/--no-require-docking need --executor mock "
-            "(v2 runs the real arms only with the Pinky and docking checks)"
+            "--no-require-pinky needs --executor mock "
+            "(v2 runs the real arms only with the Pinky check)"
         )
     if args.protocol == "v2" and args.report_placement:
         parser.error(
@@ -585,7 +577,6 @@ def main() -> None:
                 executor,
                 control=args.control,
                 require_pinky=args.require_pinky,
-                require_docking=args.require_docking,
                 readiness=sampler,
             )
         else:
@@ -624,13 +615,11 @@ def main() -> None:
         log.info("SIMULATED executor")
     if args.protocol == "v2":
         log.info(
-            "protocol v2 (%s) control=%s boot_version=%s require_pinky=%s "
-            "require_docking=%s",
+            "protocol v2 (%s) control=%s boot_version=%s require_pinky=%s",
             field_wire.PROFILE,
             args.control,
             host.boot_id,
             "on" if args.require_pinky else "off",
-            "on" if args.require_docking else "off",
         )
         sampler.start()
     else:
