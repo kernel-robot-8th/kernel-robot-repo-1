@@ -12,7 +12,9 @@ only when last_result is final, and when alignment ran, arm return comes from it
 """
 
 import json
+import logging
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -181,9 +183,10 @@ def _hold_code(result: dict) -> str:
 #     (also when the aligner could not read the shelf but the evaluation's placement judge read
 #      this box's own marker in 2B with the hands clear: align_error PANEL_SHELF_UNREADABLE,
 #      2026-11-22)
-#   not loaded, evaluation failed, arms not home  → MISSION_FAILED: arms sent back to the start pose,
+#   evaluation failed, arms not home              → MISSION_FAILED: arms sent back to the start pose,
 #                                                   reported without HOLD once they are home
-#   shelf unreadable, emergency stop, unknown, …  → MISSION_HOLD: a person checks first
+#   not on the shelf (maybe dropped), shelf unreadable, emergency stop, unknown, …
+#                                                 → MISSION_HOLD: a person checks first
 NOT_ALIGNED = "shelf_load_not_aligned"
 # Failures that wait for a person; any other failure first sends the arms home (panel /api/home/return).
 HOLD_ERRORS = {
@@ -204,6 +207,11 @@ HOLD_ERRORS = {
     "PANEL_HANDOVER_STOPPED",
     "PANEL_HANDOVER_HOLD",
     "RESULT_UNAVAILABLE",
+    # TK 2026-11-24: a box that may be on the floor waits for a person, arms left where they are.
+    # Unloading: slot empty but the tray unchanged since the pre-mission photo. Loading: not on
+    # the shelf, and the tray is not checked afterwards, so a drop cannot be ruled out.
+    "PANEL_BOX_DROPPED",
+    "PANEL_BOX_NOT_ON_SHELF",
 }
 HOME_RETURN_TIMEOUT_S = 90.0
 # The panel takes episodes of 3-600 s. A control-tower evaluation ends on its own (end_on_return:
@@ -225,9 +233,9 @@ EPISODE_DEFAULT_S = 180.0
 #                right before this mission (tray_changed >= 0.25; tray_reference_state "ok" and
 #                pre_mission_match true). No marker is stuck on the tray: the unload policy was
 #                trained on a bare tray and does not start when one is there.
-# Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot, or slot empty but the
-# tray unchanged (dropped) → MISSION_FAILED, arms sent home. Anything unread or not confirmed
-# (another slot, no pre-mission photo) → MISSION_HOLD.
+# Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot → MISSION_FAILED, arms
+# sent home. Slot empty but the tray unchanged (dropped, TK 2026-11-24), anything unread or not
+# confirmed (another slot, no pre-mission photo) → MISSION_HOLD.
 PINKY_LOAD = "pinky_load"
 
 
@@ -559,6 +567,7 @@ class PanelExecutor:
         self._missing_since: float | None = None
         self._recovery: dict | None = None  # a failed mission's arms on their way home
         self._models: tuple[float, set[str]] = (float("-inf"), set())
+        self._models_refresh: threading.Thread | None = None
 
     def _call(self, method: str, path: str, body: dict | None = None, timeout=None):
         data = None if body is None else json.dumps(body).encode()
@@ -581,6 +590,8 @@ class PanelExecutor:
             raise PanelRefused(f"panel {path}: {message}", reply) from exc
 
     def readiness(self) -> dict:
+        if time.monotonic() - self._models[0] > MODELS_TTL_S:
+            self._refresh_models()  # kept warm off the MQTT loop (the sampler calls this)
         status = self._call("GET", "/api/status")
         armed = status.get("armed")  # absent before panel 3.8 → None → not armed
         busy = bool((status.get("job") or {}).get("running"))
@@ -682,12 +693,38 @@ class PanelExecutor:
         }
 
     def _model_paths(self) -> set[str]:
+        """The panel's trained models. Only the very first call waits for the panel (about 1 s);
+        later an expired list is refreshed in the background and the known list answers now, so a
+        transfer's checks never stall the Host's MQTT loop (2026-11-23 23:41 field run)."""
         fetched, paths = self._models
+        if fetched == float("-inf"):
+            return self._fetch_models()
         if time.monotonic() - fetched > MODELS_TTL_S:
-            runs = self._call("GET", "/api/train/runs", timeout=15).get("runs", [])
-            paths = {r.get("model_path") for r in runs if r.get("model_path")}
-            self._models = (time.monotonic(), paths)
+            self._refresh_models()
         return paths
+
+    def _fetch_models(self) -> set[str]:
+        runs = self._call("GET", "/api/train/runs", timeout=15).get("runs", [])
+        paths = {r.get("model_path") for r in runs if r.get("model_path")}
+        self._models = (time.monotonic(), paths)
+        return paths
+
+    def _refresh_models(self) -> None:
+        if self._models_refresh is not None and self._models_refresh.is_alive():
+            return
+
+        def run() -> None:
+            try:
+                self._fetch_models()
+            except Exception as exc:  # noqa: BLE001 - the known list stays until a refresh works
+                logging.getLogger(__name__).warning(
+                    "panel model list refresh failed: %s", exc
+                )
+
+        self._models_refresh = threading.Thread(
+            target=run, name="panel-models", daemon=True
+        )
+        self._models_refresh.start()
 
     def start(self, task: dict) -> None:
         if (

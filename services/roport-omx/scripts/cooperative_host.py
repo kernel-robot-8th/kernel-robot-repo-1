@@ -483,10 +483,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--report-placement",
         action=argparse.BooleanOptionalAction,
-        default=False,  # off until the control tower handles two reports (#134 review)
-        help="panel: loading in two reports (COMPLETE when the box is in its slot, then the "
-        "alignment result); the control tower must accept evidence shelf_placed. Default off: "
-        "one report after the alignment (control v1 holds on shelf_placed)",
+        default=None,
+        help="panel: report loading completed the moment the box is placed and both hands are "
+        "clear (evidence shelf_placed), then the alignment result as a second report. Default "
+        "on for v2 (TK 2026-11-24; control stores and ACKs the intermediate report), off for v1",
     )
     parser.add_argument(
         "--end-on-place",
@@ -516,20 +516,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.control is None:
         args.control = "control-01" if args.protocol == "v2" else "control-test"
-    if (
-        args.protocol == "v2"
-        and args.executor == "panel"
-        and not args.require_pinky
-    ):
+    if args.protocol == "v2" and args.executor == "panel" and not args.require_pinky:
         # #135 review: the arms move only with a confirmed Pinky visit; bench runs use the mock
         parser.error(
             "--no-require-pinky needs --executor mock "
             "(v2 runs the real arms only with the Pinky check)"
         )
-    if args.protocol == "v2" and args.report_placement:
-        parser.error(
-            "--report-placement is v1 only: v2 reports once, after the alignment"
-        )
+    if args.report_placement is None:
+        args.report_placement = args.protocol == "v2"
     if str(args.journal.resolve()).startswith("/tmp/"):
         parser.error("journal must survive a restart; do not use /tmp")
     if args.executor == "panel" and args.routes is None:
@@ -577,6 +571,7 @@ def main() -> None:
                 executor,
                 control=args.control,
                 require_pinky=args.require_pinky,
+                report_placement=args.report_placement,
                 readiness=sampler,
             )
         else:

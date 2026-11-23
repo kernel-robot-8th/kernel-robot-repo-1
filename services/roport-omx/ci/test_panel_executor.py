@@ -422,7 +422,9 @@ class PanelExecutorTest(unittest.TestCase):
                 self.assertIn(events[-1]["payload"]["phase"], {"REJECTED", "FAILED"})
                 self.assertIn("expired_command", str(events[-1]["payload"]))
 
-    def test_model_cache_fetches_on_fresh_boot_and_refreshes_after_ttl(self):
+    def test_model_cache_fetches_on_fresh_boot_and_refreshes_after_ttl_in_background(
+        self,
+    ):
         clock = 1.0
         with (
             patch.object(
@@ -436,6 +438,11 @@ class PanelExecutorTest(unittest.TestCase):
             self.assertEqual(self.executor._model_paths(), {MODEL})
             self.assertEqual(call.call_count, 1)
             clock += panel_executor.MODELS_TTL_S + 1
+            # expired: the known list answers at once (never a panel wait inside the MQTT loop,
+            # 2026-11-23 23:41) while a background refresh fetches the new one
+            self.assertEqual(self.executor._model_paths(), {MODEL})
+            self.executor._models_refresh.join(5)
+            self.assertEqual(call.call_count, 2)
             self.assertEqual(self.executor._model_paths(), set())
             self.assertEqual(call.call_count, 2)
 
@@ -691,7 +698,7 @@ class PanelExecutorTest(unittest.TestCase):
         def fail_with_arm_away(home):
             self.panel.arms = {"OMX 1": live("left"), "OMX 2": live("right", home=home)}
             self.send(self.inbound())
-            self.panel.finish(align=align(on_shelf=False, ok=False), final=True)
+            self.panel.finish(exit_ok=False, err={"code": "err_code_7"})
             (progress,) = self.host.poll()  # the panel moves the arms home first
             self.assertEqual(progress["payload"]["step"], "home_return")
             self.assertEqual(self.panel.home_returns, self.homes + 1)
@@ -708,7 +715,7 @@ class PanelExecutorTest(unittest.TestCase):
                 self.panel.arms["OMX 2"] = live("right")  # read at home afterwards
                 (failed,) = self.host.poll()
                 p = failed["payload"]
-                self.assertEqual(p["error_code"], "PANEL_BOX_NOT_ON_SHELF")
+                self.assertEqual(p["error_code"], "PANEL_ERR_CODE_7")
                 self.assertEqual(p["mission_result"], "MISSION_FAILED")
                 self.assertIs(p["arms"]["omx2"]["returned"], True)
                 self.assertFalse(p["departure_ready"])
@@ -797,11 +804,15 @@ class PanelExecutorTest(unittest.TestCase):
                 self.assertEqual(events[-1]["type"], "shelf_inbound.failed")
                 self.assertEqual(events[-1]["payload"]["error_code"], code)
                 result = events[-1]["payload"]["mission_result"]
-                if (
-                    code == "PANEL_EMERGENCY_STOP"
-                ):  # frozen in place until a person acts
+                if code in {
+                    "PANEL_EMERGENCY_STOP",  # frozen in place until a person acts
+                    "PANEL_BOX_NOT_ON_SHELF",  # TK 2026-11-24: may be on the floor
+                }:
                     self.assertEqual(result, "MISSION_HOLD")
                     self.assertIsNotNone(self.host.hold)
+                    self.assertEqual(
+                        self.panel.home_returns, 0
+                    )  # arms left for a person
                 else:  # a person's stop, or arms read back home: the next mission may start
                     self.assertEqual(result, "MISSION_FAILED")
                     self.assertIsNone(self.host.hold)
@@ -974,25 +985,35 @@ class PanelExecutorTest(unittest.TestCase):
                 self.assertIs(p["departure_ready"], True)
                 self.assertIsNone(self.host.hold)
 
-    def test_unload_box_dropped_or_left_on_shelf_fails_and_arms_go_home(self):
+    def test_unload_box_dropped_holds_and_left_on_shelf_fails(self):
+        # TK 2026-11-24: a dropped box (slot empty, tray unchanged) waits for a person: HOLD,
+        # arms not moved. A box still in its slot fails and the next mission may start.
         self.use_unload_route()
         cases = [
-            ("PANEL_BOX_DROPPED", pinky(on_pinky=False, on_shelf=False)),
-            ("PANEL_BOX_STILL_ON_SHELF", pinky(on_pinky=False, on_shelf=True)),
+            ("PANEL_BOX_DROPPED", pinky(on_pinky=False, on_shelf=False), True),
+            ("PANEL_BOX_STILL_ON_SHELF", pinky(on_pinky=False, on_shelf=True), False),
         ]
-        for code, check in cases:
+        for code, check, held in cases:
             with self.subTest(code=code):
+                self.host.clear_hold()
                 self.send(self.outbound())
                 self.panel.finish(pinky=check, stage="done", final=True)
                 (failed,) = self.host.poll()
                 self.assertEqual(failed["type"], "shelf_outbound.failed")
                 self.assertEqual(failed["payload"]["error_code"], code)
-                self.assertEqual(failed["payload"]["mission_result"], "MISSION_FAILED")
-                self.assertIsNone(self.host.hold)
+                self.assertEqual(
+                    failed["payload"]["mission_result"],
+                    "MISSION_HOLD" if held else "MISSION_FAILED",
+                )
+                self.assertIs(self.host.hold is not None, held)
+                self.assertEqual(self.panel.home_returns, 0)
+        self.host.clear_hold()
         # an arm left away from home: sent home first, then reported without HOLD
         self.panel.arms["OMX 1"] = live("left", home=False)
         self.send(self.outbound())
-        self.panel.finish(pinky=pinky(on_pinky=False), stage="done", final=True)
+        self.panel.finish(
+            pinky=pinky(on_pinky=False, on_shelf=True), stage="done", final=True
+        )
         (progress,) = self.host.poll()
         self.assertEqual(progress["payload"]["step"], "home_return")
         self.panel.status["job"] = {"running": False, "kind": "home"}
@@ -1014,7 +1035,7 @@ class PanelExecutorTest(unittest.TestCase):
                 "PANEL_BOX_STILL_ON_SHELF",
                 {"slot_empty": False, "on_pinky": False},
             ),
-            ("failed", "PANEL_BOX_DROPPED", {"slot_empty": True, "on_pinky": False}),
+            ("held", "PANEL_BOX_DROPPED", {"slot_empty": True, "on_pinky": False}),
             (
                 "held",
                 "PANEL_PINKY_CHECK_CONFLICT",
@@ -1186,10 +1207,10 @@ class PanelExecutorTest(unittest.TestCase):
         self.panel.arms["OMX 2"] = live("right", home=False)
         self.send(self.inbound())
         self.panel.status["armed"] = False  # e.g. the panel turned it off on an anomaly
-        self.panel.finish(align=align(on_shelf=False, ok=False), final=True)
+        self.panel.finish(exit_ok=False, err={"code": "err_code_7"})
         (failed,) = self.host.poll()
         self.assertEqual(failed["payload"]["error_code"], "PANEL_NOT_ARMED_FOR_HOME")
-        self.assertIn("PANEL_BOX_NOT_ON_SHELF", failed["payload"]["detail"])
+        self.assertIn("PANEL_ERR_CODE_7", failed["payload"]["detail"])
         self.assertEqual(failed["payload"]["mission_result"], "MISSION_HOLD")
         self.assertEqual(self.panel.home_returns, 0)
         self.assertIsNotNone(self.host.hold)

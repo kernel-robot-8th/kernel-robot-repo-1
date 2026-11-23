@@ -31,6 +31,7 @@ No MQTT, HTTP or motor access here; the executor owns the device.
 import json
 import logging
 import re
+import threading
 import time
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -54,18 +55,21 @@ PLACED = {
     "INBOUND": {"shelf_align", "shelf_load_not_aligned"},
     "OUTBOUND": {"pinky_load"},
 }
+# Freshness limits agreed with control on 2026-11-23 (TK: control moved its limits to 8 s; the
+# spec's 3 s were proposals to be fixed after field measurement). Change both sides together.
+FRESH_S = 8.0
 SENT_AGE_S = (
     -0.5,
-    3.0,
-)  # a new transfer's sent_at against this PC's clock (spec, Pinky alike)
+    FRESH_S,
+)  # a new transfer's sent_at against this PC's clock
 OBSERVATION_MAX_AGE_S = (
-    3.0  # Pinky state / readiness sample older than this proves nothing
+    FRESH_S  # Pinky state / readiness sample older than this proves nothing
 )
 STOP_TIMEOUT_S = 30.0  # the panel's safe stop lands the arms within a few seconds
 # Stop observed: two separate bus reads of both arms after the stop request, every joint within
 # STILL_TOL (panel joint units) of the previous read (the panel reads the bus about every 10 s).
 STILL_TOL = 1.0
-WATCHDOG_S = 3.0  # keep-running renewals (contract: stop/HOLD after 3 s without one)
+WATCHDOG_S = FRESH_S  # keep-running renewals: stop/HOLD after this long without one
 KEEP_RUNNING_SENT_S = 1.0  # a renewal's sent_at age (field_host.py alike)
 OBSERVED_FUTURE_S = (
     1.0  # a Pinky observed_at this far ahead of this PC's clock still counts
@@ -79,6 +83,15 @@ LOCAL_RELEASE = {
     "physical_stop_failed",
     "physical_stop_not_confirmed",
 }
+ACCEPT_SAMPLE_MAX_AGE_S = (
+    2.0  # a sampler reading this recent stands for "now" when accepting
+)
+ACCEPT_WAIT_S = (
+    3.0  # a transfer waits this long for a recent readiness sample, then is rejected
+)
+START_INLINE_S = (
+    0.2  # wait this long in handle() for a start before leaving it to poll()
+)
 TERMINAL = {"completed", "rejected", "failed", "interrupted"}
 _REASON = re.compile(r"[^A-Za-z0-9_.:-]+")
 
@@ -87,6 +100,10 @@ def _iso(at: float | None = None) -> str:
     return datetime.fromtimestamp(time.time() if at is None else at, UTC).isoformat(
         timespec="milliseconds"
     )
+
+
+class NotYet(Exception):
+    """No recent readiness sample: decide the transfer from poll() once one arrives."""
 
 
 def _reason(code) -> str:
@@ -166,20 +183,35 @@ class FieldHost:
         control: str,
         require_armed: bool = True,
         require_pinky: bool = True,
+        report_placement: bool = False,
         readiness=None,
         watchdog_s: float = WATCHDOG_S,
     ):
         self.journal, self.executor = journal, executor
         self.control = control
         self.require_armed, self.require_pinky = require_armed, require_pinky
+        # Shelf store reported completed the moment the box is placed and both hands are clear
+        # (the executor's "placed", panel hand-over judge); the alignment then runs on without
+        # further reports for this command (TK 2026-11-24, control asked to accept it).
+        self.report_placement = report_placement
         self.watchdog_s, self.stop_timeout_s = watchdog_s, STOP_TIMEOUT_S
         self._sample = readiness or (lambda: (self._read(), time.time()))
+        # with a sampler thread a stale reading never turns into a panel read in the MQTT loop
+        # (#156 review): the transfer waits (in memory, nothing answered) for the next sample
+        self._sampled = readiness is not None
+        self._waiting: dict | None = None
         self.boot_version = "boot-" + str(uuid4())
         self.failed = False
         self.state_sequence = 0
         self.pinkies: dict[str, dict] = {}
         self.retired_boots: dict[str, set[str]] = {}
         self._deadline: float | None = None  # keep-running watchdog of the active task
+        # The executor's start runs off the MQTT loop (a panel start takes seconds): while it waits the
+        # loop keeps reading Pinky states and renewals and publishing robot_state (2026-11-23 field
+        # run: a 3 s blocking start made the Host see its own Pinky observation as stale and stop).
+        self._starting: dict | None = (
+            None  # {"command_id", "thread", "error", "done_at"}
+        )
         self._renewals: set[str] = set()
         self._stop_wall: float | None = None  # wall time of the stop request
         # (bus read time, joints) of reads the panel finished after the stop request
@@ -370,6 +402,16 @@ class FieldHost:
             return [self.state(endpoint)]
         if "command_id" not in message:
             raise ValueError(f"{kind} is not a command")
+        waiting = self._waiting["record"] if self._waiting else None
+        if (
+            waiting is not None
+            and waiting["command"]["command_id"] == message["command_id"]
+        ):
+            if waiting["fingerprint"] == _fingerprint(message):
+                return []  # still waiting for a readiness sample: decided from poll()
+            raise ValueError(
+                "idempotency_conflict: command_id reused with another body"
+            )
         record = self._data["commands"].get(message["command_id"])
         if record is not None:
             if record["fingerprint"] == _fingerprint(message):
@@ -386,7 +428,10 @@ class FieldHost:
             "events": [],
             "sequence": 0,
             "last_step": None,
+            "timing": {},  # wall-clock marks of this command (journal only, see _mark)
         }
+        self._mark(record, "sent", field_wire.timestamp(message["sent_at"]).timestamp())
+        self._mark(record, "received")
         self._data["commands"][message["command_id"]] = record
         try:
             if datetime.now(UTC) >= field_wire.timestamp(message["expires_at"]):
@@ -412,12 +457,51 @@ class FieldHost:
             if kind == "hold_release_command":
                 return self._hold_release(record)
             task = self._check_transfer(message)
+        except NotYet:
+            return self._defer(record)
         except Rejected as exc:
             return self._status(record, "rejected", reason=_reason(exc.args[0]))
         except ValueError as exc:
             record["detail"] = str(exc)[:200]
             return self._status(record, "rejected", reason="invalid_command")
+        return self._accept(record, task)
 
+    def _defer(self, record: dict) -> list[dict]:
+        command_id = record["command"]["command_id"]
+        del self._data["commands"][
+            command_id
+        ]  # nothing journaled or answered for it yet
+        self._waiting = {"record": record, "since": time.monotonic()}
+        log.info(
+            "%s: readiness sample not recent; deciding on the next one", command_id
+        )
+        return []
+
+    def _retry_waiting(self) -> list[dict]:
+        waiting, self._waiting = self._waiting, None
+        record = waiting["record"]
+        message = record["command"]
+        self._data["commands"][message["command_id"]] = record
+        try:
+            if datetime.now(UTC) >= field_wire.timestamp(message["expires_at"]):
+                raise Rejected("expired_command")
+            task = self._check_transfer(message)
+        except NotYet:
+            if time.monotonic() - waiting["since"] < ACCEPT_WAIT_S:
+                del self._data["commands"][message["command_id"]]
+                self._waiting = waiting
+                return []
+            return self._status(record, "rejected", reason="executor_state_stale")
+        except Rejected as exc:
+            return self._status(record, "rejected", reason=_reason(exc.args[0]))
+        except ValueError as exc:
+            record["detail"] = str(exc)[:200]
+            return self._status(record, "rejected", reason="invalid_command")
+        return self._accept(record, task)
+
+    def _accept(self, record: dict, task: dict) -> list[dict]:
+        message = record["command"]
+        self._mark(record, "checked")
         record["task"] = task
         record["arrival_consumed"] = True  # one transfer per Pinky arrival (contract)
         self._data["active"] = message["command_id"]
@@ -425,30 +509,112 @@ class FieldHost:
         self._renewals.clear()
         self._stop_since = self._stop_wall = None
         events = self._status(record, "accepted")  # saved before the executor is called
-        try:
-            if datetime.now(UTC) >= field_wire.timestamp(message["expires_at"]):
-                raise StartRefused("expired_command", hold=False)
-            self.executor.start(task)
-        except StartRefused as exc:  # refused before any motion, with its own reason
-            return events + self._end(
+        self._mark(record, "accepted")
+        if datetime.now(UTC) >= field_wire.timestamp(message["expires_at"]):
+            return events + self._end(record, "failed", "expired_command", hold=False)
+        self._begin_start(record, task)
+        # A quick start (or refusal) is settled here; a slow one is followed up by poll()
+        self._starting["thread"].join(START_INLINE_S)
+        return events + (self._start_outcome(record) or [])
+
+    # --- executor start off the MQTT loop -------------------------------------------------
+    def _begin_start(self, record: dict, task: dict) -> None:
+        starting = {
+            "command_id": record["command"]["command_id"],
+            "error": None,
+            "done_at": None,
+        }
+
+        def run() -> None:
+            try:
+                self.executor.start(task)
+            except BaseException as exc:  # noqa: BLE001 - handed back to the loop in poll()
+                starting["error"] = exc
+            finally:
+                starting["done_at"] = time.time()
+
+        self._mark(record, "start_sent")
+        starting["thread"] = threading.Thread(
+            target=run, name="executor-start", daemon=True
+        )
+        self._starting = starting
+        starting["thread"].start()
+
+    def _start_outcome(self, record: dict) -> list[dict] | None:
+        """None while the start is still on its way; [] once started; events if it was refused."""
+        starting = self._starting
+        if (
+            starting is None
+            or starting["command_id"] != record["command"]["command_id"]
+        ):
+            return []
+        if starting["thread"].is_alive():
+            return None
+        self._starting = None
+        self._mark(record, "start_done", starting["done_at"])
+        exc = starting["error"]
+        if exc is None:
+            return []
+        if isinstance(
+            exc, StartRefused
+        ):  # refused before any motion, with its own reason
+            return self._end(
                 record, "failed", _reason(exc.code), hold=exc.hold, detail=exc.detail
             )
-        except Exception as exc:  # noqa: BLE001 - any refusal ends this execution
-            return events + self._end(
-                record, "failed", "executor_start_failed", detail=str(exc)
+        return self._end(record, "failed", "executor_start_failed", detail=str(exc))
+
+    def _late_start(self) -> None:
+        """A start that returned after its task had already ended (stopped, watchdog, Pinky left):
+        the run it may have begun gets the stop again, so nothing keeps moving unasked."""
+        starting = self._starting
+        if starting is None or starting["thread"].is_alive():
+            return
+        self._starting = None
+        if starting["error"] is None:
+            log.warning(
+                "start of %s returned after the task ended; stopping again",
+                starting["command_id"],
             )
-        return events
+            try:
+                self.executor.stop()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("executor stop failed: %s", exc)
+
+    # --- timing ---------------------------------------------------------------------------
+    def _mark(self, record: dict, name: str, at: float | None = None) -> None:
+        """First time this command reached `name` (unix s). Logged with the time since received."""
+        timing = record.setdefault("timing", {})
+        if name in timing:
+            return
+        timing[name] = round(time.time() if at is None else at, 3)
+        base = timing.get("received")
+        if base is not None and name not in {"sent", "received"}:
+            log.info(
+                "timing %s %s +%.2fs",
+                record["command"]["command_id"][:8],
+                name,
+                timing[name] - base,
+            )
 
     def poll(self) -> list[dict]:
         """Executor observations of the active task → in_progress / completed / failed."""
         self._usable()
+        if self._waiting is not None:  # nothing is active while a transfer waits
+            return self._retry_waiting()
         command_id = self._data["active"]
         if command_id is None:
+            self._late_start()
             return self._settle_stop()
         events = self.local_safety()
         if self._data["active"] is None:
+            self._late_start()
             return events
         record = self._data["commands"][command_id]
+        started = self._start_outcome(record)
+        if started is None:  # the panel is still taking the start: keep the loop free
+            return events + self._settle_stop()
+        if started:
+            return events + started
         if record.get(
             "run_ended"
         ):  # stopped run over: only the stop observation is missing
@@ -458,11 +624,24 @@ class FieldHost:
         except Exception:  # noqa: BLE001 - keep waiting; the device keeps its own safety
             return events + self._settle_stop()
         state = seen.get("state")
-        if state in {"running", "placed"}:  # v2 reports once, after the alignment
+        if (
+            state == "placed"
+            and self.report_placement
+            and record["task"]["operation"] == "INBOUND"
+            and not record.get("placed_reported")
+            and self._data["stop"]
+            is None  # stopping: the stop's own result only (#156 review)
+        ):
+            events += self._report_placed(record, seen)
+        if state in {"running", "placed"}:
             step = seen.get("step") if isinstance(seen.get("step"), str) else state
+            self._mark(record, "step:" + step)
             if step != record["last_step"]:
                 record["last_step"] = step
-                events += self._status(record, "in_progress")
+                if not record.get(
+                    "placed_reported"
+                ):  # completed is control's last word
+                    events += self._status(record, "in_progress")
             return events + self._settle_stop()
         if state not in {"finished", "failed"}:
             return events + self._settle_stop()
@@ -481,6 +660,13 @@ class FieldHost:
         arms = _arms(ready.get("arms"))
         busy = ready.get("busy") is not False
         active = self._data["active"]
+        if active is not None and stale:
+            # During a task the panel holds the arms (starting the run, loading the model), so a
+            # slow arm read is expected, not a fault (2026-11-23 23:06 field run: Fleet held on a
+            # participant fault while the panel started). Report what is known now - a task is
+            # running, the arms are unknown - with the time of this report, so control keeps
+            # receiving a current state; a real fault still ends the task through observe().
+            busy, observed = True, time.time()
         idle = (
             active is None
             and self._data["hold"] is None
@@ -492,9 +678,13 @@ class FieldHost:
         )
         if self._data["hold"] is not None:
             fault = "host_hold"
+        elif active is not None:
+            fault = (
+                None  # a running task reports through command_status, not a state fault
+            )
         elif stale:
             fault = "observation_stale"
-        elif ready.get("error") and active is None:
+        elif ready.get("error"):
             fault = _reason(ready["error"])
         else:
             fault = None
@@ -579,9 +769,12 @@ class FieldHost:
         if command_id is None or self._data["stop"] is not None:
             return []
         record = self._data["commands"][command_id]
+        # #156 review: the renewal watchdog stays on through the alignment (control keeps the
+        # command open until the final report); the Pinky check too, until control has stored
+        # the placement report - only then may the Pinky leave while the arms still align
         if self._deadline is None or time.monotonic() > self._deadline:
             reason = "control_watchdog_expired"
-        elif self.require_pinky:
+        elif self.require_pinky and not record.get("placed_stored"):
             reason = self._visit_lost(record["command"])
         else:
             reason = None
@@ -600,7 +793,11 @@ class FieldHost:
             raise Rejected("cooperative_slot_mismatch")
         if self._data["hold"] is not None:
             raise Rejected("host_hold")
-        if self._data["active"] is not None or self._data["stop"] is not None:
+        if (
+            self._data["active"] is not None
+            or self._data["stop"] is not None
+            or self._waiting is not None
+        ):
             raise Rejected("resource_busy")
         for other in self._data["commands"].values():
             q = other["command"]["payload"]
@@ -610,7 +807,7 @@ class FieldHost:
                 and q.get("arrival_command_id") == p["arrival_command_id"]
             ):
                 raise Rejected("arrival_already_used")
-        ready = self._read()
+        ready = self._recent_ready()  # never a slow panel call inside the MQTT loop
         if ready["error"]:
             raise Rejected("executor_error")
         if ready["busy"]:
@@ -733,10 +930,14 @@ class FieldHost:
         if seen["state"] == "finished" and all(_home(a) for a in arms.values()):
             evidence = seen.get("evidence")
             if evidence in PLACED[task["operation"]]:
+                # always named (#156 review): control tells an aligned load from a placed but
+                # crooked one (shelf_load_not_aligned holds the slot) with or without a first report
+                extra = {"evidence": evidence}
                 return self._end(
                     record,
                     "completed",
-                    result={
+                    result=extra
+                    | {
                         "package_id": task["package_id"],
                         "slot_id": task["slot_id"],
                         "pinky_id": task["pinky_id"],
@@ -820,6 +1021,15 @@ class FieldHost:
         target = p["target_command_id"]
         if target == record["command"]["command_id"]:
             raise Rejected("invalid_stop_target")
+        waiting = self._waiting["record"] if self._waiting else None
+        if waiting is not None and waiting["command"]["command_id"] == target:
+            # a stop for a transfer that waits for its readiness sample: it never starts
+            self._waiting = None
+            self._data["commands"][target] = waiting
+            events = self._status(waiting, "rejected", reason="stop_requested")
+            return events + self._status(
+                record, "rejected", reason="target_command_not_active"
+            )
         if target != self._data["active"]:
             raise Rejected("target_command_not_active")
         if not callable(getattr(self.executor, "stop", None)):
@@ -976,6 +1186,8 @@ class FieldHost:
     ) -> list[dict]:
         if not keep_active and self._data["active"] == record["command"]["command_id"]:
             self._data["active"] = None
+        if record.get("task") is not None:
+            self._mark(record, "ended")
         if status != "completed" and hold:
             # a person-only HOLD stays so when another one replaces it
             local = reason in LOCAL_RELEASE or (
@@ -992,7 +1204,46 @@ class FieldHost:
         record.update(
             {k: v for k, v in extra.items() if isinstance(v, str)}
         )  # journal only
+        if record.get("placed_reported"):
+            # second report of a store completed at placement: the alignment's outcome
+            # (completed shelf_align / shelf_load_not_aligned with the arms home, or failed);
+            # control sends the next shelf command after it (TK 2026-11-24)
+            record["after_placed"] = {"status": status, "reason": reason}
         return self._status(record, status, reason=reason, result=result)
+
+    def _report_placed(self, record: dict, seen: dict) -> list[dict]:
+        """completed at placement: the box sits in its slot, both hands clear (judge), the arms
+        are still working (the aligner takes them over), so they are reported as they are."""
+        task = record["task"]
+        record["placed_reported"] = True
+        record["evidence"] = "shelf_placed"
+        self._mark(record, "placed")
+        return self._status(
+            record,
+            "completed",
+            result={
+                "package_id": task["package_id"],
+                "slot_id": task["slot_id"],
+                "pinky_id": task["pinky_id"],
+                "arrival_command_id": task["arrival_command_id"],
+                "placement_confirmed": True,
+                "release_confirmed": seen.get("grasp_released") is True,
+                "evidence": "shelf_placed",
+                "arms": [
+                    {
+                        "robot_id": name,
+                        "boot_version": self.boot_version,
+                        "stopped": False,
+                        "home_reached": False,
+                        "holding_package_id": None,
+                        "holding_state": "empty"
+                        if seen.get("grasp_released") is True
+                        else "unknown",
+                    }
+                    for name in ARMS
+                ],
+            },
+        )
 
     def _status(
         self, record: dict, status: str, *, reason=None, result=None
@@ -1024,10 +1275,40 @@ class FieldHost:
 
     def _ack(self, acked: str) -> None:
         outbox = self._data["outbox"]
-        if not any(e["message_id"] == acked for e in outbox):
+        event = next((e for e in outbox if e["message_id"] == acked), None)
+        if event is None:
             return
+        result = event["payload"].get("result") or {}
+        if (
+            event["type"] == "command_status"
+            and result.get("evidence") == "shelf_placed"
+        ):
+            record = self._data["commands"].get(event.get("command_id"))
+            if record is not None:
+                record["placed_stored"] = (
+                    True  # control stored it: the Pinky may now leave
+                )
         self._data["outbox"] = [e for e in outbox if e["message_id"] != acked]
         self._save()
+
+    def _recent_ready(self) -> dict:
+        """The sampler's reading if it is recent; NotYet with a sampler (the caller waits for the
+        next one), a direct read without one (tests, one-shot use).
+
+        A transfer's checks run inside the MQTT loop; a direct panel read there (status plus the
+        arms of every routed model) can take seconds, and while it waits no Pinky state is read
+        (2026-11-23 23:41 field run: 2.8 s of checks, then pinky_observation_stale at once)."""
+        try:
+            sample, observed = self._sample()
+        except Exception:  # noqa: BLE001 - no sample yet
+            if self._sampled:
+                raise NotYet from None
+            return self._read()
+        if not 0 <= time.time() - observed <= ACCEPT_SAMPLE_MAX_AGE_S:
+            if self._sampled:
+                raise NotYet
+            return self._read()
+        return self._normalize(sample)
 
     def _read(self) -> dict:
         try:
@@ -1039,6 +1320,10 @@ class FieldHost:
                 "error": str(exc)[:200] or "unreachable",
                 "arms": {},
             }
+        return self._normalize(ready)
+
+    @staticmethod
+    def _normalize(ready: dict) -> dict:
         armed = ready.get("armed")
         return {
             "armed": armed if isinstance(armed, bool) else None,
