@@ -181,3 +181,113 @@ def test_lift_nav_recovery_cap_keeps_explicit_arguments():
     names = [n.tag for n in tree.iter()]
     assert 'ClearEntireCostmap' not in names and 'Spin' not in names and 'BackUp' not in names
     assert names.count('Wait') == 1 and 'FollowPath' in names
+
+
+def test_fine_align_returns_the_commanded_pose_inside_the_envelope_only():
+    from roport_follow.demo_runner import FineAlign
+    f = FineAlign(('demo_RET_N12',))
+    assert f.enabled('demo_RET_N12') and not f.enabled('demo_G3')
+    goal = {'goal_id': 'demo_RET_N12', 'pose': {'x': 2.2642, 'y': -1.2839, 'yaw': math.pi}}
+    f.reset(goal)
+    f.begin(10.0)
+    assert f.target({'x': 2.4642, 'y': -1.2839, 'yaw': 3.1}, 11.0) == {'x': 2.2642, 'y': -1.2839, 'yaw': math.pi}
+    with pytest.raises(ValueError, match='outside_envelope'):          # 40 cm: 정밀 접근 범위 밖
+        f.target({'x': 2.6642, 'y': -1.2839, 'yaw': math.pi}, 11.0)
+    with pytest.raises(ValueError, match='outside_envelope'):          # 방향 30° 넘게 틀어짐
+        f.target({'x': 2.4, 'y': -1.2839, 'yaw': math.pi - 0.5}, 11.0)
+    with pytest.raises(ValueError, match='timeout'):
+        f.target({'x': 2.3, 'y': -1.2839, 'yaw': math.pi}, 36.0)
+    f.reset()
+    assert f.active is False and f.command is None
+
+
+def test_install_fine_align_leaves_configured_gate_docking_alone():
+    from types import SimpleNamespace
+    from roport_follow.demo_runner import install_fine_align
+    logs = []
+    d = SimpleNamespace(nav=SimpleNamespace(docking=object(), dock_action=None), node=None)
+    assert install_fine_align(d, log=logs.append) is False and logs and d.nav.dock_action is None
+
+
+def test_follow_turn_first_turns_in_place_then_follows_after_settle():
+    from types import SimpleNamespace
+    from roport_follow.demo_runner import TURN_GOAL_ID, TURN_SETTLE_S
+    d, c, r = make()
+    d.nav = SimpleNamespace(snapshot=lambda: {'pose': {'x': 2.6, 'y': -0.02, 'yaw': 0.0}})
+    r.handle({'op': 'follow', 'card_id': 35, 'lost_after_s': 4, 'turn_first': True})
+    kind, typ, p = d.calls[-1]
+    assert (kind, typ) == ('dispatch', 'navigate.requested') and p['goal_id'] == TURN_GOAL_ID
+    assert (p['pose']['x'], p['pose']['y']) == (2.6, -0.02) and abs(p['pose']['yaw']) == pytest.approx(math.pi)
+    turn = d.last
+    d.results.append((turn, 'completed', {}))
+    r.tick()                                            # 돌기 끝 → 바로 보내지 않고 카메라 영상을 기다림
+    dispatched = [x for x in d.calls if x[0] == 'dispatch']
+    assert dispatched[-1][1] == 'navigate.requested' and r.state()['pending'] == 'follow_after_turn'
+    c.t += TURN_SETTLE_S / 2
+    r.handle({'op': 'ping'})                            # 콘솔은 기다리는 동안 살아 있음
+    c.t += TURN_SETTLE_S / 2
+    r.tick()
+    kind, typ, p = [x for x in d.calls if x[0] == 'dispatch'][-1]
+    assert (kind, typ) == ('dispatch', 'follow.requested') and p['card_id'] == 35 and p['lost_after_s'] == 4.0
+    assert r.state()['active']['type'] == 'follow.requested'
+
+
+def test_follow_turn_first_is_dropped_on_failed_turn_stop_or_unknown_pose():
+    from types import SimpleNamespace
+    d, c, r = make()
+    d.nav = SimpleNamespace(snapshot=lambda: {'pose': None})
+    r.handle({'op': 'follow', 'card_id': 35, 'turn_first': True})
+    assert r.events[-1]['reason'] == 'turn_pose_unavailable' and not any(x[0] == 'dispatch' for x in d.calls)
+    d.nav = SimpleNamespace(snapshot=lambda: {'pose': {'x': 0.0, 'y': 0.0, 'yaw': 1.0}})
+    r.handle({'op': 'follow', 'card_id': 35, 'turn_first': True})
+    d.results.append((d.last, 'failed', {'error_code': 'nav2_recovery_timeout'}))
+    r.tick()
+    c.t += 5
+    r.tick()
+    assert all(x[1] != 'follow.requested' for x in d.calls if x[0] == 'dispatch')
+    r.handle({'op': 'follow', 'card_id': 35, 'turn_first': True})
+    r.handle({'op': 'stop'})                            # 도는 중 정지: 돈 뒤 추종도 버림
+    d.results.append((d.last, 'completed', {}))
+    c.t += 5
+    r.tick()
+    r.tick()
+    assert all(x[1] != 'follow.requested' for x in d.calls if x[0] == 'dispatch')
+
+
+def test_follow_after_turn_is_dropped_when_console_dies_while_waiting_or_new_command_arrives():
+    from types import SimpleNamespace
+    from roport_follow.demo_runner import TURN_SETTLE_S
+    d, c, r = make()
+    d.nav = SimpleNamespace(snapshot=lambda: {'pose': {'x': 0.0, 'y': 0.0, 'yaw': 0.0}})
+    r.handle({'op': 'follow', 'card_id': 35, 'turn_first': True})
+    d.results.append((d.last, 'completed', {}))
+    r.tick()                                            # 돌기 끝(active 없음, 추종 대기)
+    c.t += 1.2                                          # 콘솔 1 s 넘게 조용 → 끊김
+    r.tick()
+    assert r.events[-1]['reason'] == 'control_link_lost' and r.state()['pending'] is None
+    c.t += TURN_SETTLE_S
+    r.handle({'op': 'ping'})
+    r.tick()
+    assert all(x[1] != 'follow.requested' for x in d.calls if x[0] == 'dispatch')
+    r.handle({'op': 'follow', 'card_id': 35, 'turn_first': True})
+    d.results.append((d.last, 'completed', {}))
+    r.tick()
+    d.reject = 'mode_mismatch'
+    r.handle({'op': 'switch_line'})                     # 거절돼도 기다리던 추종은 버림
+    d.reject = None
+    c.t += TURN_SETTLE_S
+    r.handle({'op': 'ping'})
+    r.tick()
+    assert all(x[1] != 'follow.requested' for x in d.calls if x[0] == 'dispatch')
+
+
+def test_navigate_position_tolerance_default_and_explicit_range():
+    d, c, r = make()
+    r.handle({'op': 'navigate', 'goal_id': 'g', 'x': 1.0, 'y': 2.0, 'yaw': 0.0})
+    assert d.calls[-1][2]['position_tolerance_m'] == 0.12
+    r.active = None
+    r.handle({'op': 'navigate', 'goal_id': 'ARR', 'x': 1.0, 'y': 2.0, 'yaw': 0.0, 'position_tolerance_m': 0.3})
+    assert d.calls[-1][2]['position_tolerance_m'] == 0.3
+    r.active = None
+    r.handle({'op': 'navigate', 'goal_id': 'g', 'x': 1.0, 'y': 2.0, 'yaw': 0.0, 'position_tolerance_m': 0.5})
+    assert r.events[-1]['reason'] == 'invalid_position_tolerance'

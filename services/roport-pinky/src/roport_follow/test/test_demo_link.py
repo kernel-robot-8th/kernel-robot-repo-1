@@ -59,3 +59,20 @@ def test_follow_lost_after_is_explicit_and_bounded():
     for bad in (0.5, 8, True):
         with pytest.raises(ValueError):
             demo_command({'op': 'follow', 'card_id': 35, 'lost_after_s': bad})
+
+
+def test_follow_turn_first_is_passed_only_when_true():
+    from roport_follow.demo_link import demo_command
+    assert demo_command({'op': 'follow', 'card_id': 35, 'turn_first': True})['turn_first'] is True
+    assert 'turn_first' not in demo_command({'op': 'follow', 'card_id': 35, 'turn_first': False})
+    with pytest.raises(ValueError):
+        demo_command({'op': 'follow', 'card_id': 35, 'turn_first': 'yes'})
+
+
+def test_navigate_position_tolerance_is_optional_and_bounded():
+    from roport_follow.demo_link import demo_command
+    base = {'op': 'navigate', 'goal_id': 'demo_ARR', 'x': 2.6, 'y': 0.0, 'yaw': 0.0}
+    assert 'position_tolerance_m' not in demo_command(base)
+    assert demo_command({**base, 'position_tolerance_m': 0.3})['position_tolerance_m'] == 0.3
+    with pytest.raises(ValueError):
+        demo_command({**base, 'position_tolerance_m': 0.5})
