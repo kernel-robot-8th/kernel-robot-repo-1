@@ -50,6 +50,9 @@ PINKIES = ("pinky1", "pinky2", "pinky3")
 NODE = "N11"  # the Pinky stop in front of the shelf's B column (Fleet SLOTS)
 SLOTS = ("1b", "2b")  # both arms together; A (omx1) and C (omx2) are one-arm slots
 OPERATIONS = {"store": "INBOUND", "retrieve": "OUTBOUND"}
+# The first of two reports (Host --report-placement): the box is where it belongs, the arms still work.
+# Control stores it and lets the Pinky leave (store: shelf_placed 11/24; retrieve: pinky_placed, TK 11/24).
+PLACED_EARLY = {"INBOUND": "shelf_placed", "OUTBOUND": "pinky_placed"}
 # Completion evidence that saw the box where it belongs (cooperative.Executor.observe)
 PLACED = {
     "INBOUND": {"shelf_align", "shelf_load_not_aligned"},
@@ -627,7 +630,7 @@ class FieldHost:
         if (
             state == "placed"
             and self.report_placement
-            and record["task"]["operation"] == "INBOUND"
+            and record["task"]["operation"] in PLACED_EARLY
             and not record.get("placed_reported")
             and self._data["stop"]
             is None  # stopping: the stop's own result only (#156 review)
@@ -1217,11 +1220,13 @@ class FieldHost:
         return self._status(record, status, reason=reason, result=result)
 
     def _report_placed(self, record: dict, seen: dict) -> list[dict]:
-        """completed at placement: the box sits in its slot, both hands clear (judge), the arms
-        are still working (the aligner takes them over), so they are reported as they are."""
+        """completed at placement: the box sits in its slot (store) or on the Pinky tray (retrieve),
+        both hands clear (judge), the arms are still working (the aligner takes them over / they go
+        home), so they are reported as they are."""
         task = record["task"]
+        evidence = PLACED_EARLY[task["operation"]]
         record["placed_reported"] = True
-        record["evidence"] = "shelf_placed"
+        record["evidence"] = evidence
         self._mark(record, "placed")
         return self._status(
             record,
@@ -1233,7 +1238,7 @@ class FieldHost:
                 "arrival_command_id": task["arrival_command_id"],
                 "placement_confirmed": True,
                 "release_confirmed": seen.get("grasp_released") is True,
-                "evidence": "shelf_placed",
+                "evidence": evidence,
                 "arms": [
                     {
                         "robot_id": name,
@@ -1286,7 +1291,7 @@ class FieldHost:
         result = event["payload"].get("result") or {}
         if (
             event["type"] == "command_status"
-            and result.get("evidence") == "shelf_placed"
+            and result.get("evidence") in PLACED_EARLY.values()
         ):
             record = self._data["commands"].get(event.get("command_id"))
             if record is not None:

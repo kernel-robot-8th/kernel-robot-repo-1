@@ -382,6 +382,10 @@ class CooperativeHost:
         except Exception:  # noqa: BLE001 - keep waiting; the device keeps its own safety
             return []
         state = seen.get("state")
+        if state == "placed" and record["task"].get("operation") != "INBOUND":
+            # panel 3.24 unloading tray judge: the two-report unloading is a v2 contract only
+            # (completed pinky_placed); v1 keeps one report after the camera check
+            state = seen["state"] = "running"
         if state == "placed":
             return self._placed(record, seen)
         if record.get("placed") and state in {"finished", "failed"}:
