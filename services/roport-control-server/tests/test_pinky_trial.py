@@ -5,11 +5,13 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from queue import Queue
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -280,6 +282,27 @@ def control_memory(profile, tmp_path):
     journal.close()
 
 
+def test_cart_load_waits_for_other_pinky_stop_evidence(control_memory):
+    c = control_memory
+    cart = c.state["statuses"][c.robots["smartcart"]["robot_id"]]
+    route = c.config["routes"]["cart_to_switch"]
+    cart.update(node_id=route["start_node"], heading_rad=route["start_heading_rad"])
+    index = next(
+        i for i, step in enumerate(c.plan["steps"]) if step["id"] == "WAIT_CART_LOAD"
+    )
+    c._enter_step(index)
+    token = c.state["gate"]["stop_session_id"]
+    logistics = c.state["statuses"][c.robots["logistics"]["robot_id"]]
+    logistics["stopped"] = False
+    assert c.approval_error("gate") == "robot is not safely waiting"
+    with pytest.raises(ValueError, match="robot is not safely waiting"):
+        c.dummy(token)
+    assert c.state["gate"]["stop_session_id"] == token and not c.state["transfers"]
+    logistics["stopped"] = True
+    assert c.approval_error("gate") is None
+    assert c.dummy(token) and len(c.state["transfers"]) == 1
+
+
 def test_wrong_dummy_request_and_restart_are_fenced(control_memory):
     control = control_memory
     with pytest.raises(ValueError):
@@ -530,12 +553,31 @@ def test_bad_completion_cannot_advance(control_memory, pair, change):
     assert len(control.transport.sent) == 1
 
 
-@pytest.mark.parametrize("single_robot", [False, True])
+@pytest.mark.parametrize(
+    ("single_robot", "slow_reports"),
+    [(False, False), (True, False), (False, True)],
+    ids=["two", "single", "slow-io"],
+)
 def test_complete_trial_over_real_mosquitto(
-    profile, single_profile, broker, tmp_path, single_robot
+    profile, single_profile, broker, tmp_path, single_robot, slow_reports, monkeypatch
 ):
     if single_robot:
         profile = single_profile
+    if slow_reports:
+        report = PinkyTrialClient.report
+        samples = 0
+
+        def slow_report(client, *args, **kwargs):
+            nonlocal samples
+            if (
+                client.robot == profile["robots"]["logistics"]["robot_id"]
+                and samples < 8
+            ):
+                samples += 1
+                time.sleep(0.45)
+            return report(client, *args, **kwargs)
+
+        monkeypatch.setattr(PinkyTrialClient, "report", slow_report)
     port = broker[0]
     transport = MqttTransport(
         MqttConfig("127.0.0.1", "trial-control", port=port),
@@ -547,6 +589,9 @@ def test_complete_trial_over_real_mosquitto(
     journal = Journal(tmp_path / "control.json")
     control = TrialControl(profile, transport, journal)
     clients, fakes = [], []
+    done = Event()
+    workers = ThreadPoolExecutor(max_workers=len(profile["robots"]))
+    futures = []
     try:
         for role, robot in profile["robots"].items():
             fake = FakePinky(profile, role)
@@ -566,12 +611,23 @@ def test_complete_trial_over_real_mosquitto(
             clients.append(client)
             fakes.append(fake)
         transport.start()
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            control.poll(0.01)
-            for client, fake in zip(clients, fakes, strict=True):
+
+        def run_robot(client, fake):
+            # Each real robot has its own owner; one robot's I/O cannot stall another.
+            while not done.is_set():
                 client.poll(0.01)
                 fake.finish(client)
+
+        futures = [
+            workers.submit(run_robot, client, fake)
+            for client, fake in zip(clients, fakes, strict=True)
+        ]
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            for future in futures:
+                if future.done():
+                    future.result()
+            control.poll(0.01)
             phase = control.state["phase"]
             assert phase != "HOLD", control.state["fault"]
             if phase == "READY" and len(control.state["statuses"]) == len(
@@ -617,15 +673,17 @@ def test_complete_trial_over_real_mosquitto(
             any(client.journal.data["outbox"] for client in clients)
             and time.monotonic() < deadline
         ):
-            for client in clients:
-                client.poll(0.01)
             control.poll(0.01)
         assert all(not client.journal.data["outbox"] for client in clients)
     finally:
+        done.set()
+        workers.shutdown(wait=True)
         for client in clients:
             client.close()
         transport.stop()
         journal.close()
+        for future in futures:
+            future.result()
 
 
 def test_portable_folder_imports_without_control_installation(tmp_path):

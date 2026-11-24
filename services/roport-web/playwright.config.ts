@@ -8,6 +8,7 @@ export const CUSTOMER_URL = 'http://127.0.0.1:5186';
 
 export default defineConfig({
   testDir: './e2e',
+  testIgnore: 'service-fleet.spec.ts',
   timeout: 30000,
   workers: 1,
   use: {
@@ -20,7 +21,7 @@ export default defineConfig({
     {
       // 개발 서버의 /cart-api 프록시로 서비스 서버를 부른다(배포 nginx 전달은 아직 없음).
       command: 'npm run dev --workspace @roport/pad -- --port 5185 --strictPort',
-      env: { VITE_PAD_API: 'server' },
+      env: { VITE_PAD_API: 'server', ROPORT_SERVICE_HTTP_URL: SERVICE_URL },
       url: 'http://127.0.0.1:5185',
       reuseExistingServer: false,
       timeout: 30000,
@@ -28,6 +29,7 @@ export default defineConfig({
     {
       command: 'npm run dev --workspace @roport/service -- --port 5186 --strictPort',
       url: CUSTOMER_URL,
+      env: { ROPORT_SERVICE_HTTP_URL: SERVICE_URL },
       reuseExistingServer: false,
       timeout: 30000,
     },

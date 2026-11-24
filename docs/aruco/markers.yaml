@@ -63,7 +63,7 @@ markers:
   - {id: 20, name: PKG6, group: package, size_mm: 50, quiet_mm: 6, mount: top, use: "포장물품 6"}
   - {id: 21, name: PKG7, group: package, size_mm: 50, quiet_mm: 6, mount: top, use: "포장물품 7"}
   - {id: 22, name: PKG8, group: package, size_mm: 50, quiet_mm: 6, mount: top, use: "포장물품 8"}
-  # (OMX 하차) Pinky 쟁반 기준: 쟁반 바닥 가운데에 하늘을 보게, 무광. Pinky 3대에 1장씩(예비 1장). v1.5까지 PKG4
+  # 쟁반 기준용 예약 ID. copies/size는 과거 인쇄 규격이며 실제 쟁반에는 붙이지 않음. v1.5까지 PKG4
   - {id: 18, name: TRAY, group: tray, size_mm: 50, quiet_mm: 6, mount: tray_floor, copies: 4, use: "Pinky 쟁반 기준용으로 예약(2026-11-17 현장: 쟁반에 붙이면 하차 정책이 동작하지 않아 붙이지 않음). 18 상자(옛 PKG4)는 쓰지 않음"}
   # 물류 Pinky 정밀 도킹: 상차 노드 가로선에서 멈춘 Pinky 카메라(렌즈 높이 6.3 cm)가 정면으로 보는 OMX 받침 앞면,
   # 세로선 연장선 위에 세로로 부착. 2장씩 인쇄(예비 1장)

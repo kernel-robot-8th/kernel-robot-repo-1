@@ -84,8 +84,8 @@ def test_wire_matches_existing_db_motion_without_importing_db(receiver):
     [
         {"binding_id": str(uuid4())},
         {"boot_id": str(uuid4())},
-        {"observed_at": (datetime.now(UTC) - timedelta(seconds=10)).isoformat()},
-        {"observed_at": (datetime.now(UTC) + timedelta(seconds=10)).isoformat()},
+        {"observed_at": timedelta(seconds=-10)},
+        {"observed_at": timedelta(seconds=10)},
     ],
 )
 def test_wrong_identity_and_expired_observation_cannot_replace_pose(receiver, change):
@@ -93,6 +93,10 @@ def test_wrong_identity_and_expired_observation_cannot_replace_pose(receiver, ch
     m = sample(receiver.config, statuses["pinky1"]["boot_id"])
     receiver.consume(delivery(m), statuses)
     invalid = deepcopy(m)
+    if "observed_at" in change:
+        # Parametrization runs during collection, before this sample exists.
+        observed = datetime.fromisoformat(m["payload"]["observed_at"])
+        change = {"observed_at": (observed + change["observed_at"]).isoformat()}
     invalid["payload"].update(sequence=2, **change)
     with pytest.raises(ValueError):
         receiver.consume(delivery(invalid), statuses)

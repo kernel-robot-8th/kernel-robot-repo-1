@@ -6,7 +6,7 @@ RO:PORT · GATE CREW — 통합관제 및 로봇 통신
 
 Python 3.12 / FastAPI / uv / Three.js / Paho MQTT / pytest / Playwright / Ruff. 정확한 버전은 manifest와 lockfile을 따릅니다.
 2026-11-03 팀 합의: **브라우저 웹 UI ↔ FastAPI ↔ 운영 DB ↔ 관제 실행부(별도 프로세스 1개)**. API와 실행부의 목표 연결은 운영 DB이며, 원격 서비스 WSS는 실행부가 담당합니다. AI 노트북에 서버를 배치하고 다른 PC에서 접속합니다. AI 추론은 API와 별도 프로세스로 운영합니다.
-현재 구현은 **웹 UI·REST 조회·WebSocket 모의/OFFLINE 상태 스트림**과 독립 MQTT/UDP 모듈입니다. 운영 DB 연결·WSS·카메라 웹 중계는 후속입니다. 공유 등록 계약·PostgreSQL 저장소는 제공하되 API/UI에는 아직 연결하지 않았고, Pinky 시험은 **원본 웹 UI ↔ FastAPI ↔ Unix socket ↔ 시험 실행부 1개 ↔ MQTT**로 연결합니다. 시험 이력은 파일 journal에 저장합니다. 브라우저는 DB/MQTT/UDP에 직접 연결하지 않습니다.
+현재 구현은 **웹 UI·REST 조회·WebSocket 모의/OFFLINE 상태 스트림**과 독립 MQTT/UDP 모듈입니다. Fleet 실행 스냅샷·서비스 요청은 PostgreSQL/WSS로 연결하며 운영 배포·카메라 웹 중계는 후속입니다. 공유 등록 계약·PostgreSQL 저장소는 제공하되 API/UI에는 아직 연결하지 않았고, Pinky 시험은 **원본 웹 UI ↔ FastAPI ↔ Unix socket ↔ 시험 실행부 1개 ↔ MQTT**로 연결합니다. 시험 이력은 파일 journal에 저장합니다. 브라우저는 DB/MQTT/UDP에 직접 연결하지 않습니다.
 
 ## 공통 실행부 · 구간별 시험
 
@@ -41,7 +41,7 @@ tests/         test_layers.py: 아래 import 규칙 검사
 | `domain/` (골격) | 표준 라이브러리 |
 | `executor/` | 표준 라이브러리, `domain`, `contracts`, `adapters`(api 제외) |
 
-패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`은 골격이며 `executor/pinky_trial.py`는 웹 API와 IPC로 연결되는 DB 비의존 시험 실행부입니다. `adapters/db/`는 등록 저장소이며 웹 API/실행부 연결은 후속입니다. `adapters/wss/`는 WSS 메시지 계약 확정 후 만듭니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
+패키지는 `scripts`·`tests`를 import하지 않고, DB 드라이버(psycopg·sqlite3 등)는 `adapters/db/` 밖에서 import하지 않습니다. `domain/`은 골격이며 `executor/pinky_trial.py`는 웹 API와 IPC로 연결되는 DB 비의존 시험 실행부입니다. `adapters/db/`는 등록 저장소와 Fleet 서비스 저장소를 제공하고, `adapters/wss/`는 명시적으로 설정한 Fleet 실행부에서 연결합니다. API는 Unix socket으로 Fleet을 호출합니다. 규칙이 없는 새 폴더는 `tests/test_layers.py`가 실패시키므로 규칙을 함께 추가합니다.
 
 ## 현재 범위
 
@@ -49,6 +49,90 @@ MQTT 5 작업 명령·이벤트 모듈과 모의 Pinky·OMX 왕복 예제, FastA
 UDP 영상 송수신 모듈(FFT1-105)도 포함합니다. 공유 등록·설정 요청·이력 저장소를 제공합니다. 웹에 연결된 운영 실행부·API/UI 연결은 후속 PR입니다. 업무 CRUD는 만들지 않습니다.
 CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 배포 환경 미정으로 CD와 자동 배포는 설정하지 않았습니다.
+
+## Fleet MQTT 실행과 도착 재확인
+
+`executor.fleet_runtime`은 루프백 MQTT, 시험용 journal, 모드 `simulation`의 Fleet 설정을 사용합니다. 로컬 소켓의 `enable`로 작업 처리를 시작합니다.
+
+```bash
+uv run python -m roport_control_server.executor.fleet_runtime \
+  --config /tmp/fleet.json --journal /tmp/fleet-control.json --socket /tmp/fleet.sock
+```
+
+기체가 도착 확인 전에 재부팅하면 로컬 소켓의 `snapshot`에 있는 `pending_arrivals`에서 해당 기체의 `node`, `command_id`, `recovery_boot`을 확인합니다. 해당 노드에서 기체와 정차 상태를 확인한 후 실행합니다.
+
+```bash
+python3 tools/confirm_fleet_arrival.py --socket /tmp/fleet.sock \
+  --robot pinky1 --command-id "$ARRIVAL_COMMAND" --boot-version "$RECOVERY_BOOT" \
+  --note "도착 노드에서 기체 정차 확인"
+```
+
+실행부가 새 기동의 최신 정차 상태와 도착 노드를 검증하고 확인 기록을 남깁니다. Fleet이 HOLD이면 별도로 `release_hold`와 `enable`을 실행해야 합니다.
+
+Fleet은 발행이 확인되지 않은 STOP을 같은 명령 ID로 유효기간 안에 재시도합니다. STOP이 만료됐거나 기체가 재부팅했으면 운영자가 최신 상태를 확인하고 로컬 소켓에서 `recover_stop`을 요청합니다. 요청에는 현재 `session_id`, `expires_at`, 작업 명령의 `command_id`, 현재 기록에 남은 `stop_id`, 로봇의 현재 `boot_version`, 확인한 내용을 적은 `note`가 필요합니다. 같은 기동에서 원래 명령이 여전히 활성 상태면 새 STOP을 발행합니다. 기체가 정차·유휴 상태면 그 확인만 기록하며, 물품 제거와 작업 종료는 별도 `reconcile`로 처리합니다.
+
+주행 중 재부팅한 Pinky는 기존 journal의 `active_command_id`와 `fault=recovery_required`를 유지합니다. 이 경우 `confirm_arrival`로 도착을 만들지 않고 다음 순서로 작업을 정리합니다.
+
+1. Fleet HOLD와 기체 정지를 확인합니다. `snapshot`의 현재 기동 ID·기존 활성 명령 ID·STOP ID를 사용해 `recover_stop`을 요청합니다. 새 기동에서는 최신 정차·라인 비활성·제어권 해제와 `recovery_required`가 모두 확인돼야 새 STOP을 발행합니다.
+2. 기존 주행의 `interrupted`와 새 STOP의 `completed / stopped=true`가 저장될 때까지 기다립니다. 기체 `active_command_id`는 없어지고 `fault=operator_stop`은 유지됩니다. 이때 작업·자원 예약은 해제되지 않습니다.
+3. 운영자가 물품을 제거하고 해당 역할의 대기점에 기체를 배치한 뒤, **같은 journal 경로**로 Pinky MQTT 실행부와 드라이버를 재시작합니다. 실제 배치에 맞는 시작 노드·방향 및 정차·유휴·장애 없음이 보고돼야 합니다. journal 삭제나 재고 직접 수정으로 복구하지 않습니다.
+4. 로컬 소켓에 `reconcile`(`command_id`, `outcome="removed"`, `note`)을 요청해 해당 작업을 CANCELED로 정리합니다. 기존 주행을 완료나 고객 수령으로 처리하지 않습니다. 다른 보류 작업도 정리한 뒤 `release_hold`(`note`), 별도 `enable` 순서로 재개합니다. 모든 조작에는 현재 `session_id`와 유효한 `expires_at`이 필요합니다.
+
+이 절차는 실제 MQTT endpoint·가상 드라이버·루프백 브로커·운영자 소켓으로 검증하며, 실물 재배치·정차 확인은 현장 검증 범위입니다. Pinky 메시지 규격과 endpoint 코드는 변경하지 않습니다.
+
+STOP 수락 직후 **다시 재부팅**하면 새 기동에서 생성된 STOP 완료와 원래 주행의 중단 응답은 이전 기동을 대상으로 한 명령과 맞지 않아 거절됩니다. 위 2단계에서 완료 응답을 계속 기다리지 말고, HOLD를 유지한 채 3단계의 물품 제거·대기점 배치·같은 journal 재시작을 수행합니다. 이후 최신 정차·유휴 상태의 `boot_version`으로 기존 작업 `command_id`와 현재 `stop_id`를 지정해 **`recover_stop`을 다시 요청**하고 `reconcile(outcome="removed")`를 진행합니다. 이때 재확인은 정지 상태에 대한 운영자 기록이며, 거절된 응답을 완료 근거로 바꾸지 않습니다. HOLD 해제와 별도 `enable`은 여전히 필요합니다.
+
+기동이 맞지 않는 두 응답은 관제 `events`에 저장하거나 애플리케이션 `event_stored` ACK를 보내지 않습니다. MQTT 전달 ACK와 구분하며, Pinky `records`·`outbox`에 증거로 보존되어 실행 중에는 재전송될 수 있습니다. 취소가 확정된 뒤 다시 수신해도 작업·재고를 진행시키지 않습니다. 이 PR은 별도 이벤트 정리 기능을 추가하지 않습니다. 시험 종료 후 양쪽 journal을 함께 보관하고, 미정리 작업이 있는 journal이나 outbox를 직접 지우지 않습니다.
+
+상태·위치 관측이 허용 시각 범위(-1~3초)를 벗어나면 `clock_skew_or_delay`와 기체·메시지 종류·관측 경과 시간을 로그에 남깁니다. 시계 동기화와 전달 지연을 점검하되 상태 유효기간을 늘리지 않습니다. 예상 밖 실행 오류에서도 종료 전에 HOLD를 저장하고 자원을 닫으며, 오류 자체는 숨기지 않습니다. `fleet_profiles(simulation=False)`에는 모의 N12 복귀점·허용 오차·IR 오프셋을 담은 `n12_goal`을 제공하지 않습니다. 실물용 측정·합의 후 따로 설정해야 하며 현재 Fleet CLI의 simulation·loopback 제한은 유지합니다.
+
+## Fleet 웹 UI 연결
+
+기존 3D 화면을 `?mode=fleet`으로 열어 단일 Fleet 실행부의 상태·역할·선반·입출고 요청을 공유합니다. 웹 서버는 MQTT나 journal을 직접 쓰지 않고 Unix 소켓으로 조작하며, 화면 접속·새로고침만으로 작업 처리를 시작하지 않습니다. 기존 TRIAL/DEMO/OFFLINE 모드는 유지합니다.
+
+앞 절의 Fleet 실행부와 **같은 사용자 계정·PC**에서 다음을 실행합니다. 지도와 layout은 Fleet 설정을 생성할 때 사용한 파일과 같아야 합니다.
+
+```bash
+export ROPORT_MAP="$PWD/../roport-pinky/maps/airport_map.yaml"
+export ROPORT_TRIAL_LAYOUT="$PWD/../roport-pinky/src/roport_gz_world/layout/roport_airport.yaml"
+export ROPORT_FLEET_SOCKET=/tmp/fleet.sock
+export ROPORT_TRIAL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+uv run uvicorn roport_control_server.adapters.api.app:app --host 127.0.0.1 --port 8000
+```
+
+`http://127.0.0.1:8000/ui/?mode=fleet`에서 `ROPORT_TRIAL_TOKEN` 값을 조작 키에 입력합니다. 역할·입출고 요청을 지정하고 **요청 처리 시작**을 누릅니다. 조작 키는 브라우저 저장소에 보관하지 않아 새로고침 후 다시 입력합니다. 실제 고객 수령 증거가 없는 수동 수령 버튼은 simulation 모드에만 표시합니다.
+
+- 상태: 현재 관측 좌표·노드, 상태 지연, 역할, 6칸 선반, 작업 단계, 미완료 명령과 자원 예약을 표시합니다. 마지막 노드 위치는 흐리게 표시하는 참고 위치이며 도착 근거로 사용하지 않습니다.
+- 중단: **관제 보류**는 실행부의 기존 STOP/HOLD 처리를 요청합니다. 현재 실행부 세션에 보내는 로컬 STOP 요청은 시간 만료로 버리지 않습니다. 로컬/HTTPS에서는 상태 조회를 먼저 기다리지 않고 STOP을 전달합니다. 응답 시간 초과는 정지 실패·성공을 확정하지 못하므로 현장 정지 수단과 기체 상태를 확인합니다. MQTT로 기체에 전달하는 STOP의 유효기간과 완료 확인 조건은 유지합니다. 브라우저 연결이 끊기면 조작을 막고 마지막 수신 상태임을 표시합니다. 물리 비상 정지를 대체하지 않습니다.
+- 요청 재시도: 입출고 요청은 거절·응답 미확인 시 같은 `request_id`를 유지합니다. 접수 성공 또는 입력 변경 후에는 새 ID를 사용합니다. JSON이 아닌 오류 응답도 HTTP 상태와 함께 안내합니다.
+- 복구: **중단·복구 확인**에서 대상과 현장 확인 기록을 입력합니다. 저장된 완료 반영·거절 작업 재배정·물품 제거 후 취소는 기존 실행부의 증거 검사를 그대로 통과해야 합니다. STOP 재요청과 재부팅 후 도착 재확인은 별도 버튼이며, 화면이 보고 있던 명령·기동 ID를 전달합니다. 대상/처리 변경이나 연결 단절 시 확인 체크를 다시 해야 합니다.
+- 재개: 미완료 명령과 도착 재확인을 처리한 뒤 **보류 해제**, 별도 **요청 처리 시작** 순서입니다. 조회나 복구 성공을 자동 재출발로 취급하지 않습니다.
+
+이번 실행기는 루프백 simulation Fleet용입니다. 서비스 연결과 PostgreSQL을 포함합니다. 두 대의 현장 Fleet에 연결하는 시험은 [서비스 실행 절차](docs/service-web-local-test.md#서비스-요청을-두-대의-현장-fleet에-연결하기)를 따릅니다. 운영 인증은 후속입니다. 웹 화면/가상 실행기 시험은 실제 센서·팔·주행 검증을 대신하지 않습니다. 전체 가상 실행은 `tools/start_virtual_ui.sh`, 고객 서비스 통합은 [실행 안내](docs/service-web-local-test.md)를 따릅니다. UI 회귀는 `npm run test:web -- tests/browser/fleet.spec.mjs`, HTTP→MQTT 입출고 회귀는 `REQUIRE_MQTT_TESTS=1 uv run pytest tests/test_fleet_web_mqtt.py`로 실행합니다.
+
+### Fleet 회귀시험과 가상 물품 선택
+
+```bash
+# 기본 실행은 요청 대기. 자동 입고·출고·수령·복귀는 명시적으로 선택한다.
+bash tools/start_virtual_ui.sh --verify        # 소형: 기존 옵션 유지
+bash tools/start_virtual_ui.sh --verify large  # 대형: OMX1·2 공동 상하차
+# 자동 시험은 완료 후 종료하며 실행 폴더의 outcome.json에 case·tasks를 남긴다.
+
+# Mosquitto와 격리 PostgreSQL(ROPORT_TEST_DATABASE_URL)이 필요한 회귀시험
+REQUIRE_MQTT_TESTS=1 REQUIRE_REGISTRY_TESTS=1 uv run pytest \
+  tests/test_fleet_concurrent_requests.py tests/test_fleet_reassignment_mqtt.py \
+  tests/test_fleet_spatial_matrix.py tests/test_fleet_persistence.py \
+  tests/test_virtual_fleet_launcher.py
+```
+
+| 검증 | 범위 |
+|---|---|
+| 동시 요청·복귀 재배차 | 실제 loopback MQTT와 Pinky 실행 코드로 중복 배정·경로 점유·병목 해제·수령 대기를 검사 |
+| 공간 조합 | 현재 지도, 대기점 N16/N17·H1/H2, 선반 6칸, 제외 기체·막힌 노드·가득 찬 선반을 합성 상태로 검사 |
+| 저장·재시작 | 임시 DB 저장 실패 시 명령 발행/완료 ACK를 막고, 재시작 후 작업·점유 보존 및 자동 출발 금지를 검사 |
+
+MQTT 회귀는 센서 tick을 가속한다. 가상 실행기는 1배속이며 OMX 구동·Nav2·센서는 모사한다.
+통신 단절·중복 응답·기체 재시작·한쪽 팔 실패는 기존 `test_fleet_mqtt.py` 및 정지·복구 시험과 함께 전체 `uv run pytest`로 검증한다. 물리 충돌·제동 거리·무선 품질 검증은 포함하지 않는다.
 
 ## Pinky MQTT 주행 시험 · FFT1-56
 
@@ -325,3 +409,35 @@ OMX1·2 단계는 `roport-omx-task-v1`을 사용하며, UI 수동 완료와 MQTT
 ```
 
 `execution_mode`는 실제 연결한 OMX 실행부를 나타냅니다. 현재 제공되는 `cooperative_host.py`는 mock 전용입니다. 실물 Pinky 설정과 OMX 실행 모드는 별개이며 실물 동작은 현장 설정·구동권·도킹 검증이 추가로 필요합니다. 생성한 resource_token은 격리 순차 시험의 상관 ID이며 운영 자원 예약/permit을 대신하지 않습니다. 관제 재시작·MQTT 단절·결과 timeout은 HOLD로 남기고 자동 재집기/재출발하지 않습니다. 시험 journal은 요청 32개 및 4 MiB 제한이 있으므로 보존·정리 후 새 이력으로 시험합니다.
+
+## 서비스 WSS 관제 기반 (합의 전 후보)
+
+Fleet은 `--journal` 또는 `ROPORT_DATABASE_URL` 중 하나를 선택한다. WSS는 DB와 `ROPORT_SERVICE_WSS_URL`, `ROPORT_SERVICE_TOKEN`, `ROPORT_SERVICE_SITE`를 모두 설정했을 때만 연결하며 DB migration은 별도로 수행한다. UI 접속·서비스 접수만으로 로봇 처리를 시작하지 않는다. 계약과 공용 JSON은 [WSS 후보](../../interfaces/wss/candidate/README.md)에 있다. S1 제안과는 호환되지 않으며 운영 계약은 양측 합의 대상이다.
+
+- `adapters/wss/service.py`: Bearer WebSocket, 저장 후 ACK, 1초 재접속 대기, 최대 64 KiB 수신. 4001 종료는 자동 재접속하지 않는다.
+- `adapters/db/service_tasks.py`: inbox·작업·outbox 원자 저장, 메시지별 거절 격리, 실행 스냅샷의 단일 DB owner.
+- `contracts/service_wire.py`, `service_policy.py`: 수신 필드와 명세 갱신 규칙. DB 예외는 `ServiceStorageError`로 전달해 WSS가 DB 드라이버를 import하지 않는다.
+
+형식 오류는 ACK하지 않고 다음 프레임을 처리한다. 유효한 envelope의 업무 거절은 `control_service_quarantine`에 site·message_id·내용 해시·오류 코드만 저장한 뒤 ACK한다. ACK는 **저장 확인**이며 업무 승인/수령 승인/출발 허가가 아니다. 같은 거절 재전송을 나중에 새 작업으로 실행하지 않는다. 서비스는 업무 성공을 `task.accepted`/진행으로 판단하고, 접수 없는 저장 ACK는 운영자가 격리 기록을 확인한다. 새 nack 규격은 추가하지 않았다.
+
+서비스 저장소의 DB 접속·쿼리·commit 실패는 ACK하지 않고 1초 후 다시 연결한다. `OperationalStore`의 단일 owner 연결은 자동으로 재획득하지 않는다. 실행부가 그 연결 오류를 관찰하고 정지·복구 판단을 해야 한다. 운영 migration은 실행부를 멈춘 뒤 적용한다.
+
+`dispatch_locked`는 배차 claim 또는 RUNNING 전환 시 고정한다. 배차 전 HOLD는 명세 수정 가능하며 설치 SQL 재실행도 이를 잠그지 않는다. outbox는 task 행 잠금 뒤 할당한 `seq`로 정렬해 한 번에 최대 100개를 읽고, ACK되지 않은 앞 묶음을 재전송한다. 서로 다른 작업의 전체 완료 순서는 보장하지 않으며 서비스는 높은 `task_revision`만 적용해야 한다.
+
+수령의 최초 `arrival_verified=false`는 나중 도착/재전송으로 true가 되지 않는다. 조기 수령도 기록 ACK는 보내므로 서비스가 무조건 재전송하거나 성공으로 간주하면 안 된다. 관제 도착 증거와 서비스 수령이 불일치하면 서비스 담당/운영자가 대조하고, 도착 후 **새 수령 의사 확인**으로 새 receipt를 생성해야 한다. 이 후보에는 자동 대조/복구 UI가 없다.
+
+테이블 설치는 명시적 CLI만 수행한다. 기존 기록을 보존하며 SQL 재실행을 지원하지만 운영 버전 migration runner를 대체하지 않는다.
+
+```bash
+# 폐기 가능한 시험 DB만 지정. 실제 접속 비밀값은 로컬 환경에서 주입.
+ROPORT_DATABASE_URL='postgresql://localhost/roport_wss_test' \
+  uv run python -m roport_control_server.adapters.db.service_tasks
+ROPORT_TEST_DATABASE_URL='postgresql://localhost/roport_wss_test' \
+  REQUIRE_REGISTRY_TESTS=1 PYTHONPATH=src uv run pytest -q tests/test_service_*.py
+```
+
+서비스 Java와의 로컬 상호운용은 [통합 시험](docs/service-web-local-test.md)으로 검사한다. 운영 TLS/프록시/인증·실물 로봇 검증은 후속 범위다.
+
+서비스 작업은 `service_tick`이 주문의 포장품마다 안정적인 request_id로 Fleet에 제출한다. `customer_service`는 기본적으로 pickup_at 300초 전에 배차하며 `service_policy.dispatch_lead_s`로 시험 정책을 지정한다. 업무 package_id는 재고에 보존하고 선택 marker만 OMX 명령에 매핑한다. 빈 명세/미등록 재고/미보정 목표는 주행을 생성하지 않는다. 수령 증거가 확인된 포장품만 복귀한다. WSS worker의 예상 밖 종료는 owner에 전달하며 기존 STOP·도착 재확인·복구 조건은 유지한다.
+
+현장 배포 묶음 생성, 체크섬 검증, MQTT 상태 수신 점검은 [Fleet 현장 배포 준비와 복구](../../docs/field/README.md)를 따른다.

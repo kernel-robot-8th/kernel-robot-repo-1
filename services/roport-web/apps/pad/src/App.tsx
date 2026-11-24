@@ -32,8 +32,9 @@ function pickupOf(step: Step): VerifiedPickup | null {
 
 // 진행 표시줄: 입국장 수령만 서비스 단계가 있다.
 function progressOf(step: Step, arrival: boolean): { labels: string[]; current: number } {
-  const labels = arrival ? ['예약 확인', '물품 확인', '서비스 이용', '수령 완료'] : ['예약 확인', '물품 확인', '수령 완료'];
-  const order: Partial<Record<Step['name'], number>> = arrival
+  const hasServiceStep = arrival && api.IS_DEMO;
+  const labels = hasServiceStep ? ['예약 확인', '물품 확인', '서비스 이용', '수령 완료'] : ['예약 확인', '물품 확인', '수령 완료'];
+  const order: Partial<Record<Step['name'], number>> = hasServiceStep
     ? { items: 1, chooseService: 2, shopping: 2, moving: 2, receipt: 3, returning: 4 }
     : { items: 1, receipt: 2, returning: 3 };
   return { labels, current: order[step.name] ?? 0 };
@@ -67,6 +68,8 @@ export function App() {
   const { step, notice, lastPickup } = state;
   const busy = state.request !== null;
   const [now, setNow] = useState(() => Date.now());
+  const [card, setCard] = useState(35);
+  const [requestedFollow, setRequestedFollow] = useState(false);
   const nextToken = useRef(0);
   // 같은 렌더 안의 연속 터치로 요청이 두 번 나가지 않게 reduce의 요청 상태를 즉시 따라가는 값
   const inFlight = useRef<{ token: number; stop: boolean } | null>(null);
@@ -114,8 +117,11 @@ export function App() {
       command === 'PAUSE',
     );
 
-  const confirm = (target: VerifiedPickup) =>
-    send(() => api.confirmReceipt(target.pickupId), (token, res) => dispatch({ type: 'receiptAnswered', token, res }));
+  const confirm = (target: VerifiedPickup, followCard?: number) =>
+    send(() => api.confirmReceipt(target, followCard), (token, res) => {
+      if (res?.accepted) setRequestedFollow(followCard !== undefined);
+      dispatch({ type: 'receiptAnswered', token, res });
+    });
 
   function reset() {
     api.resetDemo();
@@ -162,12 +168,12 @@ export function App() {
       <main className="stage">
         {step.name === 'idle' && (
           <Split visual={<PhoneQr />}>
-            <h1>예약 QR을<br />카메라에 보여주세요</h1>
-            <ol className="guide">
+            <h1>{api.IS_DEMO ? <>예약 QR을<br />카메라에 보여주세요</> : <>예약번호를 입력해 주세요</>}</h1>
+            {api.IS_DEMO ? <ol className="guide">
               <li><span>휴대폰에서 고객 웹의 <b>예약 화면</b>을 엽니다.</span></li>
               <li><span>QR을 카트의 <b>카메라</b>에 가까이 비춥니다.</span></li>
               <li><span>확인되면 이 화면에 주문하신 물품이 표시됩니다.</span></li>
-            </ol>
+            </ol> : <p className="lead">고객 웹에 표시된 8자리 예약번호로 주문을 확인합니다. 카트 도착 후 물품을 수령해 주세요.</p>}
             <button className="btn btn-secondary" onClick={() => go({ name: 'keypad' })}>
               <Icon name="keyboard" /> QR이 인식되지 않으면 예약번호 입력
             </button>
@@ -197,7 +203,7 @@ export function App() {
         )}
 
         {step.name === 'items' && (
-          <Split visual={<><StatusIcon name="bag" /><p className="visual-note">{step.pickup.packageCount > 0 ? <>포장 <b>{step.pickup.packageCount}개</b>가 카트에 실려 있습니다</> : '아래 물품을 카트에서 꺼내 주세요'}</p></>}>
+          <Split visual={<><StatusIcon name="bag" /><p className="visual-note">{step.pickup.packageCount > 0 ? <>포장 <b>{step.pickup.packageCount}개</b>가 주문에 포함되어 있습니다</> : '아래 물품을 카트에서 꺼내 주세요'}</p></>}>
             <h1>{step.pickup.customerName}님의 주문 물품</h1>
             <table className="items">
               <thead><tr><th>상품</th><th>수량</th></tr></thead>
@@ -208,7 +214,7 @@ export function App() {
               </tbody>
             </table>
             <p className="meta">예약번호 {step.pickup.reservationNo} · 주문번호 {step.pickup.orderNo} · {step.pickup.location.name} 수령</p>
-            {api.isArrivalHall(step.pickup.location) ? (
+            {api.IS_DEMO && api.isArrivalHall(step.pickup.location) ? (
               <button className="btn btn-primary btn-block" onClick={() => go({ name: 'chooseService', pickup: step.pickup })}>
                 물품을 확인했습니다
               </button>
@@ -312,10 +318,16 @@ export function App() {
         {step.name === 'receipt' && (
           <Split visual={<StatusIcon name="bag" />}>
             <h1>물품을 모두 받으셨나요?</h1>
-            <p className="lead">수령을 확인하면 카트는 대기 장소로 돌아갑니다.</p>
+            <p className="lead">{api.FOLLOW_AVAILABLE ? '바로 복귀하려면 수령 확인을, 추종하려면 카드 번호를 선택하고 추종 요청을 눌러 주세요.' : '수령을 확인하면 카트는 대기 장소로 돌아갑니다.'}</p>
             <button className="btn btn-primary btn-block" disabled={busy} onClick={() => confirm(step.pickup)}>
               {busy ? '저장 중…' : '수령 확인'}
             </button>
+            {api.FOLLOW_AVAILABLE && <>
+              <label>추종 카드 번호 <select value={card} disabled={busy} onChange={e => setCard(Number(e.target.value))}>
+                {Array.from({length: 15}, (_, i) => i + 35).map(n => <option key={n}>{n}</option>)}
+              </select></label>
+              <button className="btn btn-secondary" disabled={busy} onClick={() => confirm(step.pickup, card)}>수령 확인 및 추종 요청</button>
+            </>}
           </Split>
         )}
 
@@ -323,7 +335,7 @@ export function App() {
           <div className="finale">
             <StatusIcon name="check" tone="done" />
             <h1>수령이 완료되었습니다</h1>
-            <p className="lead">이용해 주셔서 감사합니다. 카트는 대기 장소로 돌아갑니다.</p>
+            <p className="lead">{requestedFollow ? '추종 요청을 접수했습니다. 관제 승인 후 출발합니다.' : '수령 확인을 저장했습니다. 카트 복귀는 관제에서 처리합니다.'}</p>
             {api.RECEIPT_IS_DEMO && <p className="demo-note">데모: 수령 기록은 아직 서버에 연결 전이라 저장되지 않았습니다.</p>}
             <p className="tagline">로봇이 만드는 더 편리한 여행의 시작, RO:PORT</p>
           </div>

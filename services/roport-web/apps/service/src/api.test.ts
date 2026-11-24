@@ -14,7 +14,7 @@ const problem = (status: number, code?: string) =>
 
 // 1. statusLabel
 test('statusLabel: REQUESTED는 접수 문구', () => {
-  assert.equal(statusLabel('REQUESTED'), '예약 접수됨 – 현장 배정 전');
+  assert.equal(statusLabel('REQUESTED'), '예약 접수됨');
 });
 test('statusLabel: 모르는 값은 원문과 함께 알 수 없음', () => {
   assert.equal(statusLabel('ARRIVED'), '알 수 없는 상태 (ARRIVED)');

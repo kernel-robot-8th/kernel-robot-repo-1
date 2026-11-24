@@ -1,5 +1,5 @@
 // 패드가 서버와 주고받는 모든 호출을 이 파일에 모은다.
-// 기본은 데모 데이터로 응답한다. 빌드 때 VITE_PAD_API=server면 예약번호 확인만 서비스 서버에 묻는다.
+// 기본은 데모. VITE_PAD_API=server면 QR/예약번호 확인과 수령 저장을 서비스 서버에 요청한다.
 // 데모 응답은 서버·로봇 동작을 확인한 결과가 아니다.
 import type { Location, ServiceMode, VerifiedPickup, VerifyResult } from './types';
 import { newVerificationRequestId, toVerifyResult } from './verify';
@@ -7,15 +7,16 @@ import { newVerificationRequestId, toVerifyResult } from './verify';
 // 배포 nginx에는 아직 /cart-api 전달이 없어 기본을 데모로 둔다.
 const USE_SERVER = import.meta.env.VITE_PAD_API === 'server';
 
-// 서버 모드에서도 QR 확인·수령 확인·서비스 요청은 아직 데모 응답이라 데모 표시를 유지한다.
-export const IS_DEMO = true;
+export const FOLLOW_AVAILABLE = USE_SERVER && import.meta.env.VITE_PAD_FOLLOW === '1';
 
-// 서버에서 확인한 예약의 수령 완료는 저장되지 않는다. 완료 화면에 그 사실을 적는다.
-export const RECEIPT_IS_DEMO = USE_SERVER;
+export const IS_DEMO = !USE_SERVER;
+
+// 데모에서만 수령 저장이 가상 응답이다.
+export const RECEIPT_IS_DEMO = !USE_SERVER;
 
 // 이 패드가 붙은 카트(서버 X-Cart-Id, 개발 전용 카트 인증). 비밀값이 아니다.
 export const CART_ID = import.meta.env.VITE_PAD_CART_ID || 'pinky3';
-export const CART_LABEL = '스마트카트 3호기';
+export const CART_LABEL = `스마트카트 · ${CART_ID}`;
 
 // 서비스 서버의 예약번호 문자 집합(0·O·1·I 제외, 8자리).
 export const RESERVATION_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -93,6 +94,7 @@ function verify(reservationNo: string): VerifyResult {
 
 // 카트 카메라가 읽은 예약 QR을 서비스 서버에 확인 요청한다(SR-18-1·18-2).
 export async function verifyQr(qrPayload: string): Promise<VerifyResult> {
+  if (USE_SERVER) return verifyServer('QR', qrPayload);
   await delay(600);
   return verify(qrPayload);
 }
@@ -105,17 +107,20 @@ export async function verifyReservationNo(reservationNo: string): Promise<Verify
     await delay(600);
     return verify(value);
   }
-  const body = JSON.stringify({ verificationRequestId: newVerificationRequestId(), method: 'RESERVATION_NO', value });
-  const [status, json, retryAfter] = await postVerification(body);
-  const result = toVerifyResult(status, json, retryAfter);
+  return verifyServer('RESERVATION_NO', value);
+}
+
+async function verifyServer(method: 'QR' | 'RESERVATION_NO', value: string): Promise<VerifyResult> {
+  const body = JSON.stringify({ verificationRequestId: newVerificationRequestId(), method, value });
+  const result = toVerifyResult(...(await postCart('/cart-api/verifications', body)));
   if (!result) throw new Error('예약 확인 실패');
   return result;
 }
 
 // 응답을 못 받았을 때(연결 실패·8초 초과)만 같은 요청 ID로 한 번 더 보낸다. 서버는 같은 ID를 한 번만 기록한다.
-async function postVerification(body: string): Promise<[number, unknown, string | null]> {
+async function postCart(path: string, body: string): Promise<[number, unknown, string | null]> {
   const send = () =>
-    fetch('/cart-api/verifications', {
+    fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Cart-Id': CART_ID },
       body,
@@ -137,26 +142,36 @@ async function postVerification(body: string): Promise<[number, unknown, string 
 }
 
 // 고객의 수령 확인. 서비스 서버가 수령 완료를 기록한다(SR-18-2).
-// 수령 기록 API가 아직 없어 서버 모드에서도 데모로 접수한다(서버 예약은 수령 처리되지 않는다).
-export async function confirmReceipt(pickupId: string): Promise<{ accepted: boolean }> {
+// 서버가 배정·도착·확인 유효성을 검사한 뒤에만 완료를 표시한다.
+export async function confirmReceipt(pickup: VerifiedPickup, followCard?: number): Promise<{ accepted: boolean }> {
+  const { pickupId, verificationId } = pickup;
+  if (USE_SERVER) {
+    if (!verificationId) return { accepted: false };
+    // Stable across response loss, repeated taps and reloads of this verification.
+    const [status, body] = await postCart('/cart-api/receipts', JSON.stringify({ verificationId, confirmationRequestId: `receipt-${verificationId}`, followCard }));
+    return { accepted: (status === 200 || status === 201) && Boolean(body && typeof body === 'object' && 'receiptId' in body && typeof body.receiptId === 'string' && body.receiptId) };
+  }
   await delay(500);
   const found = DEMO_PICKUPS.find((p) => p.pickupId === pickupId);
   if (found) found.received = true;
-  return { accepted: Boolean(found) || (USE_SERVER && Boolean(pickupId)) };
+  return { accepted: Boolean(found) };
 }
 
 // 아래 요청은 실제 연동 시 관제를 거쳐 로봇 명령이 된다. 응답은 "접수"일 뿐 로봇 동작 완료가 아니다.
 export async function requestService(pickupId: string, mode: ServiceMode): Promise<{ accepted: boolean }> {
+  if (USE_SERVER) return { accepted: false };
   await delay(500);
   return { accepted: Boolean(pickupId && mode) };
 }
 
 export async function requestPause(pickupId: string): Promise<{ accepted: boolean }> {
+  if (USE_SERVER) return { accepted: false };
   await delay(300);
   return { accepted: Boolean(pickupId) };
 }
 
 export async function requestResume(pickupId: string): Promise<{ accepted: boolean }> {
+  if (USE_SERVER) return { accepted: false };
   await delay(300);
   return { accepted: Boolean(pickupId) };
 }

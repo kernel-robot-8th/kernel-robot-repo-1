@@ -21,6 +21,7 @@ from .trial_wire import PROFILE, check_result
 OPERATIONS = {
     "line_route_command": "route",
     "set_drive_mode_command": "mode_switch",
+    "follow_target_command": "follow",
     "nav_goal_command": "navigate",
 }
 LOAD_NODES = {"N01", "N11", "N21", "N22"}
@@ -49,7 +50,7 @@ def driver_command(message, profile, binding):
                 raise ValueError("graph_mismatch")
             p["node_id"] = p.pop("node")
             p.pop("graph_version")
-        else:
+        elif kind == "navigate":
             p.setdefault("goal_id", "coordinate_goal")
             p["goal_version"] = profile["map_version"]
     return {
@@ -434,6 +435,11 @@ class FieldPinkyClient:
         original = self.journal.data["records"][
             rec["command"]["payload"]["target_command_id"]
         ]
+        pause = (
+            original["command"]["type"] == "follow_target_command"
+            and rec["command"]["payload"]["reason"] == "follow_pause"
+        )
+        reason = "follow_pause" if pause else "operator_stop"
         self._save_event(
             original["command"],
             self._event(
@@ -441,14 +447,15 @@ class FieldPinkyClient:
                 "interrupted",
                 original["event"]["payload"]["sequence"] + 1,
                 {"stopped": True},
-                "operator_stop",
+                reason,
             ),
         )
         self._save_event(
             rec["command"],
             self._event(rec["command"], "completed", 2, {"stopped": True}),
         )
-        self.halted = "operator_stop"
+        if not pause:
+            self.halted = "operator_stop"
 
     def poll(self, timeout=0.1):
         try:

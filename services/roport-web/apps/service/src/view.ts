@@ -1,5 +1,5 @@
 // 화면 표시용 순수 함수. 서버 계약 필드만 읽고 새 상태를 만들어 내지 않는다.
-import type { Flight, Location } from './api'; // 타입 전용 import라 node --test에서도 지워진다.
+import type { Flight, Location, PickupProgress } from './api'; // 타입 전용 import라 node --test에서도 지워진다.
 
 // 수령 위치 간략 지도: 이름이 "Gate N"인 위치는 게이트 줄에 번호순으로, 나머지(입국장 등)는 아래 줄에 둔다.
 // 위치 ID를 하드코딩하지 않아 서버 목록이 바뀌어도 모든 위치가 표시된다.
@@ -10,12 +10,27 @@ export function splitLocations(locations: Location[]): { gates: Location[]; othe
   return { gates, others };
 }
 
-// 진행 단계. 서버 계약상 현재 오는 상태는 REQUESTED뿐이라 그 뒤 단계는 관제 연동 전까지 "예정"으로만 그린다.
+// 관제 진행 단계. 실제 수령 완료는 서비스 수령 기록으로만 판정한다.
 export const PROGRESS_STEPS = ['예약 접수', '카트 배정', '운송 중', '수령 위치 도착', '수령 완료'] as const;
 
 // 현재 단계 번호. 모르는 상태는 -1(어느 단계도 완료로 표시하지 않음).
 export function progressIndex(status: string): number {
   return status === 'REQUESTED' ? 0 : -1;
+}
+
+// 여러 포장이면 가장 덜 진행된 물품 기준. 완료는 서비스 수령 기록으로만 표시한다.
+export function controlProgress(p: PickupProgress): { index: number; text: string } {
+  if (p.orderComplete) return { index: 4, text: '수령이 완료되었습니다' };
+  if (['HOLD', 'FAILED', 'REJECTED'].includes(p.state)) return { index: -1, text: '작업 확인이 필요합니다. 직원에게 문의해 주세요.' };
+  if (p.state === 'WAITING_MANIFEST') return { index: 0, text: '물품 포장을 기다리고 있습니다' };
+  const stageIndex = (s: string) => {
+    if (['await_receipt', 'return_nav', 'switch_line', 'return_route', 'done'].includes(s)) return 3;
+    if (['switch_route', 'switch_nav', 'navigate'].includes(s)) return 2;
+    if (['shelf_route', 'transfer'].includes(s)) return 1;
+    return 0;
+  };
+  const index = p.stages.length ? Math.min(...p.stages.map(stageIndex)) : 0;
+  return { index, text: ['예약이 접수되었습니다', '카트에 물품을 준비하고 있습니다', '카트가 수령 위치로 이동 중입니다', '카트가 도착했습니다. 패드에서 수령을 확인해 주세요'][index] };
 }
 
 // 한국 시간 HH:mm

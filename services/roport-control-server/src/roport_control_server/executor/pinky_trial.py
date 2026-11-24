@@ -775,10 +775,13 @@ class TrialControl:
         return True
 
     def request_error(self):
+        return self.approval_error("request")
+
+    def approval_error(self, kind):
         if not self.transport.ready:
             return "MQTT subscriptions not ready"
         try:
-            self._gate_error("request")
+            self._gate_error(kind)
         except (ValueError, IndexError) as exc:
             return str(exc)
         return None

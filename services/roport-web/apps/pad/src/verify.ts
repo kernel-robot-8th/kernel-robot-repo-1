@@ -10,6 +10,7 @@ export function newVerificationRequestId(): string {
 }
 
 type Verification = {
+  verificationId?: string;
   result?: string;
   reasonCode?: string | null;
   pickup?: VerifiedPickup | null;
@@ -26,7 +27,7 @@ export function toVerifyResult(status: number, body: unknown, retryAfter: string
   }
   if (status !== 200 && status !== 201) return null;
   const v = (body ?? {}) as Verification;
-  if (v.result === 'VERIFIED') return isPickup(v.pickup) ? { ok: true, pickup: v.pickup } : null;
+  if (v.result === 'VERIFIED') return isPickup(v.pickup) && typeof v.verificationId === 'string' && v.verificationId ? { ok: true, pickup: { ...v.pickup, verificationId: v.verificationId } } : null;
   if (v.result !== 'REJECTED') return null;
   if (v.reasonCode === 'ALREADY_RECEIVED') return { ok: false, reason: 'ALREADY_RECEIVED' };
   if (v.reasonCode === 'PICKUP_NOT_ACTIVE') return { ok: false, reason: 'NOT_ACTIVE' };

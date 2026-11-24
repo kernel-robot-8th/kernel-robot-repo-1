@@ -20,7 +20,22 @@ D660 = Calibration(carpet=(2308, 2376, 2233), tape=(299, 388, 281),
 DIRV = {'E': (1, 0), 'N': (0, 1), 'W': (-1, 0), 'S': (0, -1)}
 
 
-def tape_rects(graph, skip=()):
+def _cut(rect, a, b, start, length):
+    """a→b 구간 사각형에서 a 중심 기준 [start, start + length] cm 를 잘라 낸 사각형들."""
+    x0, y0, x1, y1 = rect
+    horizontal = abs(b.x - a.x) > abs(b.y - a.y)
+    sign = 1.0 if (b.x - a.x if horizontal else b.y - a.y) > 0 else -1.0
+    base = a.x if horizontal else a.y
+    c0, c1 = sorted((base + sign * start, base + sign * (start + length)))
+    lo, hi = (x0, x1) if horizontal else (y0, y1)
+    out = []
+    for p, q in ((lo, min(hi, c0)), (max(lo, c1), hi)):
+        if q - p > 1e-9:
+            out.append((p, y0, q, y1) if horizontal else (x0, p, x1, q))
+    return out
+
+
+def tape_rects(graph, skip=(), gaps=()):
     h = graph.line_width / 2
     half_bar = graph.bar_length / 2
     rects = []
@@ -32,8 +47,13 @@ def tape_rects(graph, skip=()):
                 continue
             done.add(key)
             m = graph.nodes[o]
-            rects.append((min(n.x, m.x) - h, min(n.y, m.y) - h,
-                          max(n.x, m.x) + h, max(n.y, m.y) + h))
+            seg = [(min(n.x, m.x) - h, min(n.y, m.y) - h,
+                    max(n.x, m.x) + h, max(n.y, m.y) + h)]
+            for ga, gb, start, length in gaps:
+                if tuple(sorted((ga, gb))) == key:
+                    seg = [r for rect in seg
+                           for r in _cut(rect, graph.nodes[ga], graph.nodes[gb], start, length)]
+            rects.extend(seg)
         if n.bar == 'x':
             rects.append((n.x - half_bar, n.y - h, n.x + half_bar, n.y + h))
         elif n.bar == 'y':
@@ -43,14 +63,14 @@ def tape_rects(graph, skip=()):
 
 class Sim:
     def __init__(self, graph, cal=D660, ir_ahead=3.0, ir_spacing=2.0, skip=(), dt=0.05,
-                 tape_graph=None, odom_scale=1.0, odom_yaw_scale=1.0, cmd_delay_s=0.0):
+                 tape_graph=None, odom_scale=1.0, odom_yaw_scale=1.0, cmd_delay_s=0.0, gaps=()):
         """tape_graph: 실제 테이프 위치(없으면 graph). odom_*_scale: 엔코더 오차 흉내.
         cmd_delay_s: 구동 지연(s). 0 이면 받은 명령을 같은 tick 에 반영(기존 동작)."""
         if cmd_delay_s < 0:
             raise ValueError('cmd_delay_s must be >= 0')
         self.graph = graph
         self.cal = cal
-        self.rects = tape_rects(tape_graph or graph, skip)
+        self.rects = tape_rects(tape_graph or graph, skip, gaps)
         self.odom_scale = odom_scale
         self.odom_yaw_scale = odom_yaw_scale
         self.odom = (0.0, 0.0, 0.0)

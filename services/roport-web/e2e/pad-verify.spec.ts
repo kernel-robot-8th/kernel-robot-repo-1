@@ -65,12 +65,11 @@ test('실제 예약번호로 확인하면 DB의 주문 물품을 보여 주고 �
 
   await page.getByRole('button', { name: '물품을 꺼냈습니다' }).click();
   await page.getByRole('button', { name: '수령 확인' }).click();
-  await expect(page.getByRole('heading', { name: '수령이 완료되었습니다' })).toBeVisible();
-  // 수령 기록 API가 없어 서버에는 저장되지 않는다는 안내가 보여야 한다.
-  await expect(page.getByText('수령 기록은 아직 서버에 연결 전')).toBeVisible();
+  // 이 시험은 관제 도착 증거를 만들지 않으므로 수령 승인을 거부해야 한다.
+  await expect(page.getByRole('alert')).toContainText('수령 확인이 저장되지 않았습니다');
 });
 
-test('수령 기록이 저장되지 않으므로 같은 예약을 다시 확인할 수 있다(새 요청 ID)', async ({ page }) => {
+test('도착 전 수령을 거부한 예약은 다시 확인할 수 있다(새 요청 ID)', async ({ page }) => {
   await enterReservationNo(page, reservationNo);
   await expect(page.getByRole('heading', { name: '테스트 고객 1님의 주문 물품' })).toBeVisible();
 });

@@ -78,6 +78,7 @@ def test_cli_never_overwrites_source_or_output(profile, tmp_path):  # noqa: F811
     assert first.returncode == 0, first.stderr
     config = json.loads(output.read_text())
     assert config["omx"]["binding_id"] in first.stdout
+    assert "--protocol v1" in first.stdout
     assert profile["site_id"] in first.stdout and "MOCK ONLY" in first.stdout
     saved = output.read_bytes()
     assert subprocess.run(command, capture_output=True, check=False).returncode == 2

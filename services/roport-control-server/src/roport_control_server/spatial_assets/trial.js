@@ -1,4 +1,4 @@
-import { renderComposer, hasUnappliedChanges } from "./scenario.js";
+import { renderComposer, hasUnappliedChanges, awaitingPlanState } from "./scenario.js";
 import { renderService, hasServiceDraft } from "./service.js";
 // Trial actions use the server-owned state machine; this page never publishes MQTT.
 const panel = document.getElementById("trial-panel");
@@ -17,7 +17,7 @@ function enable() {
   if (blocked) key.value = '';
   for (const button of buttons) {
     button.disabled = blocked || !connected || pending || state?.reset_pending || !key.value ||
-      (button.dataset.action === 'start' && (hasUnappliedChanges() || hasServiceDraft())) ||
+      (button.dataset.action === 'start' && (awaitingPlanState() || hasUnappliedChanges() || hasServiceDraft())) ||
       !state?.[`can_${button.dataset.action}`];
   }
   const reasons = {
@@ -30,6 +30,7 @@ function enable() {
   const error = state?.start_error ?? state?.request_error;
   document.getElementById("trial-readiness").textContent = blocked ? "실물 조작은 로컬 주소 또는 HTTPS에서만 가능합니다."
     : !connected ? "실행부 연결 대기 · 조작 비활성"
+    : awaitingPlanState() ? "적용한 계획의 상태 갱신을 기다리는 중입니다."
     : state?.phase === 'READY' && (hasUnappliedChanges() || hasServiceDraft()) ? "편집한 시나리오를 먼저 실행 계획에 적용하세요."
     : error ? reasons[error] ?? error
     : !key.value ? "조작 키를 입력하면 현재 단계에서 가능한 버튼이 활성화됩니다."

@@ -9,10 +9,10 @@ import yaml
 
 from roport_control_server.adapters.mqtt import field_wire as wire
 
-INTERFACES = Path(__file__).resolve().parents[3] / "interfaces/mqtt"
+INTERFACES = Path(__file__).resolve().parents[1] / "interfaces/mqtt"
 
 
-def test_all_thirteen_types_have_valid_documented_examples():
+def test_all_types_have_valid_documented_examples():
     rows = json.loads((INTERFACES / "examples.json").read_text())
     assert {r["message"]["type"] for r in rows} == wire.TYPES
     for row in rows:
