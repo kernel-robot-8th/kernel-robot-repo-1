@@ -170,7 +170,17 @@ class FieldHostTrayTest(v2.FieldHostTest):
                     "step": "tray_placed",
                     "evidence": "pinky_placed",
                     "grasp_released": True,
-                    "placement": {"slot": "2B", "box": 16},
+                    "placement": {
+                        "slot": "2B",
+                        "box": 16,
+                        "on_pinky": True,
+                        "slot_empty": True,
+                        "tray_marker": True,
+                        "tray_changed": 0.61,
+                        "tray_reference_state": "ok",
+                        "observed_ts": 1795530000.25,
+                        "observed_clock": "capture",
+                    },
                 }
             if time.monotonic() - state["at"] < hold:
                 return {"state": "running", "step": "천천히 내려놓는 중"}
@@ -197,8 +207,13 @@ class FieldHostTrayTest(v2.FieldHostTest):
             (r["evidence"], r["placement_confirmed"], r["release_confirmed"]),
             ("pinky_placed", True, True),
         )
+        self.assertEqual({a["home_reached"] for a in r["arms"]}, {False})
+        # the camera check of that moment, for control's record (the Pinky leaves on it)
+        self.assertEqual(r["unload_check"]["on_pinky"], True)
+        self.assertEqual(r["unload_check"]["slot_empty"], True)
+        self.assertEqual(r["unload_check"]["tray_reference_state"], "ok")
         self.assertEqual(
-            {a["home_reached"] for a in r["arms"]}, {False}
+            r["unload_check"]["observed_clock"], "capture"
         )  # the arms still go home
         self.assertEqual(self.host.active, task["command_id"])
         self.ack(first[0])  # control stored it: the Pinky may leave now

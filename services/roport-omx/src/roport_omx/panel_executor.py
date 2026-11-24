@@ -945,6 +945,7 @@ class PanelExecutor:
             "tips_clear",
             "grippers_released",
             "tray_reference",
+            "tray_reference_state",
             "observed_ts",
             "observed_clock",
             "judged_at",

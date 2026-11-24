@@ -171,6 +171,27 @@ def _home(flags: dict) -> bool:
     )
 
 
+UNLOAD_CHECK_KEYS = (
+    "on_pinky",
+    "slot_empty",
+    "tray_marker",
+    "tray_changed",
+    "tray_reference_state",
+    "observed_ts",
+    "observed_clock",
+)
+
+
+def _unload_check(record: dict, seen: dict) -> dict:
+    """The retrieve's camera check at the moment the tray judge saw the box on the Pinky (panel 3.24.1):
+    the first report carries it for control's record, since the Pinky leaves on it (TK 2026-11-24)."""
+    if record["task"]["operation"] != "OUTBOUND":
+        return {}
+    placement = seen.get("placement") if isinstance(seen.get("placement"), dict) else {}
+    check = {k: placement[k] for k in UNLOAD_CHECK_KEYS if k in placement}
+    return {"unload_check": check} if check else {}
+
+
 class FieldHost:
     """Single-threaded: call handle() per delivery and poll() from the same loop.
 
@@ -1239,6 +1260,7 @@ class FieldHost:
                 "placement_confirmed": True,
                 "release_confirmed": seen.get("grasp_released") is True,
                 "evidence": evidence,
+                **_unload_check(record, seen),
                 "arms": [
                     {
                         "robot_id": name,
