@@ -6,3 +6,4 @@
 - 인도 승인은 서비스 서버가 판단한다(SR-18-2). 패드는 QR 인식 결과만으로 승인 화면을 띄우지 않는다.
 - 중지·재개·안내 시작 버튼은 로봇 명령으로 이어질 수 있다. 화면 진입·자동 새로고침으로 명령을 보내지 않고, 접수와 실제 로봇 상태를 구분해 표시한다.
 - 화면 상태 전이는 `src/flow.ts`에 둔다. 요청 응답은 보낸 뒤 화면이 바뀌지 않았을 때만 반영하고, 정지·주행 표시는 카트 상태 보고(데모: 모의 상태 입력)로만 바꾼다.
+- 탑승 시간 알림 창(`BoardingAlert.tsx`)은 추종 화면(`FollowSession`)에서 패드가 판단해 띄운다. `VITE_PAD_BOARDING_ALERT_S`(초, 기본 없음 = 끔)를 주면 실제 추종(`following`)이 그 시간 이어진 뒤 수령 한 건에 한 번 뜬다. 편명·탑승 시각·게이트는 예약 확인 응답 값을 표시만 하고, 탑승 시각 기준 판단은 아직 없다. 창은 명령을 보내지 않는다(게이트 안내 전환 경로가 없어 「확인」만). `VITE_PAD_BOARDING_ROBOT=1`이면 창이 떠 있는 동안 개발 서버 프록시 `/follow-tool`로 같은 PC의 `roport_follow tool --boarding-alert`에 로봇 표시를 부탁한다. 검사: `npx playwright test --config apps/pad/playwright.boarding.config.ts`.

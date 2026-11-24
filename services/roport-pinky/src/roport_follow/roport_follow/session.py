@@ -59,6 +59,8 @@ class ViewSession:
         self._cards = []
         # 시험용 로봇 명령 연결(demo_link.DemoLink, 없으면 None) — tool 의 --demo
         self.demo = getattr(a, 'demo_link', None)
+        # 탑승 시간 알림 발행(boarding_alert.BoardingAlert, 없으면 None) — tool 의 --boarding-alert
+        self.boarding = getattr(a, 'boarding', None)
         self.loc_view = getattr(a, 'loc_view', None)
 
     # ---- 알림

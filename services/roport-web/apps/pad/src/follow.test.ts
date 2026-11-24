@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { framePath, newerFollowStatus, parseFollowStatus, parseReceiptIntent, receiptIntent, validBox } from './follow.ts';
+import { boardingAlertDelayMs, followingNow, framePath, newerFollowStatus, parseFollowStatus, parseReceiptIntent, receiptIntent, validBox } from './follow.ts';
 import { followView } from './flow.ts';
 
 const receiptId = 'receipt-test';
@@ -67,4 +67,20 @@ test('completed registration restores target state without retired capture field
   assert.deepEqual(result?.registration, registration);
   assert.equal(result?.registration?.frameRef, undefined);
   assert.equal(parseFollowStatus({ ...status, registration: { ...registration, registered: false } }, receiptId), null);
+});
+
+test('boarding alert delay is off unless a valid number of seconds is configured', () => {
+  assert.equal(boardingAlertDelayMs('20'), 20_000);
+  assert.equal(boardingAlertDelayMs('1.5'), 1500);
+  for (const off of [undefined, '', '0', '0.5', '-20', '3601', 'abc', '20s', 20]) assert.equal(boardingAlertDelayMs(off), null);
+});
+
+test('boarding alert timer counts only actual following', () => {
+  assert.equal(followingNow({ stage: 'following', status: 'RUNNING' }), true);
+  for (const stage of ['follow_pending', 'follow_start', 'follow_stopping', 'follow_paused', 'return_nav', 'done']) {
+    assert.equal(followingNow({ stage, status: 'RUNNING' }), false);
+  }
+  assert.equal(followingNow({ stage: 'following', status: 'HOLD' }), false);
+  assert.equal(followingNow({ stage: 'following', status: 'CANCELED' }), false);
+  assert.equal(followingNow(null), false);
 });

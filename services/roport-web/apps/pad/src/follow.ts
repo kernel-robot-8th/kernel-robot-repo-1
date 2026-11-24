@@ -97,3 +97,17 @@ export function parseFollowStatus(value: unknown, receiptId: string): FollowStat
 export function newerFollowStatus(current: FollowStatus | null, incoming: FollowStatus): FollowStatus {
   return current && incoming.revision < current.revision ? current : incoming;
 }
+
+// ---- 탑승 시간 알림(패드가 판단) ----
+// 시연·시험: 실제 추종(following)이 확인된 뒤 정해진 시간 뒤에 한 번 알린다. 탑승 시각 기준 판단은 아직 하지 않는다.
+// VITE_PAD_BOARDING_ALERT_S 값(초) → ms. 없거나 1~3600 범위 밖이면 null(알림 끔).
+export function boardingAlertDelayMs(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^\d+(\.\d+)?$/.test(value.trim())) return null;
+  const seconds = Number(value);
+  return seconds >= 1 && seconds <= 3600 ? Math.round(seconds * 1000) : null;
+}
+
+// 로봇이 실제 추종 활성을 보고한 단계만. 접수(follow_start)·정지·복귀·HOLD·취소는 아니다.
+export function followingNow(status: Pick<FollowStatus, 'stage' | 'status'> | null): boolean {
+  return Boolean(status && status.stage === 'following' && status.status !== 'HOLD' && status.status !== 'CANCELED');
+}

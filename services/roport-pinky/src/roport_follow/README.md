@@ -119,6 +119,7 @@ ros2 run roport_follow demo_runner --map <지도.yaml> --layout <레이아웃.ya
 - `--demo` + 로봇 `demo_runner`: 화면 「① N08 → N12 라인 출발 · ② Nav2 전환 · ③ 추종 시작 · ■ 정지」를 로봇 TrialDriver 에
   관제 trial-v1 과 같은 모양의 명령으로 넣음. 브라우저가 3 s 넘게 화면을 안 보면 살아 있음 신호가 끊기고 로봇이 멈춤
   (시험 탭을 앞에 둘 것). 관제에 추종 명령이 생기면 빼는 시험용 지름길이며, 최종 구조는 폰·패드 → 서비스 서버 → 관제 → 로봇.
+- `tool web --boarding-alert`(기본 끔): `POST /api/boarding_alert {"on": true|false}` 를 받아 `smartcart/boarding_alert`(Bool, 2 Hz)를 내보낸다(`boarding_alert.py`). 패드를 띄운 노트북이 탑승 시간 알림을 로봇 LCD·LED·부저(`status_indicator smartcart:=true`)에 보이는 통로다. 주행 명령이 아니고, 60 s 뒤와 도구 종료 때 저절로 끈다. 로봇과 같은 ROS_DOMAIN_ID 여야 닿는다. 실로봇 미확인.
 - `demo_runner` 의 `alert {"on": true|false}`: 탑승 시간 알림을 `smartcart/boarding_alert`(Bool, 2 Hz)로 내보낸다. 로봇 LCD·LED·부저는
   `roport_line_nav status_indicator`(smartcart:=true)가 맡는다(같은 LCD 를 쓰는 다른 표시 프로그램과 함께 켜지 않음). 주행 명령이 아니다. 화면(콘솔) 신호가 끊기면 알림도 끈다.
 - `demo_runner` 의 Nav2 목표 도착 허용은 기본 0.12 m. `navigate` 에 `position_tolerance_m`(0.05~0.30)을 주면 그 값을 쓴다(ARR·Gate 처럼 목표가 인형·고객 둘레에 걸려 플래너가 0.3 m 안에서 경로를 끝낼 수 있는 목표만 넓힘).

@@ -151,6 +151,14 @@ def make_handler(ses, worker):
                     return self._send(200, {'sent': ses.demo_send(body)})
                 except ValueError as e:
                     return self._send(400, {'error': str(e)})
+            if path == '/api/boarding_alert':     # 패드의 탑승 시간 알림 → 로봇 표시(주행 명령 아님)
+                boarding = getattr(ses, 'boarding', None)
+                if boarding is None:
+                    return self._send(404, {'error': 'boarding alert off'})
+                try:
+                    return self._send(200, {'on': boarding.set(body.get('on'))})
+                except ValueError as e:
+                    return self._send(400, {'error': str(e)})
             if path == '/api/typed':
                 return self._send(200, {'typed': ses.set_typed(body.get('value', ''))})
             return self._send(404, {'error': 'not found'})
