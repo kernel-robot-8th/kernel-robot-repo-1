@@ -1199,6 +1199,11 @@ class PanelExecutor:
             }
         if stopped_by in STOPS:
             return {"state": "failed", "error": STOPS[stopped_by], "arms": arms}
+        err = result.get("err") or {}
+        if _wrist_check_refused(err):
+            # as #163 for two arms: the panel 3.25 one-arm run checks the wrist cameras too; refused (err 13), the
+            # policy never ran, so there is no placement or tray read - the refusal and its numbers are the cause
+            return _wrist_check_failure(err, result, arms)
         if operation == "OUTBOUND":
             pinky = result.get("pinky")
             error = _one_arm_unload_error(pinky, slot)

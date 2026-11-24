@@ -178,6 +178,33 @@ class ExecutorOneArmTest(unittest.TestCase):
                 )
                 self.assertEqual(seen["error"], code)
 
+    def test_wrist_check_refusal_is_its_own_cause(self):
+        # as #163 for two arms: panel 3.25 checks the wrist cameras before a one-arm run too. Refused (err 13),
+        # the policy never ran: PANEL_WRIST_CHECK with the numbers (no HOLD), not a missing placement / tray read
+        result = {
+            "exit_ok": False,
+            "err": {"code": 13, "name": "err_code_13"},
+            "wrist_check": {
+                "ok": False,
+                "why": "right move changed both wrist cameras",
+                "change": {"right": {"wrist_left": 0.027, "wrist_right": 0.044}},
+            },
+        }
+        for operation, slot, arm in (
+            ("INBOUND", "2c", "omx2"),
+            ("OUTBOUND", "2a", "omx1"),
+        ):
+            with self.subTest(operation=operation):
+                seen = PanelExecutor._result_one_arm(result, slot, operation, (arm,))
+                self.assertEqual(seen["state"], "failed")
+                self.assertEqual(seen["error"], "PANEL_WRIST_CHECK")
+                self.assertIn("wrist_right=0.044", seen["detail"])
+                self.assertNotIn("PANEL_WRIST_CHECK", panel_executor.HOLD_ERRORS)
+                stopped = PanelExecutor._result_one_arm(
+                    result | {"stopped_by": "중지"}, slot, operation, (arm,)
+                )
+                self.assertEqual(stopped["error"], "PANEL_STOPPED")
+
     def test_arm_at_a_one_arm_home_counts_as_home(self):
         # the two-arm model says omx2 is away; the one-arm right model (?arm=right) says it is at its home
         orig = self.panel.arms
