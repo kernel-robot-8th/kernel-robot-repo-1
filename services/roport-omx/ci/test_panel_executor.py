@@ -950,6 +950,39 @@ class PanelExecutorTest(unittest.TestCase):
         self.executor.routes = ROUTES | OUT_ROUTE
         self.panel.models.append(OUT_MODEL)
 
+    def test_unload_wrist_check_refusal_is_its_own_cause(self):
+        # #157 review: unloading refused by the wrist camera check never ran the policy, so there
+        # is no Pinky check; it was PANEL_PINKY_CHECK_NOT_RUN (HOLD, no numbers)
+        self.use_unload_route()
+        check = {
+            "ok": False,
+            "why": "right move changed both wrist cameras",
+            "change": {"right": {"wrist_left": 0.027, "wrist_right": 0.044}},
+        }
+        self.send(self.outbound())
+        self.panel.finish(
+            exit_ok=False, err={"code": 13, "name": "err_code_13"}, wrist_check=check
+        )
+        (failed,) = self.host.poll()
+        self.assertEqual(failed["type"], "shelf_outbound.failed")
+        p = failed["payload"]
+        self.assertEqual(p["error_code"], "PANEL_WRIST_CHECK")
+        self.assertEqual(p["mission_result"], "MISSION_FAILED")
+        self.assertIn("right move changed both wrist cameras", p["detail"])
+        self.assertIn("wrist_right=0.044", p["detail"])
+        self.assertEqual(self.panel.home_returns, 0)
+        self.assertIsNone(self.host.hold)
+        # a person's stop still comes first
+        self.send(self.outbound())
+        self.panel.finish(
+            exit_ok=False,
+            stopped_by="중지",
+            err={"code": 13, "name": "err_code_13"},
+            wrist_check=check,
+        )
+        (failed,) = self.host.poll()
+        self.assertEqual(failed["payload"]["error_code"], "PANEL_STOPPED")
+
     def test_unload_route_needs_panel_3_20(self):
         # 3.20 takes the empty-tray photo right before the unloading (2026-11-21 review)
         self.panel.status["version"] = "3.14.5"
