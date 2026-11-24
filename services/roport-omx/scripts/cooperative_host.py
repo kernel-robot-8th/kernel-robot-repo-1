@@ -489,6 +489,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "on for v2 (TK 2026-11-24; control stores and ACKs the intermediate report), off for v1",
     )
     parser.add_argument(
+        "--report-unload-placement",
+        action="store_true",
+        help="v2 panel: also report unloading completed the moment the box is on the Pinky tray (evidence "
+        "pinky_placed), then pinky_load. Off by default: control main does not store that first report yet and "
+        "would HOLD the unloading (#169 review)",
+    )
+    parser.add_argument(
         "--end-on-place",
         action=argparse.BooleanOptionalAction,
         default=True,  # on by default (TK 2026-11-22); --no-end-on-place for the older flow
@@ -543,6 +550,7 @@ def main() -> None:
             box_marker=args.box_marker,
             base_url=args.panel_url,
             report_placement=args.report_placement,
+            report_unload_placement=args.report_unload_placement,
             end_on_place=args.end_on_place,
             place_shadow=args.place_shadow,
         )
@@ -572,6 +580,7 @@ def main() -> None:
                 control=args.control,
                 require_pinky=args.require_pinky,
                 report_placement=args.report_placement,
+                report_unload_placement=args.report_unload_placement,
                 readiness=sampler,
             )
         else:

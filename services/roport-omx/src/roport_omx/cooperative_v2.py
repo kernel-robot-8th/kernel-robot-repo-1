@@ -208,6 +208,7 @@ class FieldHost:
         require_armed: bool = True,
         require_pinky: bool = True,
         report_placement: bool = False,
+        report_unload_placement: bool = False,
         readiness=None,
         watchdog_s: float = WATCHDOG_S,
     ):
@@ -218,6 +219,9 @@ class FieldHost:
         # (the executor's "placed", panel hand-over judge); the alignment then runs on without
         # further reports for this command (TK 2026-11-24, control asked to accept it).
         self.report_placement = report_placement
+        # retrieve's first report (pinky_placed) only when asked for: control main takes any other completed as
+        # final and HOLDs the unloading (#169 review). Store's shelf_placed stays with report_placement.
+        self.report_unload_placement = report_unload_placement
         self.watchdog_s, self.stop_timeout_s = watchdog_s, STOP_TIMEOUT_S
         self._sample = readiness or (lambda: (self._read(), time.time()))
         # with a sampler thread a stale reading never turns into a panel read in the MQTT loop
@@ -652,6 +656,9 @@ class FieldHost:
             state == "placed"
             and self.report_placement
             and record["task"]["operation"] in PLACED_EARLY
+            and (
+                record["task"]["operation"] == "INBOUND" or self.report_unload_placement
+            )
             and not record.get("placed_reported")
             and self._data["stop"]
             is None  # stopping: the stop's own result only (#156 review)

@@ -49,7 +49,8 @@ class ExecutorTrayTest(unittest.TestCase):
         self.panel = pe.FakePanel()
         self.panel.status["version"] = "3.24.1"
         self.ex = PanelExecutor(pe.ROUTES, box_marker=16, base_url=self.panel.url)
-        self.ex.report_placement = True
+        self.ex.report_placement = True  # v2 default
+        self.ex.report_unload_placement = True
         self.ex._version = (3, 24, 1)
         self.ex.repo_id, self.ex.slot, self.ex.operation, self.ex.box = (
             "tkoo/eval_x",
@@ -82,7 +83,8 @@ class ExecutorTrayTest(unittest.TestCase):
 
     def test_not_placed_unless_every_condition_holds(self):
         cases = {
-            "no option": ({}, {"report_placement": False}),
+            # #169 review: the v2 default (report_placement on) alone never reports the unloading early
+            "unloading option off": ({}, {"report_unload_placement": False}),
             "inbound": ({}, {"operation": "INBOUND"}),
             "panel 3.24.0": ({}, {"_version": (3, 24, 0)}),
             "record mode": ({"mode": "record"}, {}),
@@ -190,6 +192,7 @@ class FieldHostTrayTest(v2.FieldHostTest):
 
     def test_retrieve_completes_at_the_tray_then_when_home(self):
         self.host.report_placement = True
+        self.host.report_unload_placement = True
         self.executor.run_s = 0.2
         self.tray_then(
             lambda seen: {
@@ -231,6 +234,7 @@ class FieldHostTrayTest(v2.FieldHostTest):
 
     def test_retrieve_held_over_the_tray_after_the_first_report(self):
         self.host.report_placement = True
+        self.host.report_unload_placement = True
         self.tray_then(
             lambda seen: {
                 "state": "failed",
@@ -255,6 +259,7 @@ class FieldHostTrayTest(v2.FieldHostTest):
     def test_pinky_leaving_before_control_stored_it_still_stops_the_arms(self):
         # until control has stored the first report the Pinky must stay: leaving then is a lost visit
         self.host.report_placement = True
+        self.host.report_unload_placement = True
         self.tray_then(
             lambda seen: {"state": "running", "step": "천천히 내려놓는 중"}, hold=30
         )
@@ -267,7 +272,9 @@ class FieldHostTrayTest(v2.FieldHostTest):
         self.assertEqual([e["payload"]["status"] for e in events], ["failed"])
 
     def test_without_the_option_one_report_after_home(self):
-        self.host.report_placement = False
+        # #169 review: the v2 default (report_placement on) keeps one pinky_load report after home
+        self.host.report_placement = True
+        self.host.report_unload_placement = False
         self.executor.run_s = 0.2
         self.tray_then(
             lambda seen: {

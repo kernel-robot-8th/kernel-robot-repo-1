@@ -564,6 +564,7 @@ class PanelExecutor:
         timeout: float = 5.0,
         start_timeout: float = 300.0,
         report_placement: bool = False,
+        report_unload_placement: bool = False,
         end_on_place: bool = False,
         place_shadow: bool = False,
     ):
@@ -573,6 +574,9 @@ class PanelExecutor:
         # Loading in two reports: COMPLETE once the box is in its slot (Pinky may leave), then the
         # alignment result as a progress event. Needs a control tower that accepts "shelf_placed".
         self.report_placement = report_placement
+        # Unloading in two reports (pinky_placed, then pinky_load): only with a control tower that stores the first
+        # one (#169 review: control main treats it as the final report and HOLDs). Off unless asked for.
+        self.report_unload_placement = report_unload_placement
         self.end_on_place = end_on_place
         # panel 3.18: run the placement judge during loading and only record it (no hand-over)
         self.place_shadow = place_shadow
@@ -902,7 +906,7 @@ class PanelExecutor:
         the commanded slot empty, the tray compared with this mission's own photo, both fingertips out of
         the tray zone and both grippers released, a capture at most PLACEMENT_FRESH_S old."""
         if (
-            not self.report_placement
+            not self.report_unload_placement
             or self.operation != "OUTBOUND"
             or self._placed
             or not job.get("running")
