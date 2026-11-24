@@ -26,7 +26,7 @@ def test_bad_camera_frame_does_not_replace_last_good_packet(malformed):
         msg = Image(width=2, height=2, encoding='bgr8', step=step,
                     data=bytes(step*2 if malformed == 'short_step' else 5))
     msg.header.frame_id = 'camera'
-    assert not shop.camera(msg)
+    assert not shop.camera(msg, 10.05)
     assert shop.packet is old
 
     pixels = np.full((2, 2, 3), 170, np.uint8)
@@ -35,8 +35,30 @@ def test_bad_camera_frame_does_not_replace_last_good_packet(malformed):
     else:
         msg.step = 8
         msg.data = (bytes([170]*6) + bytes(2))*2
-    assert shop.camera(msg)
+    assert shop.camera(msg, 10.05)
     np.testing.assert_array_equal(shop.packet[1], pixels)
+
+
+def test_camera_keeps_arrival_time_and_serves_verified_jpeg_without_reencoding(monkeypatch):
+    from collections import deque
+    from roport_smartcart import shopping_follow
+
+    shop = Shopping.__new__(Shopping)
+    shop.waiting = deque(maxlen=5)
+    shop.owner, shop.touch = 'session', 10.2
+    shop.received = lambda msg: 10.
+    shop.info = NS(width=2, height=2)
+    shop.optical_frame, shop.lock, shop.tf = 'optical', Condition(), Mock()
+    jpeg = cv2.imencode('.jpg', np.full((2, 2, 3), 170, np.uint8))[1].tobytes()
+    msg = CompressedImage(format='jpeg', data=jpeg)
+    msg.header.frame_id = 'camera'
+    monotonic = Mock(side_effect=[10.1, 10.25, 10.3, 10.3])
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', monotonic)
+    shop.queue_frame(msg)
+    assert shop.camera(*shop.waiting.pop())
+    assert shop.packet[4:] == (10.1, 10.25, jpeg)
+    monkeypatch.setattr(cv2, 'imencode', Mock(side_effect=AssertionError('must reuse original JPEG')))
+    assert shop.image(None, shop.owner) == jpeg
 
 
 @pytest.mark.parametrize('skew_ns, accepted', [(80_000_000, True), (80_000_001, False)])

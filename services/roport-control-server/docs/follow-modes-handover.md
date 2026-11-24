@@ -8,6 +8,7 @@
 | --- | --- |
 | 통합 작업 분기 | `feature/inyup-baek/follow-mode-service` |
 | 시작 기준 | `task/control-integration-test`의 `083276e5` |
+| 현재 PR 대상 | [#165](https://github.com/kernel-robot-8th/kernel-robot-repo-1/pull/165) → `main` |
 | 작업 추적 | [FFT1-207](https://fp-team1.atlassian.net/browse/FFT1-207) |
 | 이 문서의 범위 | 관제·서비스 서버·패드·MQTT 계약·가상 실행부와 실물 실행부의 연결 기준 |
 | 실물 적용 상태 | **실제 ROS 실행부는 이번 작업에서 수정하지 않았으며, 두 모드의 서비스 경유 실물 추종은 아직 검증하지 않았다.** |
@@ -79,6 +80,8 @@ endpoint는 외부 `follow_registration_command`를 내부 `follow_registration.
 
 마커의 기존 요청은 session 필드가 없을 수 있으므로 `{ "active": true, "follow_mode": "marker" }`도 지원한다. 요청에 session이 있으면 같은 값을 보고한다. 마커 실행부도 이 관측이 없으면 MQTT 접수는 가능하지만 서비스는 ‘시작 확인 대기’를 유지한다.
 
+드라이버는 Nav2의 추종 목표 수락과 신선한 `trial_guard` 응답의 실제 `owner == "nav2"`를 모두 확인한 뒤 `active:true`를 보고한다. 구동권 전환 대기 중에는 `active:false`다. 기존 `observe().drive_owner`는 Nav2 모드만으로도 `"nav2"`가 되므로, 드라이버에서 guard 응답을 확인해야 한다.
+
 endpoint는 실제 모드·대상·Nav2 준비·구동 소유권·관측 신선도가 확인된 경우에만 `in_progress.result.follow_active=true`와 `result.follow`를 발행한다. Fleet도 이 활성 값, 중첩된 `result.follow`의 mode/session/target/perception, 현재 상태 근거가 시작 명령과 일치하는지 다시 검사한다. 고객이 서 있으면 추종이 활성인 상태에서도 속도가 0일 수 있으므로 속도 0/이동 여부 자체를 활성 판정으로 사용하지 않는다. `accepted`는 활성 근거가 아니며, `drain_results()`에서 임의로 `follow_active=true`를 넣어도 이를 근거로 인정하지 않는다.
 
 ## 5. MQTT 필드와 등록 결과
@@ -134,7 +137,7 @@ MQTT `completed.result`에는 endpoint의 관측 상태가 함께 붙고 `stoppe
 2. **구동 owner는 하나다.** 관제 runner가 기존 guard/lease를 소유하고, 선택된 추종 방식만 Nav2 목표를 갱신한다. 독립 Shopping Nav2 client, `doll_follow_demo`의 `line_nav/cmd_vel`/lease 발행, 기존 TrialDriver를 동시에 주행 owner로 실행하지 않는다. 외형 탐지 재사용과 독립 데모 구동 재사용은 구분한다.
 3. **ROS 범위를 기체별로 고정한다.** 동일 기체의 영상·TF·odom·Nav2·추종 노드가 같은 합의된 domain/namespace를 사용해야 한다. 여러 기체의 동일 이름 토픽이 섞이지 않게 한다. 마커의 기존 `/follow/target`, `/follow/status`와 외형 상태를 무조건 같은 토픽으로 합치지 말고 모드 선택 adapter가 입력을 구분한다.
 4. **전환 전에 정지와 해제를 확인한다.** 이전 목표 취소·실제 정차·이전 모드 출력 중단을 확인한 뒤 새 모드/복귀를 허용한다. 대상 유실·애매한 일치·카메라 단절·기동 변경·guard 오류는 정지/거절 근거다. marker↔appearance 자동 전환이나 임의의 다른 사람 재선택은 하지 않는다.
-5. **최대 주행 속도는 0.08 m/s 이하로 맞춘다.** Nav2 추종·외형 실행부의 실제 속도 설정도 담당자가 검증한다. 이번 MQTT 추종 명령에 새로운 속도 필드를 추가한 것은 아니므로 관제 라인 속도 설정만 보고 추종 속도도 제한됐다고 판단하지 않는다. 기존 N12 정밀 접근의 0.02 m/s와 허용 오차·guard 조건은 유지한다.
+5. **관제 연동 시험의 두 추종 모드 상한은 0.08 m/s다.** 0.10 m/s로 시험한 마커 추종은 Nav2 상한을 0.08 m/s로 맞춘 뒤 출발·일시정지·재개·복귀를 다시 확인한다. 외형 실행부도 실제 속도를 확인한다. 추종 속도는 실행부 설정에서 제한하며, 기존 N12 정밀 접근의 0.02 m/s와 허용 오차·guard 조건을 유지한다.
 
 ## 8. 현장 허용 설정과 적용 순서
 
@@ -164,6 +167,8 @@ MQTT `completed.result`에는 endpoint의 관측 상태가 함께 붙고 `stoppe
 ## 9. 통합 완료 판단과 남은 범위
 
 이번 작업에서 관제/서비스/패드/MQTT와 가상 실행부를 연결한다. 실제 `roport_smartcart`의 HTTP/ROS 실행기를 서비스 owner에 연결한 것으로 보지 않는다. 기존 패드 [`Shopping.tsx`](../../roport-web/apps/pad/src/Shopping.tsx)의 독립 Shopping 데모도 이 통합 완료에 포함하지 않는다. 서비스 수령 뒤 `FollowSession` 경로를 사용하며 별도 데모의 ‘시작’ 버튼으로 운영 권한을 우회하면 안 된다.
+
+[#166](https://github.com/kernel-robot-8th/kernel-robot-repo-1/pull/166)의 탑승 알림 창은 `GET /cart-api/follow/{receiptId}`에 선택 필드 `boardingAlert: true`가 있고 최신 상태가 `following`일 때 열린다. 관제가 알림 시점을 결정하고 서비스가 이 필드를 보내는 구현과 게이트 안내 전환은 후속 작업이다. 가상 브라우저 테스트는 상태 응답을 모사한다. LCD·LED·부저의 개발 시험용 프록시는 기본으로 끄고, 같은 기체에서 드라이버의 표시 hook과 함께 켜지 않는다.
 
 실물 통합 PR의 완료 조건:
 

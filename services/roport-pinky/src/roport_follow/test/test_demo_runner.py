@@ -17,6 +17,7 @@ class Graph:
 class Driver:
     def __init__(self):
         self.calls, self.results, self.reject = [], [], None
+        self.boarding, self.beats = False, 0
 
     def validate_action(self, cmd):
         self.calls.append(('validate', cmd['type']))
@@ -32,6 +33,12 @@ class Driver:
 
     def heartbeat(self):
         self.calls.append(('heartbeat',))
+        self.beats += 1
+
+    def set_boarding_alert(self, on):
+        # 실제 드라이버처럼: heartbeat 를 한 번도 못 받았으면 켜자마자 끈다
+        self.calls.append(('boarding_alert', on))
+        self.boarding = bool(on) and self.beats > 0
 
     def drain_results(self):
         out, self.results = self.results, []
@@ -188,11 +195,31 @@ def test_alert_only_toggles_boarding_and_never_drives():
     r.handle({'op': 'ping'})
     r.handle({'op': 'alert', 'on': True})
     assert r.state()['boarding'] is True and r.events[-1] == {**r.events[-1], 'kind': 'alert', 'on': True}
+    r.tick()                                            # 켜기는 heartbeat 뒤에 드라이버로 넘어간다
     r.handle({'op': 'alert', 'on': 'yes'})
     assert r.events[-1]['reason'] == 'invalid_alert' and r.state()['boarding'] is True
     r.handle({'op': 'alert', 'on': False})
     assert r.state()['boarding'] is False
     assert not any(x[0] in ('dispatch', 'safe_stop', 'validate') for x in d.calls)
+    # 발행은 드라이버 hook 하나로: 잘못된 값은 hook 까지 가지 않는다
+    assert [x for x in d.calls if x[0] == 'boarding_alert'] == [('boarding_alert', True), ('boarding_alert', False)]
+
+
+def test_alert_on_right_after_connect_waits_for_the_next_heartbeat():
+    """연결 직후 ping → alert 가 같은 tick 사이에 와도 실행기와 드라이버 상태가 어긋나지 않는다. 드라이버는 heartbeat 를
+    받기 전에는 켜자마자 끄므로, 켜기는 tick 의 heartbeat 뒤에 넘긴다. 드라이버가 스스로 끈 뒤에도 다시 맞춘다."""
+    d, c, r = make()
+    r.handle({'op': 'ping'})
+    r.handle({'op': 'alert', 'on': True})               # 아직 heartbeat 전
+    assert r.state()['boarding'] is True and not any(x[0] == 'boarding_alert' for x in d.calls)
+    r.tick()
+    assert d.calls[-2:] == [('heartbeat',), ('boarding_alert', True)]    # heartbeat 가 먼저
+    assert d.boarding is True and r.state()['boarding'] is True
+    r.tick()
+    assert [x for x in d.calls if x[0] == 'boarding_alert'] == [('boarding_alert', True)]    # 켜진 뒤 다시 부르지 않음
+    d.boarding = False                                  # 드라이버가 스스로 끔(heartbeat 가 잠깐 끊김)
+    r.tick()
+    assert d.boarding is True and d.calls[-1] == ('boarding_alert', True)
 
 
 def test_alert_turns_off_when_console_link_is_lost_after_stopping_drive():
@@ -203,6 +230,7 @@ def test_alert_turns_off_when_console_link_is_lost_after_stopping_drive():
     r.tick()
     assert ('safe_stop', 'control_link_lost') in d.calls and r.state()['boarding'] is False
     assert [e['kind'] for e in r.events][-2:] == ['stopped', 'alert']
+    assert d.calls[-1] == ('boarding_alert', False)                 # 드라이버 알림도 끔
 
 
 def test_fine_align_returns_the_commanded_pose_inside_the_envelope_only():
@@ -229,6 +257,28 @@ def test_install_fine_align_leaves_configured_gate_docking_alone():
     logs = []
     d = SimpleNamespace(nav=SimpleNamespace(docking=object(), dock_action=None), node=None)
     assert install_fine_align(d, log=logs.append) is False and logs and d.nav.dock_action is None
+
+
+def test_fine_align_is_the_driver_class():
+    from roport_follow.demo_runner import FineAlign
+    from roport_pinky.fine_align import FineAlign as DriverFineAlign
+    assert FineAlign is DriverFineAlign             # 중복 정의 없음
+
+
+def test_install_fine_align_adds_demo_goal_to_driver_fine_align():
+    """드라이버가 ROPORT_FINE_ALIGN_GOALS 로 FineAlign 을 켰으면 그 목표에 demo_RET_N12 를 더하고 슬롯은 그대로 둔다."""
+    import threading
+    from types import SimpleNamespace
+    from roport_follow.demo_runner import FINE_ALIGN_GOALS, install_fine_align
+    from roport_pinky.fine_align import FineAlign
+    existing, action = FineAlign(('N12_RETURN',)), object()
+    logs = []
+    d = SimpleNamespace(nav=SimpleNamespace(docking=existing, dock_action=action), node=None,
+                        lock=threading.RLock())
+    assert install_fine_align(d, log=logs.append) is True and logs
+    assert d.nav.docking is existing and d.nav.dock_action is action
+    assert existing.goals == frozenset(('N12_RETURN',) + FINE_ALIGN_GOALS)
+    assert existing.enabled('N12_RETURN') and existing.enabled('demo_RET_N12')
 
 
 def test_follow_turn_first_turns_in_place_then_follows_after_settle():
@@ -422,6 +472,7 @@ def test_reconnect_ping_after_expiry_also_turns_the_boarding_alert_off():
     assert ('safe_stop', 'control_link_lost') in d.calls             # 주행 정지
     assert st['active'] is None and st['pending'] is None            # 돌기 뒤 추종도 취소
     assert st['boarding'] is False                                   # 탑승 알림 해제
+    assert ('boarding_alert', False) in d.calls                      # 드라이버 hook 으로 끔
     kinds = [(e['kind'], e.get('reason')) for e in r.events]
     assert ('alert', 'control_link_lost') in kinds and ('stopped', 'control_link_lost') in kinds
     r.tick()                                            # 다음 tick: 다시 살아 있음, 알림은 꺼진 채

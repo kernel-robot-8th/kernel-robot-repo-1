@@ -117,6 +117,7 @@ def test_hardware_trial_preserves_base_tracking_and_collision_checks(trial_launc
 
 def test_docking_controller_is_opt_in_and_retains_collision_and_speed_caps(trial_launch, monkeypatch):
     monkeypatch.delenv('ROPORT_GATE_DOCK_CONFIG', raising=False)
+    monkeypatch.delenv('ROPORT_FINE_ALIGN_GOALS', raising=False)
     normal = {n['executable']: n for n in trial_launch._nodes(context(.15))}
     assert 'GateDock.plugin' not in normal['controller_server']['parameters'][1]
     monkeypatch.setenv('ROPORT_GATE_DOCK_CONFIG', '/unused/local-calibrated.yaml')
@@ -126,6 +127,72 @@ def test_docking_controller_is_opt_in_and_retains_collision_and_speed_caps(trial
     assert cfg['GateDock.use_collision_detection'] is True
     assert cfg['GateDock.allow_reversing'] is False
     assert cfg['gate_dock_goal_checker.xy_goal_tolerance'] == .01
+
+
+@pytest.mark.parametrize('goals, enabled', [(None, False), ('', False), (' , ', False),
+                                             ('N12_RETURN', True), (' N12_RETURN , G3', True)])
+def test_fine_align_goals_also_enable_dock_controller(trial_launch, monkeypatch, goals, enabled):
+    monkeypatch.delenv('ROPORT_GATE_DOCK_CONFIG', raising=False)
+    if goals is None:
+        monkeypatch.delenv('ROPORT_FINE_ALIGN_GOALS', raising=False)
+    else:
+        monkeypatch.setenv('ROPORT_FINE_ALIGN_GOALS', goals)
+    cfg = {n['executable']: n for n in trial_launch._nodes(context(.15))}['controller_server']['parameters'][1]
+    assert ('GateDock.plugin' in cfg) is enabled
+    if not enabled:
+        assert not any(k.startswith(('GateDock', 'gate_dock')) for k in cfg) and 'controller_plugins' not in cfg
+        return
+    assert cfg['controller_plugins'] == ['FollowPath', 'GateDock']
+    assert cfg['goal_checker_plugins'] == ['general_goal_checker', 'gate_dock_goal_checker']
+    assert cfg['gate_dock_goal_checker.xy_goal_tolerance'] == .01
+    assert cfg['gate_dock_goal_checker.yaw_goal_tolerance'] == .05
+    assert cfg['GateDock.desired_linear_vel'] == .02 and cfg['GateDock.use_collision_detection'] is True
+    # 마커 없는 정밀 접근에만 새 속도(2026-11-23 d660: 20 cm 접근 25 s 시간 초과 → 19 s)
+    assert cfg['GateDock.min_approach_linear_velocity'] == .01
+    assert cfg['GateDock.regulated_linear_scaling_min_speed'] == .015
+    assert cfg['GateDock.approach_velocity_scaling_dist'] == .05
+
+
+@pytest.mark.parametrize('fine_align_goals', [None, 'N12_RETURN'])
+def test_gate_marker_docking_keeps_its_previous_speeds(trial_launch, monkeypatch, fine_align_goals):
+    """게이트 마커 주차(ROPORT_GATE_DOCK_CONFIG)는 변경 전 감속 값을 그대로 쓴다. FineAlign 환경 변수가 같이 있어도
+    드라이버처럼 게이트 마커 주차가 우선이라 새 속도를 넣지 않는다. 감속 거리는 launch 가 넣지 않아
+    params_file 에 적은 값(없으면 RPP 기본값)이 그대로 쓰인다."""
+    monkeypatch.setenv('ROPORT_GATE_DOCK_CONFIG', '/unused/local-calibrated.yaml')
+    if fine_align_goals is None:
+        monkeypatch.delenv('ROPORT_FINE_ALIGN_GOALS', raising=False)
+    else:
+        monkeypatch.setenv('ROPORT_FINE_ALIGN_GOALS', fine_align_goals)
+    cfg = {n['executable']: n for n in trial_launch._nodes(context(.15))}['controller_server']['parameters'][1]
+    assert cfg['GateDock.desired_linear_vel'] == .02
+    assert cfg['GateDock.min_approach_linear_velocity'] == .005
+    assert cfg['GateDock.regulated_linear_scaling_min_speed'] == .005
+    assert 'GateDock.approach_velocity_scaling_dist' not in cfg
+    assert cfg['GateDock.use_collision_detection'] is True and cfg['GateDock.allow_reversing'] is False
+    assert cfg['gate_dock_goal_checker.xy_goal_tolerance'] == .01
+    assert cfg['gate_dock_goal_checker.yaw_goal_tolerance'] == .05
+
+
+def test_real_params_yaml_keeps_gate_values_and_no_fine_align_speeds(trial_launch):
+    """nav2_follow_real.yaml 의 GateDock 은 launch 의 게이트 공통 값과 같고, FineAlign 감속 거리는 갖지 않는다
+    (적으면 같은 파일로 띄운 게이트 마커 주차의 감속 거리가 바뀐다). FineAlign 값은 launch 에만 있다."""
+    import yaml
+    fine = trial_launch.FINE_ALIGN_CONTROLLER_OVERRIDES
+    assert fine == {'GateDock.min_approach_linear_velocity': .01,
+                    'GateDock.regulated_linear_scaling_min_speed': .015,
+                    'GateDock.approach_velocity_scaling_dist': .05}
+    dock = trial_launch.DOCK_CONTROLLER_OVERRIDES
+    assert 'GateDock.approach_velocity_scaling_dist' not in dock
+    params = yaml.safe_load((Path(__file__).parents[1] / 'config/nav2_follow_real.yaml').read_text())
+    controller = params['controller_server']['ros__parameters']
+    assert 'approach_velocity_scaling_dist' not in controller['GateDock']
+    for key, value in dock.items():
+        if key.startswith('GateDock.'):
+            assert controller['GateDock'][key.split('.', 1)[1]] == value, key
+        elif key.startswith('gate_dock_goal_checker.'):
+            assert controller['gate_dock_goal_checker'][key.split('.', 1)[1]] == value, key
+        else:
+            assert controller[key] == value, key
 
 
 def test_planner_tolerance_default_and_follow_value(trial_launch):

@@ -13,8 +13,9 @@ TrialDriver·trial_guard(구동권 문지기)는 그대로 쓰고, 관제 키트
                  | turn (지금 자리에서 180° 돌기 = 같은 위치·반대 방향 Nav2 목표 demo_TURN. ARR 도착 뒤 고객 쪽으로 돌아서서 대기)
                  | alert {"on": bool} (탑승 시간 알림 켜기·끄기. 주행 명령이 아님)
   ROS 출력  demo/state std_msgs/String JSON 2 Hz: 드라이버 관측·진행 중 명령·최근 결과·콘솔 연결
-            smartcart/boarding_alert std_msgs/Bool 2 Hz → roport_line_nav status_indicator(smartcart:=true)가
-            LCD·LED·부저로 알림. 언제 켤지(탑승 시각 기준)는 명령을 보내는 쪽이 정한다.
+            smartcart/boarding_alert std_msgs/Bool: alert 를 드라이버 hook TrialDriver.set_boarding_alert 로 넘기고
+            드라이버가 발행한다(켜진 동안 0.5 s 마다 True, 끌 때 False 한 번) → roport_line_nav status_indicator
+            (smartcart:=true)가 LCD·LED·부저로 알림. 언제 켤지(탑승 시각 기준)는 명령을 보내는 쪽이 정한다.
 안전: 콘솔 신호(ping 또는 명령)가 console_timeout_s(1 s) 넘게 없으면 heartbeat 를 멈추고(구동권이 1 s 뒤 닫힘)
       진행 중 명령이 있으면 safe_stop('control_link_lost'). 모터 bringup·Nav2 실행은 하지 않는다(사람이 함).
 
@@ -33,6 +34,8 @@ import threading
 import time
 import uuid
 from pathlib import Path
+
+from roport_pinky.fine_align import FineAlign
 
 OPS = ('ping', 'route', 'switch_nav2', 'switch_line', 'navigate', 'turn', 'follow', 'stop', 'alert')
 PATIENT_BT = Path(__file__).parent / 'bt' / 'navigate_patient.xml'
@@ -169,7 +172,13 @@ class DemoRunner:
                 if not isinstance(msg.get('on'), bool):
                     self._event('rejected', op=op, reason='invalid_alert')
                     return
-                self.boarding = msg['on']
+                if msg['on']:
+                    # 켜기는 다음 tick 의 heartbeat 뒤에 드라이버로 넘긴다. 드라이버는 heartbeat 가 1 s 넘게 없으면
+                    # 켜자마자 끄므로, 연결 직후 ping → alert 가 tick 사이에 오면 여기서 바로 부르면 상태가 어긋난다.
+                    self.boarding = True
+                else:
+                    self.driver.set_boarding_alert(False)    # 발행은 드라이버 하나가 한다
+                    self.boarding = False
                 self._event('alert', on=self.boarding)
                 return
             if self.console_at is not None and not self.console_alive():
@@ -218,6 +227,7 @@ class DemoRunner:
             self._event('stopped', op=self.active['type'], reason='control_link_lost')
             self.active, self.link_stopped = None, True
         if self.boarding:                   # 알림을 켠 화면이 끊김: 끌 방법이 없으니 끈다
+            self.driver.set_boarding_alert(False)
             self.boarding = False
             self._event('alert', on=False, reason='control_link_lost')
 
@@ -230,6 +240,8 @@ class DemoRunner:
             alive = self.console_alive()
             if alive:
                 self.driver.heartbeat()
+                if self.boarding and not getattr(self.driver, 'boarding', False):
+                    self.driver.set_boarding_alert(True)    # heartbeat 뒤에 켠다(드라이버가 스스로 끈 뒤에도 다시 맞춤)
             else:
                 self._link_lost()
             for original, phase, details in self.driver.drain_results():
@@ -280,54 +292,23 @@ def apply_start_mode(driver, mode):
         driver.logic.node = None
 
 
-class FineAlign:
-    """마커 없는 마지막 정밀 접근(시험용, 11-22). 드라이버(trial_nav2)의 게이트 마커 정밀 접근 단계를 그대로 쓴다:
-    Nav2 가 목표 20 cm 뒤까지 간 뒤 멈춘 것을 확인하고, 목표까지 직선 경로를 GateDock 제어기(2 cm/s, 충돌 검사 유지)로
-    보내 1.5 cm·0.08 rad 안에 들어왔는지 확인한다. 마커 대신 명령의 목표 좌표를 쓴다.
-
-    왜: N12 복귀 자세에서 Nav2 가 일반 도착 허용 오차(8 cm) 안에서 멈춰, 라인 전환 조건(5 cm·가운데 IR 이 선 위)을
-    못 맞추고 매번 7 cm 앞에 섰다(11-22 d660 두 번). roport_smartcart real_return 의 N12 정밀 맞춤(8 cm 안이면
-    정확한 끝점까지 FollowPath 로 한 번 더)과 같은 생각이다. 드라이버의 GateDocking 과 같은 함수 이름을 가진다."""
-
-    MAX_OFFSET_M = 0.30         # 정밀 접근을 시작할 때 목표까지 허용 거리(20 cm 뒤 + Nav2 도착 오차)
-    MAX_YAW_RAD = 0.35
-    TIMEOUT_S = 25.0
-
-    def __init__(self, goals):
-        self.goals = frozenset(goals)
-        self.active, self.command, self.started = False, None, None
-
-    def reset(self, command=None):
-        self.active, self.command, self.started = False, command, None
-
-    def enabled(self, goal_id):
-        return goal_id in self.goals
-
-    def begin(self, now):
-        self.active, self.started = True, now
-
-    def target(self, pose, now):
-        if self.command is None:
-            raise ValueError('fine_align_no_goal')
-        if self.started is not None and now - self.started > self.TIMEOUT_S:
-            raise ValueError('fine_align_timeout')
-        goal = self.command['pose']
-        target = {'x': float(goal['x']), 'y': float(goal['y']), 'yaw': float(goal['yaw'])}
-        yaw_error = math.atan2(math.sin(target['yaw'] - pose['yaw']), math.cos(target['yaw'] - pose['yaw']))
-        if math.hypot(target['x'] - pose['x'], target['y'] - pose['y']) > self.MAX_OFFSET_M or abs(yaw_error) > self.MAX_YAW_RAD:
-            raise ValueError('fine_align_outside_envelope')
-        return target
-
-
+# FineAlign(마커 없는 마지막 정밀 접근)은 roport_pinky.fine_align 에 있다(드라이버 ROPORT_FINE_ALIGN_GOALS 와 같은 것).
 FINE_ALIGN_GOALS = ('demo_RET_N12',)
 
 
 def install_fine_align(driver, log=print):
-    """드라이버의 Nav2 어댑터에 FineAlign 을 끼운다(--fine-align 을 줬을 때만 부른다). 게이트 마커 정밀 접근이 이미
+    """드라이버의 Nav2 어댑터에 FineAlign 을 끼운다(--fine-align 을 줬을 때만 부른다). 드라이버가 이미
+    ROPORT_FINE_ALIGN_GOALS 로 FineAlign 을 켰으면 그 목표 집합에 demo_RET_N12 를 더한다. 게이트 마커 정밀 접근이
     켜져 있으면(ROPORT_GATE_DOCK_CONFIG) 건드리지 않는다. 제어기 GateDock·검사기 gate_dock_goal_checker 가 Nav2
     설정(params_file)에 없으면 20 cm 뒤에서 마지막 접근 요청이 거절되므로, 그 설정으로 띄운 경우에만 켠다."""
     nav = driver.nav
-    if getattr(nav, 'docking', None) is not None:
+    docking = getattr(nav, 'docking', None)
+    if isinstance(docking, FineAlign):
+        with driver.lock:
+            docking.add_goals(FINE_ALIGN_GOALS)
+        log(f'fine align: added {", ".join(FINE_ALIGN_GOALS)} to driver fine align goals')
+        return True
+    if docking is not None:
         log('fine align: gate docking already configured; N12 fine align not installed')
         return False
     from nav2_msgs.action import FollowPath
@@ -364,7 +345,7 @@ def main(argv=None):
     ap.add_argument('--keep-nav-recovery-cap', action='store_true',
                     help='Nav2 목표의 누적 복구 상한(2번)을 그대로 둠. 기본은 시험용으로 상한 없음(30 s 무진행이면 멈춤)')
     a = ap.parse_args(argv)
-    from std_msgs.msg import Bool, String
+    from std_msgs.msg import String
 
     from roport_line_nav.graph import Graph
     from roport_pinky.trial_driver import TrialDriver
@@ -391,7 +372,6 @@ def main(argv=None):
 
     node.create_subscription(String, 'demo/cmd', on_cmd, 10)
     pub = node.create_publisher(String, 'demo/state', 5)
-    boarding_pub = node.create_publisher(Bool, 'smartcart/boarding_alert', 1)
     print(f'demo_runner: map {profile["map_id"]} {profile["map_version"]}, start {a.start_node}. '
           '시험용(관제 대신). 콘솔 신호가 끊기면 멈춤.'
           + (' [Nav2 모드로 바로 시작: 로봇이 N12 에 있고 처음 위치를 넣었는지 확인]' if a.start_mode == 'nav2' else ''),
@@ -402,9 +382,7 @@ def main(argv=None):
             runner.tick()
             if time.monotonic() - last >= 0.5:
                 last = time.monotonic()
-                state = runner.state()
-                pub.publish(String(data=json.dumps(state, ensure_ascii=False)))
-                boarding_pub.publish(Bool(data=bool(state['boarding'])))
+                pub.publish(String(data=json.dumps(runner.state(), ensure_ascii=False)))
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass

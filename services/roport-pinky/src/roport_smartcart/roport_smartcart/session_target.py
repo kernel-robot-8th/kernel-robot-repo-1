@@ -144,7 +144,7 @@ class SessionTracker:
         union = (a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - intersection
         return intersection >= .5 * union
 
-    def step(self, frame, targetignored=None, *, near_anchor=None, expected_box=None):
+    def step(self, frame, targetignored=None, *, near_anchor=None, expected_box=None, recent_confirmation=False):
         lost = {'state': 'LOST', 'index': None}
         try:
             if _frame(frame) != self.shape:
@@ -156,6 +156,12 @@ class SessionTracker:
                 if index is None:
                     self.reacquisition = None
                     if selection['state'] == 'LOST':
+                        if (not self.preview and recent_confirmation and len(boxes) == 1
+                                and matches[0]['score'] >= self.threshold - .03
+                                and expected_box is not None and self._overlaps(boxes[0], expected_box)
+                                and near_anchor is not None and near_anchor(boxes[0])):
+                            # Bridge a brief dip only with a fresh box and agreeing geometry.
+                            return boxes, matches, {'state': 'MATCH', 'index': 0, 'continuity': True}
                         selection['reason'] = 'appearance_mismatch' if boxes else 'no_detection'
                     return boxes, matches, selection
                 box = boxes[index]
@@ -171,13 +177,23 @@ class SessionTracker:
                     anchored_only = anchored and len(boxes) == 1
                     threshold = .76 if anchored_only else .81 if anchored else .86
                     required = 3
+                    if anchored_only and recent_confirmation:
+                        threshold, required = self.threshold, 1
+                    elif anchored and not anchored_only and recent_confirmation and all(
+                            matches[index]['score'] - matches[i]['score'] >= max(.12, self.margin)
+                            and (matches[i]['score'] < self.threshold or not near_anchor(other))
+                            for i, other in enumerate(boxes) if i != index):
+                        # A distinct match can ignore background proposals only
+                        # while confirmation at the known location is still recent.
+                        threshold, required = .76, 1
                     if not anchored and len(boxes) == 1 and matches[index]['score'] < .86:
                         threshold, required = .83, 5
                     if matches[index]['score'] >= threshold:
                         count = candidate[1]+1 if candidate and (self._overlaps(box, candidate[0]) or anchored and candidate[2]) else 1
                         self.reacquisition = box, count, anchored
                     if self.reacquisition is None or self.reacquisition[1] < required:
-                        return boxes, matches, {'state': 'LOST', 'index': None, 'reason': 'position_mismatch'}
+                        return boxes, matches, {'state': 'LOST', 'index': None, 'reason': 'position_mismatch',
+                                                'anchor_agrees': anchored}
                 self.reacquisition = None
                 self.last_verified_box = box
                 return boxes, matches, selection

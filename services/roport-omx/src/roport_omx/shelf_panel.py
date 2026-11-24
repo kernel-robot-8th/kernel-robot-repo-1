@@ -1,6 +1,7 @@
 """Executor that runs shelf-01 COOPERATIVE tasks through the local OMX control panel (v3.14+).
 
-Copied from c27da61's panel_executor.py; consolidate when task/omx-cooperative is integrated.
+Copied from f476a73's panel_executor.py (task/omx-cooperative #156, #157, #162, #163);
+consolidate when task/omx-cooperative is integrated.
 
 The panel owns the arms, cameras and safety stop. This adapter only calls its HTTP API on this PC:
 the panel runs the robot loop and sends each observation to the GPU AI inference server over UDP
@@ -14,7 +15,9 @@ only when last_result is final, and when alignment ran, arm return comes from it
 """
 
 import json
+import logging
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -183,9 +186,10 @@ def _hold_code(result: dict) -> str:
 #     (also when the aligner could not read the shelf but the evaluation's placement judge read
 #      this box's own marker in 2B with the hands clear: align_error PANEL_SHELF_UNREADABLE,
 #      2026-11-22)
-#   not loaded, evaluation failed, arms not home  → MISSION_FAILED: arms sent back to the start pose,
+#   evaluation failed, arms not home              → MISSION_FAILED: arms sent back to the start pose,
 #                                                   reported without HOLD once they are home
-#   shelf unreadable, emergency stop, unknown, …  → MISSION_HOLD: a person checks first
+#   not on the shelf (maybe dropped), shelf unreadable, emergency stop, unknown, …
+#                                                 → MISSION_HOLD: a person checks first
 NOT_ALIGNED = "shelf_load_not_aligned"
 # Failures that wait for a person; any other failure first sends the arms home (panel /api/home/return).
 HOLD_ERRORS = {
@@ -206,6 +210,11 @@ HOLD_ERRORS = {
     "PANEL_HANDOVER_STOPPED",
     "PANEL_HANDOVER_HOLD",
     "RESULT_UNAVAILABLE",
+    # TK 2026-11-24: a box that may be on the floor waits for a person, arms left where they are.
+    # Unloading: slot empty but the tray unchanged since the pre-mission photo. Loading: not on
+    # the shelf, and the tray is not checked afterwards, so a drop cannot be ruled out.
+    "PANEL_BOX_DROPPED",
+    "PANEL_BOX_NOT_ON_SHELF",
 }
 HOME_RETURN_TIMEOUT_S = 90.0
 # The panel takes episodes of 3-600 s. A control-tower evaluation ends on its own (end_on_return:
@@ -227,9 +236,9 @@ EPISODE_DEFAULT_S = 180.0
 #                right before this mission (tray_changed >= 0.25; tray_reference_state "ok" and
 #                pre_mission_match true). No marker is stuck on the tray: the unload policy was
 #                trained on a bare tray and does not start when one is there.
-# Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot, or slot empty but the
-# tray unchanged (dropped) → MISSION_FAILED, arms sent home. Anything unread or not confirmed
-# (another slot, no pre-mission photo) → MISSION_HOLD.
+# Both true → MISSION_COMPLETE (evidence "pinky_load"). Box still in the slot → MISSION_FAILED, arms
+# sent home. Slot empty but the tray unchanged (dropped, TK 2026-11-24), anything unread or not
+# confirmed (another slot, no pre-mission photo) → MISSION_HOLD.
 PINKY_LOAD = "pinky_load"
 
 
@@ -397,6 +406,55 @@ def _judge_placed(result: dict, slot: str | None, box: int | None) -> bool:
     )
 
 
+WRIST_CHECK_ERROR = 13  # panel 3.22.0 omx_errors: "손목 카메라 좌우 확인 실패"
+
+
+def _wrist_check_refused(err: dict) -> bool:
+    names = {str(WRIST_CHECK_ERROR), f"err_code_{WRIST_CHECK_ERROR}"}
+    return str(err.get("code")) in names or err.get("name") in names
+
+
+def _wrist_check_detail(err: dict, check) -> str:
+    """Why the wrist check refused, with its numbers: the share of changed pixels each wrist camera
+    saw while the left and then the right gripper moved."""
+    parts = []
+    check = check if isinstance(check, dict) else {}
+    if check.get("why") or err.get("detail"):
+        parts.append(str(check.get("why") or err.get("detail")))
+    change = check.get("change")
+    if isinstance(change, dict):
+        moved = []
+        for arm, seen in change.items():
+            if isinstance(seen, dict):
+                cams = ",".join(f"{cam}={value}" for cam, value in seen.items())
+                moved.append(f"{arm} moved: {cams}")
+        if moved:
+            parts.append("; ".join(moved))
+    return " | ".join(parts) or "wrist camera check failed"
+
+
+def _wrist_check_failure(err: dict, result: dict, arms: dict) -> dict:
+    """panel 3.22.0+: the left/right wrist cameras could not be told apart by a small gripper
+    move, so the policy never started; the arms wait at home (no HOLD). Loading and unloading."""
+    return _with_detail(
+        {"state": "failed", "error": "PANEL_WRIST_CHECK", "arms": arms},
+        _wrist_check_detail(err, result.get("wrist_check")),
+    )
+
+
+def _with_detail(observation: dict, why: str | None) -> dict:
+    if why:
+        observation["detail"] = why[:200]
+    return observation
+
+
+def _then(then: str, why: str | None) -> str:
+    """A recovery failure together with the mission's first cause (#157 review: the wrist camera
+    numbers must not be lost when the home return fails too). The short recovery part goes first
+    so the 200-character cap only shortens the first cause."""
+    return (f"{then} | first: {why}" if why else then)[:200]
+
+
 @dataclass(frozen=True)
 class Route:
     model_path: str  # as listed by the panel's model list (GPU laptop path)
@@ -521,6 +579,7 @@ class PanelExecutor:
         self._missing_since: float | None = None
         self._recovery: dict | None = None  # a failed mission's arms on their way home
         self._models: tuple[float, set[str]] = (float("-inf"), set())
+        self._models_refresh: threading.Thread | None = None
 
     def _call(self, method: str, path: str, body: dict | None = None, timeout=None):
         data = None if body is None else json.dumps(body).encode()
@@ -543,6 +602,8 @@ class PanelExecutor:
             raise PanelRefused(f"panel {path}: {message}", reply) from exc
 
     def readiness(self) -> dict:
+        if time.monotonic() - self._models[0] > MODELS_TTL_S:
+            self._refresh_models()  # kept warm off the MQTT loop (the sampler calls this)
         status = self._call("GET", "/api/status")
         armed = status.get("armed")  # absent before panel 3.8 → None → not armed
         busy = bool((status.get("job") or {}).get("running"))
@@ -644,12 +705,46 @@ class PanelExecutor:
         }
 
     def _model_paths(self) -> set[str]:
+        """The panel's trained models. Only the very first call waits for the panel (about 1 s);
+        later an expired list is refreshed in the background and the known list answers now, so a
+        transfer's checks never stall the Host's MQTT loop (2026-11-23 23:41 field run)."""
         fetched, paths = self._models
+        if fetched == float("-inf"):
+            return self._fetch_models()
         if time.monotonic() - fetched > MODELS_TTL_S:
-            runs = self._call("GET", "/api/train/runs", timeout=15).get("runs", [])
-            paths = {r.get("model_path") for r in runs if r.get("model_path")}
-            self._models = (time.monotonic(), paths)
+            self._refresh_models()
         return paths
+
+    def models_ready(self) -> bool:
+        """Whether the model list was fetched at least once. If not, fetch it in the background
+        now, so a caller that must not wait (the v2 Host's MQTT loop) can decide later."""
+        if self._models[0] != float("-inf"):
+            return True
+        self._refresh_models()
+        return False
+
+    def _fetch_models(self) -> set[str]:
+        runs = self._call("GET", "/api/train/runs", timeout=15).get("runs", [])
+        paths = {r.get("model_path") for r in runs if r.get("model_path")}
+        self._models = (time.monotonic(), paths)
+        return paths
+
+    def _refresh_models(self) -> None:
+        if self._models_refresh is not None and self._models_refresh.is_alive():
+            return
+
+        def run() -> None:
+            try:
+                self._fetch_models()
+            except Exception as exc:  # noqa: BLE001 - the known list stays until a refresh works
+                logging.getLogger(__name__).warning(
+                    "panel model list refresh failed: %s", exc
+                )
+
+        self._models_refresh = threading.Thread(
+            target=run, name="panel-models", daemon=True
+        )
+        self._models_refresh.start()
 
     def start(self, task: dict) -> None:
         if (
@@ -848,7 +943,9 @@ class PanelExecutor:
                 return observation
             if observation.get("operator_stop") or observation["error"] in HOLD_ERRORS:
                 return observation
-            return self._recover(observation["error"], status)
+            return self._recover(
+                observation["error"], status, observation.get("detail")
+            )
         # Between the job ending and last_result appearing; give up only after a grace period.
         now = time.monotonic()
         self._missing_since = self._missing_since or now
@@ -856,15 +953,21 @@ class PanelExecutor:
             return {"state": "running", "step": "finishing"}
         return {"state": "failed", "error": "RESULT_UNAVAILABLE", "arms": {}}
 
-    def _recover(self, error: str, status: dict) -> dict:
-        """Mission failed: send both arms back to the start pose, then report it without HOLD."""
+    def _recover(self, error: str, status: dict, why: str | None = None) -> dict:
+        """Mission failed: send both arms back to the start pose, then report it without HOLD.
+
+        why: the failure's own explanation (e.g. the wrist camera check's numbers), kept in every
+        report of this failure."""
         live = self._arms_now()
         if _home_and_released(live):
-            return {"state": "failed", "error": error, "arms": live, "recovered": True}
+            return _with_detail(
+                {"state": "failed", "error": error, "arms": live, "recovered": True},
+                why,
+            )
         if status.get("armed") is not True:
             # The panel turned armed off (a stop or an anomaly) or a person did: the Host never
             # moves the arms then, even though the panel's home move does not check armed.
-            detail = f"{error}: armed off, arms not moved"
+            detail = _then(f"{error}: armed off, arms not moved", why)
             return {
                 "state": "failed",
                 "error": "PANEL_NOT_ARMED_FOR_HOME",
@@ -876,9 +979,9 @@ class PanelExecutor:
             # "source": "mqtt" lets the panel refuse it while armed is off (its button stays free)
             self._call("POST", "/api/home/return", {"source": "mqtt"})
         except Exception as exc:  # noqa: BLE001 - no way home: a person takes over (HOLD)
-            detail = f"home return refused: {exc}"[:200]
+            detail = _then(f"home return refused: {exc}"[:120], why)
             return {"state": "failed", "error": error, "arms": live, "detail": detail}
-        self._recovery = {"error": error, "since": time.monotonic()}
+        self._recovery = {"error": error, "since": time.monotonic(), "why": why}
         return {"state": "running", "step": "home_return"}
 
     def _recovering(self, status: dict) -> dict:
@@ -886,13 +989,18 @@ class PanelExecutor:
         if (status.get("job") or {}).get("running"):
             if time.monotonic() - since < HOME_RETURN_TIMEOUT_S:
                 return {"state": "running", "step": "home_return"}
+            why = self._recovery.get("why")
             self._recovery = None
-            detail = "home return did not finish"
+            detail = _then("home return did not finish", why)
             return {"state": "failed", "error": error, "arms": {}, "detail": detail}
+        why = self._recovery.get("why")
         self._recovery = None
         live = self._arms_now()  # only the motors tell whether the arms are home now
         recovered = _home_and_released(live)
-        return {"state": "failed", "error": error, "arms": live, "recovered": recovered}
+        return _with_detail(
+            {"state": "failed", "error": error, "arms": live, "recovered": recovered},
+            why,
+        )
 
     @staticmethod
     def _result(
@@ -931,7 +1039,12 @@ class PanelExecutor:
                 "safe": safe,
             }
         stopped_by = result.get("stopped_by")
+        err = result.get("err") or {}
         if operation == "OUTBOUND" and stopped_by not in STOPS:
+            if _wrist_check_refused(err):
+                # #157 review: the policy never ran, so there is no Pinky check to read; the
+                # wrist camera refusal (and its numbers) is the cause, not PANEL_PINKY_CHECK_*
+                return _wrist_check_failure(err, result, arms)
             # finished, timed out or ended on an error: the cameras decide
             error = _pinky_error(result.get("pinky"), slot)
             if error is None:
@@ -1018,7 +1131,8 @@ class PanelExecutor:
                 "arms": arms,
                 "operator_stop": True,
             }
-        err = result.get("err") or {}
+        if _wrist_check_refused(err):
+            return _wrist_check_failure(err, result, arms)
         code = err.get("code") or err.get("name")
         error = (
             "PANEL_" + re.sub(r"[^A-Za-z0-9]+", "_", str(code)).strip("_").upper()

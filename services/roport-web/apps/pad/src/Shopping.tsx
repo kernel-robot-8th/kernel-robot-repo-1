@@ -56,6 +56,12 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
   const loaded = !!image && picture?.path === image;
   const [portrait, setPortrait] = useState('');
   const [started, setStarted] = useState(false);
+  const [startOffered, setStartOffered] = useState(false);
+  // Keep the button steady while the start request still requires fresh tracking.
+  useEffect(() => {
+    if (!status?.selected) setStartOffered(false);
+    else if (status.canStart) setStartOffered(true);
+  }, [status?.selected, status?.canStart]);
   const [manual, setManual] = useState(false);
   const [cursor, setCursor] = useState([.5,.5]);
   const [rect, setRect] = useState<number[] | null>(null);
@@ -165,6 +171,7 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
     else go();
   }
   const s = status;
+  const canRequestStart = Boolean(s?.stopped && (startOffered || s.canStart));
   const frozen = !!s?.frame && loaded;
   const autoSelected = useRef<string | null>(null);
   useEffect(() => {
@@ -203,8 +210,7 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
     s.armed ? (s.state==='CLOSE' ? '카트가 기다리고 있어요. 간격이 생기면 다시 따라갈게요.' : waiting ?
       '카트 앞에 다시 모습을 보여 주세요. 같은 사람을 확인하면 이어서 따라가요.' :
       '앞에서 천천히 걸어 주세요. 언제든 아래 버튼으로 멈출 수 있어요.') :
-      (s.reason ? '카트가 출발을 준비하고 있어요. 잠시 기다려 주세요.' :
-       s.canStart ? '준비되면 시작을 누르고 앞에서 천천히 걸어 주세요.' : '카트 쪽을 보고 잠시 서 주세요.');
+      (canRequestStart ? '시작을 누르면 카트가 대상을 확인한 뒤 출발해요.' : '카트 쪽을 보고 잠시 서 주세요.');
   return <section className="shopping" aria-label="쇼핑 모드">
     <div className="shopping-camera"><div className="shopping-camera-head"><strong>카트 앞 카메라{s?.simulation ? ' · 시뮬레이션' : ''}</strong>
       <span className={picking ? 'still' : ''}>{picking ? '선택용 사진' : offline || !loaded ? '연결 대기' : '실시간'}</span></div>
@@ -245,7 +251,7 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
           {rect && <span className="shop-box" style={{left:rect[0]*100+'%',top:rect[1]*100+'%',
             width:(rect[2]-rect[0])*100+'%',height:(rect[3]-rect[1])*100+'%'}}/>}
         </div>}
-      {s?.box && !s.frame && <span className="shop-box shop-track" style={{left:s.box[0]*100+'%',top:s.box[1]*100+'%',
+      {s?.box && loaded && !s.frame && <span className="shop-box shop-track" style={{left:s.box[0]*100+'%',top:s.box[1]*100+'%',
         width:(s.box[2]-s.box[0])*100+'%',height:(s.box[3]-s.box[1])*100+'%'}}/>}
     </div>
     </div>
@@ -263,10 +269,15 @@ export function Shopping({onBack, onFinish, onGate}: {onBack: () => void; onFini
         {s && !s.ownsCamera && <button className="btn btn-primary btn-block" disabled={busy || offline} onClick={() => command('preview')}>카메라 켜기</button>}
         {s?.ownsCamera && !s.armed && <button className={'btn '+(!picking && !s?.selected ? 'btn-primary btn-block' : 'btn-secondary')} disabled={busy || offline} onClick={() => command('capture')}>{s?.frame || s?.selected ? '다시 찍기' : '내 모습 찾기'}</button>}
         {s?.frame && s.boxes.length > 0 && <button className="btn btn-secondary" disabled={busy}
-          onClick={() => { setManual(!manual); setRect(null); }}>{manual ? '번호로 선택' : '직접 선택'}</button>}
+          onClick={() => {
+            if (manual) autoSelected.current = s.frame;
+            drag.current = null;
+            setRect(null);
+            setManual(!manual);
+          }}>{manual ? '번호로 선택' : '직접 선택'}</button>}
         {s?.selected && !s.armed && <button className="btn btn-secondary" disabled={busy || offline}
           onClick={() => command('capture', {}, () => setManual(true))}>직접 선택</button>}
-        {s?.selected && !s.armed && <button className="btn btn-primary" disabled={busy || offline || !s.canStart}
+        {s?.selected && !s.armed && <button className="btn btn-primary" disabled={busy || offline || !canRequestStart}
           onClick={() => command('start')}><Icon name="play" />{started ? '다시 시작' : '따라가기 시작'}</button>}
         {(s?.armed || busy && s?.selected) && <button className="btn btn-stop btn-block" onClick={() => command('stop')}><Icon name="pause" />잠시 멈추기</button>}
         {!s?.armed && (!s?.selected || s.stopped) && <>
