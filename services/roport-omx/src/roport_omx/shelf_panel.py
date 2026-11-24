@@ -1,7 +1,7 @@
 """Executor that runs shelf-01 COOPERATIVE tasks through the local OMX control panel (v3.14+).
 
-Copied from dcd9691's panel_executor.py (task/omx-cooperative #156, #157); consolidate when
-task/omx-cooperative is integrated.
+Copied from f476a73's panel_executor.py (task/omx-cooperative #156, #157, #162, #163);
+consolidate when task/omx-cooperative is integrated.
 
 The panel owns the arms, cameras and safety stop. This adapter only calls its HTTP API on this PC:
 the panel runs the robot loop and sends each observation to the GPU AI inference server over UDP
@@ -433,6 +433,15 @@ def _wrist_check_detail(err: dict, check) -> str:
     return " | ".join(parts) or "wrist camera check failed"
 
 
+def _wrist_check_failure(err: dict, result: dict, arms: dict) -> dict:
+    """panel 3.22.0+: the left/right wrist cameras could not be told apart by a small gripper
+    move, so the policy never started; the arms wait at home (no HOLD). Loading and unloading."""
+    return _with_detail(
+        {"state": "failed", "error": "PANEL_WRIST_CHECK", "arms": arms},
+        _wrist_check_detail(err, result.get("wrist_check")),
+    )
+
+
 def _with_detail(observation: dict, why: str | None) -> dict:
     if why:
         observation["detail"] = why[:200]
@@ -705,6 +714,14 @@ class PanelExecutor:
         if time.monotonic() - fetched > MODELS_TTL_S:
             self._refresh_models()
         return paths
+
+    def models_ready(self) -> bool:
+        """Whether the model list was fetched at least once. If not, fetch it in the background
+        now, so a caller that must not wait (the v2 Host's MQTT loop) can decide later."""
+        if self._models[0] != float("-inf"):
+            return True
+        self._refresh_models()
+        return False
 
     def _fetch_models(self) -> set[str]:
         runs = self._call("GET", "/api/train/runs", timeout=15).get("runs", [])
@@ -1022,7 +1039,12 @@ class PanelExecutor:
                 "safe": safe,
             }
         stopped_by = result.get("stopped_by")
+        err = result.get("err") or {}
         if operation == "OUTBOUND" and stopped_by not in STOPS:
+            if _wrist_check_refused(err):
+                # #157 review: the policy never ran, so there is no Pinky check to read; the
+                # wrist camera refusal (and its numbers) is the cause, not PANEL_PINKY_CHECK_*
+                return _wrist_check_failure(err, result, arms)
             # finished, timed out or ended on an error: the cameras decide
             error = _pinky_error(result.get("pinky"), slot)
             if error is None:
@@ -1109,14 +1131,8 @@ class PanelExecutor:
                 "arms": arms,
                 "operator_stop": True,
             }
-        err = result.get("err") or {}
         if _wrist_check_refused(err):
-            # panel 3.22.0: the left/right wrist cameras could not be told apart by a small
-            # gripper move, so the policy never started; the arms wait at home (no HOLD)
-            return _with_detail(
-                {"state": "failed", "error": "PANEL_WRIST_CHECK", "arms": arms},
-                _wrist_check_detail(err, result.get("wrist_check")),
-            )
+            return _wrist_check_failure(err, result, arms)
         code = err.get("code") or err.get("name")
         error = (
             "PANEL_" + re.sub(r"[^A-Za-z0-9]+", "_", str(code)).strip("_").upper()
