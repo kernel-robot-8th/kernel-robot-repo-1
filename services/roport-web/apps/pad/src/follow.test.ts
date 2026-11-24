@@ -75,12 +75,15 @@ test('boarding alert delay is off unless a valid number of seconds is configured
   for (const off of [undefined, '', '0', '0.5', '-20', '3601', 'abc', '20s', 20]) assert.equal(boardingAlertDelayMs(off), null);
 });
 
-test('boarding alert timer counts only actual following', () => {
-  assert.equal(followingNow({ stage: 'following', status: 'RUNNING' }), true);
+test('boarding alert timer counts only fresh, actual following', () => {
+  const fresh = { stage: 'following', status: 'RUNNING', stale: false };
+  assert.equal(followingNow(fresh), true);
   for (const stage of ['follow_pending', 'follow_start', 'follow_stopping', 'follow_paused', 'return_nav', 'done']) {
-    assert.equal(followingNow({ stage, status: 'RUNNING' }), false);
+    assert.equal(followingNow({ ...fresh, stage }), false);
   }
-  assert.equal(followingNow({ stage: 'following', status: 'HOLD' }), false);
-  assert.equal(followingNow({ stage: 'following', status: 'CANCELED' }), false);
+  assert.equal(followingNow({ ...fresh, status: 'HOLD' }), false);
+  assert.equal(followingNow({ ...fresh, status: 'CANCELED' }), false);
+  assert.equal(followingNow({ ...fresh, stale: true }), false);   // 서버가 오래된 상태라고 알림
+  assert.equal(followingNow(fresh, true), false);                 // 상태 조회 실패
   assert.equal(followingNow(null), false);
 });

@@ -107,7 +107,8 @@ export function boardingAlertDelayMs(value: unknown): number | null {
   return seconds >= 1 && seconds <= 3600 ? Math.round(seconds * 1000) : null;
 }
 
-// 로봇이 실제 추종 활성을 보고한 단계만. 접수(follow_start)·정지·복귀·HOLD·취소는 아니다.
-export function followingNow(status: Pick<FollowStatus, 'stage' | 'status'> | null): boolean {
-  return Boolean(status && status.stage === 'following' && status.status !== 'HOLD' && status.status !== 'CANCELED');
+// 최신 조회 결과가 「로봇이 실제 추종 활성을 보고한 단계」일 때만 true.
+// 접수(follow_start)·정지·복귀·HOLD·취소, 조회 실패(offline), 서버가 오래됐다고 알린 상태(stale)는 아니다.
+export function followingNow(status: Pick<FollowStatus, 'stage' | 'status' | 'stale'> | null, offline = false): boolean {
+  return Boolean(status && !offline && !status.stale && status.stage === 'following' && status.status !== 'HOLD' && status.status !== 'CANCELED');
 }
