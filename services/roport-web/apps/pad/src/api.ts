@@ -3,7 +3,7 @@
 // 데모 응답은 서버·로봇 동작을 확인한 결과가 아니다.
 import type { Location, ServiceMode, VerifiedPickup, VerifyResult } from './types';
 import { newVerificationRequestId, toVerifyResult } from './verify';
-import { boardingAlertDelayMs, framePath, parseFollowStatus, parseReceiptIntent, receiptIntent, type FollowAction, type FollowMode, type FollowStatus, type ReceiptIntent } from './follow';
+import { framePath, parseFollowStatus, parseReceiptIntent, receiptIntent, type FollowAction, type FollowMode, type FollowStatus, type ReceiptIntent } from './follow';
 
 // 배포 nginx에는 아직 /cart-api 전달이 없어 기본을 데모로 둔다.
 const USE_SERVER = import.meta.env.VITE_PAD_API === 'server';
@@ -147,15 +147,13 @@ async function postCart(path: string, body: string): Promise<[number, unknown, s
 export interface ReceiptResult { accepted: boolean; receiptId?: string }
 const RECEIPT_KEY = `roport.pad.receipt.${CART_ID}`;
 
-// ---- 탑승 시간 알림(패드가 판단, 기본 끔) ----
-// VITE_PAD_BOARDING_ALERT_S: 실제 추종이 확인된 뒤 알림까지의 초(시연·시험 20). 없으면 알림을 띄우지 않는다.
-export const BOARDING_ALERT_DELAY_MS = boardingAlertDelayMs(import.meta.env.VITE_PAD_BOARDING_ALERT_S);
+// ---- 탑승 시간 알림(서버가 알리고 패드는 표시만) ----
 // VITE_PAD_BOARDING_ROBOT=1: 같은 PC 의 인식 도구(roport_follow tool --boarding-alert)에 로봇 표시(LCD·LED·부저)를 부탁한다.
 // 개발 서버 프록시(/follow-tool)로만 간다. 주행 명령이 아니고, 실패해도 패드 창은 그대로 둔다.
 const BOARDING_ROBOT = import.meta.env.VITE_PAD_BOARDING_ROBOT === '1';
 const BOARDING_SHOWN_KEY = `roport.pad.boarding-alert.${CART_ID}`;
 
-// 한 수령(receipt)에 한 번만 알린다. 새로고침해도 다시 띄우지 않게 수령 ID 만 저장한다(예약·고객 정보 없음).
+// 고객이 창을 닫은 수령(receipt). 새로고침해도 다시 띄우지 않게 수령 ID 만 저장한다(예약·고객 정보 없음).
 export function boardingAlertShown(receiptId: string): boolean {
   try { return sessionStorage.getItem(BOARDING_SHOWN_KEY) === receiptId; } catch { return false; }
 }

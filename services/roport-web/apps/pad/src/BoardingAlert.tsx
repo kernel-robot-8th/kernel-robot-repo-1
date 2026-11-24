@@ -3,7 +3,7 @@ import { Icon } from './icons';
 
 // 탑승 시간 알림 창. 카트·관제의 알림 보고(flow 의 boardingAlert)가 있을 때만 그려진다.
 // 시간 계산은 하지 않는다. 「예」「아니오」의 동작은 부르는 쪽이 기존 경로로 넘긴다.
-// 창이 떠 있는 동안 뒤의 「중지」 버튼은 가려진다. 카트 중지는 창을 닫은 뒤 누르거나 관제 화면에서 한다.
+// 창이 떠 있는 동안 뒤의 버튼은 가려진다. onPause 를 주면 창 안에 같은 「잠시 멈추기」를 그려 창을 닫지 않고 멈출 수 있다.
 // onSwitch 가 없으면(게이트 안내 전환 경로가 없는 화면) 「확인」 버튼 하나만 그린다.
 // 편명·탑승 시각·게이트는 예약 확인 응답에서 온다. 새로고침으로 잃었으면 빼고 안내한다.
 type Props = {
@@ -12,10 +12,12 @@ type Props = {
   gateText?: string;
   busy?: boolean; // 「예」를 막는 조건. 기존 「게이트 안내로 전환」 버튼과 같다(요청 대기 중이거나 주행 중이 아닐 때)
   onSwitch?: () => void; // 기존 startService(pickup, 'GATE_GUIDE')
+  onPause?: () => void; // 뒤 화면의 「잠시 멈추기」와 같은 요청. 중복 방지는 부르는 쪽이 한다
+  pauseDisabled?: boolean;
   onDismiss: () => void; // 창만 닫는다
 };
 
-export function BoardingAlert({ flightNo, boardingStartText, gateText, busy = false, onSwitch, onDismiss }: Props) {
+export function BoardingAlert({ flightNo, boardingStartText, gateText, busy = false, onSwitch, onPause, pauseDisabled = false, onDismiss }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const dismissBtn = useRef<HTMLButtonElement>(null);
   const switchBtn = useRef<HTMLButtonElement>(null);
@@ -76,6 +78,7 @@ export function BoardingAlert({ flightNo, boardingStartText, gateText, busy = fa
         <div className="actions">
           {onSwitch && <button className="btn btn-primary btn-big" ref={switchBtn} disabled={busy} onClick={onSwitch}>예, 게이트 안내로 전환</button>}
           <button className={onSwitch ? 'btn btn-secondary' : 'btn btn-primary btn-big'} ref={dismissBtn} onClick={onDismiss}>{onSwitch ? '아니오, 계속 따라오게 할게요' : '확인'}</button>
+          {onPause && <button className="btn btn-stop" disabled={pauseDisabled} onClick={onPause}><Icon name="pause" />잠시 멈추기</button>}
         </div>
       </div>
     </div>

@@ -24,7 +24,7 @@ export function FollowSession({ receiptId, boarding, onClose }: { receiptId: str
   const video = useRef<HTMLDivElement>(null);
   const mounted = useRef(false);
   const sending = useRef<FollowAction | null>(null);
-  const [boardingAlert, setBoardingAlert] = useState(false);
+  const [boardingClosed, setBoardingClosed] = useState(() => api.boardingAlertShown(receiptId));
 
   useEffect(() => {
     mounted.current = true;
@@ -54,17 +54,10 @@ export function FollowSession({ receiptId, boarding, onClose }: { receiptId: str
     }
   }, [status, awaiting, retry]);
 
-  // 탑승 시간 알림: 최신 상태가 실제 추종(following)인 시간이 설정값만큼 이어지면 띄운다.
-  // 조회 실패·오래된 상태·HOLD·정지·복귀로 바뀌면 세던 시간을 버리고, 이미 뜬 창과 로봇 표시도 끈다(다시 추종이 확인되면 처음부터 센다).
-  // 고객이 「확인」으로 닫은 뒤에는 같은 수령에서 다시 띄우지 않는다. 알림은 화면 창과 로봇 표시뿐이고 명령을 보내지 않는다.
-  const following = followingNow(status, offline);
-  useEffect(() => {
-    if (!following) { setBoardingAlert(false); return; }
-    if (api.BOARDING_ALERT_DELAY_MS === null || api.boardingAlertShown(receiptId)) return;
-    const timer = setTimeout(() => setBoardingAlert(true), api.BOARDING_ALERT_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [following, receiptId]);
-  // 창이 떠 있는 동안만 로봇 표시를 켠다. 창을 닫거나 화면을 떠나면 끈다.
+  // 탑승 시간 알림: 서버가 알렸고(boardingAlert) 최신 상태가 실제 추종 중일 때만 창을 띄운다. 패드는 시간을 재지 않는다.
+  // 조회 실패·오래된 상태·HOLD·정지·복귀로 바뀌면 창과 로봇 표시가 꺼진다. 고객이 「확인」으로 닫으면 같은 수령에서 다시 띄우지 않는다.
+  const boardingAlert = followingNow(status, offline) && status?.boardingAlert === true && !boardingClosed;
+  // 창이 떠 있는 동안만 로봇 표시를 켠다. 창이 꺼지거나 화면을 떠나면 끈다.
   useEffect(() => {
     if (!boardingAlert) return;
     void api.robotBoardingAlert(true);
@@ -192,6 +185,8 @@ export function FollowSession({ receiptId, boarding, onClose }: { receiptId: str
         {terminal && <button className="btn btn-secondary" onClick={onClose}>화면 닫기</button>}
       </div>
     </div>
-    {boardingAlert && following && <BoardingAlert {...boarding} onDismiss={() => { api.markBoardingAlertShown(receiptId); setBoardingAlert(false); }} />}
+    {boardingAlert && <BoardingAlert {...boarding}
+      onPause={status?.allowedActions.includes('pause') ? () => command('pause') : undefined} pauseDisabled={disabled('pause')}
+      onDismiss={() => { api.markBoardingAlertShown(receiptId); setBoardingClosed(true); }} />}
   </section>;
 }

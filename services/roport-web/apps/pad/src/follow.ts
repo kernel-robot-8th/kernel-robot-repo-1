@@ -20,6 +20,7 @@ export interface FollowStatus {
   revision: number;
   allowedActions: FollowOperation[];
   stale: boolean;
+  boardingAlert: boolean; // 서버가 보낸 탑승 시간 알림. 필드가 없거나 true 가 아니면 false
   registration?: FollowRegistration;
   lastRequest?: { requestId: string; status: string; reason?: string | null };
 }
@@ -87,7 +88,7 @@ export function parseFollowStatus(value: unknown, receiptId: string): FollowStat
     receiptId, mode: value.mode, stage: value.stage, status: value.status,
     reason: typeof value.reason === 'string' ? value.reason : null,
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : null,
-    revision: value.revision as number, stale: value.stale,
+    revision: value.revision as number, stale: value.stale, boardingAlert: value.boardingAlert === true,
     allowedActions: value.allowedActions as FollowOperation[], registration,
     ...(last != null ? { lastRequest: last as unknown as FollowStatus['lastRequest'] } : {}),
   };
@@ -98,16 +99,10 @@ export function newerFollowStatus(current: FollowStatus | null, incoming: Follow
   return current && incoming.revision < current.revision ? current : incoming;
 }
 
-// ---- 탑승 시간 알림(패드가 판단) ----
-// 시연·시험: 실제 추종(following)이 확인된 뒤 정해진 시간 뒤에 한 번 알린다. 탑승 시각 기준 판단은 아직 하지 않는다.
-// VITE_PAD_BOARDING_ALERT_S 값(초) → ms. 없거나 1~3600 범위 밖이면 null(알림 끔).
-export function boardingAlertDelayMs(value: unknown): number | null {
-  if (typeof value !== 'string' || !/^\d+(\.\d+)?$/.test(value.trim())) return null;
-  const seconds = Number(value);
-  return seconds >= 1 && seconds <= 3600 ? Math.round(seconds * 1000) : null;
-}
+// ---- 탑승 시간 알림(서버가 알린다) ----
+// 알림 시점은 관제가 정한다. 패드는 상태 조회의 boardingAlert 가 true 인 동안만 창을 띄우고 스스로 시간을 재지 않는다.
 
-// 최신 조회 결과가 「로봇이 실제 추종 활성을 보고한 단계」일 때만 true.
+// 창을 띄울 수 있는 상태: 최신 조회 결과가 「로봇이 실제 추종 활성을 보고한 단계」일 때만 true.
 // 접수(follow_start)·정지·복귀·HOLD·취소, 조회 실패(offline), 서버가 오래됐다고 알린 상태(stale)는 아니다.
 export function followingNow(status: Pick<FollowStatus, 'stage' | 'status' | 'stale'> | null, offline = false): boolean {
   return Boolean(status && !offline && !status.stale && status.stage === 'following' && status.status !== 'HOLD' && status.status !== 'CANCELED');
