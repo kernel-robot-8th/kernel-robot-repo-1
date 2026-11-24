@@ -149,6 +149,13 @@ export function App() {
     dispatch({ type: 'reset' });
   }
 
+  // 탑승 시간 알림 창에 보일 편명·탑승 시각·게이트(예약 확인 응답). 새로고침으로 예약 정보가 없으면 창은 이 줄 없이 뜬다.
+  const flightPickup = pickup ?? lastPickup;
+  const boardingInfo = flightPickup ? {
+    flightNo: flightPickup.flight.flightNo,
+    boardingStartText: formatTime(flightPickup.flight.boardingStart),
+    gateText: api.gateLabel(flightPickup.flight.gateCode),
+  } : undefined;
   const progressPickup = pickup ?? (step.name === 'returning' ? lastPickup : null);
   const progress = progressPickup ? progressOf(step, api.isArrivalHall(progressPickup.location)) : null;
 
@@ -186,7 +193,7 @@ export function App() {
       )}
 
       <main className="stage">
-        {receiptId ? <FollowSession receiptId={receiptId} onClose={() => { api.forgetReceipt(); setReceiptId(null); go({ name: 'idle' }); }} />
+        {receiptId ? <FollowSession receiptId={receiptId} boarding={boardingInfo} onClose={() => { api.forgetReceipt(); setReceiptId(null); go({ name: 'idle' }); }} />
           : receiptPending ? <Split visual={<StatusIcon name="alert" tone="warn" />}>
             <h1>수령 확인 결과를 확인해 주세요</h1>
             <p className="lead">수령 확인 결과를 받지 못했습니다. 이전 선택을 유지한 채 다시 확인해 주세요.</p>

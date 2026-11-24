@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { framePath, newerFollowStatus, parseFollowStatus, parseReceiptIntent, receiptIntent, validBox } from './follow.ts';
+import { followingNow, framePath, newerFollowStatus, parseFollowStatus, parseReceiptIntent, receiptIntent, validBox } from './follow.ts';
 import { followView } from './flow.ts';
 
 const receiptId = 'receipt-test';
@@ -67,4 +67,24 @@ test('completed registration restores target state without retired capture field
   assert.deepEqual(result?.registration, registration);
   assert.equal(result?.registration?.frameRef, undefined);
   assert.equal(parseFollowStatus({ ...status, registration: { ...registration, registered: false } }, receiptId), null);
+});
+
+test('boarding alert comes only from an explicit server flag', () => {
+  const following = { ...status, stage: 'following', registration: null };
+  assert.equal(parseFollowStatus(following, receiptId)?.boardingAlert, false);
+  assert.equal(parseFollowStatus({ ...following, boardingAlert: true }, receiptId)?.boardingAlert, true);
+  for (const other of [false, 'true', 1, null, {}]) assert.equal(parseFollowStatus({ ...following, boardingAlert: other }, receiptId)?.boardingAlert, false);
+});
+
+test('boarding alert is shown only during fresh, actual following', () => {
+  const fresh = { stage: 'following', status: 'RUNNING', stale: false };
+  assert.equal(followingNow(fresh), true);
+  for (const stage of ['follow_pending', 'follow_start', 'follow_stopping', 'follow_paused', 'return_nav', 'done']) {
+    assert.equal(followingNow({ ...fresh, stage }), false);
+  }
+  assert.equal(followingNow({ ...fresh, status: 'HOLD' }), false);
+  assert.equal(followingNow({ ...fresh, status: 'CANCELED' }), false);
+  assert.equal(followingNow({ ...fresh, stale: true }), false);   // 서버가 오래된 상태라고 알림
+  assert.equal(followingNow(fresh, true), false);                 // 상태 조회 실패
+  assert.equal(followingNow(null), false);
 });

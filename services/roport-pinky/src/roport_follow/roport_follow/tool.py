@@ -225,14 +225,18 @@ VIEW_ARGS = [
          help='시험 화면 「로봇이 아는 내 위치」에 그릴 지도(로봇 Nav2 와 같은 파일). --demo 일 때만 씀'),
     _arg('--demo', action='store_true',
          help='시험용: 화면 버튼(라인 출발·Nav2 전환·추종 시작·정지)을 로봇 demo_runner 로 보냄(관제 대신)'),
+    _arg('--boarding-alert', action='store_true',
+         help='POST /api/boarding_alert {"on": true|false} 를 받아 로봇 표시(LCD·LED·부저)용 '
+              'smartcart/boarding_alert 를 내보냄(패드의 탑승 시간 알림, 주행 명령 아님)'),
 ]
 
 
 def make_ros_sinks(a, cam):
     """--publish-obstacles·--follow-card 이면 ROS 노드 하나를 만들어 두 발행을 함께 쓴다. 닫을 노드를 돌려준다."""
     a.obstacle_sink = a.follow_sink = None
-    a.demo_link = None
-    if not (getattr(a, 'publish_obstacles', False) or getattr(a, 'follow_card', 0) or getattr(a, 'demo', False)):
+    a.demo_link = a.boarding = None
+    if not (getattr(a, 'publish_obstacles', False) or getattr(a, 'follow_card', 0) or getattr(a, 'demo', False)
+            or getattr(a, 'boarding_alert', False)):
         return None
     from .ros_obstacles import make_ros_node
     node = make_ros_node('roport_follow')
@@ -252,6 +256,10 @@ def make_ros_sinks(a, cam):
         else:
             print(f'주의: 지도 {a.map_yaml} 없음 → 「로봇이 아는 내 위치」 화면 끔')
         print('시험용 로봇 명령: demo/cmd → 로봇 demo_runner(관제 대신). 브라우저가 1 s 넘게 안 보면 로봇이 멈춤')
+    if getattr(a, 'boarding_alert', False):
+        from .boarding_alert import TOPIC, make_ros_boarding_alert
+        a.boarding = make_ros_boarding_alert(node)
+        print(f'탑승 시간 알림: POST /api/boarding_alert → {TOPIC}(로봇 status_indicator smartcart:=true 가 표시)')
     if a.odom_buffer is not None or a.demo_link is not None:
         from .ros_obstacles import RosSpinner
         a.ros_spinner = RosSpinner(node)       # 구독(odom·demo/state)을 받으려면 노드를 돌려야 함
@@ -343,6 +351,8 @@ def cmd_web(a):
             from .ros_obstacles import close_ros_node
             if getattr(a, 'demo_link', None) is not None:
                 a.demo_link.close()
+            if getattr(a, 'boarding', None) is not None:
+                a.boarding.close()            # 도구가 끝나면 알림도 끈다
             if getattr(a, 'ros_spinner', None) is not None:
                 a.ros_spinner.close()
             close_ros_node(node)

@@ -146,6 +146,29 @@ async function postCart(path: string, body: string): Promise<[number, unknown, s
 // 서버가 배정·도착·확인 유효성을 검사한 뒤에만 완료를 표시한다.
 export interface ReceiptResult { accepted: boolean; receiptId?: string }
 const RECEIPT_KEY = `roport.pad.receipt.${CART_ID}`;
+
+// ---- 탑승 시간 알림(서버가 알리고 패드는 표시만) ----
+// VITE_PAD_BOARDING_ROBOT=1: 같은 PC 의 인식 도구(roport_follow tool --boarding-alert)에 로봇 표시(LCD·LED·부저)를 부탁한다.
+// 개발 서버 프록시(/follow-tool)로만 간다. 주행 명령이 아니고, 실패해도 패드 창은 그대로 둔다.
+const BOARDING_ROBOT = import.meta.env.VITE_PAD_BOARDING_ROBOT === '1';
+const BOARDING_SHOWN_KEY = `roport.pad.boarding-alert.${CART_ID}`;
+
+// 고객이 창을 닫은 수령(receipt). 새로고침해도 다시 띄우지 않게 수령 ID 만 저장한다(예약·고객 정보 없음).
+export function boardingAlertShown(receiptId: string): boolean {
+  try { return sessionStorage.getItem(BOARDING_SHOWN_KEY) === receiptId; } catch { return false; }
+}
+export function markBoardingAlertShown(receiptId: string): void {
+  try { sessionStorage.setItem(BOARDING_SHOWN_KEY, receiptId); } catch { /* 저장 못 해도 창은 띄운다 */ }
+}
+export async function robotBoardingAlert(on: boolean): Promise<void> {
+  if (!BOARDING_ROBOT) return;
+  try {
+    await fetch('/follow-tool/api/boarding_alert', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on }),
+      keepalive: true, signal: AbortSignal.timeout(3000),
+    });
+  } catch { /* 로봇 표시는 보조 수단 */ }
+}
 const RECEIPT_PENDING_KEY = `roport.pad.receipt-pending.${CART_ID}`;
 
 export function savedReceipt(): string | null {

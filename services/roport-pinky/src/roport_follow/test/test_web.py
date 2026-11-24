@@ -156,3 +156,24 @@ def test_demo_command_validated_before_robot(server):
         assert code == 400 and 'error' in body
     code, _ = _post(base, '/api/demo', {'op': 'stop'}, headers={'Sec-Fetch-Site': 'cross-site'})
     assert code == 403
+
+
+def test_boarding_alert_off_by_default_and_needs_boolean(server):
+    ses, base = server
+    code, body = _post(base, '/api/boarding_alert', {'on': True})
+    assert code == 404 and body['error'] == 'boarding alert off'    # --boarding-alert 없이는 통로가 없다
+
+    from roport_follow.boarding_alert import BoardingAlert
+    sent = []
+    ses.boarding = BoardingAlert(sent.append)
+    try:
+        assert _post(base, '/api/boarding_alert', {'on': True}) == (200, {'on': True})
+        for bad in ({'on': 1}, {'on': 'true'}, {}):
+            code, body = _post(base, '/api/boarding_alert', bad)
+            assert code == 400 and body['error'] == 'invalid_alert'
+        code, _ = _post(base, '/api/boarding_alert', {'on': False}, headers={'Sec-Fetch-Site': 'cross-site'})
+        assert code == 403 and sent == [True]
+        assert _post(base, '/api/boarding_alert', {'on': False}) == (200, {'on': False})
+        assert sent == [True, False]
+    finally:
+        ses.boarding = None

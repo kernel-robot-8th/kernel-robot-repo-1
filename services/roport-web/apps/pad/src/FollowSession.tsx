@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import * as api from './api';
+import { BoardingAlert } from './BoardingAlert';
 import { followView } from './flow';
-import { newerFollowStatus, validBox, type Box, type FollowAction, type FollowOperation, type FollowStatus } from './follow';
+import { followingNow, newerFollowStatus, validBox, type Box, type FollowAction, type FollowOperation, type FollowStatus } from './follow';
 import { Icon } from './icons';
 import { newVerificationRequestId } from './verify';
 
-export function FollowSession({ receiptId, onClose }: { receiptId: string; onClose: () => void }) {
+// boarding: 예약 확인 응답의 편명·탑승 시각·게이트(표시용). 새로고침 뒤에는 없을 수 있다.
+export type BoardingInfo = { flightNo: string; boardingStartText: string; gateText: string };
+
+export function FollowSession({ receiptId, boarding, onClose }: { receiptId: string; boarding?: BoardingInfo; onClose: () => void }) {
   const [status, setStatus] = useState<FollowStatus | null>(null);
   const [offline, setOffline] = useState(false);
   const [message, setMessage] = useState('');
@@ -20,6 +24,7 @@ export function FollowSession({ receiptId, onClose }: { receiptId: string; onClo
   const video = useRef<HTMLDivElement>(null);
   const mounted = useRef(false);
   const sending = useRef<FollowAction | null>(null);
+  const [boardingClosed, setBoardingClosed] = useState(() => api.boardingAlertShown(receiptId));
 
   useEffect(() => {
     mounted.current = true;
@@ -48,6 +53,16 @@ export function FollowSession({ receiptId, onClose }: { receiptId: string; onClo
       setRetry(null); setMessage('요청 처리 상태를 확인했습니다. 실제 카트 상태를 표시합니다.');
     }
   }, [status, awaiting, retry]);
+
+  // 탑승 시간 알림: 서버가 알렸고(boardingAlert) 최신 상태가 실제 추종 중일 때만 창을 띄운다. 패드는 시간을 재지 않는다.
+  // 조회 실패·오래된 상태·HOLD·정지·복귀로 바뀌면 창과 로봇 표시가 꺼진다. 고객이 「확인」으로 닫으면 같은 수령에서 다시 띄우지 않는다.
+  const boardingAlert = followingNow(status, offline) && status?.boardingAlert === true && !boardingClosed;
+  // 창이 떠 있는 동안만 로봇 표시를 켠다. 창이 꺼지거나 화면을 떠나면 끈다.
+  useEffect(() => {
+    if (!boardingAlert) return;
+    void api.robotBoardingAlert(true);
+    return () => { void api.robotBoardingAlert(false); };
+  }, [boardingAlert]);
 
   const registration = status?.registration;
   const frame = registration?.frameRef;
@@ -170,5 +185,8 @@ export function FollowSession({ receiptId, onClose }: { receiptId: string; onClo
         {terminal && <button className="btn btn-secondary" onClick={onClose}>화면 닫기</button>}
       </div>
     </div>
+    {boardingAlert && <BoardingAlert {...boarding}
+      onPause={status?.allowedActions.includes('pause') ? () => command('pause') : undefined} pauseDisabled={disabled('pause')}
+      onDismiss={() => { api.markBoardingAlertShown(receiptId); setBoardingClosed(true); }} />}
   </section>;
 }
