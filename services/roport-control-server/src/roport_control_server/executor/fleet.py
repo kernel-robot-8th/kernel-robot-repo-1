@@ -24,6 +24,7 @@ PARKING = {"logistics": ("N16", "N17"), "smartcart": ("H1", "H2")}
 ROLES = {"pinky1": "logistics", "pinky2": "logistics", "pinky3": "smartcart"}
 TARGETS = (*ROLES, "omx1", "omx2", "omx3", "shelf-01")
 OMX3_PACKAGE_MARKERS = frozenset({"15", "16", "17", "21", "22"})
+SHELF_ACTIVE_STATE_GAP_S = 8
 # Pinky trial_follow.SOFT_STOPS are retryable without unlocking the driver.
 FOLLOW_SOFT_STOPS = {
     "follow_lost",
@@ -33,6 +34,10 @@ FOLLOW_SOFT_STOPS = {
     "follow_not_tracking",
     "follow_card_mismatch",
 }
+
+
+def is_inbound_return(task):
+    return task["stage"] == "return_route" and task["request"]["operation"] == "inbound"
 
 
 class FleetControl:
@@ -170,6 +175,12 @@ class FleetControl:
         if any(
             t["request"]["package_id"] == request["package_id"]
             and t["status"] not in {"COMPLETE", "CANCELED"}
+            and not (
+                request["operation"] == "outbound"
+                and is_inbound_return(t)
+                and t["status"] == "RUNNING"
+                and "shelf_alignment_pending" not in t
+            )
             for t in self.data["tasks"].values()
         ):
             raise ValueError("package already has an active task")
@@ -501,10 +512,10 @@ class FleetControl:
             returning = (
                 previous
                 and role == "logistics"
-                and previous["request"]["operation"] == "inbound"
-                and previous["stage"] == "return_route"
+                and is_inbound_return(previous)
                 and previous["status"] == "RUNNING"
                 and "departure" not in previous
+                and "shelf_alignment_pending" not in previous
             )
             if assigned != role or (previous and not returning):
                 continue
@@ -593,6 +604,7 @@ class FleetControl:
                 in {
                     "done",
                     "await_receipt",
+                    "await_shelf_alignment",
                     "follow_pending",
                     "following",
                     "follow_stopping",
@@ -601,7 +613,10 @@ class FleetControl:
                 or task["status"] == "HOLD"
             ):
                 continue
-            if any(c["task"] == request_id for c in data["commands"].values()):
+            if any(
+                c["task"] == request_id and cid != task.get("shelf_alignment_pending")
+                for cid, c in data["commands"].items()
+            ):
                 continue
             try:
                 if task["request"]["operation"] == "inbound" and task["stage"] in {
@@ -615,7 +630,10 @@ class FleetControl:
                 if task["stage"] == "choose_slot":
                     self.select_slot(data, task)
                 action = self.action(task)
-                if set(self.command_resources(task, action)) & set(data["resources"]):
+                if any(
+                    data["resources"].get(key, request_id) != request_id
+                    for key in self.command_resources(task, action)
+                ):
                     raise ValueError("waiting for shared robot/work area")
                 task["reason"] = None
                 self.save(data)
@@ -678,6 +696,18 @@ class FleetControl:
 
     def route_prefix(self, task, start, goal):
         occupied = self.occupied(task["robot"])
+        reserved = self.data["resources"]
+        start_key = "node:" + start
+        alignment = task.get("shelf_alignment_pending")
+        if (
+            alignment
+            and task.get("departure", {}).get("transfer_command_id") == alignment
+            and reserved.get(start_key) == task["request"]["request_id"]
+        ):
+            # Only the just-unloaded Pinky may leave the still-reserved shelf node.
+            reserved = {
+                key: owner for key, owner in reserved.items() if key != start_key
+            }
         moving = {
             c["message"]["target"]
             for c in self.data["commands"].values()
@@ -693,7 +723,7 @@ class FleetControl:
                 for robot, p in self.observed.items()
                 if robot in moving
             },
-            reserved=self.data["resources"],
+            reserved=reserved,
         )
         while (
             len(path) > 1
@@ -863,7 +893,7 @@ class FleetControl:
             }
         }
         resources.add("parking:" + task["parking"])
-        if task.get("slot"):
+        if task.get("slot") and not is_inbound_return(task):
             resources.add("slot:" + task["slot"])
         if route := payload.get("route"):
             resources.update(
@@ -897,12 +927,18 @@ class FleetControl:
         resources = {}
         for active in data["commands"].values():
             message = active["message"]
+            task = data["tasks"][active["task"]]
             keys = self.command_resources(
-                data["tasks"][active["task"]],
+                {**task, "stage": active.get("stage", task["stage"])},
                 (message["target"], message["type"], message["payload"]),
                 active.get("route_index", 0),
             )
-            if keys & resources.keys():
+            if message["command_id"] == task.get("shelf_alignment_pending"):
+                keys.discard("robot:" + task["robot"])
+                keys.discard("parking:" + task["parking"])
+            if any(
+                resources.get(key, active["task"]) != active["task"] for key in keys
+            ):
                 raise ValueError("overlapping command reservations")
             resources.update(dict.fromkeys(keys, active["task"]))
         return resources
@@ -970,7 +1006,24 @@ class FleetControl:
             return True
         active = self.data["commands"].get(message["command_id"])
         if not active:
-            return False
+            placement_id = self.data.get("shelf_state_completions", {}).get(
+                message["command_id"]
+            )
+            if not placement_id:
+                return False
+            placement = self.data["events"][placement_id]
+            original, p = placement["payload"], message["payload"]
+            if (
+                message["source"] != placement["source"]
+                or p["boot_version"] != original["boot_version"]
+                or p["sequence"] <= original["sequence"]
+                or p["status"] not in {"completed", "failed", "interrupted"}
+            ):
+                return False
+            data = deepcopy(self.data)
+            data["events"][message["message_id"]] = message
+            self.save(data)
+            return True
         cmd, p = active["message"], message["payload"]
         stop = active.get("stop", {}).get("payload", {})
         # A restarted Pinky may interrupt inherited work only via the recorded STOP.
@@ -995,6 +1048,19 @@ class FleetControl:
         current["sequence"] = p["sequence"]
         data["events"][message["message_id"]] = message
         task = data["tasks"][active["task"]]
+        result = p.get("result", {})
+        if p["status"] == "completed" and result.get("evidence") == "shelf_placed":
+            if (
+                cmd["type"] != "shelf_transfer_command"
+                or cmd["payload"]["operation"] != "store"
+                or active.get("placement_message_id")
+            ):
+                raise ValueError("unexpected cooperative shelf placement")
+            self.check_completion(cmd, result, task, active, placement_only=True)
+            current["placement_message_id"] = message["message_id"]
+            self.save(data)
+            return True
+
         pause_interrupted = (
             not data["fault"]
             and cmd["type"] == "follow_target_command"
@@ -1065,7 +1131,33 @@ class FleetControl:
             self.route_progress(message["command_id"], p.get("result", {}).get("node"))
         return True
 
-    def check_completion(self, cmd, result, task, active):
+    def shelf_placement_acked(self, command_id, message_id):
+        active = self.data["commands"].get(command_id)
+        if (
+            self.data["fault"]
+            or not active
+            or active.get("placement_message_id") != message_id
+        ):
+            return
+        task = self.data["tasks"][active["task"]]
+        if task.get("shelf_alignment_pending"):
+            return
+        data = deepcopy(self.data)
+        data["tasks"][active["task"]].update(
+            stage="return_route",
+            shelf_alignment_pending=command_id,
+            departure={
+                "arrival_command_id": active["message"]["payload"][
+                    "arrival_command_id"
+                ],
+                "transfer_command_id": command_id,
+            },
+        )
+        data["commands"][command_id]["participants"].remove(task["robot"])
+        data["resources"] = self.reservations(data)
+        self.save(data)
+
+    def check_completion(self, cmd, result, task, active, *, placement_only=False):
         kind, p = cmd["type"], cmd["payload"]
         if kind == "line_route_command":
             if (
@@ -1105,29 +1197,35 @@ class FleetControl:
             if (
                 result.get("package_id") != p["package_id"]
                 or result.get("pinky_id") != task["robot"]
-                or result.get("arrival_command_id") != task["arrival"]
+                or result.get("arrival_command_id") != p["arrival_command_id"]
                 or result.get("placement_confirmed") is not True
                 or result.get("release_confirmed") is not True
             ):
                 raise ValueError("transfer lacks package placement/release evidence")
-            arms = (
-                SLOTS[task["slot"]]["arms"] if task["stage"] == "transfer" else ["omx3"]
-            )
+            transfer = kind != "warehouse_load_command"
+            arms = SLOTS[task["slot"]]["arms"] if transfer else ["omx3"]
             reported = {a["robot_id"]: a for a in result.get("arms", [])}
             if set(reported) != set(arms) or any(
-                a.get("stopped") is not True
-                or a.get("home_reached") is not True
+                (
+                    not placement_only
+                    and (
+                        a.get("stopped") is not True
+                        or a.get("home_reached") is not True
+                    )
+                )
                 or a.get("holding_state") != "empty"
                 or a.get("holding_package_id") is not None
                 or a.get("boot_version") != active["participant_boots"][r]
                 for r, a in reported.items()
             ):
                 raise ValueError("transfer lacks matching arm return evidence")
-            if task["stage"] == "transfer" and result.get("slot_id") != task["slot"]:
+            if transfer and result.get("slot_id") != task["slot"]:
                 raise ValueError("transfer slot mismatch")
 
     def advance(self, data, task, cmd, result):
-        stage = task["stage"]
+        active = data["commands"][cmd["command_id"]]
+        stage = active.get("stage", task["stage"])
+        released = task.get("shelf_alignment_pending") == cmd["command_id"]
         task["reason"] = None
         next_stage = {
             "warehouse_route": "warehouse_load",
@@ -1145,7 +1243,7 @@ class FleetControl:
             if result["node"] != self.route_goal(task):
                 return
             task["arrival"] = cmd["command_id"]
-        if stage in {"warehouse_load", "transfer"}:
+        if stage in {"warehouse_load", "transfer"} and not released:
             task["departure"] = {
                 "arrival_command_id": task["arrival"],
                 "transfer_command_id": cmd["command_id"],
@@ -1163,7 +1261,20 @@ class FleetControl:
                     else {}
                 ),
             }
-            task["stage"] = "return_route" if inbound else "switch_route"
+            if (
+                inbound
+                and cmd["type"] == "shelf_transfer_command"
+                and result.get("evidence") != "shelf_align"
+            ):
+                data["slots"][task["slot"]]["alignment"] = "unconfirmed"
+            if released:
+                del task["shelf_alignment_pending"]
+                if task["stage"] == "await_shelf_alignment":
+                    task["stage"] = "done"
+            else:
+                task["stage"] = "return_route" if inbound else "switch_route"
+        elif stage == "return_route" and task.get("shelf_alignment_pending"):
+            task["stage"] = "await_shelf_alignment"
         else:
             task["stage"] = next_stage[stage]
         if task["stage"] == "done":
@@ -1178,16 +1289,66 @@ class FleetControl:
         data["enabled"] = True
         self.save(data)
 
+    def finish_shelf_from_state(self, active):
+        cmd = active["message"]
+        task = self.data["tasks"][active["task"]]
+        if task.get("shelf_alignment_pending") != cmd["command_id"]:
+            return False
+        placement_id = active["placement_message_id"]
+        placement = self.data["events"][placement_id]["payload"]
+        placed_at = datetime.fromisoformat(placement["observed_at"])
+        for robot in active["participants"]:
+            observed = self.observed.get(robot, {})
+            state = observed.get("state", {})
+            observed_at = observed.get("observed_at")
+            if (
+                not observed_at
+                or datetime.fromisoformat(observed_at) <= placed_at
+                or self.state_age(robot) > 3
+                or observed.get("boot_version") != active["participant_boots"][robot]
+                or observed.get("active_command_id") is not None
+                or state.get("fault")
+                or state.get("stopped") is not True
+                or (
+                    robot != cmd["target"]
+                    and (
+                        state.get("home_reached") is not True
+                        or state.get("holding_state") != "empty"
+                        or state.get("holding_package_id") is not None
+                    )
+                )
+            ):
+                return False
+        data = deepcopy(self.data)
+        self.advance(data, data["tasks"][active["task"]], cmd, placement["result"])
+        del data["commands"][cmd["command_id"]]
+        data.setdefault("shelf_state_completions", {})[cmd["command_id"]] = placement_id
+        data["resources"] = self.reservations(data)
+        self.save(data)
+        return True
+
     def check_active(self):
         if not self.data["enabled"]:
             return
         for active in self.data["commands"].values():
+            if self.finish_shelf_from_state(active):
+                continue
             if (
                 self.clock() - active.get("sent_at", -math.inf)
                 > self.config["command_timeout_s"]
             ):
                 self.hold("command outcome unknown: timeout")
-            elif any(self.state_age(r) > 3 for r in active["participants"]):
+                return
+            elif any(
+                self.state_age(robot)
+                > (
+                    SHELF_ACTIVE_STATE_GAP_S
+                    if active["message"]["type"] == "shelf_transfer_command"
+                    and robot in ("shelf-01", "omx1", "omx2")
+                    else 3
+                )
+                for robot in active["participants"]
+            ):
                 self.hold("participant state stale")
             elif active["message"]["payload"].get("route"):
                 robot = active["message"]["target"]
@@ -1209,7 +1370,7 @@ class FleetControl:
             **{
                 k: deepcopy(v)
                 for k, v in self.data.items()
-                if k not in {"events", "host_releases"}
+                if k not in {"events", "host_releases", "shelf_state_completions"}
             },
             "robots": deepcopy(self.observed),
             "poses": deepcopy(self.poses),

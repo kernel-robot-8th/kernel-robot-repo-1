@@ -10,7 +10,7 @@ control panel (v3.14+, armed switch on the panel screen) with the model routed f
 arms move, so a person stays by them. Broker settings come from ROPORT_MQTT_* like the control
 server; secrets stay in the env.
 
-  uv run python scripts/cooperative_host.py --executor mock --no-require-docking \
+  uv run python scripts/cooperative_host.py --executor mock \
       --mock-versions model-demo-v1 calibration-demo-v1 --journal ~/.local/state/roport/shelf-01-v2.json
   uv run python scripts/cooperative_host.py --executor panel --routes ~/.config/roport/shelf-01-routes.json \
       --journal ~/.local/state/roport/shelf-01-v2.json
@@ -30,6 +30,7 @@ from queue import Empty
 
 from cooperative_mock import MockExecutor
 
+from roport_omx import panel_executor, shelf_panel
 from roport_omx.cooperative import WORKCELL, CooperativeHost, StorageError
 from roport_omx.cooperative_v2 import ENDPOINTS, PINKIES, FieldHost
 from roport_omx.mqtt_link import field_wire
@@ -37,7 +38,6 @@ from roport_omx.mqtt_link.host_metrics import host_metrics_message, read_host_me
 from roport_omx.mqtt_link.journal import Journal
 from roport_omx.mqtt_link.messages import decode, topic
 from roport_omx.mqtt_link.mqtt import MqttConfig, MqttTransport
-from roport_omx.panel_executor import PanelExecutor, load_routes
 
 RESEND_S = 5.0
 log = logging.getLogger("cooperative_host")
@@ -456,14 +456,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "(simulated executor only)",
     )
     parser.add_argument(
-        "--require-docking",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="v2: a transfer also needs a docking sensor's fresh confirmation of the visit; "
-        "none is connected yet, so the panel executor refuses every transfer "
-        "(docking_alignment_unconfirmed). --no-require-docking: simulated executor only",
-    )
-    parser.add_argument(
         "--mock-versions",
         nargs=2,
         metavar=("MODEL_VERSION", "CALIBRATION_VERSION"),
@@ -486,15 +478,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--box-marker",
         type=int,
-        help="ignored (kept for old start commands): each command's package_id names the box",
+        help="legacy v1 panel trial box marker",
     )
     parser.add_argument(
         "--report-placement",
         action=argparse.BooleanOptionalAction,
-        default=False,  # off until the control tower handles two reports (#134 review)
-        help="panel: loading in two reports (COMPLETE when the box is in its slot, then the "
-        "alignment result); the control tower must accept evidence shelf_placed. Default off: "
-        "one report after the alignment (control v1 holds on shelf_placed)",
+        default=None,
+        help="v2 panel: report loading completed the moment the box is placed and both hands are "
+        "clear (evidence shelf_placed), then the alignment result as a second report. Default "
+        "on for v2 (TK 2026-11-24; control stores and ACKs the intermediate report, #158)",
     )
     parser.add_argument(
         "--end-on-place",
@@ -524,20 +516,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.control is None:
         args.control = "control-01" if args.protocol == "v2" else "control-test"
-    if (
-        args.protocol == "v2"
-        and args.executor == "panel"
-        and not (args.require_pinky and args.require_docking)
-    ):
-        # #135 review: the arms move only with a confirmed visit; bench runs use the mock
+    if args.protocol == "v2" and args.executor == "panel" and not args.require_pinky:
+        # #135 review: the arms move only with a confirmed Pinky visit; bench runs use the mock
         parser.error(
-            "--no-require-pinky/--no-require-docking need --executor mock "
-            "(v2 runs the real arms only with the Pinky and docking checks)"
+            "--no-require-pinky needs --executor mock "
+            "(v2 runs the real arms only with the Pinky check)"
         )
-    if args.protocol == "v2" and args.report_placement:
-        parser.error(
-            "--report-placement is v1 only: v2 reports once, after the alignment"
-        )
+    if args.report_placement is None:
+        args.report_placement = args.protocol == "v2"
+    elif args.report_placement and args.protocol != "v2":
+        # the v1 panel executor in this task has no early placement report
+        parser.error("--report-placement is v2 only")
     if str(args.journal.resolve()).startswith("/tmp/"):
         parser.error("journal must survive a restart; do not use /tmp")
     if args.executor == "panel" and args.routes is None:
@@ -552,13 +541,21 @@ def main() -> None:
     )
 
     if args.executor == "panel":
-        executor = PanelExecutor(
-            load_routes(args.routes),
+        panel = shelf_panel if args.protocol == "v2" else panel_executor
+        options = (
+            {
+                "end_on_place": args.end_on_place,
+                "report_placement": args.report_placement,
+            }
+            if args.protocol == "v2"
+            else {}
+        )
+        executor = panel.PanelExecutor(
+            panel.load_routes(args.routes),
             box_marker=args.box_marker,
-            base_url=args.panel_url,
-            report_placement=args.report_placement,
-            end_on_place=args.end_on_place,
             place_shadow=args.place_shadow,
+            base_url=args.panel_url,
+            **options,
         )
     else:
         executor = MockExecutor(
@@ -585,7 +582,7 @@ def main() -> None:
                 executor,
                 control=args.control,
                 require_pinky=args.require_pinky,
-                require_docking=args.require_docking,
+                report_placement=args.report_placement,
                 readiness=sampler,
             )
         else:
@@ -616,7 +613,7 @@ def main() -> None:
         log.info(
             "loading hand-over (end_on_place)=%s; early COMPLETE on placement "
             "(report_placement)=%s; episode limit [%s]",
-            "on" if args.end_on_place else "off",
+            "on" if args.protocol == "v2" and args.end_on_place else "off",
             "on" if args.report_placement else "off",
             episodes,
         )
@@ -624,13 +621,11 @@ def main() -> None:
         log.info("SIMULATED executor")
     if args.protocol == "v2":
         log.info(
-            "protocol v2 (%s) control=%s boot_version=%s require_pinky=%s "
-            "require_docking=%s",
+            "protocol v2 (%s) control=%s boot_version=%s require_pinky=%s",
             field_wire.PROFILE,
             args.control,
             host.boot_id,
             "on" if args.require_pinky else "off",
-            "on" if args.require_docking else "off",
         )
         sampler.start()
     else:
@@ -638,8 +633,9 @@ def main() -> None:
     metrics = None
     if args.host_metrics_period_s is not None:
         metrics = HostMetrics(host.boot_id, args.control, args.host_metrics_period_s)
-    holds = HoldChannel(args.journal)  # the panel's [HOLD 해제] button
-    holds.tick(host)
+    holds = HoldChannel(args.journal) if args.protocol == "v2" else None
+    if holds:
+        holds.tick(host)
     if args.protocol == "v2":
         subscriptions = [
             field_wire.topic(e, c) for e in ENDPOINTS for c in ("cmd", "ack")
@@ -669,9 +665,7 @@ def main() -> None:
                 if args.protocol == "v2":
                     wait_offline_v2(host, holds, 2.0)
                 else:
-                    for _ in range(10):
-                        holds.tick(host)
-                        time.sleep(0.2)
+                    time.sleep(2)
     except KeyboardInterrupt:
         pass
     except StorageError as exc:

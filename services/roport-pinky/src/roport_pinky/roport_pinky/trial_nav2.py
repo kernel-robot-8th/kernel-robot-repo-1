@@ -73,10 +73,7 @@ class Nav2Bridge:
         self.docking = None
         self.dock_action = None
         self.dock_phase = None
-        if os.environ.get('ROPORT_GATE_DOCK_CONFIG'):
-            from .gate_docking import GateDocking
-            self.docking = GateDocking(node, self.tf, os.environ['ROPORT_GATE_DOCK_CONFIG'])
-            self.dock_action = ActionClient(node, FollowPath, 'follow_path')
+        self._install_docking(node, lambda: ActionClient(node, FollowPath, 'follow_path'))
         self.map_ok = False
         self.amcl = None
         self.scan = self.odom = None
@@ -105,6 +102,24 @@ class Nav2Bridge:
             node.create_subscription(Odometry, 'odom', self._odom, qos_profile_sensor_data)]
         self.timer = node.create_timer(0.5, self._states)
         self.pose_timer = node.create_timer(0.1, self._publish_localization)
+
+    def _install_docking(self, node, make_dock_action):
+        """Opt-in final approach; one docking slot. Neither env var = no docking (unchanged default).
+
+        ROPORT_GATE_DOCK_CONFIG (marker GateDocking) wins over ROPORT_FINE_ALIGN_GOALS (FineAlign).
+        """
+        from .fine_align import FineAlign, goals_from_env
+        gate, goals = os.environ.get('ROPORT_GATE_DOCK_CONFIG'), goals_from_env()
+        if gate:
+            from .gate_docking import GateDocking
+            self.docking = GateDocking(node, self.tf, gate)
+            self.dock_action = make_dock_action()
+            if goals:
+                node.get_logger().warning(
+                    'ROPORT_FINE_ALIGN_GOALS ignored: ROPORT_GATE_DOCK_CONFIG gate docking uses the docking slot')
+        elif goals:
+            self.docking = FineAlign(goals)
+            self.dock_action = make_dock_action()
 
     def _map(self, msg):
         cfg, width, height, cells = self.reference

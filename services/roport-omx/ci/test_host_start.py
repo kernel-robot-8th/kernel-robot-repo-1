@@ -82,7 +82,7 @@ class HostStartTest(unittest.TestCase):
                 }
             )
         )
-        flags = ("--report-placement", "--place-shadow", "--box-marker", "16")
+        flags = ("--place-shadow", "--box-marker", "16")
         output = self.run_main(
             "--protocol", "v1", "--executor", "panel", "--routes", str(routes), *flags
         )
@@ -114,21 +114,9 @@ class HostStartTest(unittest.TestCase):
         output = self.run_main(
             "--protocol", "v1", "--executor", "panel", "--routes", str(routes)
         )
-        self.assertIn("hand-over (end_on_place)=on", output)
+        self.assertIn("hand-over (end_on_place)=off", output)  # v1: no option passed
         self.assertIn("early COMPLETE on placement (report_placement)=off", output)
         self.assertIn("episode limit [INBOUND:2b=180s, OUTBOUND:2b=70s]", output)
-        output = self.run_main(
-            "--protocol",
-            "v1",
-            "--executor",
-            "panel",
-            "--routes",
-            str(routes),
-            "--no-end-on-place",
-            "--report-placement",
-        )
-        self.assertIn("hand-over (end_on_place)=off", output)
-        self.assertIn("(report_placement)=on", output)
 
     def test_mock_executor_starts(self):
         self.assertIn("SIMULATED executor", self.run_main("--executor", "mock"))
@@ -155,20 +143,28 @@ class HostStartTest(unittest.TestCase):
         )
         output = self.run_main("--executor", "panel", "--routes", str(routes))
         self.assertIn("protocol v2 (roport-control-v2) control=control-01", output)
-        self.assertIn("require_pinky=on require_docking=on", output)
+        self.assertIn("require_pinky=on", output)
+        self.assertNotIn("require_docking", output)  # check dropped (TK 2026-11-23)
         self.assertNotIn("boot_id=", output)  # the v1 start line
         self.assertIn("protocol v2", self.run_main("--executor", "mock"))
         # v1 only when asked for; its own journal (a v2 journal is refused)
         v1 = self.run_main("--protocol", "v1", "--journal", str(self.dir / "v1.json"))
         self.assertIn("boot_id=", v1)
         self.assertNotIn("protocol v2", v1)
+        # TK 2026-11-24: v2 reports completed at placement, then the alignment (control #158)
+        self.assertIn("early COMPLETE on placement (report_placement)=on", output)
 
-    def test_v1_only_options_need_protocol_v1(self):
-        argv = ["--journal", str(self.dir / "j.json"), "--report-placement"]
+    def test_report_placement_defaults_on_for_v2_only(self):
+        journal = ["--journal", str(self.dir / "j.json")]
+        self.assertTrue(ch.parse_args(journal).report_placement)
+        self.assertFalse(
+            ch.parse_args([*journal, "--no-report-placement"]).report_placement
+        )
+        self.assertFalse(ch.parse_args(["--protocol", "v1", *journal]).report_placement)
+        # the v1 panel executor of this task has no early placement report
         with self.assertRaises(SystemExit) as stop, patch("sys.stderr"):
-            ch.parse_args(argv)
+            ch.parse_args(["--protocol", "v1", *journal, "--report-placement"])
         self.assertEqual(stop.exception.code, 2)
-        self.assertTrue(ch.parse_args(["--protocol", "v1", *argv]).report_placement)
 
 
 if __name__ == "__main__":
