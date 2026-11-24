@@ -63,7 +63,17 @@ def field_settings(bundle, mock_omx, *, shelf_slot=None):
     return config
 
 
-def start_field(start, root, bundle, config, port, broker_port, mock_omx, service_env):
+def start_field(
+    start,
+    root,
+    bundle,
+    config,
+    port,
+    broker_port,
+    mock_omx,
+    service_env,
+    preview_env=None,
+):
     folder = root / "fleet"
     folder.mkdir()
     key = secrets.token_urlsafe(24)
@@ -148,6 +158,7 @@ def start_field(start, root, bundle, config, port, broker_port, mock_omx, servic
             "ROPORT_TRIAL_TOKEN": key,
             "ROPORT_MAP": str(map_file),
             "ROPORT_MAP_LAYOUT": str(bundle / "maps/layout.yaml"),
+            **(preview_env or {}),
         },
     )
 
@@ -258,7 +269,15 @@ def main():
 
         # Registered after the DB/service contexts so clients stop before their servers.
         pg = stack.enter_context(databases(args.pg_bin, root, keep=True))
-        service_url, token = stack.enter_context(java_service(pg, root))
+        preview_token = secrets.token_urlsafe(32)
+        service_url, token = stack.enter_context(
+            java_service(
+                pg,
+                root,
+                preview_url=f"http://127.0.0.1:{args.port}",
+                preview_token=preview_token,
+            )
+        )
         dsn = f"postgresql://{getpass.getuser()}@127.0.0.1:{pg}/service_test"
         accounts, reservations, stock = [], [], []
         if not args.real_shelf:
@@ -282,6 +301,7 @@ def main():
                     + "/ws/v1/sites/E2E/control",
                     "ROPORT_SERVICE_TOKEN": token,
                     "ROPORT_SERVICE_SITE": "E2E",
+                    "ROPORT_FOLLOW_PREVIEW_TOKEN": preview_token,
                 }
             )
         )
@@ -296,6 +316,17 @@ def main():
                 args.broker_port,
                 args.mock_omx,
                 json.loads(connection.read_text()),
+                {
+                    "ROPORT_FOLLOW_PREVIEW_TOKEN": preview_token,
+                    **{
+                        k: os.environ[k]
+                        for k in (
+                            "ROPORT_FOLLOW_FRAME_SOURCES",
+                            "ROPORT_FOLLOW_FRAME_TOKEN",
+                        )
+                        if k in os.environ
+                    },
+                },
             )
         else:
             start(

@@ -75,6 +75,9 @@ jobs:
         run: npm ci
       - working-directory: services/roport-web
         run: npx playwright install --with-deps chromium
+      - name: 추종 패드 상태 계약·새로고침 회귀
+        working-directory: services/roport-web
+        run: npx playwright test --config apps/pad/playwright.follow.config.ts --output=test-results/follow
       - working-directory: services/roport-web
         run: npm run test:e2e
       - if: failure()

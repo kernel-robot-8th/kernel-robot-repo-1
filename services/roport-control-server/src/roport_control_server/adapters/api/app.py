@@ -16,6 +16,7 @@ from ...contracts.pinky_settings import validate_job, validate_registration
 from ...contracts.robots import HOST_IDS, unknown_host
 from .display import ROBOTS, Display
 from .fleet import FleetView
+from .follow_frames import FollowFrames
 from .maps import load_map
 from .pinky_settings import NOT_CONNECTED, settings_view
 from .trial import TrialView
@@ -70,6 +71,11 @@ def create_app(
         yield
 
     app = FastAPI(title="RO:PORT control web display", lifespan=lifespan)
+    frames = FollowFrames(
+        os.environ.get("ROPORT_FOLLOW_PREVIEW_TOKEN", ""),
+        os.environ.get("ROPORT_FOLLOW_FRAME_SOURCES", "{}"),
+        os.environ.get("ROPORT_FOLLOW_FRAME_TOKEN", ""),
+    )
 
     @app.middleware("http")
     async def headers(request, call_next):
@@ -206,6 +212,15 @@ def create_app(
     @app.post("/api/fleet/commands")
     async def fleet_command(request: Request):
         return await operator_command(request, app.state.fleet)
+
+    @app.get("/api/fleet/follow/{session_id}/frames/{frame_ref}")
+    def follow_frame(request: Request, session_id: str, frame_ref: str):
+        return frames.get(
+            app.state.fleet,
+            request.headers.get("authorization", ""),
+            session_id,
+            frame_ref,
+        )
 
     @app.post("/api/trial/commands")
     async def trial_command(request: Request):

@@ -100,14 +100,14 @@ def main():
     service_env = {}
     if args.service_env:
         service_env = json.loads(args.service_env.read_text())
-        if set(service_env) != {
+        if set(service_env) - {"ROPORT_FOLLOW_PREVIEW_TOKEN"} != {
             "ROPORT_DATABASE_URL",
             "ROPORT_SERVICE_WSS_URL",
             "ROPORT_SERVICE_TOKEN",
             "ROPORT_SERVICE_SITE",
         }:
             parser.error(
-                "service-env must contain the four service connection settings"
+                "service-env requires the four service settings and optional preview token"
             )
         db = urlsplit(service_env["ROPORT_DATABASE_URL"])
         link = urlsplit(service_env["ROPORT_SERVICE_WSS_URL"])
@@ -151,6 +151,15 @@ def main():
         ROPORT_MAP_LAYOUT=str(LAYOUT),
         ROPORT_FLEET_SOCKET=str(root / "f"),
         ROPORT_TRIAL_TOKEN=token,
+    )
+    preview_ports = {
+        robot: free_port() for robot, (role, _) in robots.items() if role == "smartcart"
+    }
+    env.update(
+        ROPORT_FOLLOW_FRAME_SOURCES=json.dumps(
+            {r: f"http://127.0.0.1:{port}" for r, port in preview_ports.items()}
+        ),
+        ROPORT_FOLLOW_FRAME_TOKEN=secrets.token_urlsafe(32),
     )
     processes, logs = [], []
 
@@ -199,6 +208,11 @@ def main():
                     role,
                     "--journal",
                     str(root / (robot + ".json")),
+                    *(
+                        ["--preview-port", str(preview_ports[robot])]
+                        if robot in preview_ports
+                        else []
+                    ),
                     *(
                         ["--fault", "d660-line-loss"]
                         if args.d660_line_loss and robot == "pinky1"

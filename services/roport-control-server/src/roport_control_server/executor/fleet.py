@@ -8,6 +8,9 @@ from copy import deepcopy
 from datetime import datetime
 from time import monotonic
 
+from ..adapters.mqtt.field_wire import validate_follow_registration_result
+from ..contracts.service_wire import validate_follow_mode
+from . import fleet_follow
 from .fleet_traffic import clear_prefix, edge_key, route_resources, validate_clearance
 from .plans import shortest_route
 
@@ -52,6 +55,15 @@ class FleetControl:
         self.observed_since = {}
         self.awaiting_state = set()
         roles = config.get("initial_roles", ROLES)
+        modes = config.get("follow_modes", {})
+        if not isinstance(modes, dict) or any(
+            robot not in ROLES
+            or not isinstance(values, list)
+            or any(value not in {"marker", "appearance"} for value in values)
+            or len(set(values)) != len(values)
+            for robot, values in modes.items()
+        ):
+            raise ValueError("invalid follow modes")
         if (
             not isinstance(roles, dict)
             or roles.keys() != ROLES.keys()
@@ -96,6 +108,19 @@ class FleetControl:
         return self.store.data
 
     def save(self, data):
+        for key, task in data.get("tasks", {}).items():
+            follow = task.get("follow")
+            if not follow:
+                continue
+            previous = self.data.get("tasks", {}).get(key, {})
+            old = previous.get("follow", {})
+            changed = any(
+                task.get(k) != previous.get(k) for k in ("stage", "status", "reason")
+            )
+            changed |= {k: v for k, v in follow.items() if k != "revision"} != {
+                k: v for k, v in old.items() if k != "revision"
+            }
+            follow["revision"] = old.get("revision", 0) + int(changed)
         self.store.save(data)
 
     def hold(self, reason, *, data=None):
@@ -235,6 +260,8 @@ class FleetControl:
         s = p["state"]
         if not s.get("stopped") or s.get("fault") or p.get("active_command_id"):
             raise ValueError(f"{robot}: not ready")
+        if s.get("follow", {}).get("active") is True:
+            raise ValueError(f"{robot}: follow controller still active")
         if (
             robot in ROLES
             and s.get("mode") == "line"
@@ -389,11 +416,19 @@ class FleetControl:
                 task["robot_boot"] = boot_version
         self.save(data)
 
-    def receipt(self, request_id, follow_card=None):
+    def receipt(
+        self, request_id, follow_card=None, *, follow_mode=None, session_id=None
+    ):
         task = self.data["tasks"].get(request_id)
         if not task or task["stage"] not in {
             "await_receipt",
             "follow_pending",
+            "follow_register",
+            "follow_registering",
+            "follow_start",
+            "following",
+            "follow_stopping",
+            "follow_paused",
             "return_nav",
             "switch_line",
             "return_route",
@@ -402,11 +437,25 @@ class FleetControl:
             raise ValueError("task is not awaiting customer receipt")
         if task["stage"] != "await_receipt":
             return
+        mode = validate_follow_mode(follow_mode, follow_card)
+        if mode != "none" and mode not in fleet_follow.supported_modes(
+            self, task["robot"]
+        ):
+            raise ValueError("follow mode unavailable for this robot")
         data = deepcopy(self.data)
         data["tasks"][request_id].update(
-            stage="return_nav" if follow_card is None else "follow_pending",
+            stage={
+                "none": "return_nav",
+                "marker": "follow_pending",
+                "appearance": "follow_register",
+            }[mode],
             status="RUNNING",
             reason=None,
+            follow={
+                "session_id": session_id or request_id,
+                "mode": mode,
+                "revision": 0,
+            },
         )
         if follow_card is not None:
             if type(follow_card) is not int or not 35 <= follow_card <= 49:
@@ -429,6 +478,10 @@ class FleetControl:
     def follow_control(self, request_id, operation):
         data = deepcopy(self.data)
         task = data["tasks"].get(request_id)
+        self.apply_follow_control(data, task, operation)
+        self.save(data)
+
+    def apply_follow_control(self, data, task, operation):
         transitions = {
             ("approve", "follow_pending"): "follow_start",
             ("pause", "follow_start"): "follow_stopping",
@@ -436,20 +489,42 @@ class FleetControl:
             ("resume", "follow_paused"): "follow_start",
             ("return", "follow_paused"): "return_nav",
             ("return", "follow_pending"): "return_nav",
+            ("return", "follow_register"): "return_nav",
+            ("return", "follow_start"): "follow_stopping",
+            ("return", "following"): "follow_stopping",
         }
         stage = transitions.get((operation, task and task["stage"]))
         if not stage or not data["enabled"] or data["fault"]:
             raise ValueError("현재 작업 단계에서 실행할 수 없습니다.")
         if operation in {"approve", "resume"}:
             self.check_follow_robot(task)
+            if task.get("follow", {}).get("mode") == "appearance":
+                fleet_follow.registration_ready(self, task, target=True)
         if stage == "follow_stopping" and not any(
-            c["task"] == request_id for c in data["commands"].values()
+            c["task"] == task["request"]["request_id"]
+            for c in data["commands"].values()
         ):
-            stage = "follow_paused"  # Approval was withdrawn before dispatch.
-        if operation != "pause":
+            stage = "return_nav" if operation == "return" else "follow_paused"
+        if stage != "follow_stopping":
             self.ready(task["robot"])
+        if stage == "follow_stopping" and operation == "return":
+            task.setdefault(
+                "follow",
+                {
+                    "session_id": task["request"]["request_id"],
+                    "mode": "marker",
+                    "revision": 0,
+                },
+            )["return_requested"] = True
+        if stage == "return_nav" and task.get("follow"):
+            task["follow"].pop("registration", None)
         task.update(stage=stage, reason=None)
-        self.save(data)
+
+    def follow_request(self, payload, *, sent_at=None):
+        fleet_follow.request(self, payload, sent_at=sent_at)
+
+    def service_projection(self, task):
+        return fleet_follow.projection(self, task)
 
     def occupied(self, robot):
         occupied = set()
@@ -606,6 +681,7 @@ class FleetControl:
                     "await_receipt",
                     "await_shelf_alignment",
                     "follow_pending",
+                    "follow_register",
                     "following",
                     "follow_stopping",
                     "follow_paused",
@@ -640,6 +716,15 @@ class FleetControl:
                 return request_id, action
             except ValueError as exc:
                 task["reason"] = str(exc)
+                if task["stage"] in {"follow_registering", "follow_start"} and str(
+                    exc
+                ).startswith("registration_expired"):
+                    follow = task["follow"]
+                    follow.pop("pending", None)
+                    follow.pop("registration", None)
+                    if "last_request" in follow:
+                        follow["last_request"].update(status="failed", reason=str(exc))
+                    task["stage"] = "follow_register"
         if data != self.data:
             self.save(data)
         return None
@@ -781,7 +866,7 @@ class FleetControl:
                     "map_version": self.config["map_version"],
                 },
             )
-        if stage == "follow_start":
+        if stage in {"follow_start", "follow_registering"}:
             self.check_follow_robot(task)
             if (
                 state["mode"] != "nav2"
@@ -789,13 +874,37 @@ class FleetControl:
                 or not state["localization_ready"]
             ):
                 raise ValueError("추종에는 Nav2 위치 추정이 필요합니다.")
+            follow = task.get("follow", {})
+            if stage == "follow_registering":
+                pending = follow["pending"]
+                if pending["operation"] == "select":
+                    fleet_follow.registration_ready(self, task)
+                return (
+                    robot,
+                    "follow_registration_command",
+                    {
+                        **base,
+                        "map_version": self.config["map_version"],
+                        "follow_session_id": follow["session_id"],
+                        **pending,
+                    },
+                )
+            target = {"card_id": task.get("follow_card")}
+            if follow.get("mode") == "appearance":
+                registration = fleet_follow.registration_ready(self, task, target=True)
+                target = {
+                    "follow_mode": "appearance",
+                    "follow_session_id": follow["session_id"],
+                    "target_ref": registration["target_ref"],
+                    "perception_boot_id": registration["perception_boot_id"],
+                }
             return (
                 robot,
                 "follow_target_command",
                 {
                     **base,
                     "map_version": self.config["map_version"],
-                    "card_id": task["follow_card"],
+                    **target,
                     # Leave time for delivery and the terminal report before Fleet times out.
                     "max_duration_s": min(240, self.config["command_timeout_s"] - 8),
                 },
@@ -992,7 +1101,11 @@ class FleetControl:
                 > datetime.fromisoformat(stopped_at)
             ):
                 data = deepcopy(self.data)
-                data["tasks"][active["task"]].update(stage="follow_paused")
+                task = data["tasks"][active["task"]]
+                returning = task.get("follow", {}).pop("return_requested", False)
+                task.update(stage="return_nav" if returning else "follow_paused")
+                if returning:
+                    task["follow"].pop("registration", None)
                 del data["commands"][cid]
                 data["resources"] = self.reservations(data)
                 self.save(data)
@@ -1049,6 +1162,57 @@ class FleetControl:
         data["events"][message["message_id"]] = message
         task = data["tasks"][active["task"]]
         result = p.get("result", {})
+        if cmd["type"] == "follow_registration_command" and not data["fault"]:
+            if p["status"] == "completed":
+                validate_follow_registration_result(cmd["payload"], result)
+                follow = task["follow"]
+                if cmd["payload"]["operation"] == "select" and result[
+                    "perception_boot_id"
+                ] != follow.get("registration", {}).get("perception_boot_id"):
+                    raise ValueError("registration perception boot mismatch")
+                operation = follow.pop("pending")["operation"]
+                if operation == "release":
+                    follow.pop("registration", None)
+                else:
+                    fields = {
+                        "frame_ref",
+                        "image_ref",
+                        "expires_at",
+                        "perception_boot_id",
+                        "candidates",
+                        "target_ref",
+                    }
+                    follow["registration"] = {
+                        k: deepcopy(v) for k, v in result.items() if k in fields
+                    }
+                    follow["robot_boot_version"] = p["boot_version"]
+                task.update(
+                    stage="follow_pending"
+                    if operation == "select"
+                    else "follow_register",
+                    reason=None,
+                )
+                follow["last_request"].update(status="completed", reason=None)
+                del data["commands"][message["command_id"]]
+                data["resources"] = self.reservations(data)
+                self.awaiting_state.add(cmd["target"])
+            elif (
+                p["status"] in {"rejected", "failed"} and result.get("stopped") is True
+            ):
+                follow = task["follow"]
+                follow.pop("pending", None)
+                follow.pop("registration", None)
+                reason = p.get("reason", "registration_failed")
+                task.update(stage="follow_register", reason=reason)
+                follow["last_request"].update(status="failed", reason=reason)
+                del data["commands"][message["command_id"]]
+                data["resources"] = self.reservations(data)
+                self.awaiting_state.add(cmd["target"])
+            elif p["status"] in {"failed", "rejected", "interrupted"}:
+                self.hold("registration_stop_unconfirmed", data=data)
+                return True
+            self.save(data)
+            return True
         if p["status"] == "completed" and result.get("evidence") == "shelf_placed":
             if (
                 cmd["type"] != "shelf_transfer_command"
@@ -1087,8 +1251,28 @@ class FleetControl:
         elif (
             cmd["type"] == "follow_target_command"
             and task["stage"] == "follow_start"
-            and p["status"] in {"accepted", "in_progress"}
+            and p["status"] == "in_progress"
+            and result.get("follow_active") is True
         ):
+            follow = result.get("follow", {})
+            payload = cmd["payload"]
+            if (
+                follow.get("active") is not True
+                or follow.get("follow_mode") != payload.get("follow_mode", "marker")
+                or any(
+                    follow.get(k) != payload[k]
+                    for k in ("follow_session_id", "target_ref", "perception_boot_id")
+                    if k in payload
+                )
+                or result.get("mode") != "nav2"
+                or result.get("nav2_ready") is not True
+                or result.get("localization_ready") is not True
+                or result.get("drive_owner") != "nav2"
+                or result.get("line_enabled") is not False
+                or result.get("fault") is not None
+                or result.get("map_version") != self.config["map_version"]
+            ):
+                raise ValueError("invalid follow activation evidence")
             task.update(stage="following")
         elif p["status"] in {"failed", "rejected", "interrupted"} or (
             cmd["type"] == "follow_target_command" and p["status"] == "completed"

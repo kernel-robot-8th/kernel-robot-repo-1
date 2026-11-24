@@ -150,3 +150,22 @@ export function automaticShopper(boxes: number[][]): number | null {
 export function shoppingDemoEnabled(flag: string | undefined, apiMode: string | undefined): boolean {
   return flag === 'true' && apiMode !== 'server';
 }
+
+// Service follow state is authoritative; HTTP command acceptance never changes it.
+export function followView(stage: string, status: string, mode: string): { title: string; lead: string } {
+  if (status === 'HOLD') return { title: '카트 상태 확인이 필요합니다', lead: '현재 상태를 유지하고 있습니다. 안내 직원에게 문의해 주세요.' };
+  if (status === 'CANCELED') return { title: '서비스가 중단되었습니다', lead: '카트 상태는 안내 직원에게 확인해 주세요.' };
+  if (status === 'COMPLETE' || status === 'COMPLETED' || stage === 'done') return { title: '이용이 완료되었습니다', lead: '물품을 빠짐없이 챙겨 주세요.' };
+  if (mode === 'none' && stage === 'follow_pending') return { title: '수령이 완료되었습니다', lead: '카트 복귀 준비 상태를 확인하고 있습니다.' };
+  switch (stage) {
+    case 'follow_register': return { title: '함께 갈 사람을 등록해 주세요', lead: '카트 앞에 서서 사진을 찍은 뒤, 사진에서 본인을 직접 선택해 주세요.' };
+    case 'follow_registering': return { title: '대상을 등록하고 있습니다', lead: '선택한 모습을 확인하고 있습니다. 카트 앞에서 기다려 주세요.' };
+    case 'follow_pending': return { title: '출발 승인을 기다리고 있습니다', lead: '관제에서 준비 상태를 확인한 뒤 출발합니다. 아직 따라가기 시작하지 않았습니다.' };
+    case 'follow_start': return { title: '출발을 확인하고 있습니다', lead: '실제 추종 상태가 확인될 때까지 기다려 주세요.' };
+    case 'following': return { title: '카트가 따라가고 있습니다', lead: mode === 'marker' ? '마커 카드가 카트 쪽을 향하도록 하고 천천히 걸어 주세요.' : '카트 앞에서 천천히 걸어 주세요. 멈추려면 아래 정지 버튼을 눌러 주세요.' };
+    case 'follow_stopping': return { title: '정지를 확인하고 있습니다', lead: '카트가 완전히 멈출 때까지 가까이 가지 마세요.' };
+    case 'follow_paused': return { title: '카트가 멈췄습니다', lead: '주변을 확인한 뒤 재개하거나, 물품을 모두 내리고 복귀를 요청해 주세요.' };
+    case 'return_nav': case 'switch_line': case 'return_route': return { title: '카트가 복귀하고 있습니다', lead: '복귀 완료가 확인될 때까지 상태를 표시합니다.' };
+    default: return { title: '카트 상태를 확인하고 있습니다', lead: '관제에서 준비 상태를 확인하고 있습니다.' };
+  }
+}

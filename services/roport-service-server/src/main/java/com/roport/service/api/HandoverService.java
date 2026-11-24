@@ -33,13 +33,21 @@ class HandoverService {
 
     @Transactional
     public Map<String, Object> confirm(String cart, String verificationId, String requestId, Integer followCard) {
+        return confirm(cart, verificationId, requestId, followCard, null);
+    }
+
+    @Transactional
+    public Map<String, Object> confirm(String cart, String verificationId, String requestId, Integer followCard, String followMode) {
+        String mode = followMode(followMode, followCard);
         // Serializes retry IDs and receipt assignment; no device or external network calls in this transaction.
         db.sql("SELECT pg_advisory_xact_lock(71519006)").query().singleValue();
-        var previous = db.sql("SELECT r.receipt_id,r.follow_card,a.verification_id,a.cart_ref FROM receipts r JOIN handover_approvals a USING(approval_id) WHERE confirmation_request_id=?")
+        var previous = db.sql("SELECT r.receipt_id,r.follow_card,r.follow_mode,a.verification_id,a.cart_ref FROM receipts r JOIN handover_approvals a USING(approval_id) WHERE confirmation_request_id=?")
                 .param(requestId).query().listOfRows().stream().findFirst();
         if (previous.isPresent()) {
             var row = previous.get();
-            if (!java.util.Objects.equals(followCard, row.get("follow_card")) || !cart.equals(row.get("cart_ref")) || !verificationId.equals(row.get("verification_id"))) throw conflict("IDEMPOTENCY_CONFLICT");
+            if (!mode.equals(followMode((String) row.get("follow_mode"), (Integer) row.get("follow_card")))
+                    || !java.util.Objects.equals(followCard, row.get("follow_card")) || !cart.equals(row.get("cart_ref"))
+                    || !verificationId.equals(row.get("verification_id"))) throw conflict("IDEMPOTENCY_CONFLICT");
             return result((String) row.get("receipt_id"));
         }
         var found = db.sql("""
@@ -62,6 +70,11 @@ class HandoverService {
                 .param(pickup).param(verified.get("site_id")).query().listOfRows();
         if (views.size() != 1) throw conflict("CART_NOT_ARRIVED");
         var view = views.getFirst();
+        if (followMode != null && !"none".equals(mode) && !FollowService.supported(
+                json.readTree(view.get("progress_payload").toString()), cart, clock.instant(),
+                ((java.sql.Timestamp) view.get("synced_at")).toInstant().toString()).contains(mode)) {
+            throw conflict("FOLLOW_MODE_UNSUPPORTED");
+        }
         var progress = json.readTree(view.get("progress_payload").toString()).path("progress").path("packages");
         List<String> packages = new java.util.ArrayList<>();
         for (var p : progress) {
@@ -81,8 +94,9 @@ class HandoverService {
         db.sql("INSERT INTO handover_approvals(approval_id,pickup_id,order_id,verification_id,task_ref,cart_ref,order_revision,manifest_hash,consumed_at) VALUES(?,?,?,?,?,?,?,?,now())")
                 .param(approval).param(pickup).param(order).param(verificationId).param(view.get("task_ref")).param(cart)
                 .param(verified.get("revision")).param(QrTokens.hash(json.writeValueAsString(packages.stream().sorted().toList()))).update();
-        db.sql("INSERT INTO receipts(receipt_id,order_id,pickup_id,approval_id,confirmation_request_id,confirmed_by,channel,received_at,order_revision,follow_card) VALUES(?,?,?,?,?,?,'CART',now(),?,?)")
-                .param(receipt).param(order).param(pickup).param(approval).param(requestId).param("cart:" + cart).param(verified.get("revision")).param(followCard).update();
+        db.sql("INSERT INTO receipts(receipt_id,order_id,pickup_id,approval_id,confirmation_request_id,confirmed_by,channel,received_at,order_revision,follow_card,follow_mode) VALUES(?,?,?,?,?,?,'CART',now(),?,?,?)")
+                .param(receipt).param(order).param(pickup).param(approval).param(requestId).param("cart:" + cart)
+                .param(verified.get("revision")).param(followCard).param(followMode).update();
         for (String id : packages) {
             db.sql("INSERT INTO receipt_packages(receipt_id,order_id,package_id,package_revision) SELECT ?,order_id,package_id,package_revision FROM packages WHERE package_id=?")
                     .param(receipt).param(id).update();
@@ -97,9 +111,19 @@ class HandoverService {
     }
 
     private Map<String, Object> result(String receipt) {
-        var row = db.sql("SELECT r.receipt_id,o.business_status FROM receipts r JOIN orders o USING(order_id) WHERE receipt_id=?")
+        var row = db.sql("SELECT r.receipt_id,r.follow_mode,r.follow_card,o.business_status FROM receipts r JOIN orders o USING(order_id) WHERE receipt_id=?")
                 .param(receipt).query().singleRow();
         return Map.of("receiptId", receipt, "orderComplete", "RECEIVED".equals(row.get("business_status")),
+                "followMode", followMode((String) row.get("follow_mode"), (Integer) row.get("follow_card")),
                 "packageIds", db.sql("SELECT package_id FROM receipt_packages WHERE receipt_id=? ORDER BY package_id").param(receipt).query(String.class).list());
+    }
+
+    static String followMode(String supplied, Integer card) {
+        String mode = supplied == null ? (card == null ? "none" : "marker") : supplied;
+        if (!java.util.Set.of("none", "marker", "appearance").contains(mode)
+                || ("marker".equals(mode) ? card == null || card < 35 || card > 49 : card != null)) {
+            throw ApiException.badRequest("추종 방식은 none·marker·appearance이며 marker에만 카드 번호 35~49가 필요합니다.");
+        }
+        return mode;
     }
 }

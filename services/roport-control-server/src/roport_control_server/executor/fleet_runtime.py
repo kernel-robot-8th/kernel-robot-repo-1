@@ -319,6 +319,31 @@ class FleetRuntime:
 
 def service_tick(control, store, *, now=None):
     now = now or datetime.now(UTC)
+    for receipt in store.receipts():
+        payload = receipt["message"]["payload"]
+        for request_id, child in list(control.data["tasks"].items()):
+            if (
+                request_id.startswith(receipt["task_id"] + ":")
+                and child["request"]["package_id"] in payload["package_ids"]
+                and child["stage"] == "await_receipt"
+            ):
+                try:
+                    control.receipt(
+                        request_id,
+                        payload.get("follow_card"),
+                        follow_mode=payload.get("follow_mode"),
+                        session_id=payload["receipt_id"],
+                    )
+                except ValueError as exc:
+                    control.hold(str(exc))
+    for request in store.follow_requests():
+        try:
+            control.follow_request(
+                request["message"]["payload"], sent_at=request["message"]["sent_at"]
+            )
+        except ValueError:
+            LOG.warning("follow_request_rejected")
+        store.follow_processed(request["request_id"])
     for task in store.pending_tasks():
         payload = task["request"]
         if task["state"] == "WAITING_MANIFEST":
@@ -383,31 +408,11 @@ def service_tick(control, store, *, now=None):
                     state,
                     {
                         "stages": [t["stage"] for t in children],
-                        "packages": [
-                            {
-                                "package_id": t["request"]["package_id"],
-                                "robot": t.get("robot"),
-                                "stage": t["stage"],
-                            }
-                            for t in children
-                        ],
+                        "packages": [control.service_projection(t) for t in children],
                     },
                 )
         except ValueError as exc:
             store.update(task["task_id"], "HOLD", {"reason": str(exc)})
-    for receipt in store.receipts():
-        for request_id, child in list(control.data["tasks"].items()):
-            if (
-                request_id.startswith(receipt["task_id"] + ":")
-                and child["request"]["package_id"]
-                in receipt["message"]["payload"]["package_ids"]
-                and child["stage"] == "await_receipt"
-            ):
-                follow_card = receipt["message"]["payload"].get("follow_card")
-                if follow_card is None:
-                    control.receipt(request_id)
-                else:
-                    control.receipt(request_id, follow_card)
 
 
 def main(*, field_loader=None):

@@ -63,7 +63,7 @@ psql -v ON_ERROR_STOP=1 -d <개발 DB> -f src/main/resources/db/dev/seed.sql
 
 양쪽은 처리 내용을 DB에 commit한 뒤 `message.ack`를 보냅니다. ACK를 잃거나 연결이 끊기면 동일 메시지를 다시 보내고, `message_id` 중복을 제거합니다. 관제 상태는 `task_revision`이 증가할 때만 갱신하며 완료 상태를 과거 진행으로 되돌리지 않습니다. 완료 메시지는 `orders.business_status`나 고객 수령을 바꾸지 않습니다.
 
-`POST /cart-api/receipts`는 `{ "verificationId": "검증 결과 ID", "confirmationRequestId": "확인 요청의 고유 ID" }`를 받습니다. 같은 카트의 5분 이내 성공 검증(`service.handover.verification-age`), QR 유효성, 관제 진행 사본의 카트 배정/도착을 확인하고 해당 포장품 수령을 기록합니다. HTTP 200은 `{receiptId, packageIds, orderComplete}`이며 같은 요청은 동일 receipt를 반환합니다. 실제 수령 의사 확인 후에만 호출합니다. 확정된 수령 근거는 `handover.receipt_recorded`로 관제에 전달하고, 관제는 자체 최신 도착 상태를 다시 검사합니다.
+`POST /cart-api/receipts`는 `{ "verificationId": "검증 결과 ID", "confirmationRequestId": "확인 요청의 고유 ID" }`를 받습니다. 같은 카트의 5분 이내 성공 검증(`service.handover.verification-age`), QR 유효성, 관제 진행 사본의 카트 배정/도착을 확인하고 해당 포장품 수령을 기록합니다. HTTP 200은 `{receiptId, packageIds, orderComplete, followMode}`이며 같은 요청은 동일 receipt를 반환합니다. 실제 수령 의사 확인 후에만 호출합니다. 확정된 수령 근거는 `handover.receipt_recorded`로 관제에 전달하고, 관제는 자체 최신 도착 상태를 다시 검사합니다.
 
 검증: `./gradlew --no-daemon build`는 격리 PostgreSQL에서 예약/outbox 원자성, 실제 WebSocket 인증·저장 후 ACK, 재전송·순서 역전·고객 수령 분리를 검사합니다.
 
@@ -72,3 +72,18 @@ psql -v ON_ERROR_STOP=1 -d <개발 DB> -f src/main/resources/db/dev/seed.sql
 ## 로컬 관제·고객 화면 통합
 
 [통합 가상 시험 실행 안내](../roport-control-server/docs/service-web-local-test.md). 고객 상태는 `GET /api/pickups/{pickupId}/progress`로 소유권 검사 후 조회한다. QR/예약번호 확인 결과의 `verificationId`로 `/cart-api/receipts`에 수령을 명시 요청한다. 도착 전 수령·다른 카트·중복 수령은 서버에서 판정한다.
+
+## 추종 방식 선택·조작 (FFT1-207)
+
+수령 요청에는 `followMode: "none" | "marker" | "appearance"`를 선택해 넣는다. `marker`만 `followCard: 35..49`가 필요하며 다른 모드에 카드 번호를 넣으면 400이다. 모드를 생략한 이전 요청은 카드가 있으면 marker, 없으면 none으로 유지하고 기존 WSS payload 형태를 보존한다. 명시한 marker/appearance는 현재 카트의 관제 capability를 다시 확인한다. `V6__receipt_follow_modes.sql`이 저장 필드를 추가한다.
+
+| API | 결과 |
+| --- | --- |
+| `GET /cart-api/follow/capabilities?verificationId=...` | 해당 카트의 신선한 도착 상태에서 `modes` 반환. 미지원 방식은 수령 요청에서도 거절 |
+| `GET /cart-api/follow/{receiptId}` | mode·stage·status·revision·allowedActions·stale·registration·lastRequest로 새로고침 복원 |
+| `POST /cart-api/follow/{receiptId}/actions` | `{requestId, expectedRevision, operation}`을 durable WSS outbox에 저장. 202 `{accepted:true,requestId}`는 접수이며 실행 성공 아님 |
+| `GET /cart-api/follow/{receiptId}/frames/{frameRef}` | 소유 카트·현재 세션·프레임·만료를 확인한 스냅샷 프록시. 캐시 금지 |
+
+`operation`은 capture/select/release/pause/resume/return이다. select에만 `frameRef`와 `candidateId` 또는 정규화 `[x1,y1,x2,y2]` `box` 하나를 넣는다. 임의 `target_ref`나 후보와 영역을 동시에 보낼 수 없다. 등록 성공은 관제의 로봇 결과를 받아 표시한다. 재전송은 같은 requestId·같은 본문을 사용하며 다른 본문은 409다. 서비스 관제 사본이 10초, 로봇 관측값이 3초를 넘거나 작업이 RUNNING이 아니면 새 조작을 거절한다. 재접속은 상태 조회만 수행하고 조작을 자동 재개하지 않는다.
+
+프레임 연결은 `SERVICE_FOLLOW_PREVIEW_BASE_URL`에 관제 HTTP(S) origin을, `SERVICE_FOLLOW_PREVIEW_TOKEN`에 전용 토큰을 넣는다(생략 시 `SERVICE_CONTROL_TOKEN`). 토큰은 관제의 `ROPORT_FOLLOW_PREVIEW_TOKEN`과 맞춘다. HTTP는 loopback만 허용하며 원격 관제는 HTTPS로 연결한다. 경로는 서버가 `/api/fleet/follow/{receiptId}/frames/{frameRef}`로 고정한다. 미설정은 503이며 외부 URL·redirect는 허용하지 않는다. JPEG/PNG만 최대 2MiB, 연결 1.5초·읽기 2.5초 제한으로 읽는다. 카트 인증은 위의 개발 전용 설정 그대로이므로 공개 운영 인증을 구현한 것으로 보지 않는다.

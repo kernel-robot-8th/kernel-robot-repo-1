@@ -69,3 +69,10 @@ CREATE TABLE IF NOT EXISTS control_service_quarantine (
     recorded_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (site_id, message_id, digest)
 );
+CREATE TABLE IF NOT EXISTS control_service_follow_requests (
+    seq bigserial UNIQUE NOT NULL,
+    request_id text PRIMARY KEY,
+    task_id text NOT NULL REFERENCES control_service_tasks,
+    message jsonb NOT NULL,
+    processed_at timestamptz
+);

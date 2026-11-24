@@ -1,5 +1,7 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { Shopping } from './Shopping';
+import { FollowSession } from './FollowSession';
+import type { FollowMode } from './follow';
 import * as api from './api';
 import { bigButton, initialState, movingPhase, reduce, shoppingDemoEnabled, type MovingPhase, type Notice, type Step } from './flow';
 import { Icon, PhoneQr, type IconName } from './icons';
@@ -68,7 +70,11 @@ export function App() {
   const busy = state.request !== null;
   const [now, setNow] = useState(() => Date.now());
   const [card, setCard] = useState(35);
-  const [requestedFollow, setRequestedFollow] = useState(false);
+  const [mode, setMode] = useState<FollowMode>('none');
+  const [modes, setModes] = useState<FollowMode[] | null>(null);
+  const [capabilityError, setCapabilityError] = useState(false);
+  const [receiptId, setReceiptId] = useState(api.savedReceipt);
+  const [receiptPending, setReceiptPending] = useState(api.pendingReceipt);
   const nextToken = useRef(0);
   // 같은 렌더 안의 연속 터치로 요청이 두 번 나가지 않게 reduce의 요청 상태를 즉시 따라가는 값
   const inFlight = useRef<{ token: number; stop: boolean } | null>(null);
@@ -77,6 +83,17 @@ export function App() {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, []);
+
+  const verificationId = step.name === 'receipt' ? step.pickup.verificationId : undefined;
+  useEffect(() => {
+    setMode('none'); setModes(null); setCapabilityError(false);
+    if (!api.FOLLOW_AVAILABLE || !verificationId) return;
+    let active = true;
+    void api.followCapabilities(verificationId).then(supported => {
+      if (active) setModes(supported);
+    }).catch(() => { if (active) { setModes([]); setCapabilityError(true); } });
+    return () => { active = false; };
+  }, [verificationId]);
 
   const pickup = pickupOf(step);
   const go = (s: Step) => {
@@ -98,8 +115,10 @@ export function App() {
     } catch {
       res = null;
     }
-    if (inFlight.current?.token === token) inFlight.current = null;
-    done(token, res);
+    if (inFlight.current?.token === token) {
+      inFlight.current = null;
+      done(token, res);
+    }
   }
 
   const verifyWith = (call: () => Promise<VerifyResult>) =>
@@ -116,11 +135,13 @@ export function App() {
       command === 'PAUSE',
     );
 
-  const confirm = (target: VerifiedPickup, followCard?: number) =>
-    send(() => api.confirmReceipt(target, followCard), (token, res) => {
-      if (res?.accepted) setRequestedFollow(followCard !== undefined);
-      dispatch({ type: 'receiptAnswered', token, res });
-    });
+  const receiptAnswered = (token: number, res: api.ReceiptResult | null) => {
+    if (res?.accepted && res.receiptId) setReceiptId(res.receiptId);
+    setReceiptPending(api.pendingReceipt());
+    dispatch({ type: 'receiptAnswered', token, res });
+  };
+  const confirm = (target: VerifiedPickup) =>
+    send(() => api.confirmReceipt(target, api.FOLLOW_AVAILABLE ? mode : 'none', card), receiptAnswered);
 
   function reset() {
     api.resetDemo();
@@ -153,7 +174,7 @@ export function App() {
         )}
       </header>
 
-      {progress && (
+      {progress && !receiptId && !receiptPending && (
         <ol className="progress" aria-label="진행 단계">
           {progress.labels.map((label, i) => (
             <li key={label} className={i < progress.current ? 'done' : i === progress.current ? 'current' : ''}>
@@ -165,6 +186,14 @@ export function App() {
       )}
 
       <main className="stage">
+        {receiptId ? <FollowSession receiptId={receiptId} onClose={() => { api.forgetReceipt(); setReceiptId(null); go({ name: 'idle' }); }} />
+          : receiptPending ? <Split visual={<StatusIcon name="alert" tone="warn" />}>
+            <h1>수령 확인 결과를 확인해 주세요</h1>
+            <p className="lead">수령 확인 결과를 받지 못했습니다. 이전 선택을 유지한 채 다시 확인해 주세요.</p>
+            <button className="btn btn-primary" disabled={busy} onClick={() => send(api.retryReceipt, receiptAnswered)}>{busy ? '확인 중…' : '수령 확인 결과 다시 확인'}</button>
+            {notice && <p role="alert">{NOTICE_TEXT[notice]}</p>}
+          </Split> : <>
+
         {step.name === 'idle' && (
           <Split visual={<PhoneQr />}>
             <h1>{api.IS_DEMO ? <>예약 QR을<br />카메라에 보여주세요</> : <>예약번호를 입력해 주세요</>}</h1>
@@ -317,16 +346,20 @@ export function App() {
         {step.name === 'receipt' && (
           <Split visual={<StatusIcon name="bag" />}>
             <h1>물품을 모두 받으셨나요?</h1>
-            <p className="lead">{api.FOLLOW_AVAILABLE ? '바로 복귀하려면 수령 확인을, 추종하려면 카드 번호를 선택하고 추종 요청을 눌러 주세요.' : '수령을 확인하면 카트는 대기 장소로 돌아갑니다.'}</p>
-            <button className="btn btn-primary btn-block" disabled={busy} onClick={() => confirm(step.pickup)}>
-              {busy ? '저장 중…' : '수령 확인'}
+            <p className="lead">물품 수령을 확인하고 카트 이용 방법을 선택해 주세요.</p>
+            {api.FOLLOW_AVAILABLE && <fieldset className="follow-options" disabled={busy}>
+              <legend>마커 카드를 부착하거나 들고 이동할 수 있나요?</legend>
+              <label><input type="radio" name="follow-mode" value="none" checked={mode === 'none'} onChange={() => setMode('none')} /> 추종하지 않고 카트 복귀</label>
+              <label><input type="radio" name="follow-mode" value="marker" checked={mode === 'marker'} disabled={!modes?.includes('marker')} onChange={() => setMode('marker')} /> 가능해요 · 마커 카드 추종</label>
+              <label><input type="radio" name="follow-mode" value="appearance" checked={mode === 'appearance'} disabled={!modes?.includes('appearance')} onChange={() => setMode('appearance')} /> 어려워요 · 외형 인식 추종</label>
+              {mode === 'marker' && <label>추종 카드 번호 <select value={card} onChange={e => setCard(Number(e.target.value))}>
+                {Array.from({ length: 15 }, (_, i) => i + 35).map(n => <option key={n}>{n}</option>)}
+              </select></label>}
+              <p className="meta" role="status">{modes === null ? '카트가 지원하는 추종 방식을 확인하고 있습니다.' : capabilityError ? '추종 지원 상태를 확인하지 못했습니다. 안내 직원에게 문의해 주세요.' : '선택할 수 없는 방식은 현재 카트에서 지원하지 않습니다. 추종 출발에는 관제 승인이 필요합니다.'}</p>
+            </fieldset>}
+            <button className="btn btn-primary btn-block" disabled={busy || mode !== 'none' && !modes?.includes(mode)} onClick={() => confirm(step.pickup)}>
+              {busy ? '저장 중…' : mode === 'none' ? '수령 확인' : '수령 확인 및 추종 요청'}
             </button>
-            {api.FOLLOW_AVAILABLE && <>
-              <label>추종 카드 번호 <select value={card} disabled={busy} onChange={e => setCard(Number(e.target.value))}>
-                {Array.from({length: 15}, (_, i) => i + 35).map(n => <option key={n}>{n}</option>)}
-              </select></label>
-              <button className="btn btn-secondary" disabled={busy} onClick={() => confirm(step.pickup, card)}>수령 확인 및 추종 요청</button>
-            </>}
           </Split>
         )}
 
@@ -334,13 +367,14 @@ export function App() {
           <div className="finale">
             <StatusIcon name="check" tone="done" />
             <h1>수령이 완료되었습니다</h1>
-            <p className="lead">{requestedFollow ? '추종 요청을 접수했습니다. 관제 승인 후 출발합니다.' : '수령 확인을 저장했습니다. 카트 복귀는 관제에서 처리합니다.'}</p>
+            <p className="lead">수령 확인을 저장했습니다. 카트 복귀는 관제에서 처리합니다.</p>
             {api.RECEIPT_IS_DEMO && <p className="demo-note">데모: 수령 기록은 아직 서버에 연결 전이라 저장되지 않았습니다.</p>}
             <p className="tagline">로봇이 만드는 더 편리한 여행의 시작, RO:PORT</p>
           </div>
         )}
 
         {notice && <p className="notice" role="alert">{NOTICE_TEXT[notice]}</p>}
+        </>}
       </main>
 
       {api.IS_DEMO && step.name !== 'shopping' && (

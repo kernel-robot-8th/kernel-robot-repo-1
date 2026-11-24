@@ -775,7 +775,7 @@
     }
   },
   {
-    "label": "Pinky \uace0\uac1d \uce74\ub4dc \ucd94\uc885",
+    "label": "Pinky 고객 카드 추종",
     "topic": "roport/robot/pinky1/cmd",
     "qos": 1,
     "retain": false,
@@ -794,6 +794,133 @@
         "map_version": "map-demo-v1",
         "card_id": 35,
         "max_duration_s": 240
+      }
+    }
+  },
+  {
+    "label": "Pinky 외형 추종 등록 capture",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-registration-capture",
+      "type": "follow_registration_command",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "registration-capture",
+      "payload": {
+        "expected_boot_version": "boot-pinky1-007",
+        "map_version": "map-demo-v1",
+        "follow_session_id": "follow-session-demo-1",
+        "operation": "capture"
+      }
+    }
+  },
+  {
+    "label": "Pinky 외형 추종 등록 select",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-registration-select",
+      "type": "follow_registration_command",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "registration-select",
+      "payload": {
+        "expected_boot_version": "boot-pinky1-007",
+        "map_version": "map-demo-v1",
+        "follow_session_id": "follow-session-demo-1",
+        "operation": "select",
+        "frame_ref": "frame-demo-1",
+        "candidate_id": "candidate-demo-1"
+      }
+    }
+  },
+  {
+    "label": "Pinky 외형 추종 등록 select-box",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-registration-select-box",
+      "type": "follow_registration_command",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "registration-select-box",
+      "payload": {
+        "expected_boot_version": "boot-pinky1-007",
+        "map_version": "map-demo-v1",
+        "follow_session_id": "follow-session-demo-1",
+        "operation": "select",
+        "frame_ref": "frame-demo-1",
+        "box": [
+          0.1,
+          0.2,
+          0.4,
+          0.8
+        ]
+      }
+    }
+  },
+  {
+    "label": "Pinky 외형 추종 등록 release",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-registration-release",
+      "type": "follow_registration_command",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "registration-release",
+      "payload": {
+        "expected_boot_version": "boot-pinky1-007",
+        "map_version": "map-demo-v1",
+        "follow_session_id": "follow-session-demo-1",
+        "operation": "release"
+      }
+    }
+  },
+  {
+    "label": "Pinky 등록 외형 추종 시작",
+    "topic": "roport/robot/pinky1/cmd",
+    "qos": 1,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "msg-follow-appearance",
+      "type": "follow_target_command",
+      "source": "control-01",
+      "target": "pinky1",
+      "sent_at": "2026-11-11T10:00:00+09:00",
+      "expires_at": "2026-11-11T10:00:05+09:00",
+      "command_id": "follow-appearance",
+      "payload": {
+        "expected_boot_version": "boot-pinky1-007",
+        "map_version": "map-demo-v1",
+        "follow_session_id": "follow-session-demo-1",
+        "follow_mode": "appearance",
+        "target_ref": "target-demo-1",
+        "perception_boot_id": "perception-demo-1",
+        "max_duration_s": 120
       }
     }
   }

@@ -3,6 +3,7 @@
 // 데모 응답은 서버·로봇 동작을 확인한 결과가 아니다.
 import type { Location, ServiceMode, VerifiedPickup, VerifyResult } from './types';
 import { newVerificationRequestId, toVerifyResult } from './verify';
+import { framePath, parseFollowStatus, parseReceiptIntent, receiptIntent, type FollowAction, type FollowMode, type FollowStatus, type ReceiptIntent } from './follow';
 
 // 배포 nginx에는 아직 /cart-api 전달이 없어 기본을 데모로 둔다.
 const USE_SERVER = import.meta.env.VITE_PAD_API === 'server';
@@ -143,18 +144,89 @@ async function postCart(path: string, body: string): Promise<[number, unknown, s
 
 // 고객의 수령 확인. 서비스 서버가 수령 완료를 기록한다(SR-18-2).
 // 서버가 배정·도착·확인 유효성을 검사한 뒤에만 완료를 표시한다.
-export async function confirmReceipt(pickup: VerifiedPickup, followCard?: number): Promise<{ accepted: boolean }> {
-  const { pickupId, verificationId } = pickup;
+export interface ReceiptResult { accepted: boolean; receiptId?: string }
+const RECEIPT_KEY = `roport.pad.receipt.${CART_ID}`;
+const RECEIPT_PENDING_KEY = `roport.pad.receipt-pending.${CART_ID}`;
+
+export function savedReceipt(): string | null {
+  if (!USE_SERVER) return null;
+  try { return sessionStorage.getItem(RECEIPT_KEY); } catch { return null; }
+}
+export function pendingReceipt(): ReceiptIntent | null {
+  if (!USE_SERVER) return null;
+  try { return parseReceiptIntent(JSON.parse(sessionStorage.getItem(RECEIPT_PENDING_KEY) || 'null')); } catch { return null; }
+}
+export function forgetReceipt(): void { sessionStorage.removeItem(RECEIPT_KEY); }
+
+export async function confirmReceipt(pickup: VerifiedPickup, mode: FollowMode = 'none', card?: number): Promise<ReceiptResult> {
   if (USE_SERVER) {
-    if (!verificationId) return { accepted: false };
-    // Stable across response loss, repeated taps and reloads of this verification.
-    const [status, body] = await postCart('/cart-api/receipts', JSON.stringify({ verificationId, confirmationRequestId: `receipt-${verificationId}`, followCard }));
-    return { accepted: (status === 200 || status === 201) && Boolean(body && typeof body === 'object' && 'receiptId' in body && typeof body.receiptId === 'string' && body.receiptId) };
+    if (!pickup.verificationId) return { accepted: false };
+    const intent = receiptIntent(pickup.verificationId, mode, card);
+    const pending = pendingReceipt();
+    if (pending && JSON.stringify(pending) !== JSON.stringify(intent)) {
+      throw new Error('이전 수령 확인 결과를 먼저 확인해 주세요.');
+    }
+    // Persist only the immutable request, never reservation/customer data or camera images.
+    sessionStorage.setItem(RECEIPT_PENDING_KEY, JSON.stringify(intent));
+    return retryReceipt();
   }
   await delay(500);
-  const found = DEMO_PICKUPS.find((p) => p.pickupId === pickupId);
+  const found = DEMO_PICKUPS.find((p) => p.pickupId === pickup.pickupId);
   if (found) found.received = true;
   return { accepted: Boolean(found) };
+}
+
+// User initiated only: reloading never repeats a receipt or robot command.
+export async function retryReceipt(): Promise<ReceiptResult> {
+  const intent = pendingReceipt();
+  if (!intent) throw new Error('수령 확인 기록이 없습니다.');
+  const [status, body] = await postCart('/cart-api/receipts', JSON.stringify(intent));
+  if ((status === 200 || status === 201) && body && typeof body === 'object' && 'receiptId' in body && typeof body.receiptId === 'string' && body.receiptId) {
+    sessionStorage.setItem(RECEIPT_KEY, body.receiptId);
+    sessionStorage.removeItem(RECEIPT_PENDING_KEY);
+    return { accepted: true, receiptId: body.receiptId };
+  }
+  if (status >= 400 && status < 500 && body && typeof body === 'object') {
+    sessionStorage.removeItem(RECEIPT_PENDING_KEY);
+    return { accepted: false };
+  }
+  throw new Error('수령 확인 결과를 받지 못했습니다. 같은 내용으로 다시 확인해 주세요.');
+}
+
+async function getCart(path: string, signal?: AbortSignal): Promise<Response> {
+  return fetch(path, { headers: { 'X-Cart-Id': CART_ID }, cache: 'no-store', signal: signal ?? AbortSignal.timeout(8000) });
+}
+
+export async function followCapabilities(verificationId: string): Promise<FollowMode[]> {
+  const res = await getCart(`/cart-api/follow/capabilities?verificationId=${encodeURIComponent(verificationId)}`);
+  if (!res.ok) throw new Error('추종 지원 상태를 확인하지 못했습니다.');
+  const data: unknown = await res.json();
+  if (!data || typeof data !== 'object' || !('modes' in data) || !Array.isArray(data.modes) ||
+      data.modes.some(m => m !== 'marker' && m !== 'appearance')) throw new Error('추종 지원 상태를 확인하지 못했습니다.');
+  return data.modes;
+}
+
+export async function followStatus(receiptId: string, signal?: AbortSignal): Promise<FollowStatus> {
+  const res = await getCart(`/cart-api/follow/${encodeURIComponent(receiptId)}`, signal);
+  if (!res.ok) throw new Error('카트 상태를 확인하지 못했습니다. 안내 직원에게 문의해 주세요.');
+  const status = parseFollowStatus(await res.json(), receiptId);
+  if (!status) throw new Error('카트 상태 응답을 확인하지 못했습니다.');
+  return status;
+}
+
+export async function followAction(receiptId: string, action: FollowAction): Promise<boolean> {
+  const [status, body] = await postCart(`/cart-api/follow/${encodeURIComponent(receiptId)}/actions`, JSON.stringify(action));
+  if (status >= 200 && status < 300 && body && typeof body === 'object' && 'accepted' in body && body.accepted === true) return true;
+  if (status >= 400 && status < 500) return false;
+  throw new Error('요청 결과를 확인하지 못했습니다.');
+}
+
+export async function followImage(receiptId: string, frameRef: string, path: string, signal: AbortSignal): Promise<Blob> {
+  if (path !== framePath(receiptId, frameRef)) throw new Error('사진 경로를 확인하지 못했습니다.');
+  const res = await getCart(path, signal);
+  const contentType = res.headers.get('content-type')?.split(';')[0];
+  if (!res.ok || !['image/jpeg', 'image/png'].includes(contentType || '')) throw new Error('사진을 불러오지 못했습니다. 다시 찍어 주세요.');
+  return res.blob();
 }
 
 // 아래 요청은 실제 연동 시 관제를 거쳐 로봇 명령이 된다. 응답은 "접수"일 뿐 로봇 동작 완료가 아니다.
