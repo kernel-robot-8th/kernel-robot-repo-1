@@ -32,6 +32,8 @@ def target_bearing_change(pose, previous, current):
 
 
 RETARGET_ANGLE = math.radians(12)
+TURN_START_ANGLE = math.radians(10)
+TURN_STOP_ANGLE = math.radians(6)
 
 
 COSTMAP_MAX_AGE_NS = 1_000_000_000
@@ -302,7 +304,7 @@ class ShoppingNav:
                 self.node.get_logger().info(f'SHOP_RETARGET delta={math.degrees(change):.0f}deg '
                                             f'target_bearing={math.degrees(bearing):.0f}deg')
                 self.cancel()
-            elif self.turn_only and not self.detouring and abs(bearing) < math.radians(8):
+            elif self.turn_only and not self.detouring and abs(bearing) < TURN_STOP_ANGLE:
                 self.cancel()
             elif not self.turn_only and (separation <= gap + .015 or
                     not self.detouring and math.dist(pose[:2], self.destination) < .015):
@@ -312,7 +314,8 @@ class ShoppingNav:
             self.cancelled = False
             travel = min(.8, separation-gap)
             advance = separation >= advance_at - 1e-9
-            self.turn_only = not advance and abs(bearing) > .32
+            turn_at = TURN_START_ANGLE if via is None else .32
+            self.turn_only = not advance and abs(bearing) > turn_at
             if advance or self.turn_only:
                 if self.turn_only:
                     travel = 0.
