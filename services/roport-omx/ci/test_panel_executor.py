@@ -446,6 +446,16 @@ class PanelExecutorTest(unittest.TestCase):
             self.assertEqual(self.executor._model_paths(), set())
             self.assertEqual(call.call_count, 2)
 
+    def test_models_ready_fetches_the_first_list_in_the_background(self):
+        # #156 review: the v2 Host asks this before check() so it never waits for the panel
+        with patch.object(self.executor, "_call", wraps=self.executor._call) as call:
+            self.assertFalse(self.executor.models_ready())
+            self.executor._models_refresh.join(5)
+            self.assertEqual(call.call_count, 1)
+            self.assertTrue(self.executor.models_ready())
+            self.assertEqual(self.executor._model_paths(), {MODEL})
+            self.assertEqual(call.call_count, 1)  # no second fetch
+
     def test_refusals_happen_before_anything_starts(self):
         cases = [("NOT_ARMED", {"armed": False}), ("NOT_ARMED", {"armed": None})]
         for code, change in cases:
