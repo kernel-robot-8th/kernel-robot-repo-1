@@ -62,6 +62,11 @@ PANEL_END_ON_PLACE = (3, 18, 0)
 # the hands' state at that moment and the camera's own capture time (not the panel's read time),
 # marked observed_clock "capture" (a "control_step" time or no mark never counts).
 PANEL_PLACEMENT_EVIDENCE = (3, 20, 0)
+# Panel 3.24.1: the unloading's tray judge with the pre-mission photo check (job.info.tray_placed).
+PANEL_TRAY_PLACED = (3, 24, 1)
+# Unloading completed at the tray (TK 2026-11-24): the panel's tray judge saw the box on the Pinky tray,
+# the slot empty and both hands out of the tray zone; the arms still go home. First report.
+PINKY_PLACED = "pinky_placed"
 # An early COMPLETE uses a capture at most this old (seconds, same PC clock).
 PLACEMENT_FRESH_S = 3.0
 # package_id is the box's ArUco marker number as a string (agreed with control, same rule as OMX3's
@@ -172,6 +177,8 @@ def _hold_code(result: dict) -> str:
         return "PANEL_EMERGENCY_STOP"
     if _handover_hold(result):
         return "PANEL_HANDOVER_HOLD"
+    if (result.get("hold") or {}).get("reason") == "tray_reentry":
+        return "PANEL_TRAY_REENTRY_HOLD"
     if align.get("released") is False:
         return "PANEL_ALIGN_RELEASE_FAILED"
     return "PANEL_HOLD"
@@ -212,6 +219,9 @@ HOLD_ERRORS = {
     # the shelf, and the tray is not checked afterwards, so a drop cannot be ruled out.
     "PANEL_BOX_DROPPED",
     "PANEL_BOX_NOT_ON_SHELF",
+    # panel 3.24: after an unloading completed at the tray, a hand came back into the tray zone on
+    # the way home and could not get out (the Pinky may be leaving): held in place, torque on
+    "PANEL_TRAY_REENTRY_HOLD",
 }
 HOME_RETURN_TIMEOUT_S = 90.0
 # The panel takes episodes of 3-600 s. A control-tower evaluation ends on its own (end_on_return:
@@ -554,6 +564,7 @@ class PanelExecutor:
         timeout: float = 5.0,
         start_timeout: float = 300.0,
         report_placement: bool = False,
+        report_unload_placement: bool = False,
         end_on_place: bool = False,
         place_shadow: bool = False,
     ):
@@ -563,6 +574,9 @@ class PanelExecutor:
         # Loading in two reports: COMPLETE once the box is in its slot (Pinky may leave), then the
         # alignment result as a progress event. Needs a control tower that accepts "shelf_placed".
         self.report_placement = report_placement
+        # Unloading in two reports (pinky_placed, then pinky_load): only with a control tower that stores the first
+        # one (#169 review: control main treats it as the final report and HOLDs). Off unless asked for.
+        self.report_unload_placement = report_unload_placement
         self.end_on_place = end_on_place
         # panel 3.18: run the placement judge during loading and only record it (no hand-over)
         self.place_shadow = place_shadow
@@ -885,6 +899,69 @@ class PanelExecutor:
             "placement": {k: placement.get(k) for k in keys if k in placement},
         }
 
+    def _tray_placement(self, job: dict, info: dict) -> dict | None:
+        """The unloading's box judged on the Pinky tray while the eval still runs (panel 3.24.1, TK 11/24).
+
+        The same rule as the camera check after an unloading (_pinky_error) plus the hands: box on the tray,
+        the commanded slot empty, the tray compared with this mission's own photo, both fingertips out of
+        the tray zone and both grippers released, a capture at most PLACEMENT_FRESH_S old."""
+        if (
+            not self.report_unload_placement
+            or self.operation != "OUTBOUND"
+            or self._placed
+            or not job.get("running")
+            or info.get("repo_id") != self.repo_id
+            or info.get("tray_hold")
+        ):
+            return None
+        p = info.get("tray_placed")
+        if not isinstance(p, dict) or (self._version or ()) < PANEL_TRAY_PLACED:
+            return None
+        if (
+            p.get("source") != "eval_judge"
+            or p.get("operation") != "OUTBOUND"
+            or p.get("mode") != "on"
+            or p.get("on_pinky") is not True
+            or _slot_empty(p, self.slot) is not True
+            or str(p.get("box")) != str(self.box)
+            or p.get("tips_clear") is not True
+            or p.get("grippers_released") is not True
+            or p.get("tray_reference_state") != "ok"
+            or p.get("pre_mission_match") is not True
+            or p.get("observed_clock") != "capture"
+        ):
+            return None
+        captured = p.get("observed_ts")
+        if (
+            not isinstance(captured, (int, float))
+            or not 0 <= time.time() - captured <= PLACEMENT_FRESH_S
+        ):
+            return None
+        self._placed = True
+        keys = (
+            "slot",
+            "box",
+            "source",
+            "on_pinky",
+            "slot_empty",
+            "tray_marker",
+            "tray_changed",
+            "tips_clear",
+            "grippers_released",
+            "tray_reference",
+            "tray_reference_state",
+            "observed_ts",
+            "observed_clock",
+            "judged_at",
+        )
+        return {
+            "state": "placed",
+            "step": "tray_placed",
+            "evidence": PINKY_PLACED,
+            "grasp_released": True,
+            "placement": {k: p.get(k) for k in keys if k in p},
+        }
+
     def observe(self) -> dict:
         if self.repo_id is None:
             return {"state": "idle"}
@@ -896,6 +973,16 @@ class PanelExecutor:
             return placed
         job = status.get("job") or {}
         info = job.get("info") or {}
+        placed = self._tray_placement(job, info)
+        if placed is not None:
+            return placed
+        if (
+            job.get("running")
+            and info.get("repo_id") == self.repo_id
+            and isinstance(info.get("tray_hold"), dict)
+        ):
+            # panel 3.24: held over the tray zone on the way home; the run waits for a person
+            return {"state": "failed", "error": "PANEL_TRAY_REENTRY_HOLD", "arms": {}}
         if job.get("running") and info.get("repo_id") == self.repo_id:
             self._missing_since = None
             phase = info.get("phase")
