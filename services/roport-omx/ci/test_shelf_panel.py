@@ -143,6 +143,28 @@ class ShelfPanelTest(unittest.TestCase):
         self.assertTrue(detail.startswith("home return did not finish | first: "))
         self.assertEqual(len(detail), 200)
 
+    def test_unload_wrist_check_refusal_comes_before_the_pinky_check(self):
+        # task/omx-cooperative #163: unloading refused by the wrist camera check never ran the
+        # policy, so there is no Pinky check to read; it was PANEL_PINKY_CHECK_NOT_RUN (HOLD)
+        result = {
+            "exit_ok": False,
+            "err": {"code": 13, "name": "err_code_13"},
+            "wrist_check": {
+                "ok": False,
+                "why": "right move changed both wrist cameras",
+                "change": {"right": {"wrist_left": 0.027, "wrist_right": 0.044}},
+            },
+        }
+        seen = PanelExecutor._result(result, "2b", "OUTBOUND", 16)
+        self.assertEqual(seen["state"], "failed")
+        self.assertEqual(seen["error"], "PANEL_WRIST_CHECK")
+        self.assertIn("wrist_right=0.044", seen["detail"])
+        # a person's stop still comes first
+        stopped = PanelExecutor._result(
+            result | {"stopped_by": "중지"}, "2b", "OUTBOUND", 16
+        )
+        self.assertEqual(stopped["error"], "PANEL_STOPPED")
+
     def test_possible_drop_waits_for_a_person(self):
         # task/omx-cooperative #156 (TK 2026-11-24): a box that may be on the floor is a HOLD
         self.assertIn("PANEL_BOX_DROPPED", shelf_panel.HOLD_ERRORS)
