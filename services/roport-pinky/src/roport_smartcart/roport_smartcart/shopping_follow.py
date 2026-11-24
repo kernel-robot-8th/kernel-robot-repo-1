@@ -204,9 +204,9 @@ class Shopping:
 
     def queue_frame(self, msg):
         # TF can lag several camera frames. Use the newest frame with a matching pose.
-        self.waiting.append(msg)
+        self.waiting.append((msg, time.monotonic()))
 
-    def camera(self, msg):
+    def camera(self, msg, arrival):
         stamp, info = self.received(msg), self.info
         if (stamp is None or info is None or not msg.header.frame_id
                 or not self.optical_frame and msg.header.frame_id != info.header.frame_id):
@@ -215,13 +215,17 @@ class Shopping:
         transform = self.sensor_transform(child, msg.header.stamp)
         if transform is None or not msg.data:
             return
+        jpeg = None
         if isinstance(msg, CompressedImage):
             try:
-                img = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
+                data = memoryview(msg.data)
+                img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
             except cv2.error:
                 return
             if img is None or img.shape[:2] != (info.height, info.width):
                 return
+            if data[:2].tobytes() == b'\xff\xd8':
+                jpeg = data.tobytes()
         else:
             if ((info.width, info.height) != (msg.width, msg.height) or msg.encoding not in ('bgr8', 'rgb8')
                     or not msg.width or msg.step < 3*msg.width or len(msg.data) != msg.height*msg.step):
@@ -230,7 +234,7 @@ class Shopping:
             if msg.encoding == 'rgb8':
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         with self.lock:
-            self.packet = (stamp, img, info, transform)
+            self.packet = (stamp, img, info, transform, arrival, time.monotonic(), jpeg)
         return True
 
     def reset(self):
@@ -291,14 +295,17 @@ class Shopping:
                 self.reset()
                 if not self.packet or now-self.packet[0] > .55:
                     raise ValueError('카메라를 연결하고 있어요. 잠시 뒤 다시 눌러 주세요.')
-                stamp, frame, _, _ = self.packet
-                ok, jpeg = cv2.imencode('.jpg', frame)
-                if not ok:
-                    raise ValueError('사진을 다시 찍어 주세요.')
+                stamp, frame = self.packet[:2]
+                jpeg = self.packet[6]
+                if jpeg is None:
+                    ok, encoded = cv2.imencode('.jpg', frame)
+                    if not ok:
+                        raise ValueError('사진을 다시 찍어 주세요.')
+                    jpeg = encoded.tobytes()
                 self.touch = now
                 if self.nav.pending is None and self.nav.handle is None:
                     self.nav.fault = None
-                self.frozen = (uuid4().hex, (stamp, frame, None, jpeg.tobytes()))
+                self.frozen = (uuid4().hex, (stamp, frame, None, jpeg))
             elif action == 'select':
                 idx = body.get('index')
                 if (not self.frozen or self.frozen[0] != body.get('frame')
@@ -351,15 +358,19 @@ class Shopping:
 
     def status(self, key):
         with self.lock:
+            now = time.monotonic()
             own = key == self.owner and self.owner is not None
             frozen = self.frozen if own else None
-            return dict(ownsCamera=own, stopped=self.stopped(time.monotonic()), simulation=self.node.get_parameter('use_sim_time').value, canStart=bool(own and not self.armed and self.can_start(time.monotonic())), selected=bool(own and self.seed), armed=self.armed if own else False,
+            age = now-self.observed
+            # A slow scan can delay the next box without reporting a miss.
+            box = self.frame_box if own and 0 <= age < 1.4 else None
+            return dict(ownsCamera=own, stopped=self.stopped(now), simulation=self.node.get_parameter('use_sim_time').value, canStart=bool(own and not self.armed and self.can_start(now)), selected=bool(own and self.seed), armed=self.armed if own else False,
                         state=self.track.state if own else 'SEARCHING', drive=self.drive if own else 'HOLD',
-                        notice=self.indicator() if own else 'INACTIVE', reason=self.reason if own else '', age=round(time.monotonic()-self.observed, 2) if own and self.observed>0 else None,
+                        notice=self.indicator() if own else 'INACTIVE', reason=self.reason if own else '', age=round(age, 2) if own and self.observed>0 else None,
                         position=self.track.samples[-1][1] if own and self.track.samples else None, frame=frozen[0] if frozen else None,
                         detecting=bool(frozen and frozen[1][2] is None),
                         boxes=[i['box'] for i in frozen[1][2]] if frozen and frozen[1][2] else [],
-                        box=self.frame_box if own and time.monotonic()-self.observed<.55 else None)
+                        box=box)
 
     def indicator(self):
         if not self.owner or self.seed is None:
@@ -382,6 +393,8 @@ class Shopping:
                 return self.frozen[1][3]
             packet = self.packet
         if packet and time.monotonic()-packet[0] < .8:
+            if packet[6] is not None:
+                return packet[6]
             ok, jpeg = cv2.imencode('.jpg', packet[1], [cv2.IMWRITE_JPEG_QUALITY, 75])
             return jpeg.tobytes() if ok else None
         return None
@@ -411,9 +424,15 @@ class Shopping:
             if not seed or packet is None or packet is previous:
                 continue
             previous = packet
-            stamp, frame, info, camera = packet
+            stamp, frame, info, camera, arrival, ready, _ = packet
             h, w = frame.shape[:2]
             tic = time.monotonic()
+            timing = (f'camera_age={tic-stamp:.2f} capture_to_callback={arrival-stamp:.2f} '
+                      f'callback_to_frame={ready-arrival:.2f} frame_to_vision={tic-ready:.2f}')
+            if tic-stamp >= .60:
+                self.node.get_logger().info(f'SHOP_VISION_SKIP before_detection {timing}',
+                                            throttle_duration_sec=2.)
+                continue
             try:
                 if generation != version:
                     templates = SelectedProposals(*seed)
@@ -433,7 +452,7 @@ class Shopping:
                     if key is not None:
                         items.append((item, key))
                 template_count = len(items)
-                scan_interval = 3. if len(items)==1 and self.track.state=='FOLLOWING' else .7
+                scan_interval = 3. if self.track.state == 'FOLLOWING' and tic-self.observed < .45 else .7
                 if not items or time.monotonic()-last_yolo >= scan_interval:
                     # After selection, one full-frame YOLO pass sees people entering from either side.
                     for item in self.detector.full_frame(frame):
@@ -443,6 +462,10 @@ class Shopping:
                             items.append((item, key))
                     last_yolo = time.monotonic()
                 after_detection = time.monotonic()
+                if after_detection-stamp >= .60:
+                    self.node.get_logger().info(f'SHOP_VISION_SKIP before_match {timing} detect={after_detection-tic:.2f}',
+                                                throttle_duration_sec=2.)
+                    continue
                 boxes = [item['box'] for item, _ in items]
                 normalized = [dict(box=[a/w,b/h,c/w,d/h]) for a,b,c,d in boxes]
                 if version != generation:
@@ -452,6 +475,7 @@ class Shopping:
                 if tracker:
                     with self.lock:
                         anchor = self.track.samples[-1][1] if self.track.samples else None
+                        confirmed = self.track.confirmed
                         recent_box = (self.frame_box if self.track.state == 'FOLLOWING' and
                                       0 < stamp-self.observed < .45 else None)
                     expected = None
@@ -482,13 +506,16 @@ class Shopping:
                     def near_anchor(box):
                         location = location_of(tuple(box), near=True)
                         return anchor and location and math.dist(anchor, location) < .18
-                    _, scores, match = tracker.step(frame, near_anchor=near_anchor, expected_box=expected)
+                    recent_confirmation = confirmed is not None and 0 < stamp-confirmed[0] < 1.25
+                    _, scores, match = tracker.step(frame, near_anchor=near_anchor, expected_box=expected,
+                                                    recent_confirmation=recent_confirmation)
                     if invalid_crop and not items and match.get('reason') == 'no_detection':
                         # Malformed detections are not clean loss evidence for a bypass turn.
                         match = {**match, 'reason': 'processing_error'}
                     if match['state'] == 'MATCH':
                         pick = match['index']
-                        if pick >= template_count and 0 < boxes[pick][0] and boxes[pick][2] < w-1:
+                        if (not match.get('continuity') and pick >= template_count
+                                and 0 < boxes[pick][0] and boxes[pick][2] < w-1):
                             # Refresh the fast proposal crop; identity still uses the original portrait.
                             templates = SelectedProposals(frame, normalized[pick]['box'])
                         point = location_of(items[pick][1])
@@ -499,7 +526,8 @@ class Shopping:
                     if generation != self.generation:
                         continue
                     if tracker:
-                        if not self.track.update(stamp, point, uncertain):
+                        if not self.track.update(stamp, point, uncertain,
+                                                 confirm_identity=not match.get('continuity')):
                             continue
                         self.miss_reason = match.get('reason')
                         cropped = pick is not None and point is None and boxes[pick][3]>=h-2
@@ -507,9 +535,13 @@ class Shopping:
                         if self.close_streak >= 3:
                             self.track.state = 'CLOSE'
                         self.frame_box = normalized[pick]['box'] if pick is not None else None
-                        if self.track.state != getattr(self, '_logged_state', None) or time.monotonic()-getattr(self,'_logged_at',0)>2:
-                            self._logged_at, self._logged_state = time.monotonic(), self.track.state
-                            self.node.get_logger().info(f'{self.track.state} match={match} scores={[round(v["score"],2) for v in scores]} candidates={len(items)} pose={point} camera_age={tic-stamp:.2f} detect={after_detection-tic:.2f} match={time.monotonic()-after_detection:.2f}')
+                        finished = time.monotonic()
+                        if self.track.state != getattr(self, '_logged_state', None) or finished-getattr(self,'_logged_at',0)>2:
+                            self._logged_at, self._logged_state = finished, self.track.state
+                            self.node.get_logger().info(
+                                f'{self.track.state} match={match} scores={[round(v["score"],2) for v in scores]} '
+                                f'candidates={len(items)} pose={point} {timing} '
+                                f'detect={after_detection-tic:.2f} match={finished-after_detection:.2f}')
                         self.observed = stamp
                         self.lock.notify_all()
                         self.node.get_logger().debug(f'{self.track.state} target={point} latency={time.monotonic()-stamp:.3f}')
@@ -577,7 +609,7 @@ class Shopping:
 
     def tick(self):
         for index in range(len(self.waiting)-1, -1, -1):
-            if self.camera(self.waiting[index]):
+            if self.camera(*self.waiting[index]):
                 for _ in range(index+1):
                     self.waiting.popleft()
                 break
@@ -599,9 +631,10 @@ class Shopping:
             if self.nav.fault or self.nav.guard.get('blocked'):
                 self.armed = False
             if (self.field_camera and self.seed and not self.gap_selected and not self.armed and pose
-                    and self.track.state == 'FOLLOWING' and now - self.observed < .55):
+                    and self.track.state == 'FOLLOWING' and 0 <= now-self.observed < .55):
                 distances = [math.dist(pose[:2], point) for _, point in list(self.track.samples)[-3:]]
                 selected_distance = median(distances)
+                self.nav.follow_distance_m = max(MIN_FOLLOW_GAP_M, selected_distance)
                 self.gap_selected = True
                 gap, advance_at = following_distances(self.nav.follow_distance_m)
                 self.node.get_logger().info(

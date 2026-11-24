@@ -33,7 +33,7 @@ class Track:
         self.observation_stamp = float('-inf')
         self.state = 'SEARCHING'
 
-    def update(self, stamp, point, ambiguous=False):
+    def update(self, stamp, point, ambiguous=False, *, confirm_identity=True):
         # Loss is an observation too: an older result must not undo it.
         if not math.isfinite(stamp) or stamp <= self.observation_stamp:
             return False
@@ -49,7 +49,7 @@ class Track:
             self.streak += 1
             self.samples.append((stamp, point))
             self.state = 'FOLLOWING' if self.streak >= 3 else 'VERIFYING'
-            if self.state == 'FOLLOWING':
+            if self.state == 'FOLLOWING' and confirm_identity:
                 self.confirmed = self.samples[-1]
         else:
             self.streak = 0
@@ -133,11 +133,12 @@ def bypass_waypoint(origin, target, hit, grid):
         return None
     dx, dy = target[0]-origin[0], target[1]-origin[1]
     distance = math.hypot(dx, dy)
-    if distance < .48:
+    if distance == 0:
         return None
     ux, uy = dx/distance, dy/distance
     hx, hy = hit[0]-origin[0], hit[1]-origin[1]
     along = hx*ux + hy*uy
+    # Allow close targets when the echo is still distinct and an exit fits.
     if not .10 < along < min(.55, distance-.22) or abs(hy*ux-hx*uy) > .11:
         return None
 

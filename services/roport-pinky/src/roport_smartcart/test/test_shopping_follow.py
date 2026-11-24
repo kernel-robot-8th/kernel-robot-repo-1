@@ -73,10 +73,14 @@ def test_sonar_bypass_uses_only_free_known_side_between_robot_and_target():
     for row in range(50):
         grid.data[row*100:(row+1)*100] = [100]*100
     assert bypass_waypoint((0,.04),(.8,.04),(.30,.04),grid)==pytest.approx((.42,.24))
+    assert bypass_waypoint((0,.04),(.36,.04),(.13,.04),grid)==pytest.approx((.25,.24))
+    assert bypass_waypoint((0,.04),(.36,.04),(.15,.04),grid) is None
+    assert bypass_waypoint((0,.04),(0,.04),(.13,.04),grid) is None
     assert bypass_waypoint((0,.04),(.8,.04),(.50,.27),grid) is None
     assert bypass_waypoint((0,.04),(.45,.04),(.42,.04),grid) is None
     grid.data = [-1]*10000
     assert bypass_waypoint((0,.04),(.8,.04),(.30,.04),grid) is None
+    assert bypass_waypoint((0,.04),(.36,.04),(.13,.04),grid) is None
 
 
 def test_seed_at_close_range_can_propose_same_figure_at_half_scale():
@@ -180,6 +184,37 @@ def test_shopping_goal_respects_configured_following_gap(gap, separation, sends_
         assert goal.pose.pose.position.x == pytest.approx(separation-max(.22, gap))
 
 
+@pytest.mark.parametrize('side', [-1, 1])
+@pytest.mark.parametrize('distance, degrees, via, moves, turns', [
+    (.32, 8, None, False, False),
+    (.32, 11, None, False, True),
+    (.34, 11, (.18, .20), False, False),
+    (.38, 11, None, True, False),
+])
+def test_near_shopper_turns_symmetrically_without_changing_forward_goals(
+        side, distance, degrees, via, moves, turns):
+    from unittest.mock import Mock
+    from builtin_interfaces.msg import Time
+    from roport_smartcart.shopping_nav import ShoppingNav
+
+    nav = Mock(follow_distance_m=.32, fault=None, boot=None, anchor=None, retry_after=0.,
+               last_reached=None, pending=None, handle=None,
+               guard={'owner': 'none', 'boot': 'test'})
+    nav.ready.return_value = True
+    nav.node.get_clock().now().to_msg.return_value = Time()
+    angle = math.radians(side * degrees)
+    target = distance * math.cos(angle), distance * math.sin(angle)
+    ShoppingNav.tick(nav, 1., True, (0., 0., 0.), target, via=via)
+    assert nav.client.send_goal_async.called is (moves or turns)
+    assert nav.turn_only is turns
+    if moves or turns:
+        goal = nav.client.send_goal_async.call_args.args[0].pose.pose
+        travel = distance-.32 if moves else 0.
+        assert (goal.position.x, goal.position.y) == pytest.approx(
+            (travel * math.cos(angle), travel * math.sin(angle)))
+        assert 2 * math.atan2(goal.orientation.z, goal.orientation.w) == pytest.approx(angle)
+
+
 def test_frozen_photo_is_examined_once_and_a_retake_discards_the_old_result():
     pytest.importorskip('nav2_msgs')
     from threading import Condition
@@ -225,6 +260,69 @@ def test_partial_appearance_keeps_same_box_but_near_equal_candidates_wait():
     boxes.append([100, 10, 160, 110])
     encoder.encode.return_value = [feature, feature]
     assert tracker.step(frame)[2]['state'] == 'AMBIGUOUS'
+
+
+def test_brief_appearance_dip_needs_the_only_box_at_the_recent_predicted_position():
+    from roport_smartcart.session_target import SessionTracker
+    from unittest.mock import Mock
+    frame = np.zeros((200, 200, 3), np.uint8)
+    encoder = Mock()
+    box = [10, 10, 70, 110]
+    boxes = [box]
+    encoder.encode.return_value = [[1., 0.]]
+    tracker = SessionTracker(encoder, lambda _: boxes, frame, (.05, .05, .35, .55))
+    score = .70
+    feature = [score, math.sqrt(1-score**2)]
+    encoder.encode.return_value = [feature]
+    evidence = dict(near_anchor=lambda _: True, expected_box=box, recent_confirmation=True)
+    assert tracker.step(frame, **evidence)[2].get('continuity')
+    assert tracker.step(frame, **(evidence | {'recent_confirmation': False}))[2]['state'] == 'LOST'
+    assert tracker.step(frame, **(evidence | {'near_anchor': lambda _: False}))[2]['state'] == 'LOST'
+    boxes.append([100, 10, 160, 110])
+    encoder.encode.return_value = [feature, feature]
+    assert tracker.step(frame, **evidence)[2]['state'] == 'LOST'
+    boxes.clear()
+    assert tracker.step(frame, **evidence)[2]['reason'] == 'no_detection'
+
+    track = Track()
+    for stamp in (.1, .2, .3):
+        track.update(stamp, (.25, 0.))
+    track.update(.4, (.26, 0.), confirm_identity=False)
+    assert track.target() == (.26, 0.)
+    assert track.confirmed == (.3, (.25, 0.))
+
+
+def test_recent_sole_candidate_can_reacquire_at_previous_map_location():
+    from roport_smartcart.session_target import SessionTracker
+    from unittest.mock import Mock
+    frame = np.zeros((200, 200, 3), np.uint8)
+    encoder = Mock()
+    encoder.encode.return_value = [[1., 0.]]
+    tracker = SessionTracker(encoder, lambda _: [[100, 10, 160, 110]], frame, (.05, .05, .35, .55))
+    score = .74
+    encoder.encode.return_value = [[score, math.sqrt(1-score**2)]]
+    for _ in range(3):
+        assert tracker.step(frame, near_anchor=lambda _: True)[2]['state'] == 'LOST'
+    for _ in range(3):
+        assert tracker.step(frame, near_anchor=lambda _: False, recent_confirmation=True)[2]['state'] == 'LOST'
+    assert tracker.step(frame, near_anchor=lambda _: True, recent_confirmation=True)[2]['state'] == 'MATCH'
+
+
+@pytest.mark.parametrize('left', [True, False])
+def test_near_reacquisition_can_ignore_a_weaker_background_candidate(left):
+    from roport_smartcart.session_target import SessionTracker
+    from unittest.mock import Mock
+    frame = np.zeros((200, 300, 3), np.uint8)
+    target = [10, 30, 70, 130] if left else [225, 30, 285, 130]
+    background = [225, 30, 285, 130] if left else [10, 30, 70, 130]
+    encoder = Mock()
+    encoder.encode.return_value = [[1., 0.]]
+    tracker = SessionTracker(encoder, lambda _: [target, background], frame, (.4, .1, .6, .6))
+    encoder.encode.return_value = [[s, math.sqrt(1-s**2)] for s in (.78, .62)]
+    for _ in range(3):
+        assert tracker.step(frame, near_anchor=lambda _: False)[2]['state'] == 'LOST'
+    states = [tracker.step(frame, near_anchor=lambda _: True)[2]['state'] for _ in range(3)]
+    assert states == ['LOST', 'LOST', 'MATCH']
 
 
 def test_blocked_shopping_goal_waits_for_a_fresh_target_and_stops_after_two_retries(monkeypatch):
@@ -452,6 +550,29 @@ def make_shop(now):
     nav.ready = lambda _: True
     nav.guard_at, nav.guard = now, {'owner': 'nav2', 'boot': 'test'}
     return shop
+
+
+@pytest.mark.parametrize('measured, gap', [(.18, .22), (.23, .23), (.37, .37)])
+def test_field_selection_preserves_initial_gap_and_minimum(measured, gap, monkeypatch):
+    from unittest.mock import Mock
+    from roport_smartcart import shopping_follow
+
+    now = 10.
+    shop = make_shop(now)
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: now)
+    shop.field_camera, shop.gap_selected, shop.armed = True, False, False
+    shop.nav.tick = Mock(return_value='HOLD')
+    shop.track = Track()
+    for stamp in (now-.3, now-.2, now-.1):
+        shop.track.update(stamp, (measured, 0.))
+    shop.tick()
+    assert shop.gap_selected
+    assert shop.nav.follow_distance_m == pytest.approx(gap)
+
+    for stamp in (now-.09, now-.08, now-.07):
+        shop.track.update(stamp, (measured+.04, 0.))
+    shop.tick()
+    assert shop.nav.follow_distance_m == pytest.approx(gap)
 
 
 @pytest.mark.parametrize('loss', ['searching', 'ambiguous', 'verifying', 'stale_result',
@@ -844,7 +965,8 @@ def test_vision_edge_uses_full_foot_for_anchor_and_motion(side, geometry, monkey
     shop.track = Track()
     for stamp in (now-.5, now-.4, now-.3):
         shop.track.update(stamp, anchor)
-    shop.packet, shop.floor_z = (now, frame, info, camera), 0.
+    shop.packet, shop.floor_z = (now, frame, info, camera, now, now, None), 0.
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: now)
     shop.seed, shop.encoder = (frame, (.2,.2,.5,.7)), object()
     shop.closed = NS(wait=lambda _: next(steps))
     steps = iter((False, True))
@@ -855,7 +977,7 @@ def test_vision_edge_uses_full_foot_for_anchor_and_motion(side, geometry, monkey
     shop.detector = NS(full_frame=lambda _: [] if geometry == 'template' else [item])
 
     def tracker(_encoder, detector, *_seed):
-        def step(image, *, near_anchor, expected_box):
+        def step(image, *, near_anchor, expected_box, recent_confirmation):
             box, = detector(image)
             assert box == crop  # Appearance receives only the visible crop.
             projected_anchor.append(bool(near_anchor(list(box))))
@@ -886,7 +1008,8 @@ def test_vision_distinguishes_all_invalid_from_empty_for_bypass(invalid, monkeyp
     c, s = math.cos(yaw/2), math.sin(yaw/2)
     camera = NS(translation=NS(x=0., y=0., z=.1),
                 rotation=NS(x=(-c-s)/2,y=(c-s)/2,z=(-c+s)/2,w=(c+s)/2))
-    shop.packet, shop.floor_z = (10., frame, info, camera), 0.
+    shop.packet, shop.floor_z = (10., frame, info, camera, 10., 10., None), 0.
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: 10.)
     shop.seed = frame, (.2, .2, .5, .7)
     shop.encoder = NS(encode=lambda crops: np.tile([1., 0.], (len(crops), 1)))
     steps = iter((False, True))
@@ -938,7 +1061,8 @@ def test_vision_valid_sibling_keeps_match_and_candidate_provenance(mode, monkeyp
     shop.track = Track()
     for stamp in (now-.5, now-.4, now-.3):
         shop.track.update(stamp, point)
-    shop.packet, shop.floor_z = (now, frame, info, camera), 0.
+    shop.packet, shop.floor_z = (now, frame, info, camera, now, now, None), 0.
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: now)
     shop.seed = frame, visible
     crop_counts, seeds, yolo_calls = [], [], []
     def encode(crops):
@@ -963,6 +1087,59 @@ def test_vision_valid_sibling_keeps_match_and_candidate_provenance(mode, monkeyp
     assert seeds == [visible] * (2 if mode == 'overlap_yolo' else 1)
 
 
+@pytest.mark.parametrize('age, detect_time, stage', [
+    (.65, 0., 'before_detection'),
+    (.30, .35, 'before_match'),
+])
+def test_vision_drops_expired_work_without_resetting_identity(age, detect_time, stage, monkeypatch):
+    from unittest.mock import Mock
+    from roport_smartcart import shopping_follow
+
+    started = 10.
+    shop = make_shop(started)
+    stamp = started-age
+    frame = np.zeros((120, 160, 3), np.uint8)
+    shop.packet = (stamp, frame, None, None, stamp+.05, stamp+.10, None)
+    shop.seed = frame, (.1,.1,.6,.8)
+    steps = iter((False, True))
+    shop.closed = NS(wait=lambda _: next(steps))
+    now = started
+
+    def detect(_frame):
+        nonlocal now
+        now += detect_time
+        return []
+
+    shop.detector = NS(full_frame=Mock(side_effect=detect))
+    tracker = Mock()
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: now)
+    monkeypatch.setattr(shopping_follow, 'SelectedProposals', lambda *_: NS(detect=lambda _: []))
+    monkeypatch.setattr(shopping_follow, 'SessionTracker', tracker)
+    previous = shop.observed, shop.track.target()
+    shop.vision()
+    assert (shop.observed, shop.track.target()) == previous
+    assert shop.detector.full_frame.call_count == (stage == 'before_match')
+    tracker.assert_not_called()
+    log = shop.node.get_logger().info.call_args.args[0]
+    assert f'SHOP_VISION_SKIP {stage}' in log
+    assert 'capture_to_callback=0.05 callback_to_frame=0.05 frame_to_vision=' in log
+
+
+def test_status_keeps_box_during_a_slow_scan_but_expires_it(monkeypatch):
+    from roport_smartcart import shopping_follow
+
+    shop = make_shop(10.)
+    shop.frame_box = [.1,.1,.4,.6]
+    shop.observed = 9.45
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: 9.99)
+    assert shop.status(shop.owner)['box'] == shop.frame_box
+    assert shop.status('other')['box'] is None
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: 10.65)
+    assert shop.status(shop.owner)['box'] == shop.frame_box
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: 10.86)
+    assert shop.status(shop.owner)['box'] is None
+
+
 def test_vision_preserves_interior_fractional_yolo_projection(monkeypatch):
     pytest.importorskip('nav2_msgs')
     from roport_smartcart import shopping_follow
@@ -981,7 +1158,8 @@ def test_vision_preserves_interior_fractional_yolo_projection(monkeypatch):
     shop.track = Track()
     for stamp in (now-.5, now-.4, now-.3):
         shop.track.update(stamp, anchor)
-    shop.packet, shop.floor_z = (now, frame, info, camera), 0.
+    shop.packet, shop.floor_z = (now, frame, info, camera, now, now, None), 0.
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: now)
     shop.seed, shop.encoder = (frame, (.2,.2,.5,.7)), object()
     steps = iter((False, True))
     shop.closed = NS(wait=lambda _: next(steps))
@@ -991,7 +1169,7 @@ def test_vision_preserves_interior_fractional_yolo_projection(monkeypatch):
     shop.detector = NS(full_frame=lambda _: [dict(box=raw)])
 
     def tracker(_encoder, detector, *_seed):
-        def step(image, *, near_anchor, expected_box):
+        def step(image, *, near_anchor, expected_box, recent_confirmation):
             assert detector(image) == [raw]
             calls.append(bool(near_anchor(rounded)))
             return [rounded], [{'score': .9}], {'state': 'MATCH', 'index': 0}
