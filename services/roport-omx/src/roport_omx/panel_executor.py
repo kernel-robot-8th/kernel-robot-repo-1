@@ -703,6 +703,14 @@ class PanelExecutor:
             self._refresh_models()
         return paths
 
+    def models_ready(self) -> bool:
+        """Whether the model list was fetched at least once. If not, fetch it in the background
+        now, so a caller that must not wait (the v2 Host's MQTT loop) can decide later."""
+        if self._models[0] != float("-inf"):
+            return True
+        self._refresh_models()
+        return False
+
     def _fetch_models(self) -> set[str]:
         runs = self._call("GET", "/api/train/runs", timeout=15).get("runs", [])
         paths = {r.get("model_path") for r in runs if r.get("model_path")}

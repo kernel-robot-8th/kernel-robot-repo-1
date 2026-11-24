@@ -1139,6 +1139,42 @@ class FieldHostTest(unittest.TestCase):
         self.assertEqual(events[0]["payload"]["reason"], "executor_state_stale")
         self.assertEqual(self.executor.tasks, [])
 
+    def first_model_list(self, ready_after: int | None):
+        """A sampler with a fresh reading and an executor whose first model list is loading."""
+        fresh = self.executor.readiness()
+        self.host._sampled = True
+        self.host._sample = lambda: (fresh, time.time())
+        asked = []
+
+        def models_ready():
+            asked.append(1)
+            return ready_after is not None and len(asked) > ready_after
+
+        self.executor.models_ready = models_ready
+        return asked
+
+    def test_first_model_list_defers_acceptance_without_a_panel_read(self):
+        # #156 review: before the panel's first model list, check() waited for the panel inside
+        # the MQTT loop (reproduced with a 3 s panel). Now the transfer waits for poll().
+        asked = self.first_model_list(ready_after=2)
+        task = self.transfer()
+        began = time.monotonic()
+        self.assertEqual(self.send(task), [])  # list loading: nothing answered yet
+        self.assertLess(time.monotonic() - began, 0.5)
+        self.assertEqual(self.host.poll(), [])  # still loading
+        self.assertEqual(self.statuses(self.host.poll())[:1], ["accepted"])
+        self.assertEqual(len(asked), 3)
+
+    def test_first_model_list_missing_for_too_long_rejects_the_transfer(self):
+        self.first_model_list(ready_after=None)  # e.g. the panel is not up yet
+        task = self.transfer()
+        with patch.object(cooperative_v2, "ACCEPT_WAIT_S", 0.2):
+            self.assertEqual(self.send(task), [])
+            events = self.drain(0.4)
+        self.assertEqual(self.statuses(events), ["rejected"])
+        self.assertEqual(events[0]["payload"]["reason"], "executor_state_stale")
+        self.assertEqual(self.executor.tasks, [])
+
     def test_stop_for_a_waiting_transfer_keeps_it_from_starting(self):
         fresh, _ = self.stale_sampler()
         task = self.transfer()

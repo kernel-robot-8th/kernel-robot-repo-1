@@ -836,6 +836,11 @@ class FieldHost:
             "execution_id": message["command_id"],
             "expires_at": message["expires_at"],
         }
+        models_ready = getattr(self.executor, "models_ready", None)
+        if self._sampled and callable(models_ready) and not models_ready():
+            # #156 review: the panel's first model list is still loading off the loop (it starts
+            # it); the check would otherwise wait for the panel here, inside the MQTT loop
+            raise NotYet
         check = getattr(self.executor, "check", None)
         if check is not None:
             check(
