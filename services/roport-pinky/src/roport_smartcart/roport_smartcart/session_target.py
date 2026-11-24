@@ -179,14 +179,13 @@ class SessionTracker:
                     required = 3
                     if anchored_only and recent_confirmation:
                         threshold, required = self.threshold, 1
-                    elif anchored and not anchored_only and all(
+                    elif anchored and not anchored_only and recent_confirmation and all(
                             matches[index]['score'] - matches[i]['score'] >= max(.12, self.margin)
                             and (matches[i]['score'] < self.threshold or not near_anchor(other))
                             for i, other in enumerate(boxes) if i != index):
-                        # Background proposals should not block a distinct match at the known location.
-                        threshold = .76
-                        if recent_confirmation:
-                            required = 1
+                        # A distinct match can ignore background proposals only
+                        # while confirmation at the known location is still recent.
+                        threshold, required = .76, 1
                     if not anchored and len(boxes) == 1 and matches[index]['score'] < .86:
                         threshold, required = .83, 5
                     if matches[index]['score'] >= threshold:

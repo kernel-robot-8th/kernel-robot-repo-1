@@ -73,7 +73,11 @@ def test_sonar_bypass_uses_only_free_known_side_between_robot_and_target():
     for row in range(50):
         grid.data[row*100:(row+1)*100] = [100]*100
     assert bypass_waypoint((0,.04),(.8,.04),(.30,.04),grid)==pytest.approx((.42,.24))
-    assert bypass_waypoint((0,.04),(.36,.04),(.13,.04),grid)==pytest.approx((.25,.24))
+    assert bypass_waypoint((0,.04),(.36,.04),(.13,.04),grid) is None
+    assert bypass_waypoint((0,.04),(.47,.04),(.11,.04),grid) is None
+    # An all-free side does not make the exit safe if the shopper is ahead of it.
+    assert bypass_waypoint((0,.04),(.55,.04),(.20,.04),grid) is None
+    assert bypass_waypoint((0,.04),(.55,.04),(.12,.04),grid)==pytest.approx((.24,.24))
     assert bypass_waypoint((0,.04),(.36,.04),(.15,.04),grid) is None
     assert bypass_waypoint((0,.04),(0,.04),(.13,.04),grid) is None
     assert bypass_waypoint((0,.04),(.8,.04),(.50,.27),grid) is None
@@ -81,6 +85,22 @@ def test_sonar_bypass_uses_only_free_known_side_between_robot_and_target():
     grid.data = [-1]*10000
     assert bypass_waypoint((0,.04),(.8,.04),(.30,.04),grid) is None
     assert bypass_waypoint((0,.04),(.36,.04),(.13,.04),grid) is None
+
+
+@pytest.mark.parametrize('target_distance, echo_distance, detour', [
+    (.36, .13, False), (.55, .20, False), (.80, .28, True),
+])
+def test_only_well_separated_sonar_echo_can_arm_bypass(target_distance, echo_distance, detour):
+    shop = make_shop(10.)
+    shop.nav.handle = None
+    pose, target = (0., 0., 0.), (target_distance, 0.)
+    shop.hit, shop.hit_at = (echo_distance, 0.), 9.9
+
+    drive_target, waypoint, look = shop.bypass_command(10., pose, target, make_grid(), True)
+
+    assert drive_target == target and look is None
+    assert (waypoint is not None) == detour
+    assert (shop.bypass is not None) == detour
 
 
 def test_seed_at_close_range_can_propose_same_figure_at_half_scale():
@@ -309,7 +329,12 @@ def test_recent_sole_candidate_can_reacquire_at_previous_map_location():
 
 
 @pytest.mark.parametrize('left', [True, False])
-def test_near_reacquisition_can_ignore_a_weaker_background_candidate(left):
+@pytest.mark.parametrize('score, recent, states', [
+    (.78, False, ['LOST', 'LOST', 'LOST', 'LOST']),
+    (.82, False, ['LOST', 'LOST', 'MATCH']),
+    (.78, True, ['MATCH']),
+])
+def test_near_reacquisition_requires_recent_confirmation_for_lower_threshold(left, score, recent, states):
     from roport_smartcart.session_target import SessionTracker
     from unittest.mock import Mock
     frame = np.zeros((200, 300, 3), np.uint8)
@@ -318,11 +343,10 @@ def test_near_reacquisition_can_ignore_a_weaker_background_candidate(left):
     encoder = Mock()
     encoder.encode.return_value = [[1., 0.]]
     tracker = SessionTracker(encoder, lambda _: [target, background], frame, (.4, .1, .6, .6))
-    encoder.encode.return_value = [[s, math.sqrt(1-s**2)] for s in (.78, .62)]
-    for _ in range(3):
-        assert tracker.step(frame, near_anchor=lambda _: False)[2]['state'] == 'LOST'
-    states = [tracker.step(frame, near_anchor=lambda _: True)[2]['state'] for _ in range(3)]
-    assert states == ['LOST', 'LOST', 'MATCH']
+    encoder.encode.return_value = [[s, math.sqrt(1-s**2)] for s in (score, .62)]
+    for state in states:
+        assert tracker.step(frame, near_anchor=lambda box: list(box) == target,
+                            recent_confirmation=recent)[2]['state'] == state
 
 
 def test_blocked_shopping_goal_waits_for_a_fresh_target_and_stops_after_two_retries(monkeypatch):
@@ -552,8 +576,8 @@ def make_shop(now):
     return shop
 
 
-@pytest.mark.parametrize('measured, gap', [(.18, .22), (.23, .23), (.37, .37)])
-def test_field_selection_preserves_initial_gap_and_minimum(measured, gap, monkeypatch):
+@pytest.mark.parametrize('measured, gap', [(.18, .22), (.23, .23), (.37, .37), (.45, .45), (1.2, .45)])
+def test_field_selection_latches_initial_gap_within_bounds(measured, gap, monkeypatch):
     from unittest.mock import Mock
     from roport_smartcart import shopping_follow
 
@@ -568,6 +592,8 @@ def test_field_selection_preserves_initial_gap_and_minimum(measured, gap, monkey
     shop.tick()
     assert shop.gap_selected
     assert shop.nav.follow_distance_m == pytest.approx(gap)
+    assert shop.nav.tick.call_args.args[1:2] == (False,)
+    assert not shop.armed
 
     for stamp in (now-.09, now-.08, now-.07):
         shop.track.update(stamp, (measured+.04, 0.))

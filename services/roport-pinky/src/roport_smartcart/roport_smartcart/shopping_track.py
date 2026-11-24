@@ -133,21 +133,24 @@ def bypass_waypoint(origin, target, hit, grid):
         return None
     dx, dy = target[0]-origin[0], target[1]-origin[1]
     distance = math.hypot(dx, dy)
-    if distance == 0:
+    if not math.isfinite(distance) or distance < .48:
         return None
     ux, uy = dx/distance, dy/distance
     hx, hy = hit[0]-origin[0], hit[1]-origin[1]
     along = hx*ux + hy*uy
-    # Allow close targets when the echo is still distinct and an exit fits.
-    if not .10 < along < min(.55, distance-.22) or abs(hy*ux-hx*uy) > .11:
+    # Check the gap to the selected foot position independently of costmap
+    # occupancy. The exit advances farther along this axis than the waypoint,
+    # so both checked segments leave at least 22 cm of forward separation.
+    exit_advance = .20
+    if not .10 < along < .55 or along + exit_advance > distance - .22 or abs(hy*ux-hx*uy) > .11:
         return None
 
     choices = []
+    exit_point = hit[0]+exit_advance*ux, hit[1]+exit_advance*uy
     for sign in (-1, 1):
         wx = hit[0] + .12*ux - sign*.20*uy
         wy = hit[1] + .12*uy + sign*.20*ux
         # Compare the swept centreline on the inflated costmap, including the exit.
-        exit_point = hit[0]+.20*ux, hit[1]+.20*uy
         costs = (bypass_segment_costs(grid, origin, (wx,wy)) +
                  bypass_segment_costs(grid, (wx,wy), exit_point))
         if max(costs) < 99:

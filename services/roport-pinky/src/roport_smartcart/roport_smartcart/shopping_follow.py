@@ -28,6 +28,9 @@ from .shopping_nav import (MIN_FOLLOW_GAP_M, ShoppingNav, costmap_stamp_ns,
                            following_distances, fresh_costmap)
 from .shopping_track import ProximityNotice, Track, bypass_waypoint, foot_pixel, foot_position, waypoint_cost
 
+# Bound only the automatically captured standstill reference, not CLI profiles.
+MAX_AUTO_FOLLOW_GAP_M = .45
+
 
 def projection_box(item, width):
     """Return full, supported foot geometry, never a truncated crop centre."""
@@ -634,7 +637,7 @@ class Shopping:
                     and self.track.state == 'FOLLOWING' and 0 <= now-self.observed < .55):
                 distances = [math.dist(pose[:2], point) for _, point in list(self.track.samples)[-3:]]
                 selected_distance = median(distances)
-                self.nav.follow_distance_m = max(MIN_FOLLOW_GAP_M, selected_distance)
+                self.nav.follow_distance_m = min(MAX_AUTO_FOLLOW_GAP_M, max(MIN_FOLLOW_GAP_M, selected_distance))
                 self.gap_selected = True
                 gap, advance_at = following_distances(self.nav.follow_distance_m)
                 self.node.get_logger().info(
