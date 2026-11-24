@@ -48,6 +48,12 @@ ARMS = ("omx1", "omx2")
 ENDPOINTS = (WORKCELL, *ARMS)
 PINKIES = ("pinky1", "pinky2", "pinky3")
 NODE = "N11"  # the Pinky stop in front of the shelf's B column (Fleet SLOTS)
+# Fleet SLOTS (control main, 2026-11-24): column -> the Pinky stop; A = omx1 alone (N21), C = omx2 alone (N22)
+SLOT_NODES = {"a": "N21", "b": "N11", "c": "N22"}
+ARM_COLUMN = {
+    "omx1": "a",
+    "omx2": "c",
+}  # one-arm transfers (arm_action_command) per arm
 SLOTS = ("1b", "2b")  # both arms together; A (omx1) and C (omx2) are one-arm slots
 OPERATIONS = {"store": "INBOUND", "retrieve": "OUTBOUND"}
 # The first of two reports (Host --report-placement): the box is where it belongs, the arms still work.
@@ -58,6 +64,10 @@ PLACED = {
     "INBOUND": {"shelf_align", "shelf_load_not_aligned"},
     "OUTBOUND": {"pinky_load"},
 }
+# One arm (arm_action_command transfer, TK 2026-11-24): no aligner on A/C, the loading's evidence is the panel's
+# placement judge (box in its slot, hand clear) with the arm home; the unloading's the tray read again with the arm
+# home. One completed after the arm is home (Fleet expects no early report for arm_action_command).
+PLACED_ONE_ARM = {"INBOUND": {"shelf_load_one_arm"}, "OUTBOUND": {"pinky_load"}}
 # Freshness limits agreed with control on 2026-11-23 (TK: control moved its limits to 8 s; the
 # spec's 3 s were proposals to be fixed after field measurement). Change both sides together.
 FRESH_S = 8.0
@@ -471,8 +481,12 @@ class FieldHost:
             ):  # a late stop still stops (no sent_at check)
                 return self._stop_request(record)
             if kind == "arm_action_command":
-                raise Rejected("unsupported_one_arm_command")  # two-arm missions only
-            if (
+                # one-arm transfer on its own arm (column A = omx1, C = omx2); return_home stays reserved
+                if endpoint not in ARM_COLUMN:
+                    raise Rejected("unsupported_command")
+                if message["payload"]["operation"] != "transfer":
+                    raise Rejected("unsupported_operation")
+            elif (
                 kind not in {"shelf_transfer_command", "hold_release_command"}
                 or endpoint != WORKCELL
             ):
@@ -484,7 +498,7 @@ class FieldHost:
                 raise Rejected("stale_message")
             if kind == "hold_release_command":
                 return self._hold_release(record)
-            task = self._check_transfer(message)
+            task = self._check_any(message, endpoint)
         except NotYet:
             return self._defer(record)
         except Rejected as exc:
@@ -513,7 +527,7 @@ class FieldHost:
         try:
             if datetime.now(UTC) >= field_wire.timestamp(message["expires_at"]):
                 raise Rejected("expired_command")
-            task = self._check_transfer(message)
+            task = self._check_any(message, record["endpoint"])
         except NotYet:
             if time.monotonic() - waiting["since"] < ACCEPT_WAIT_S:
                 del self._data["commands"][message["command_id"]]
@@ -659,6 +673,8 @@ class FieldHost:
             and (
                 record["task"]["operation"] == "INBOUND" or self.report_unload_placement
             )
+            and record["task"]["manipulation_mode"]
+            == "COOPERATIVE"  # one arm: one report
             and not record.get("placed_reported")
             and self._data["stop"]
             is None  # stopping: the stop's own result only (#156 review)
@@ -778,7 +794,10 @@ class FieldHost:
         if (
             active is None
             or self._data["stop"] is not None
-            or endpoint != WORKCELL
+            or endpoint
+            != self._data["commands"][active][
+                "endpoint"
+            ]  # shelf-01, or the arm of a one-arm task
             or p["expected_boot_version"] != self.boot_version
             or p["keep_running_command_id"] != active
             or not _fresh(message["sent_at"], KEEP_RUNNING_SENT_S)
@@ -806,7 +825,7 @@ class FieldHost:
         if self._deadline is None or time.monotonic() > self._deadline:
             reason = "control_watchdog_expired"
         elif self.require_pinky and not record.get("placed_stored"):
-            reason = self._visit_lost(record["command"])
+            reason = self._visit_lost(record["task"])
         else:
             reason = None
         if reason is None:
@@ -816,12 +835,56 @@ class FieldHost:
         return self._end(record, "failed", reason)
 
     # --- transfer -------------------------------------------------------------------------
-    def _check_transfer(self, message: dict) -> dict:
+    def _check_any(self, message: dict, endpoint: str) -> dict:
+        if message["type"] == "arm_action_command":
+            return self._check_arm_transfer(message, endpoint)
+        return self._check_transfer(message)
+
+    def _check_arm_transfer(self, message: dict, endpoint: str) -> dict:
+        """One arm moves a box between its column's slot and the Pinky beside it (Fleet SLOTS: A = omx1 at N21,
+        C = omx2 at N22). store = Pinky -> shelf, retrieve = shelf -> Pinky."""
         p = message["payload"]
-        if any(a["expected_boot_version"] != self.boot_version for a in p["arms"]):
-            raise Rejected("participating_arms_mismatch")
-        if p["slot_id"] not in SLOTS:
-            raise Rejected("cooperative_slot_mismatch")
+        src, dst = p["source_location"], p["destination_location"]
+        if src["kind"] == "pinky" and dst["kind"] == "shelf":
+            operation, pinky, shelf = "store", src, dst
+        elif src["kind"] == "shelf" and dst["kind"] == "pinky":
+            operation, pinky, shelf = "retrieve", dst, src
+        else:
+            raise Rejected("invalid_transfer_locations")
+        slot = shelf["slot_id"]
+        if len(slot) != 2 or slot[1] != ARM_COLUMN[endpoint]:
+            raise Rejected("slot_arm_mismatch")
+        self._common_checks(pinky["robot_id"], p["arrival_command_id"])
+        if self.require_pinky:
+            self._check_visit(
+                pinky["robot_id"],
+                p["expected_pinky_boot_version"],
+                p["arrival_command_id"],
+                SLOT_NODES[slot[1]],
+            )
+        task = {
+            "operation": OPERATIONS[operation],
+            "workcell_id": WORKCELL,
+            "manipulation_mode": "DEDICATED",
+            "assigned_arm_id": endpoint,
+            "robot_ids": [endpoint],
+            "package_id": p["package_id"],
+            "quantity": 1,
+            "slot_id": slot,
+            "pinky_id": pinky["robot_id"],
+            "pinky_position": pinky.get("position"),
+            "arrival_command_id": p["arrival_command_id"],
+            "expected_pinky_boot_version": p["expected_pinky_boot_version"],
+            "model_version": p["model_version"],
+            "calibration_version": p["calibration_version"],
+            "command_id": message["command_id"],
+            "execution_id": message["command_id"],
+            "expires_at": message["expires_at"],
+        }
+        return self._executor_checks(task, p)
+
+    def _common_checks(self, pinky_id: str, arrival: str) -> None:
+        """Hold, busy, one transfer per Pinky arrival, and the executor's readiness (armed, arms home)."""
         if self._data["hold"] is not None:
             raise Rejected("host_hold")
         if (
@@ -831,11 +894,11 @@ class FieldHost:
         ):
             raise Rejected("resource_busy")
         for other in self._data["commands"].values():
-            q = other["command"]["payload"]
+            q = other.get("task") or other["command"]["payload"]
             if (
                 other.get("arrival_consumed")
-                and q.get("pinky_id") == p["pinky_id"]
-                and q.get("arrival_command_id") == p["arrival_command_id"]
+                and q.get("pinky_id") == pinky_id
+                and q.get("arrival_command_id") == arrival
             ):
                 raise Rejected("arrival_already_used")
         ready = self._recent_ready()  # never a slow panel call inside the MQTT loop
@@ -847,8 +910,21 @@ class FieldHost:
             raise Rejected("not_armed")
         if not all(_home(a) for a in _arms(ready.get("arms")).values()):
             raise Rejected("arm_not_safely_home")
+
+    def _check_transfer(self, message: dict) -> dict:
+        p = message["payload"]
+        if any(a["expected_boot_version"] != self.boot_version for a in p["arms"]):
+            raise Rejected("participating_arms_mismatch")
+        if p["slot_id"] not in SLOTS:
+            raise Rejected("cooperative_slot_mismatch")
+        self._common_checks(p["pinky_id"], p["arrival_command_id"])
         if self.require_pinky:
-            self._check_pinky(message)
+            self._check_visit(
+                p["pinky_id"],
+                p["expected_pinky_boot_version"],
+                p["arrival_command_id"],
+                NODE,
+            )
         task = {
             "operation": OPERATIONS[p["operation"]],
             "workcell_id": WORKCELL,
@@ -867,6 +943,9 @@ class FieldHost:
             "execution_id": message["command_id"],
             "expires_at": message["expires_at"],
         }
+        return self._executor_checks(task, p)
+
+    def _executor_checks(self, task: dict, p: dict) -> dict:
         models_ready = getattr(self.executor, "models_ready", None)
         if self._sampled and callable(models_ready) and not models_ready():
             # #156 review: the panel's first model list is still loading off the loop (it starts
@@ -898,33 +977,32 @@ class FieldHost:
             return None
         return seen
 
-    def _check_pinky(self, message: dict) -> None:
-        p = message["payload"]
-        seen = self._pinky_seen(p["pinky_id"])
+    def _check_visit(self, pinky_id: str, boot: str, arrival: str, node: str) -> None:
+        seen = self._pinky_seen(pinky_id)
         if seen is None:
             raise Rejected("pinky_observation_stale")
-        if seen["boot_version"] != p["expected_pinky_boot_version"]:
+        if seen["boot_version"] != boot:
             raise Rejected("pinky_boot_mismatch")
-        if not self._parked(seen, p["arrival_command_id"]):
+        if not self._parked(seen, arrival, node):
             raise Rejected("pinky_visit_not_confirmed")
 
-    def _visit_lost(self, command: dict) -> str | None:
+    def _visit_lost(self, task: dict) -> str | None:
         """Why the Pinky visit of a running transfer no longer holds, or None."""
-        p = command["payload"]
-        seen = self._pinky_seen(p["pinky_id"])
+        seen = self._pinky_seen(task["pinky_id"])
         if seen is None:
             return "pinky_observation_stale"  # a lost state cannot show the Pinky still there
-        if seen["boot_version"] != p["expected_pinky_boot_version"] or not self._parked(
-            seen, p["arrival_command_id"]
-        ):
+        node = SLOT_NODES.get(str(task.get("slot_id") or "")[1:], NODE)
+        if seen["boot_version"] != task[
+            "expected_pinky_boot_version"
+        ] or not self._parked(seen, task["arrival_command_id"], node):
             return "pinky_left"
         return None
 
     @staticmethod
-    def _parked(seen: dict, arrival: str | None) -> bool:
+    def _parked(seen: dict, arrival: str | None, node: str = NODE) -> bool:
         s = seen["state"]
         return (
-            s.get("node") == NODE
+            s.get("node") == node
             and s.get("mode") == "line"
             and s.get("stopped") is True
             and s.get("line_enabled") is False
@@ -963,12 +1041,21 @@ class FieldHost:
                 record["detail"] = detail[:200]
             self._save()
             return self._settle_stop()
-        if seen["state"] == "finished" and all(_home(a) for a in arms.values()):
+        # the task's own arms (#171 review): a one-arm observation holds only that arm, the other one is
+        # unknown there and is not part of this transfer; a two-arm task checks both as before
+        names = tuple(task.get("robot_ids") or ARMS)
+        if seen["state"] == "finished" and all(_home(arms[n]) for n in names):
             evidence = seen.get("evidence")
-            if evidence in PLACED[task["operation"]]:
+            one_arm = task.get("manipulation_mode") == "DEDICATED"
+            placed = (PLACED_ONE_ARM if one_arm else PLACED)[task["operation"]]
+            if evidence in placed:
                 # always named (#156 review): control tells an aligned load from a placed but
                 # crooked one (shelf_load_not_aligned holds the slot) with or without a first report
                 extra = {"evidence": evidence}
+                if isinstance(
+                    seen.get("unload_check"), dict
+                ):  # one-arm unloading: the tray read with the arm home
+                    extra["unload_check"] = seen["unload_check"]
                 return self._end(
                     record,
                     "completed",
@@ -989,7 +1076,7 @@ class FieldHost:
                                 "holding_package_id": None,
                                 "holding_state": "empty",
                             }
-                            for name in ARMS
+                            for name in task.get("robot_ids") or ARMS
                         ],
                     },
                     hold=False,
