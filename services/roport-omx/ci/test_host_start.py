@@ -96,6 +96,20 @@ class HostStartTest(unittest.TestCase):
         v1 = self.run_main("--protocol", "v1", "--journal", str(self.dir / "v1.json"))
         self.assertIn("boot_id=", v1)
         self.assertNotIn("protocol v2", v1)
+        # TK 2026-11-24: v2 reports completed at placement, then the alignment (control #158)
+        self.assertIn("early COMPLETE on placement (report_placement)=on", output)
+
+    def test_report_placement_defaults_on_for_v2_only(self):
+        journal = ["--journal", str(self.dir / "j.json")]
+        self.assertTrue(ch.parse_args(journal).report_placement)
+        self.assertFalse(
+            ch.parse_args([*journal, "--no-report-placement"]).report_placement
+        )
+        self.assertFalse(ch.parse_args(["--protocol", "v1", *journal]).report_placement)
+        # the v1 panel executor of this task has no early placement report
+        with self.assertRaises(SystemExit) as stop, patch("sys.stderr"):
+            ch.parse_args(["--protocol", "v1", *journal, "--report-placement"])
+        self.assertEqual(stop.exception.code, 2)
 
 
 if __name__ == "__main__":

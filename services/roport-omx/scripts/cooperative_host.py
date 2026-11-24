@@ -481,6 +481,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="legacy v1 panel trial box marker",
     )
     parser.add_argument(
+        "--report-placement",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="v2 panel: report loading completed the moment the box is placed and both hands are "
+        "clear (evidence shelf_placed), then the alignment result as a second report. Default "
+        "on for v2 (TK 2026-11-24; control stores and ACKs the intermediate report, #158)",
+    )
+    parser.add_argument(
         "--end-on-place",
         action=argparse.BooleanOptionalAction,
         default=True,  # on by default (TK 2026-11-22); --no-end-on-place for the older flow
@@ -512,6 +520,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "--no-require-pinky needs --executor mock "
             "(v2 runs the real arms only with the Pinky check)"
         )
+    if args.report_placement is None:
+        args.report_placement = args.protocol == "v2"
+    elif args.report_placement and args.protocol != "v2":
+        # the v1 panel executor in this task has no early placement report
+        parser.error("--report-placement is v2 only")
     if str(args.journal.resolve()).startswith("/tmp/"):
         parser.error("journal must survive a restart; do not use /tmp")
     if args.executor == "panel" and args.routes is None:
@@ -527,7 +540,14 @@ def main() -> None:
 
     if args.executor == "panel":
         panel = shelf_panel if args.protocol == "v2" else panel_executor
-        options = {"end_on_place": args.end_on_place} if args.protocol == "v2" else {}
+        options = (
+            {
+                "end_on_place": args.end_on_place,
+                "report_placement": args.report_placement,
+            }
+            if args.protocol == "v2"
+            else {}
+        )
         executor = panel.PanelExecutor(
             panel.load_routes(args.routes),
             box_marker=args.box_marker,
@@ -559,6 +579,7 @@ def main() -> None:
                 executor,
                 control=args.control,
                 require_pinky=args.require_pinky,
+                report_placement=args.report_placement,
                 readiness=sampler,
             )
         else:
@@ -587,8 +608,10 @@ def main() -> None:
             for key, route in executor.routes.items()
         )
         log.info(
-            "loading hand-over (end_on_place)=%s; episode limit [%s]",
+            "loading hand-over (end_on_place)=%s; early COMPLETE on placement "
+            "(report_placement)=%s; episode limit [%s]",
             "on" if args.protocol == "v2" and args.end_on_place else "off",
+            "on" if args.report_placement else "off",
             episodes,
         )
     else:
