@@ -1041,7 +1041,10 @@ class FieldHost:
                 record["detail"] = detail[:200]
             self._save()
             return self._settle_stop()
-        if seen["state"] == "finished" and all(_home(a) for a in arms.values()):
+        # the task's own arms (#171 review): a one-arm observation holds only that arm, the other one is
+        # unknown there and is not part of this transfer; a two-arm task checks both as before
+        names = tuple(task.get("robot_ids") or ARMS)
+        if seen["state"] == "finished" and all(_home(arms[n]) for n in names):
             evidence = seen.get("evidence")
             one_arm = task.get("manipulation_mode") == "DEDICATED"
             placed = (PLACED_ONE_ARM if one_arm else PLACED)[task["operation"]]

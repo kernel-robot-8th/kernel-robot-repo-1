@@ -259,7 +259,10 @@ class FieldHostOneArmTest(v2.FieldHostTest):
         def run():
             seen = observe()
             if seen.get("state") == "finished":
-                return dict(seen, evidence=evidence, **extra)
+                # #171 review: the real PanelExecutor's one-arm observation holds only the task's arm
+                only = self.executor.tasks[-1].get("robot_ids") or []
+                arms = {k: v for k, v in (seen.get("arms") or {}).items() if k in only}
+                return dict(seen, evidence=evidence, arms=arms, **extra)
             return seen
 
         self.executor.observe = run
