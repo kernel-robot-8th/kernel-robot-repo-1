@@ -386,6 +386,43 @@ def test_n12_reverse_requires_pose_ir_and_continuous_stopped_samples(endpoint):
     assert -math.pi <= driver.observe()["heading_rad"] <= math.pi
 
 
+@pytest.mark.parametrize(
+    ("target", "profile_options", "expected"),
+    [
+        ({"card_id": 35}, {}, None),
+        ({"card_id": 35}, {"follow_standoff_m": 0.25}, 0.25),
+        ({"follow_mode": "marker", "card_id": 35}, {"follow_standoff_m": 0.25}, 0.25),
+        (
+            {
+                "follow_mode": "appearance",
+                "follow_session_id": "session-1",
+                "target_ref": "target-1",
+                "perception_boot_id": "boot-1",
+            },
+            {"follow_standoff_m": 0.25},
+            None,
+        ),
+    ],
+)
+def test_marker_follow_standoff_is_local_to_driver(
+    endpoint, target, profile_options, expected
+):
+    client, _ = endpoint
+    message = request(
+        client,
+        "follow_target_command",
+        {
+            "expected_boot_version": client.boot,
+            "map_version": client.profile["map_version"],
+            **target,
+        },
+        "follow-distance",
+    )
+    legacy = driver_command(message, client.profile | profile_options, client.binding)
+    assert "standoff_m" not in message["payload"]
+    assert legacy["payload"].get("standoff_m") == expected
+
+
 def test_docking_selector_is_preserved_at_driver_boundary(endpoint):
     client, _ = endpoint
     nav = deepcopy(client.profile["nav_goal"])

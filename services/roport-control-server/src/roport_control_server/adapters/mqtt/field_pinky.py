@@ -52,6 +52,9 @@ def driver_command(message, profile, binding):
                 raise ValueError("graph_mismatch")
             p["node_id"] = p.pop("node")
             p.pop("graph_version")
+        elif kind == "follow" and p.get("follow_mode", "marker") == "marker":
+            if "follow_standoff_m" in profile:
+                p["standoff_m"] = profile["follow_standoff_m"]
         elif kind == "navigate":
             p.setdefault("goal_id", "coordinate_goal")
             p["goal_version"] = profile["map_version"]

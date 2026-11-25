@@ -52,6 +52,7 @@ def prepare_field(output, *, map_path=MAP, layout_path=LAYOUT, two_cart_trial=Fa
     write_json(output / "fleet.json", fleet)
     for robot, (role, profile) in robots.items():
         profile["control_id"] = fleet["control_id"]
+        profile["follow_standoff_m"] = 0.25
         write_json(output / robot / "trial.json", profile)
     for name, source in (
         ("maps/" + map_path.name, map_path),

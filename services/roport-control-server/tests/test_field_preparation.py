@@ -89,6 +89,7 @@ def test_snapshot_matches_sources_and_never_certifies_hardware(tmp_path):
         ("pinky3", "smartcart"),
     ):
         profile = json.loads((root / robot / "trial.json").read_text())
+        assert profile["follow_standoff_m"] == 0.25
         assert all(
             profile[k] == fleet[k]
             for k in ("control_id", "map_version", "graph_version", "nodes")

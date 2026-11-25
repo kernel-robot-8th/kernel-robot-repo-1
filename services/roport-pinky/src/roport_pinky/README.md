@@ -94,7 +94,7 @@ Nav2 모드에서 노트북 `roport_follow`가 보낸 고객 카드 위치를 Na
 
 | 구분 | 내용 |
 |---|---|
-| 드라이버 명령 | `follow.requested` payload `{binding_id, expected_boot_id, map_id, map_version, card_id(35~49), standoff_m(기본 0.5, 0.3~1.2 m), max_duration_s(선택, 1~3600 s), lost_after_s(선택, 기본 1 s = SR-22, 1~4 s. 4 s 는 명시했을 때만 쓰는 시연값이며 노트북 `--follow-lost-s`와 같은 값을 준다)}` |
+| 드라이버 명령 | `follow.requested` payload `{binding_id, expected_boot_id, map_id, map_version, card_id(35~49), standoff_m(기본 0.5, 0.2~1.2 m), max_duration_s(선택, 1~3600 s), lost_after_s(선택, 기본 1 s = SR-22, 1~4 s. 4 s 는 명시했을 때만 쓰는 시연값이며 노트북 `--follow-lost-s`와 같은 값을 준다)}` |
 | 상태 보고 | `observe().follow`(선택 필드, 추종 명령이 살아 있는 동안만) = `{active, follow_mode: "marker"[, follow_session_id]}`. `active`는 Nav2가 추종 goal을 수락했고 0.3 s 이내 `trial_guard` 응답의 owner가 `nav2`(막힘 없음)이며 fault가 없을 때만 true다. 접수 직후·구동권 전환 대기·종료 뒤에는 false이고, 고객이 서 있어 속도가 0이어도 true일 수 있다. payload의 `follow_session_id`는 받은 값을 그대로 돌려주고, `follow_mode`가 `marker`가 아니면 `unsupported_operation`으로 거절한다 |
 | 출발 조건 | mode=nav2, 정지, 지도 일치, Nav2·위치 준비, 이전 Nav2 goal 종료 확인, 해당 card_id status 2 s 이내·`tracking`·**`seen=true`**(가려진 동안의 옛 위치로는 출발하지 않음), 그 status와 같은 stamp의 target이 1 s 이내이고 TF로 map 변환 가능. 거절 코드: `not_in_nav2_mode`, `drive_busy`, `map_mismatch`, `nav2_not_ready`, `invalid_card_id`, `invalid_standoff`, `invalid_max_duration`, `invalid_lost_after`, `follow_bt_missing`, `follow_status_stale`, `follow_card_mismatch`, `follow_not_tracking`, `follow_target_stale`, `follow_tf_unavailable` |
 | 입력 | `follow/target` `geometry_msgs/PointStamped`(frame `base_footprint`, stamp = 로봇 카메라 시각), `follow/status` `std_msgs/String` JSON. 둘 다 reliable depth 5. target은 stamp가 같은 status가 `tracking`·`seen`·요청 card_id일 때만 쓴다 |
@@ -114,10 +114,11 @@ Nav2 모드에서 노트북 `roport_follow`가 보낸 고객 카드 위치를 Na
 | Nav2 action 거부·중단·오류 | `follow_nav2_failed` | 있음 |
 | 위치 추정 상실, guard·lease 이상 | 기존 코드(`nav2_not_ready`, `drive_*` 등) | 있음 |
 | 관제 추종 일시정지(`robot_stop_command`, 사유 `follow_pause`) | 기존 추종 `interrupted`와 STOP `completed` | 잠금 해제 조작 없이, 결과 이후 최신 정차·유휴 상태가 확인되면 관제에서 재개 |
+| 추종 밖 운영자 정지(`robot_stop_command`, 사유 `operator_stop`) | 정차 확인 후 STOP `completed` | `recovery_required`. 운영자 복구 확인 필요 |
 
 `follow_target.xml`은 Jazzy `follow_point.xml`의 `GoalUpdater` 구조를 따른다. 고객 점은 고객 자신의 비용 지도 장애물·inflation 안이라 계획이 실패할 수 있어 `TruncatePath` 대신 드라이버가 목표를 standoff만큼 당긴다. 막히면 1 s 기다렸다가 다시 한다(5 cm 이동 없이 30 s 면 드라이버가 멈춤, BT 재시도는 누적 100번까지, 회전·후진 복구와 비용 지도 비우기 없음 — 비우면 카메라로만 보이는 가까운 인형이 지도에서 사라져 부딪힌다). 그 뒤 action이 끝나고 드라이버가 `follow_nav2_failed`로 멈춘다. 추종 goal에는 공용 누적 복구 상한(`MAX_RECOVERIES`)을 쓰지 않는다. 기본 navigate BT·launch 인자는 바뀌지 않는다. 인형 층을 쓰려면 그 층이 들어간 전체 Nav2 설정을 `params_file:=`로 준다. 실로봇(d660) 시험에 쓴 설정은 `config/nav2_follow_real.yaml`(설치 위치 `share/roport_pinky/config/`, 2026-11-21 시험값)이다. 고객이 멈추면 로봇은 standoff에서 `general_goal_checker.xy_goal_tolerance`(trial 기본 0.08 m)만큼 떨어진 곳에 서 있을 수 있다.
 
-관제 MQTT(`roport-control-v2`)의 `follow_target_command`는 [관제 MQTT 명세](../../../roport-control-server/interfaces/mqtt/README.md)에 따른다. Pinky의 `field_pinky.py`와 `field_wire.py`는 관제와 같은 현장 번들에서 배포한다. 관제 경로의 카드 유실 기준은 SR-22 기본 1초, 목표 거리는 0.5 m다. 현장 준비 절차는 [Fleet 배포 가이드](../../../../docs/field/README.md#스마트카트-카드-추종)를 따른다.
+관제 MQTT(`roport-control-v2`)의 `follow_target_command`는 [관제 MQTT 명세](../../../roport-control-server/interfaces/mqtt/README.md)에 따른다. Pinky의 `field_pinky.py`와 `field_wire.py`는 관제와 같은 현장 번들에서 배포한다. 카드 유실 기준은 SR-22 기본 1초다. 관제 카드 추종에서 목표 거리는 기체별 `trial.json`의 `follow_standoff_m`을 사용한다. 현장 번들은 0.25 m로 준비하며, 설정을 생략하면 드라이버 기본값을 따른다. 현장 준비 절차는 [Fleet 배포 가이드](../../../../docs/field/README.md#스마트카트-카드-추종)를 따른다.
 
 ## 검증 범위
 

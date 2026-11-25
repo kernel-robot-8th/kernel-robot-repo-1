@@ -74,7 +74,7 @@ npx @asyncapi/cli@latest generate fromTemplate services/roport-control-server/in
 카드 추종의 `follow_target_command`는 현재 기동, 지도 버전과 카드 번호 35~49를 바인딩한다. 관제는 회당 최대 추종 시간 `max_duration_s`(1~240초)를 자체 명령 제한 시간보다 짧게 내려보낸다. 일시정지 요청 시 기존 추종 명령의 실행 허가를 끊고 `robot_stop_command`를 보낸다. 정지 응답이 거절되거나 만료되면 HOLD로 전환한다. 추종 재개와 복귀는 종료 결과보다 새로운 정지 상태를 확인한 뒤에 허용한다.
 
 
-관제 MQTT의 카드 유실 기준은 SR-22에 따라 1초다. 목표 거리는 Pinky 드라이버 기본값 0.5 m를 사용한다. 드라이버의 `lost_after_s`와 `standoff_m`은 개별 시험 명령에서 설정할 수 있다. 카드 유실·미인식 등 잠금 없이 종료 가능한 결과는 Pinky `trial_follow.SOFT_STOPS`와 관제 `FOLLOW_SOFT_STOPS`에 함께 반영한다.
+관제 MQTT의 카드 유실 기준은 SR-22에 따라 1초다. 카드 추종의 목표 거리는 기체별 `trial.json`의 `follow_standoff_m`에서 읽고, 설정이 없으면 드라이버 기본값을 사용한다. MQTT v2 payload에는 이 필드를 넣지 않는다. 드라이버의 `lost_after_s`와 `standoff_m`은 개별 시험 명령에서 설정할 수 있다. 카드 유실·미인식 등 잠금 없이 종료 가능한 결과는 Pinky `trial_follow.SOFT_STOPS`와 관제 `FOLLOW_SOFT_STOPS`에 함께 반영한다.
 
 ### 추종 모드 선택·외형 등록 (FFT1-207)
 
