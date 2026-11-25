@@ -364,6 +364,7 @@ def reconcile(control, command_id, outcome, note, *, confirmed_boot=None):
                 if slot["package_id"] == task["request"]["package_id"]:
                     slot.update(state="empty", package_id=None)
                     slot.pop("alignment", None)
+                    slot.pop("alignment_command_id", None)
             task.pop("shelf_alignment_pending", None)
             task.update(stage="done", status="CANCELED", reason=note)
     if other_commands:

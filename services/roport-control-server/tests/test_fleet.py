@@ -385,6 +385,86 @@ def test_missing_final_uses_only_fresh_idle_home_evidence(fleet, unsafe):
     assert fleet.data["slots"][slot]["state"] == "reserved"
 
 
+@pytest.mark.parametrize(
+    "stock_change, final_change, aligned",
+    [
+        (None, {}, True),
+        ("reserved", {}, True),
+        ("removed", {}, False),
+        ("replaced", {}, False),
+        ("restocked", {}, False),
+        (None, {"package_id": "another-box"}, False),
+        (None, {"slot_id": "2b"}, False),
+        (None, {"pinky_id": "pinky3"}, False),
+        (None, {"arrival_command_id": "another-arrival"}, False),
+        (None, {"evidence": "shelf_load_not_aligned"}, False),
+        (None, {"status": "failed"}, False),
+    ],
+)
+def test_late_alignment_updates_only_matching_stock(
+    fleet, stock_change, final_change, aligned
+):
+    _, shelf = start_shelf_store(fleet)
+    command_id = shelf["command_id"]
+    slot_id = shelf["payload"]["slot_id"]
+    placement = complete(fleet, shelf, broken={"evidence": "shelf_placed"})
+    fleet.shelf_placement_acked(command_id, placement["message_id"])
+    finish(fleet)
+    at = datetime.fromisoformat(placement["payload"]["observed_at"])
+    for robot in fleet.data["commands"][command_id]["participants"]:
+        fleet.observed[robot]["observed_at"] = (at + timedelta(seconds=1)).isoformat()
+    fleet.check_active()
+    assert command_id not in fleet.data["commands"]
+    assert fleet.data["slots"][slot_id]["alignment"] == "unconfirmed"
+
+    if stock_change == "reserved":
+        submit(fleet, "box", "outbound")
+        assert dispatch(fleet)
+    elif stock_change == "removed":
+        fleet.data["slots"][slot_id] = {"state": "empty", "package_id": None}
+    elif stock_change in {"replaced", "restocked"}:
+        fleet.data["slots"][slot_id] = {
+            "state": "occupied",
+            "package_id": "another-box" if stock_change == "replaced" else "box",
+            "alignment": "unconfirmed",
+            "alignment_command_id": "another-store",
+        }
+    before = deepcopy(fleet.data)
+    result = {**placement["payload"]["result"], "evidence": "shelf_align"}
+    result.update({k: v for k, v in final_change.items() if k != "status"})
+    late = wire.build_message(
+        "command_status",
+        "shelf-01",
+        shelf["source"],
+        {
+            **placement["payload"],
+            "sequence": 3,
+            "status": final_change.get("status", "completed"),
+            **({"reason": "alignment_failed"} if "status" in final_change else {}),
+            "result": result,
+        },
+        command_id=command_id,
+    )
+    expected = deepcopy(before)
+    expected["events"][late["message_id"]] = late
+    if aligned:
+        expected["slots"][slot_id].pop("alignment")
+        expected["slots"][slot_id].pop("alignment_command_id", None)
+    runtime = FleetRuntime(fleet, Mock())
+    delivery = SimpleNamespace(
+        topic=wire.topic("shelf-01", "event"),
+        retained=False,
+        qos=1,
+        payload=wire.encode(late),
+    )
+    for _ in range(2):
+        runtime.handle(delivery)
+        assert runtime.transport.publish.call_args.args[1]["payload"] == {
+            "acked_message_id": late["message_id"]
+        }
+        assert fleet.data == expected
+
+
 def finish(c, *, size="small"):
     commands = []
     for _ in range(20):
