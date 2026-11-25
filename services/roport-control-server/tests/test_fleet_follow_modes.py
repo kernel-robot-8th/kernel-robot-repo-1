@@ -10,6 +10,7 @@ from test_fleet import fleet as fleet  # noqa: PLC0414
 from test_pinky_trial import profile  # noqa: F401
 
 from roport_control_server.adapters.mqtt import field_wire as wire
+from roport_control_server.executor import fleet_follow
 from roport_control_server.executor.fleet import FleetControl
 
 
@@ -130,7 +131,7 @@ def test_appearance_receipt_waits_without_return_or_motion_and_replays_once(wait
         c.follow_control("outbound", "approve")
 
 
-def test_registration_dedup_approval_and_actual_active_evidence(waiting):
+def test_registration_dedup_approval_and_actual_active_evidence(waiting, monkeypatch):
     c = waiting
     capture, select = registered(c)
     task = c.data["tasks"]["outbound"]
@@ -167,9 +168,44 @@ def test_registration_dedup_approval_and_actual_active_evidence(waiting):
         },
     }
     result(c, cmd, "in_progress", proof, sequence=3)
-    assert c.data["tasks"]["outbound"]["stage"] == "following"
+    task = c.data["tasks"]["outbound"]
+    assert task["stage"] == "following"
+    started = datetime.fromisoformat(task["follow"]["first_following_at"])
+
+    class Clock(datetime):
+        elapsed = 19
+
+        @classmethod
+        def now(cls, tz=None):
+            return started + timedelta(seconds=cls.elapsed)
+
+    monkeypatch.setattr(fleet_follow, "datetime", Clock)
+    c.config["boarding_alert_after_s"] = 20
+    assert "boarding_alert" not in c.service_projection(task)["follow"]
+    Clock.elapsed = 20
+    projection = c.service_projection(task)
+    assert projection["follow"]["boarding_alert"] is True
+    assert "first_following_at" not in projection["follow"]
+    assert projection["follow"]["revision"] == task["follow"]["revision"]
+    assert (
+        "boarding_alert"
+        not in c.service_projection({**task, "stage": "follow_paused"})["follow"]
+    )
+    for elapsed in (21, 30):
+        Clock.elapsed = elapsed
+        assert c.service_projection(task)["follow"]["boarding_alert"] is True
+    with monkeypatch.context() as stale:
+        stale.setattr(c, "state_age", lambda robot: 4)
+        assert "boarding_alert" not in c.service_projection(task)["follow"]
+    del c.config["boarding_alert_after_s"]
+    assert "boarding_alert" not in c.service_projection(task)["follow"]
+    c.config["boarding_alert_after_s"] = 20
     c.follow_request(request(c, "return"))
     assert c.data["tasks"]["outbound"]["stage"] == "follow_stopping"
+    assert (
+        "boarding_alert"
+        not in c.service_projection(c.data["tasks"]["outbound"])["follow"]
+    )
     assert c.next_action() is None and c.data["commands"]
 
 

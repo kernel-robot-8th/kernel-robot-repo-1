@@ -446,6 +446,8 @@ def main(*, field_loader=None):
             parser.error(
                 "standalone owner requires simulation; use the validated field launcher"
             )
+    if os.environ.get("ROPORT_BOARDING_ALERT_TEST") == "1":
+        config["boarding_alert_after_s"] = 20
     connection = mqtt_config(config["control_id"])
     if connection.host not in {
         "localhost",

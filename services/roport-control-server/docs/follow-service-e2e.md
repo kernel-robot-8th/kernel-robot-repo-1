@@ -23,7 +23,7 @@ uv run python tools/verify_follow_service.py \
 1. 시작 승인 전 명령 없음 → API 입고 요청 → MQTT로 선반 입고 완료 → 고객 예약 → 스마트카트 공용공간 도착. DB에 재고·완료 상태를 직접 넣지 않는다.
 2. appearance 지원 여부 조회 → 수령 API → capture → 서비스 인증 프레임 프록시에서 PNG/JPEG 확인 → 후보 select. 수령·조작의 같은 요청 재전송은 하나로 유지한다.
 3. 등록 대기·운영자 승인 대기 중 상태 GET을 반복해도 pose가 고정되고 새 주행 명령이 나오지 않는다. 운영자가 명시 승인한 후에만 `following`과 로봇 active 보고가 확인된다.
-4. 패드 pause → 실제 정지 보고 → GET 반복 중 정지 유지 → resume → following → return → 정지 확인 후 N12/Nav2 복귀·라인 전환·주차 완료까지 진행한다.
+4. 첫 추종 활성 확인 뒤 시험 알림이 서비스 API까지 전달되는지 확인한다. 패드 pause → 실제 정지 및 알림 숨김 → GET 반복 중 정지 유지 → resume → following → return → 정지 확인 후 N12/Nav2 복귀·라인 전환·주차 완료까지 진행한다.
 5. 최종 서비스 상태는 `COMPLETED`/`done`, 수령 1건, 추종 시작 2회(승인·재개), 정지 2회(일시정지·복귀), 등록 capture/select 각각 1회다.
 
 성공하면 출력 경로의 `result.json`, `cart-commands.json`, `control-snapshot.json`에 근거를 남긴다. 실패하면 `failure.json`, timeout 시 `timeout-snapshot.json`을 함께 확인한다. `fleet/` 아래 로봇·owner·broker 로그와 DB 파일도 남는다. 끝나면 시험 프로세스와 PostgreSQL은 종료한다.

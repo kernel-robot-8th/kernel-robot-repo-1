@@ -95,6 +95,21 @@ def projection(control, task):
         follow.pop("robot_boot_version", None)
         follow.pop("pending", None)
         follow.pop("return_requested", None)
+        first_following = follow.pop("first_following_at", None)
+        alert_after = control.config.get("boarding_alert_after_s")
+        if (
+            alert_after is not None
+            and first_following
+            and task["stage"] == "following"
+            and result["status"] == "RUNNING"
+            and control.data["enabled"]
+            and control.state_age(robot) <= 3
+            and (
+                datetime.now(UTC) - datetime.fromisoformat(first_following)
+            ).total_seconds()
+            >= alert_after
+        ):
+            follow["boarding_alert"] = True
         follow.update(
             reason=task.get("reason") or control.data["fault"],
             allowed_actions=allowed_actions(control, task),

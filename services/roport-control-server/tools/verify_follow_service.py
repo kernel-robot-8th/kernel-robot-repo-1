@@ -59,6 +59,7 @@ def exercise(
         if not k.startswith(("ROPORT_", "SERVICE_", "SERVER_"))
     }
     env["PINKY_SIM_TICKS_PER_FRAME"] = "1"
+    env["ROPORT_BOARDING_ALERT_TEST"] = "1"
     evidence = {
         "hardware_connected": False,
         "simulation": True,
@@ -302,21 +303,28 @@ def exercise(
                 request_id=child,
                 operation="approve",
             )
-            wait(
+            active = wait(
                 "approved appearance follow is active",
                 lambda _: follow_where(lambda f: f["stage"] == "following"),
             )
+            assert "boardingAlert" not in active
             wait(
                 "robot reports appearance follow active",
                 lambda s: (
                     s["robots"]["pinky3"]["state"].get("follow", {}).get("active")
                 ),
             )
-            pause_id = action("pause")
             wait(
+                "control boarding alert reached the service API",
+                lambda _: follow_where(lambda f: f.get("boardingAlert") is True),
+                seconds=30,
+            )
+            pause_id = action("pause")
+            paused = wait(
                 "pad pause receives stopped confirmation",
                 lambda _: follow_where(lambda f: f["stage"] == "follow_paused"),
             )
+            assert "boardingAlert" not in paused
             stable_stop("follow_paused", receipt)
             resume_id = action("resume")
             wait(

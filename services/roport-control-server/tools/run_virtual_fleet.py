@@ -140,7 +140,8 @@ def main():
     env = {
         k: v
         for k, v in os.environ.items()
-        if not k.startswith("ROPORT_") and k != "PYTHONPATH"
+        if k == "ROPORT_BOARDING_ALERT_TEST"
+        or (not k.startswith("ROPORT_") and k != "PYTHONPATH")
     }
     env.update(
         PYTHONPATH=str(SERVICE / "src"),

@@ -5,7 +5,7 @@ Robot completion, stock placement and customer receipt remain separate facts.
 
 import math
 from copy import deepcopy
-from datetime import datetime
+from datetime import UTC, datetime
 from time import monotonic
 
 from ..adapters.mqtt.field_wire import validate_follow_registration_result
@@ -1274,6 +1274,9 @@ class FleetControl:
             ):
                 raise ValueError("invalid follow activation evidence")
             task.update(stage="following")
+            task["follow"].setdefault(
+                "first_following_at", datetime.now(UTC).isoformat()
+            )
         elif p["status"] in {"failed", "rejected", "interrupted"} or (
             cmd["type"] == "follow_target_command" and p["status"] == "completed"
         ):

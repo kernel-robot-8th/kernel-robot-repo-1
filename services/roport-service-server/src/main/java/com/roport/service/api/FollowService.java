@@ -142,6 +142,11 @@ class FollowService {
         }
         result.put("allowedActions", List.copyOf(actions));
         result.put("stale", stale);
+        if (!stale && "RUNNING".equals(owner.get("state")) && "RUNNING".equals(item.path("status").asString())
+                && "following".equals(item.path("stage").asString())
+                && follow.path("boarding_alert").isBoolean() && follow.path("boarding_alert").asBoolean()) {
+            result.put("boardingAlert", true);
+        }
         var registration = follow.path("registration");
         if (registration.isObject()) {
             var mapped = new LinkedHashMap<String, Object>();

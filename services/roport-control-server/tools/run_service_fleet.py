@@ -234,7 +234,8 @@ def main():
     env = {
         k: v
         for k, v in os.environ.items()
-        if not k.startswith(("ROPORT_", "SERVICE_", "SERVER_", "VITE_"))
+        if k == "ROPORT_BOARDING_ALERT_TEST"
+        or not k.startswith(("ROPORT_", "SERVICE_", "SERVER_", "VITE_"))
     }
     processes = []
 

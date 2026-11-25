@@ -168,7 +168,7 @@ MQTT `completed.result`에는 endpoint의 관측 상태가 함께 붙고 `stoppe
 
 이번 작업에서 관제/서비스/패드/MQTT와 가상 실행부를 연결한다. 실제 `roport_smartcart`의 HTTP/ROS 실행기를 서비스 owner에 연결한 것으로 보지 않는다. 기존 패드 [`Shopping.tsx`](../../roport-web/apps/pad/src/Shopping.tsx)의 독립 Shopping 데모도 이 통합 완료에 포함하지 않는다. 서비스 수령 뒤 `FollowSession` 경로를 사용하며 별도 데모의 ‘시작’ 버튼으로 운영 권한을 우회하면 안 된다.
 
-[#166](https://github.com/kernel-robot-8th/kernel-robot-repo-1/pull/166)의 탑승 알림 창은 `GET /cart-api/follow/{receiptId}`에 선택 필드 `boardingAlert: true`가 있고 최신 상태가 `following`일 때 열린다. 관제가 알림 시점을 결정하고 서비스가 이 필드를 보내는 구현과 게이트 안내 전환은 후속 작업이다. 가상 브라우저 테스트는 상태 응답을 모사한다. LCD·LED·부저의 개발 시험용 프록시는 기본으로 끄고, 같은 기체에서 드라이버의 표시 hook과 함께 켜지 않는다.
+[#166](https://github.com/kernel-robot-8th/kernel-robot-repo-1/pull/166)의 탑승 알림 창은 `GET /cart-api/follow/{receiptId}`에 선택 필드 `boardingAlert: true`가 있고 최신 상태가 `following`일 때 열린다. 시험 런처에 `ROPORT_BOARDING_ALERT_TEST=1`을 지정하면 관제는 실제 추종 활성 최초 확인 시각부터 20초 후 세션에 알림을 표시한다. 정지·복귀·HOLD·오래된 상태에는 알림을 보내지 않는다. 재개는 첫 추종 시각을 보존하며 패드에서 확인한 알림은 같은 수령에서 다시 띄우지 않는다. 운항 정보에 따른 운영 알림, 게이트 안내 전환, 관제에서 기체 LCD·LED·부저를 제어하는 경로는 별도다. 개발 전용 로봇 표시 프록시는 기본으로 꺼져 있다.
 
 실물 통합 PR의 완료 조건:
 

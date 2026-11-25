@@ -390,6 +390,7 @@ class QrVerificationApiTest {
         item.put("package_id", "a-" + s); item.put("robot", cartId()); item.put("stage", stage);
         item.put("robot_observed_at", observed.toString());
         item.put("supported_follow_modes", List.of("marker", "appearance"));
+        item.put("status", state);
         if (receipt != null) item.put("follow", Map.of("session_id", receipt, "mode", "appearance", "revision", revision,
                 "reason", "", "observed_at", observed.toString(), "allowed_actions", List.of("capture", "select", "return"),
                 "registration", Map.of("frame_ref", "frame-" + s, "image_ref", "private-robot-url-not-for-client",
@@ -468,6 +469,29 @@ class QrVerificationApiTest {
         assertThat(call(cart, "GET", path, null, cartId()).body().path("stale").asBoolean()).isTrue();
         followProjection("different-session", "following", 5, Instant.now(), "RUNNING");
         assertThat(call(cart, "GET", path, null, cartId()).body().path("stale").asBoolean()).isTrue();
+    }
+
+    @Test
+    void boardingAlertRequiresFreshFollowingAndAnExplicitControlFlag() throws Exception {
+        String receipt = appearanceReceipt();
+        String path = "/cart-api/follow/" + receipt;
+        followProjection(receipt, "following", 4, Instant.now(), "RUNNING");
+        assertThat(call(cart, "GET", path, null, cartId()).body().has("boardingAlert")).isFalse();
+        for (String stage : List.of("following", "follow_paused", "return_nav")) {
+            for (String state : List.of("RUNNING", "HOLD")) {
+                for (int age : List.of(0, 5)) {
+                    followProjection(receipt, stage, 4, Instant.now().minusSeconds(age), state);
+                    db.sql("""
+                            UPDATE control_task_views
+                            SET progress_payload=jsonb_set(progress_payload,'{progress,packages,0,follow,boarding_alert}','true')
+                            WHERE task_ref=?
+                            """).param("task-" + s).update();
+                    var body = call(cart, "GET", path, null, cartId()).body();
+                    assertThat(body.path("boardingAlert").asBoolean())
+                            .isEqualTo(stage.equals("following") && state.equals("RUNNING") && age == 0);
+                }
+            }
+        }
     }
 
     @Test
