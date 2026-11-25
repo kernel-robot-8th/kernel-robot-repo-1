@@ -99,13 +99,16 @@ class ShoppingNav:
     last_look = None
     look_completed = False
 
-    def __init__(self, node, follow_distance_m=.34):
+    def __init__(self, node, follow_distance_m=.34, *, external_lease=False):
         self.node = node
         self.follow_distance_m = follow_distance_m
         self.client = ActionClient(node, NavigateToPose, 'navigate_to_pose')
         self.spin_client = ActionClient(node, Spin, 'spin')
         self.follow_client = ActionClient(node, FollowPath, 'follow_path')
-        self.lease = node.create_publisher(String, 'trial/lease', 1)
+        self.external_lease = external_lease
+        self.motion_requested = False
+        self.motion_at = float('-inf')
+        self.lease = None if external_lease else node.create_publisher(String, 'trial/lease', 1)
         node.create_subscription(String, 'trial/guard_state', self.guard_state, 1)
         self.guard = {}
         self.guard_at = self.last_graph = float('-inf')
@@ -121,6 +124,8 @@ class ShoppingNav:
         self.last_reached = None
         self.maps = {name: AsyncParameterClient(node, f'{name}/{name}')
                      for name in ('local_costmap','global_costmap')}
+        if external_lease:
+            self.maps['velocity_smoother'] = AsyncParameterClient(node, 'velocity_smoother')
         self.checks = {}
         self.map_verified = {}
         self.last_check = float('-inf')
@@ -150,10 +155,17 @@ class ShoppingNav:
         for name, future in list(self.checks.items()):
             if future.done():
                 try:
-                    plugins, enabled, keep, sonar, topics = future.result().values
-                    valid = ('sonar_layer' in plugins.string_array_value and enabled.bool_value
-                             and keep.double_value == 12. and sonar.string_value == 'roport_range_layer::FreshRangeLayer'
-                             and '/us_sensor/range' in topics.string_array_value)
+                    values = future.result().values
+                    if name == 'velocity_smoother':
+                        low, high = (v.double_array_value for v in values)
+                        valid = len(low) == len(high) == 3 and all(
+                            -cap <= a <= 0 <= b <= cap
+                            for a, b, cap in zip(low, high, (.08, 0., .4)))
+                    else:
+                        plugins, enabled, keep, sonar, topics = values
+                        valid = ('sonar_layer' in plugins.string_array_value and enabled.bool_value
+                                 and keep.double_value == 12. and sonar.string_value == 'roport_range_layer::FreshRangeLayer'
+                                 and '/us_sensor/range' in topics.string_array_value)
                 except (AttributeError, TypeError, ValueError, RuntimeError):
                     valid = False
                 self.map_verified[name] = now if valid else float('-inf')
@@ -169,8 +181,10 @@ class ShoppingNav:
                 self.active_at = float('-inf')
             for name, client in self.maps.items():
                 if name not in self.checks and client.services_are_ready():
-                    self.checks[name] = client.get_parameters(['plugins','sonar_layer.enabled',
-                        'sonar_layer.observation_keep_time','sonar_layer.plugin','sonar_layer.topics'])
+                    names = ['min_velocity', 'max_velocity'] if name == 'velocity_smoother' else [
+                        'plugins', 'sonar_layer.enabled', 'sonar_layer.observation_keep_time',
+                        'sonar_layer.plugin', 'sonar_layer.topics']
+                    self.checks[name] = client.get_parameters(names)
         return now-self.active_at < 5 and all(now-self.map_verified.get(name,float('-inf')) < 5 for name in self.maps)
 
     def ready(self, now):
@@ -179,6 +193,10 @@ class ShoppingNav:
                 pubs = self.node.get_publishers_info_by_topic(topic)
                 return len(pubs) == 1 and pubs[0].node_name == owner
             self.graph_ok = sole('cmd_vel', 'trial_guard') and sole('trial/lease', self.node.get_name())
+            if self.external_lease:
+                self.graph_ok &= sole('trial/nav2_cmd_vel', 'velocity_smoother')
+                self.graph_ok &= len(self.node.get_publishers_info_by_topic(
+                    'camera/image_raw/compressed')) == 1
             self.last_graph = now
         maps_ready = self.maps_ready(now)
         return (maps_ready and self.graph_ok and now-self.guard_at < .3 and self.guard.get('blocked') is False
@@ -229,6 +247,10 @@ class ShoppingNav:
             self.result = self.handle = self.anchor = None
 
     def heartbeat(self, moving, now):
+        if self.external_lease:
+            self.motion_requested = bool(moving)
+            self.motion_at = now
+            return
         if self.boot and self.graph_ok and self.boot == self.guard.get('boot') and now-self.guard_at < .3:
             self.sequence += 1
             data = dict(boot=self.boot, owner='nav2' if moving else 'none', session=self.session,
