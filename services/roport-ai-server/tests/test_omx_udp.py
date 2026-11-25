@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 
 from omx_udp import errors, wire
+from omx_udp import server as server_module
 from omx_udp.panel_policy import PanelPolicy
 from omx_udp.server import InferenceServer, PolicyError, bind_address, read_key
 from omx_udp.wire import ACTIONS, ERROR, INFER, LOAD, LOADED, PING, PONG, Message
@@ -71,6 +72,24 @@ def test_incomplete_message_expires():
     time.sleep(0.02)
     r.expire()
     assert r.stats["timeout"] == 1
+
+
+def test_lost_fragments_are_counted():
+    first = wire.pack(request(INFER, 1, {}, b"x" * 5000), KEY)
+    second = wire.pack(request(INFER, 2, {}, b"y" * 5000), KEY)
+    r = wire.Reassembler(KEY, timeout=0.01)
+    for d in first[:-2]:  # two fragments of #1 never come
+        r.feed(d, PEER)
+    for d in second[:-1]:  # a newer request replaces #1, then loses its last fragment
+        r.feed(d, PEER)
+    time.sleep(0.02)
+    r.expire()
+    n = len(first)
+    assert r.stats["fragments_expected"] == 2 * n
+    assert r.stats["fragments_received"] == 2 * n - 3
+    assert r.stats["fragments_missing"] == 3
+    assert (r.stats["superseded_infer"], r.stats["timeout_infer"]) == (1, 1)
+    assert r.stats["completed"] == 0
 
 
 @pytest.mark.parametrize(
@@ -221,6 +240,8 @@ def test_reply_that_cannot_be_built_or_sent_never_stops_the_server(link):
     huge = call(infer(2, "huge"))
     assert (huge.kind, huge.header["code"]) == (ERROR, "REPLY_FAILED")
     assert server.stats["reply_failed"] == 1
+    # both went out as ERROR: the NaN refusal and the reply that could not be packed
+    assert (server.stats["replied_error"], server.stats["replied_actions"]) == (2, 0)
     real = server.sock
 
     class Refusing:  # a socket whose sends fail (ENOBUFS, firewall EPERM, ...)
@@ -328,3 +349,44 @@ def test_host_copy_of_wire_matches():
     if not host.is_file():
         pytest.skip("roport-omx is not next to this service")
     assert host.read_text().split("\n", 1)[1] == ours
+
+
+def test_stats_line_counts_requests_replies_and_infer_time(link, capsys):
+    call, server, _ = link
+    server.stats_every = 3600  # on; this test calls stats_line itself
+    assert call(request(PING, 1)).kind == PONG
+    for request_id in (2, 3, 4):
+        assert call(infer(request_id, "a", b"j" * 3000)).kind == ACTIONS
+    line = server.stats_line()
+    assert (line["completed_ping"], line["completed_infer"]) == (1, 3)
+    assert (line["replied_pong"], line["replied_actions"]) == (1, 3)
+    assert line["fragments_expected"] == line["fragments_received"]
+    assert line["infer_by_peer"] == {"127.0.0.1": 3}
+    assert line["infer_ms_n"] == 3
+    assert line["infer_ms_p50"] <= line["infer_ms_p95"] <= line["infer_ms_max"]
+    assert server.stats_line() is None  # nothing new since the last line
+
+    server.stats_every = 0.01
+    call(infer(5, "boom"))
+    time.sleep(0.02)
+    server._log_stats()
+    out = capsys.readouterr().out.strip().splitlines()[-1]
+    assert out.startswith("[omx-udp] stats {")
+    logged = json.loads(out.removeprefix("[omx-udp] stats "))
+    assert logged["failed"] == logged["replied_error"] == 1
+    assert logged["infer_ms_n"] == 0  # a failed inference has no time
+
+
+def test_no_infer_time_samples_while_stats_are_off(link):
+    call, server, _ = link
+    assert server.stats_every == 0  # --stats-every 0
+    for request_id in range(1, 21):
+        assert call(infer(request_id, "a")).kind == ACTIONS
+    assert len(server._infer_ms) == 0
+    assert server.stats["replied_actions"] == 20  # counters still count
+
+
+def test_infer_time_samples_are_bounded(link):
+    _, server, _ = link
+    server._infer_ms.extend([1.0] * (server_module.INFER_MS_KEPT + 100))
+    assert len(server._infer_ms) == server_module.INFER_MS_KEPT
