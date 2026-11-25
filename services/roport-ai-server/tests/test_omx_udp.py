@@ -112,6 +112,18 @@ def test_rejected_datagrams(case):
     assert r.feed(datagram, PEER) is None
 
 
+def test_malformed_datagrams_and_bodies_are_counted_apart():
+    r = wire.Reassembler(KEY)
+    (datagram,) = wire.pack(request(PING, 1), KEY)
+    assert r.feed(b"XXXX" + datagram[4:], PEER) is None  # refused before reassembly
+    assert r.feed(datagram[:10], PEER) is None
+    # a verified message (CRC and HMAC pass) whose JSON header is not an object
+    (unreadable,) = wire.pack(Message(PING, SESSION, 2, [1, 2]), KEY)
+    assert r.feed(unreadable, PEER) is None
+    assert (r.stats["malformed_datagram"], r.stats["malformed_body"]) == (2, 1)
+    assert r.stats["malformed"] == 0
+
+
 def test_unverified_datagram_never_blocks_a_stream():
     # a corrupted or forged request_id (wrong MAC) must not raise the stream's newest id
     (forged,) = wire.pack(request(PING, 2**63), b"z" * 32)

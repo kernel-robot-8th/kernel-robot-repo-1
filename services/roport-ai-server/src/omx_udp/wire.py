@@ -198,7 +198,7 @@ class Reassembler:
                 packet
             )
         except (ValueError, struct.error):
-            self.stats["malformed"] += 1
+            self.stats["malformed_datagram"] += 1  # one datagram, not a whole request
             return None
         stream = (peer, session)
         pending = self._pending.get(stream)
@@ -246,7 +246,9 @@ class Reassembler:
         try:
             header, data = decode_body(body)
         except (ValueError, TypeError):
-            self.stats["malformed"] += 1
+            self.stats["malformed_body"] += (
+                1  # a whole request, verified but unreadable
+            )
             return None
         self.stats["completed"] += 1
         self.stats[f"completed_{KIND_NAMES[kind]}"] += 1
