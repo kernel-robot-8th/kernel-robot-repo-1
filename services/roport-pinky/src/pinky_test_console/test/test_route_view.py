@@ -312,6 +312,28 @@ def test_parse_dock_ok():
         'cmd': 'dock', 'node': 'N01', 'reset': True}
 
 
+def test_parse_dock_rotate_bands_per_node():
+    """② 범위: N01·N11 = 60..120, N21·N22 = −10..10 · 60..120(양 끝 포함). 180° 쪽은 모두 거부."""
+    def ok(node, r):
+        try:
+            return parse_route_command({'cmd': 'dock', 'node': node, 'advance_cm': 0,
+                                        'rotate_deg': r, 'move_cm': 0})['rotate_deg']
+        except RouteCommandError:
+            return None
+    for node in ('N21', 'N22'):
+        for r in (-10, 0, 10, 60, 120):
+            assert ok(node, r) == float(r)
+        for r in (-10.1, 10.1, 59.9, 120.1, 170, 180, -180, 190, 200):
+            assert ok(node, r) is None, r
+    for node in ('N01', 'N11'):
+        assert ok(node, 60) == 60.0 and ok(node, 120) == 120.0
+        for r in (0, 10, 180, -180, 190, 59.9):
+            assert ok(node, r) is None, (node, r)
+    with pytest.raises(RouteCommandError, match='N11 rotate_deg .*60..120'):
+        parse_route_command({'cmd': 'dock', 'node': 'N11', 'advance_cm': 0, 'rotate_deg': 0,
+                             'move_cm': 0})
+
+
 @pytest.mark.parametrize('data', [
     {'cmd': 'dock', 'node': 'N12', 'advance_cm': 0, 'rotate_deg': 90, 'move_cm': 0},
     {'cmd': 'dock', 'node': 'N16', 'advance_cm': 0, 'rotate_deg': 90, 'move_cm': 0},

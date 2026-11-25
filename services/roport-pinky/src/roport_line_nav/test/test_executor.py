@@ -84,6 +84,49 @@ def test_confirmed_n12_default_side_rise_continuous_edge_is_ignored(graph):
     assert d > runner._max_ok
 
 
+def test_restart_does_not_count_odom_moved_while_idle(graph):
+    """멈춰 있는 동안 Nav2 로 다녀온 거리·회전은 다음 경로의 구간 거리에 더하지 않는다.
+
+    2026-11-24 d660: N12 넘김 뒤 Nav2 로 다녀와 N12 에서 다시 출발할 때, 넘김 때의 odom 자세와 13.6 cm·177° 차이가
+    첫 샘플에 더해져 N08 감지 창(48.4 cm)이 실제 34.8 cm 이동에서 끝나 node_missed.
+    """
+    runner = RouteExecutor(graph)
+    runner._pose = (38.5, -41.4, 0.0)                 # 앞 경로가 끝났을 때(동쪽을 봄)의 odom
+    runner.start(['N12', 'N08', 'N09', 'H1'], start_offset_cm=0., confirmed_start=True)
+    here = (38.5, -27.8, math.radians(176.6))        # 돌아와 서쪽을 보고 선 자리: 13.6 cm·176.6° 떨어짐
+    assert runner.step(_ir((False, True, False)), here, 0.0, 0.0) is not None
+    state = runner.as_dict()
+    assert state['traveled_cm'] == 0.0 and state['rotated_deg'] == 0.0
+    runner.step(_ir((False, True, False)), (36.5, -27.8, math.radians(176.6)), 0.05, 0.05)
+    assert runner.as_dict()['traveled_cm'] == 2.0   # 그 뒤 이동은 그대로 센다
+
+
+def test_confirmed_restart_after_handoff_does_not_pre_rotate(graph):
+    """N12 로 넘긴 뒤(동쪽을 봄) Nav2 로 다녀와 서쪽을 보고 선 로봇: 확인 출발은 기억한 방향으로 반 바퀴 돌지 않는다.
+
+    예전에는 멈춰 있던 동안의 odom 회전(약 180°)이 첫 샘플에 더해져 출발 전 회전이 돈 것으로 처리됐다.
+    그 더하기를 없앤 뒤에도 실제로 반 바퀴 돌아 선을 잃지 않아야 한다(관제 가상 시험의 복귀 경로).
+    """
+    from sim import Sim
+    sim = Sim(graph)
+    sim.place('H2', 'N', 0.0)
+    ex = RouteExecutor(graph)
+    ex.start(['H2', 'N08', 'N12'])
+    sim.run(ex, lambda e: e.state in ('handoff', 'error'))
+    assert ex.state == 'handoff'
+    n12 = graph.nodes['N12']
+    sim.x, sim.y, sim.yaw = n12.x + 3.0, n12.y, math.pi      # Nav2 복귀 자세: N12 3 cm 앞, 서쪽
+    sim.odom = (sim.x, sim.y, sim.yaw)
+    ex.start(['N12', 'N08', 'H2'], start_offset_cm=0., confirmed_start=True)
+    assert ex.state == 'follow'
+    sim.tick(ex)
+    first = ex.as_dict()
+    assert first['state'] == 'follow' and first['traveled_cm'] < 0.5 and first['rotated_deg'] < 1.0
+    sim.run(ex, lambda e: e.state in ('arrived', 'error'))
+    assert ex.state == 'arrived', ex.as_dict()
+    assert not any(e['event'] == 'pre_rotate' for e in list(ex.events)[ex.route_seq0:])
+
+
 @pytest.mark.parametrize('offset', [None, -1., math.nan, math.inf, 1000.])
 def test_confirmed_start_rejects_unmeasured_offsets(graph, offset):
     runner = RouteExecutor(graph)
@@ -200,8 +243,9 @@ def test_load_waits_until_done(graph):
     (['N16', 'N14', 'N02', 'N10', 'N18', 'N07', 'N23', 'N21'], 'N21'),
     (['N11', 'N19', 'N24', 'N22'], 'N22'),
 ])
-def test_delivery_side_stops_load_like_n11(graph, route, stop):
-    """02 인도장 새 정차 노드(N21·N22, arrival: load): N11처럼 반시계 90° 뒤 상차 대기."""
+def test_delivery_side_stops_front_facing_with_reverse(graph, route, stop):
+    """02 인도장 정차 노드(N21·N22, arrival: load) 처음 값 (0, 0, -3): 도착 회전 없이 가로선에서 3 cm 후진해
+    상차 대기 → 상차 뒤 3 cm 전진 → 반시계 약 180° 로 진입선을 찾아 나감(2026-11-25 사용자 결정)."""
     seen = []
 
     def loading(sim):
@@ -211,9 +255,11 @@ def test_delivery_side_stops_load_like_n11(graph, route, stop):
     heading, offset = ('S', 0.0) if route[0] == 'N16' else ('N', 7.0)
     sim, ex = run_route(graph, route, heading, offset, loading=loading)
     assert ex.state == ARRIVED, ex.as_dict()
-    assert seen and abs(seen[0] - 0.0) < 8, seen       # 남쪽으로 들어와 반시계 90° = 동쪽
-    assert abs(_heading_deg(sim) - 90.0) < 15          # 상차 뒤 간선(북) 쪽을 봄
+    assert seen and abs(seen[0] - (-90.0)) < 8, seen   # 남쪽으로 들어와 돌지 않고 그대로 남쪽
+    assert abs(_heading_deg(sim) - 90.0) < 15          # 상차 뒤 반 바퀴 돌아 간선(북) 쪽을 봄
     assert _axle_to(sim, stop) < 6.0
+    moves = [e['detail'] for e in ex.events if e['event'] in ('advance', 'rotate')]
+    assert not any(m.startswith('r ') for m in moves), moves   # 도착 회전(r) 없음
 
 
 def test_load_to_p6_park(graph):

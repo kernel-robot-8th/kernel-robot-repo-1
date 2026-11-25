@@ -9,8 +9,11 @@
   const cv = $("cv"), ctx = cv.getContext("2d"), liveImg = $("liveImg");
   // 로봇 치수(시안·dock_zone 과 같음): footprint 12×12, 앞 끝↔축 3.8, IR↔축 3.0, 테이프 반폭 1.2, 정지 밀림 0.5
   const P = { L: 12, W: 12, frontAxle: 3.8, irAhead: 3.0, halfLine: 1.2, overshoot: 0.5 };
-  const ROUTES = { N11: ["N07", "N23", "N19", "N11"], N01: ["N07", "N18", "N01"] };
-  const DEFAULT_PLAN = { advance_cm: 0, rotate_deg: 90, move_cm: 0 };
+  // N07 교차선 출발(남쪽을 봄) → 상차 노드. 지도 links(roport_airport.yaml)와 같은 순서
+  const ROUTES = { N11: ["N07", "N23", "N19", "N11"], N01: ["N07", "N18", "N01"],
+    N21: ["N07", "N23", "N21"], N22: ["N07", "N23", "N19", "N24", "N22"] };
+  // 로봇 상태의 dock 에 없는 노드가 쓰는 값(dock_core.js initialPlan): 기본 0·90°·0, N21·N22 는 0·0°·−3 cm
+  const initialPlan = () => Core.initialPlan(node());
   const LIVE_MAX_MS = 10 * 60 * 1000;
   const KEY = "pinkyDock.v1";
   const JSON_HDR = { "Content-Type": "application/json" };
@@ -51,8 +54,8 @@
     const p = robotState && robotState.pose_est;
     return p && Number.isFinite(p.x_cm) && Number.isFinite(p.y_cm) ? { x: p.x_cm, y: p.y_cm, th: (p.heading_deg || 0) * Math.PI / 180 } : null;
   };
-  // 오차 기준 목표: 로봇에 적용된 값이 있으면 그 자세, 없으면 지금 코드(기본 0·90·0) 자세
-  const targetPose = () => appliedPose() || Core.poseFromPlan(pred(), DEFAULT_PLAN);
+  // 오차 기준 목표: 로봇에 적용된 값이 있으면 그 자세, 없으면 그 노드의 처음 값(기본 0·90·0, N21·N22 0·0·−3) 자세
+  const targetPose = () => appliedPose() || Core.poseFromPlan(pred(), initialPlan());
 
   const w2i = (p) => Core.apply(H, p), i2w = (p) => Core.apply(Hinv, p);
   const toScr = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; };
@@ -117,15 +120,15 @@
     $("pA").textContent = f1(pl.advance_cm) + " cm";
     $("pR").textContent = pl.rotate_deg.toFixed(1) + "°";
     $("pB").textContent = f1(pl.move_cm) + " cm";
-    const ok = Core.inLimits(rounded) && !pl.parallel;
-    $("pWarn").textContent = pl.parallel ? "목표 방향이 접근선과 평행이라 ③으로 옆 이동을 할 수 없음"
-      : ok ? "" : "허용 범위를 넘어서 적용할 수 없음";
-    $("pWarn").className = "tiny-note" + (ok ? "" : " dk-err");
+    const ok = Core.inLimits(rounded, cam.node);
+    const side = pl.parallel ? `②가 ${pl.rotate_deg.toFixed(0)}°(접근선과 평행)라 ③ 없이 ①만 씀 — 옆 ${f1(pl.side_cm)} cm 는 못 맞춤` : "";
+    $("pWarn").textContent = ok ? side : `허용 범위(② ${Core.bandsText(cam.node)})를 넘어서 적용할 수 없음` + (side ? ` · ${side}` : "");
+    $("pWarn").className = "tiny-note" + (ok && !(pl.parallel && Math.abs(pl.side_cm) >= 0.05) ? "" : " dk-err");
     $("apply").disabled = !ok || !H || !robotName();
     const d = robotDock();
     $("appliedTxt").textContent = !robotOk ? "로봇 상태 모름" : d
       ? `① ${f1(d.advance_cm)} cm · ② ${Number(d.rotate_deg).toFixed(1)}° · ③ ${f1(d.move_cm)} cm`
-      : (robotState && "dock" in robotState ? "없음(지금 코드 0 · 90° · 0)" : "로봇이 dock 값을 알리지 않음(line_nav 업데이트 필요?)");
+      : (robotState && "dock" in robotState ? `없음(처음 값 ${Core.initialText(node())})` : "로봇이 dock 값을 알리지 않음(line_nav 업데이트 필요?)");
     const lc = robotState && robotState.last_command;
     $("lastCmd").textContent = lc ? `${lc.cmd} ${lc.ok ? "ok" : "거부"} ${lc.detail || ""}` : "-";
     const m = store.meas[node()];
@@ -340,14 +343,14 @@
   $("apply").addEventListener("click", async () => {
     const pl = Core.plan(pred(), wantPose());
     const body = { cmd: "dock", node: cam.node, advance_cm: r1(pl.advance_cm), rotate_deg: r1(pl.rotate_deg), move_cm: r1(pl.move_cm) };
-    if (!Core.inLimits(body)) { msg("applyMsg", "허용 범위 밖", "err"); return; }
+    if (!Core.inLimits(body, cam.node)) { msg("applyMsg", `허용 범위 밖(② ${Core.bandsText(cam.node)})`, "err"); return; }
     try {
       await command(body, `dock ${cam.node} ① ${f1(body.advance_cm)} ② ${body.rotate_deg.toFixed(1)}° ③ ${f1(body.move_cm)}`);
       msg("applyMsg", `${robotName()} 에 ${cam.node} 도킹 값을 보냄 — 「마지막 명령 결과」·파란 점선으로 적용 확인`, "ok");
     } catch (e) { msg("applyMsg", e.message, "err"); }
   });
   $("resetRobot").addEventListener("click", async () => {
-    if (!confirm(`${robotName()} 의 ${cam.node} 도킹 값을 지우고 기본(0 · 90° · 0)으로 돌립니다.`)) return;
+    if (!confirm(`${robotName()} 의 ${cam.node} 도킹 값을 지우고 이 노드의 처음 값(${Core.initialText(cam.node)})으로 돌립니다.`)) return;
     try { await command({ cmd: "dock", node: cam.node, reset: true }, `dock ${cam.node} reset`); msg("applyMsg", "지우기 보냄", "ok"); } catch (e) { msg("applyMsg", e.message, "err"); }
   });
   document.querySelectorAll("input[name=goal]").forEach((r) => r.addEventListener("change", () => {
@@ -376,7 +379,7 @@
   $("save").addEventListener("click", async () => {
     const m = store.meas[node()];
     if (!m) { msg("saveMsg", "「실제 위치 표시」로 빨간 박스를 먼저 맞추세요", "err"); return; }
-    const p = pred(), tg = targetPose(), e = Core.resultError(tg, m, p.approach), d = robotDock() || DEFAULT_PLAN;
+    const p = pred(), tg = targetPose(), e = Core.resultError(tg, m, p.approach), d = robotDock() || initialPlan();
     const body = { node: cam.node, camera: cam.id, route: ROUTES[cam.node] || [],
       applied: { advance_cm: Number(d.advance_cm), rotate_deg: Number(d.rotate_deg), move_cm: Number(d.move_cm) },
       target: poseOut(tg), predicted: poseOut({ x: p.x, y: p.y, th: p.th }), measured: poseOut(m),
