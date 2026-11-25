@@ -82,6 +82,8 @@ endpoint는 외부 `follow_registration_command`를 내부 `follow_registration.
 
 드라이버는 Nav2의 추종 목표 수락과 신선한 `trial_guard` 응답의 실제 `owner == "nav2"`를 모두 확인한 뒤 `active:true`를 보고한다. 구동권 전환 대기 중에는 `active:false`다. 기존 `observe().drive_owner`는 Nav2 모드만으로도 `"nav2"`가 되므로, 드라이버에서 guard 응답을 확인해야 한다.
 
+마커 실행부의 활성 보고는 [Pinky PR #174](https://github.com/kernel-robot-8th/kernel-robot-repo-1/pull/174)에 있다. 관제는 저장된 수령 세션의 마커 명령에 `follow_mode: "marker"`와 `follow_session_id`를 보내고, 드라이버가 돌려준 동일 세션의 보고로 실제 활성 여부를 판정한다. 세션이 없는 이전 카드 명령도 지원한다.
+
 endpoint는 실제 모드·대상·Nav2 준비·구동 소유권·관측 신선도가 확인된 경우에만 `in_progress.result.follow_active=true`와 `result.follow`를 발행한다. Fleet도 이 활성 값, 중첩된 `result.follow`의 mode/session/target/perception, 현재 상태 근거가 시작 명령과 일치하는지 다시 검사한다. 고객이 서 있으면 추종이 활성인 상태에서도 속도가 0일 수 있으므로 속도 0/이동 여부 자체를 활성 판정으로 사용하지 않는다. `accepted`는 활성 근거가 아니며, `drain_results()`에서 임의로 `follow_active=true`를 넣어도 이를 근거로 인정하지 않는다.
 
 ## 5. MQTT 필드와 등록 결과
@@ -156,6 +158,8 @@ MQTT `completed.result`에는 endpoint의 관측 상태가 함께 붙고 `stoppe
 
 실물에서는 `verified_follow_robot`을 지정했더라도 `follow_modes`의 기체 항목이 없거나 빈 배열이면 추종을 열지 않는다. 현장 확인 후 통합 담당자가 실제 기체 ID와 검증된 모드만 넣는다. 가상 시험은 기체 항목을 생략해도 기존 marker 기본값을 유지한다. 서비스 패드에서는 `VITE_PAD_FOLLOW=1`과 서버 연결이 필요하며, 현재 상태 조회에서 제공된 지원 모드만 선택할 수 있다.
 
+d660의 H2 카드 추종 시험 묶음을 다시 만들 때는 MQTT 어댑터와 #174가 반영된 Pinky 런타임을 같은 시험 기준으로 맞춘다. 실제 활성·정차 보고를 검증한 후에만 시험 설정에서 `field_verified:true`, `verified_follow_robot`에 실제 기체 ID, `follow_modes`에서 같은 기체에 `["marker"]`를 적용한다. `appearance`는 등록·추종 실행부 검증 후 따로 허용한다.
+
 적용 순서:
 
 1. 통합 담당자와 모드 담당자가 이 계약·기동 방식·카메라 소유자·공동 `TrialDriver` 수정 책임을 먼저 맞춘다. 실물 런처/파라미터·모델/보정 파일의 별도 배포 항목을 기록한다.
@@ -168,7 +172,7 @@ MQTT `completed.result`에는 endpoint의 관측 상태가 함께 붙고 `stoppe
 
 이번 작업에서 관제/서비스/패드/MQTT와 가상 실행부를 연결한다. 실제 `roport_smartcart`의 HTTP/ROS 실행기를 서비스 owner에 연결한 것으로 보지 않는다. 기존 패드 [`Shopping.tsx`](../../roport-web/apps/pad/src/Shopping.tsx)의 독립 Shopping 데모도 이 통합 완료에 포함하지 않는다. 서비스 수령 뒤 `FollowSession` 경로를 사용하며 별도 데모의 ‘시작’ 버튼으로 운영 권한을 우회하면 안 된다.
 
-[#166](https://github.com/kernel-robot-8th/kernel-robot-repo-1/pull/166)의 탑승 알림 창은 `GET /cart-api/follow/{receiptId}`에 선택 필드 `boardingAlert: true`가 있고 최신 상태가 `following`일 때 열린다. 시험 런처에 `ROPORT_BOARDING_ALERT_TEST=1`을 지정하면 관제는 실제 추종 활성 최초 확인 시각부터 20초 후 세션에 알림을 표시한다. 정지·복귀·HOLD·오래된 상태에는 알림을 보내지 않는다. 재개는 첫 추종 시각을 보존하며 패드에서 확인한 알림은 같은 수령에서 다시 띄우지 않는다. 운항 정보에 따른 운영 알림, 게이트 안내 전환, 관제에서 기체 LCD·LED·부저를 제어하는 경로는 별도다. 개발 전용 로봇 표시 프록시는 기본으로 꺼져 있다.
+[#166](https://github.com/kernel-robot-8th/kernel-robot-repo-1/pull/166)의 탑승 알림 창은 `GET /cart-api/follow/{receiptId}`에 선택 필드 `boardingAlert: true`가 있고 최신 상태가 `following`일 때 열린다. 시험 런처에 `ROPORT_BOARDING_ALERT_TEST=1`을 지정하면 관제는 실제 추종 활성 최초 확인 시각부터 20초 후, 최신 관측도 같은 모드와 세션에 대해 활성일 때만 알림을 보낸다. 정지·복귀·HOLD·오래된 상태에는 알림을 보내지 않는다. 재개는 첫 추종 시각을 보존하며 패드에서 확인한 알림은 같은 수령에서 다시 띄우지 않는다. 운항 정보에 따른 운영 알림, 게이트 안내 전환, 관제에서 기체 LCD·LED·부저를 제어하는 경로는 별도다. 개발 전용 로봇 표시 프록시는 기본으로 꺼져 있다.
 
 실물 통합 PR의 완료 조건:
 

@@ -897,6 +897,10 @@ class FleetControl:
                     "target_ref": registration["target_ref"],
                     "perception_boot_id": registration["perception_boot_id"],
                 }
+            elif follow.get("mode") == "marker":
+                target.update(
+                    follow_mode="marker", follow_session_id=follow["session_id"]
+                )
             return (
                 robot,
                 "follow_target_command",
@@ -1291,9 +1295,8 @@ class FleetControl:
             ):
                 raise ValueError("invalid follow activation evidence")
             task.update(stage="following")
-            task["follow"].setdefault(
-                "first_following_at", datetime.now(UTC).isoformat()
-            )
+            if session := task.get("follow"):
+                session.setdefault("first_following_at", datetime.now(UTC).isoformat())
         elif p["status"] in {"failed", "rejected", "interrupted"} or (
             cmd["type"] == "follow_target_command" and p["status"] == "completed"
         ):

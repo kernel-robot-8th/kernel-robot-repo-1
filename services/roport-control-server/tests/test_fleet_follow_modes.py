@@ -183,6 +183,12 @@ def test_registration_dedup_approval_and_actual_active_evidence(waiting, monkeyp
     c.config["boarding_alert_after_s"] = 20
     assert "boarding_alert" not in c.service_projection(task)["follow"]
     Clock.elapsed = 20
+    assert "boarding_alert" not in c.service_projection(task)["follow"]
+    robot_state = c.observed["pinky3"]["state"]
+    for change in ({"active": False}, {"follow_session_id": "another-receipt"}):
+        robot_state["follow"] = {**proof["follow"], **change}
+        assert "boarding_alert" not in c.service_projection(task)["follow"]
+    robot_state["follow"] = proof["follow"]
     projection = c.service_projection(task)
     assert projection["follow"]["boarding_alert"] is True
     assert "first_following_at" not in projection["follow"]
@@ -207,6 +213,42 @@ def test_registration_dedup_approval_and_actual_active_evidence(waiting, monkeyp
         not in c.service_projection(c.data["tasks"]["outbound"])["follow"]
     )
     assert c.next_action() is None and c.data["commands"]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_marker_goal_and_activation_share_the_receipt_session(waiting, legacy):
+    c = waiting
+    c.receipt("outbound", follow_card=35, session_id="receipt")
+    if legacy:
+        data = deepcopy(c.data)
+        del data["tasks"]["outbound"]["follow"]
+        c.save(data)
+    c.follow_control("outbound", "approve")
+    cmd = dispatch(c)
+    assert cmd["type"] == "follow_target_command"
+    assert cmd["payload"]["card_id"] == 35
+    result(c, cmd, "accepted")
+    proof = {
+        **c.observed["pinky3"]["state"],
+        "drive_owner": "nav2",
+        "follow_active": True,
+        "follow": {
+            "active": True,
+            "follow_mode": "marker",
+        },
+    }
+    if legacy:
+        assert "follow_session_id" not in cmd["payload"]
+    else:
+        assert cmd["payload"]["follow_mode"] == "marker"
+        assert cmd["payload"]["follow_session_id"] == "receipt"
+        proof["follow"]["follow_session_id"] = "other-receipt"
+        with pytest.raises(ValueError, match="follow activation evidence"):
+            result(c, cmd, "in_progress", proof, sequence=2)
+        assert c.data["tasks"]["outbound"]["stage"] == "follow_start"
+        proof["follow"]["follow_session_id"] = "receipt"
+    result(c, cmd, "in_progress", proof, sequence=2)
+    assert c.data["tasks"]["outbound"]["stage"] == "following"
 
 
 @pytest.mark.parametrize(
@@ -290,15 +332,6 @@ def test_standing_customer_does_not_make_an_unowned_follower_ready(waiting):
     c.observed["pinky3"]["state"]["follow"] = {"active": True, "follow_mode": "marker"}
     with pytest.raises(ValueError, match="controller still active"):
         c.ready("pinky3")
-
-
-def test_marker_wire_compatibility_and_none_return(waiting):
-    c = waiting
-    c.receipt("outbound", 42, session_id="receipt")
-    c.follow_control("outbound", "approve")
-    cmd = dispatch(c)
-    assert cmd["payload"]["card_id"] == 42
-    assert "follow_mode" not in cmd["payload"]
 
 
 @pytest.mark.parametrize("modes", [None, [], ["appearance"]])
