@@ -1,7 +1,13 @@
+import json
+import shutil
+import ssl
+import subprocess
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from email.message import Message
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
+from threading import Thread
 from unittest.mock import Mock
 
 import pytest
@@ -130,3 +136,80 @@ def test_relay_limits_and_post_io_session_check(frames, monkeypatch, problem):
         request = opener.open.call_args.args[0]
         assert request.full_url == "http://127.0.0.1:9999/frames/image"
         assert request.headers["Authorization"] == "Bearer frame-token"
+
+
+def test_frame_ca_accepts_only_valid_server_identity(frames, tmp_path, monkeypatch):
+    openssl = shutil.which("openssl")
+    if not openssl:
+        pytest.skip("OpenSSL CLI is required to generate a temporary test certificate")
+    cert, key = tmp_path / "localhost.pem", tmp_path / "localhost.key"
+    subprocess.run(
+        [
+            openssl,
+            "req",
+            "-new",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    monkeypatch.setenv("no_proxy", "localhost,127.0.0.1")
+
+    class FrameHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if (
+                self.path != "/frames/image"
+                or self.headers.get("Authorization") != "Bearer frame-token"
+            ):
+                self.send_error(401)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.end_headers()
+            self.wfile.write(b"test jpeg")
+
+        def log_message(self, *_):
+            pass
+
+    _, fleet, _ = frames
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(cert, key)
+    with ThreadingHTTPServer(("127.0.0.1", 0), FrameHandler) as server:
+        server.socket = tls.wrap_socket(server.socket, server_side=True)
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        try:
+
+            def relay(host, ca_file=None):
+                sources = json.dumps({"pinky3": f"https://{host}:{server.server_port}"})
+                return FollowFrames(
+                    "preview-token", sources, "frame-token", ca_file=ca_file
+                ).get(fleet, "Bearer preview-token", "receipt", "frame")
+
+            assert relay("localhost", cert).body == b"test jpeg"
+            for host, ca_file in (
+                ("localhost", None),
+                ("127.0.0.1", cert),
+                ("localhost", tmp_path / "missing.pem"),
+            ):
+                with pytest.raises(HTTPException) as exc:
+                    relay(host, ca_file)
+                assert exc.value.status_code == 502
+        finally:
+            server.shutdown()
+            thread.join()

@@ -125,13 +125,23 @@ MQTT `completed.result`에는 endpoint의 관측 상태가 함께 붙고 `stoppe
 | 경계 | 계약/설정 |
 | --- | --- |
 | 실제 사진 제공자 | `GET /frames/{image_ref}`, `Authorization: Bearer <배포 시 주입한 토큰>`. 현재 세션/프레임·인식 기동·만료를 검사하고 JPEG 또는 PNG 반환 |
-| 관제 → 제공자 | `ROPORT_FOLLOW_FRAME_SOURCES`의 기체별 origin과 `ROPORT_FOLLOW_FRAME_TOKEN` 사용 |
+| 관제 → 제공자 | `ROPORT_FOLLOW_FRAME_SOURCES`의 기체별 origin과 `ROPORT_FOLLOW_FRAME_TOKEN` 사용. 전용 CA는 `ROPORT_FOLLOW_FRAME_CA_FILE`로 지정 |
 | 서비스 → 관제 | 관제 `/api/fleet/follow/{session_id}/frames/{frame_ref}`. 서비스 `SERVICE_FOLLOW_PREVIEW_BASE_URL`, `SERVICE_FOLLOW_PREVIEW_TOKEN`과 관제 `ROPORT_FOLLOW_PREVIEW_TOKEN`을 맞춤 |
 | 패드 → 서비스 | 기존 카트 인증으로 `/cart-api/follow/{receiptId}/frames/{frameRef}` 사용. 현재 카트·수령 세션에 속한 프레임만 제공 |
 
 현장 PC 사이에는 HTTPS와 인증서 검증을 사용한다. HTTP 예외는 루프백 가상 시험만 허용한다. 실제 토큰·인증서/키·프레임 원문은 Git에 넣지 않고 배포 시 전달한다. 관제는 배포 설정의 origin만 호출하며 MQTT/고객 입력 URL을 받아 요청하지 않는다. 리다이렉트, 허용되지 않은 이미지 형식, 2 MiB 초과 응답, 만료/교체된 프레임은 거절한다. 응답은 `Cache-Control: no-store`다.
 
-실제 사진 제공자 및 TLS 배포는 아직 Pinky/인식 담당의 연동 작업이다. 이번 가상 제공자는 [`virtual_follow_frames.py`](../scripts/virtual_follow_frames.py)이며 `--preview-port`로 명시했을 때만 루프백에서 합성 JPEG를 제공한다. 그림에는 `VIRTUAL FOLLOW TEST`가 표시되고 실제 카메라를 사용하지 않는다.
+실물 제공자와 연결할 때는 Pinky의 서버용 CSR 서명과 SAN(IP 또는 DNS)을 확인해 발급한 인증서 체인을 기체에 설치한다. 개인키는 기체에 둔다. 예시로 관제 API의 비공개 환경 파일에 아래와 같이 설정한다. `ROPORT_FOLLOW_FRAME_TOKEN`은 24자 이상의 동일한 비밀값을 제공자와 관제에 주입한다. 서비스→관제 요청에는 별도의 프리뷰 토큰을 사용한다.
+
+```bash
+export ROPORT_FOLLOW_FRAME_SOURCES='{"pinky3":"https://pinky3.example.test:8443"}'
+export ROPORT_FOLLOW_FRAME_CA_FILE=/absolute/path/to/frame-ca.pem
+export ROPORT_FOLLOW_FRAME_TOKEN=REPLACE_WITH_SHARED_FRAME_TOKEN
+```
+
+전용 CA는 관제 API의 **사진 제공자 HTTPS 호출에만** 추가된다. CA 설정을 생략하면 시스템 신뢰 저장소를 사용한다. 주소 불일치·신뢰할 수 없는 인증서·잘못된 CA 파일은 사진 요청 실패로 처리한다. 배송이 끝나고 정차를 확인한 뒤 새 제공자와 관제 API 설정을 적용한다. 촬영·대상 선택·추종 승인·정지·복귀는 별도 실물 시험으로 확인한다.
+
+가상 제공자 [`virtual_follow_frames.py`](../scripts/virtual_follow_frames.py)는 `--preview-port`로 실행하며 루프백에서 합성 JPEG를 제공한다.
 
 ## 7. 카메라·ROS·구동권 충돌 방지
 
