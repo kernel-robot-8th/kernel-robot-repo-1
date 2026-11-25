@@ -231,7 +231,8 @@ class RouteExecutor:
         """경로 시작. 잘못된 경로는 GraphError(현재 상태 유지). 주행 중이면 거부.
 
         start_cross: IR 3개가 route[0] 교차선 위, start_facing(E·N·W·S) 방향으로 출발.
-        confirmed_start: 실제 센서로 확인한 출발 오프셋에 gate_early 거리 창을 적용.
+        confirmed_start: 실제 센서로 확인한 출발 오프셋에 gate_early 거리 창을 적용. 기억한 끝 방향은 쓰지 않는다
+                         (첫 구간 방향을 보고 선 것으로 보고 출발 전 회전을 하지 않음).
         hold_at_goal: 마지막 교차점에서 축을 중심으로 옮겨 정지하고 재출발 자세를 보존.
         """
         if self.state not in TERMINAL:
@@ -260,7 +261,9 @@ class RouteExecutor:
         self.route_seq0 = self.event_seq
         self._log('start', ' → '.join(self.route))
         self._dock_phase = None
-        end = self._end
+        # confirmed_start = 출발 위치·방향을 방금 실제로 확인한 출발(Nav2 로 다녀온 뒤의 N12 등). 앞 경로가 끝났을 때
+        # 기억한 방향은 그 사이 달라졌으므로 쓰지 않는다: 출발 전 회전 없이 첫 구간 방향을 보고 선 것으로 본다.
+        end = None if confirmed_start else self._end
         self._end = None
         if start_cross:
             self._depart_cross(legs[0], start_facing)

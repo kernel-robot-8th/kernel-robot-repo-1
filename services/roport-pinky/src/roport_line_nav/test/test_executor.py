@@ -101,6 +101,32 @@ def test_restart_does_not_count_odom_moved_while_idle(graph):
     assert runner.as_dict()['traveled_cm'] == 2.0   # 그 뒤 이동은 그대로 센다
 
 
+def test_confirmed_restart_after_handoff_does_not_pre_rotate(graph):
+    """N12 로 넘긴 뒤(동쪽을 봄) Nav2 로 다녀와 서쪽을 보고 선 로봇: 확인 출발은 기억한 방향으로 반 바퀴 돌지 않는다.
+
+    예전에는 멈춰 있던 동안의 odom 회전(약 180°)이 첫 샘플에 더해져 출발 전 회전이 돈 것으로 처리됐다.
+    그 더하기를 없앤 뒤에도 실제로 반 바퀴 돌아 선을 잃지 않아야 한다(관제 가상 시험의 복귀 경로).
+    """
+    from sim import Sim
+    sim = Sim(graph)
+    sim.place('H2', 'N', 0.0)
+    ex = RouteExecutor(graph)
+    ex.start(['H2', 'N08', 'N12'])
+    sim.run(ex, lambda e: e.state in ('handoff', 'error'))
+    assert ex.state == 'handoff'
+    n12 = graph.nodes['N12']
+    sim.x, sim.y, sim.yaw = n12.x + 3.0, n12.y, math.pi      # Nav2 복귀 자세: N12 3 cm 앞, 서쪽
+    sim.odom = (sim.x, sim.y, sim.yaw)
+    ex.start(['N12', 'N08', 'H2'], start_offset_cm=0., confirmed_start=True)
+    assert ex.state == 'follow'
+    sim.tick(ex)
+    first = ex.as_dict()
+    assert first['state'] == 'follow' and first['traveled_cm'] < 0.5 and first['rotated_deg'] < 1.0
+    sim.run(ex, lambda e: e.state in ('arrived', 'error'))
+    assert ex.state == 'arrived', ex.as_dict()
+    assert not any(e['event'] == 'pre_rotate' for e in list(ex.events)[ex.route_seq0:])
+
+
 @pytest.mark.parametrize('offset', [None, -1., math.nan, math.inf, 1000.])
 def test_confirmed_start_rejects_unmeasured_offsets(graph, offset):
     runner = RouteExecutor(graph)
