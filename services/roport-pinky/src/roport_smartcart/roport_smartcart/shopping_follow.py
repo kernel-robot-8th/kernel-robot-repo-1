@@ -659,7 +659,10 @@ class Shopping:
                                            via, allow_new=target is not None, direct_grid=self.grid)
             if self.nav.fault:
                 self.armed = False
-                if self.nav.fault != 'PATH_BLOCKED':
+                # A new capture clears a response error after the old goal has ended.
+                # Keep any current sensor or guard reason for the capture check.
+                if self.nav.fault != 'PATH_BLOCKED' and not (
+                        self.nav.response_failed and self.nav.quiescent()):
                     self.reason = '경로 확인 필요 · 대상을 다시 선택해 주세요'
             distance = math.dist(pose[:2], target) if pose and target else None
             observed_state = self.track.state if fresh_result else 'SEARCHING'

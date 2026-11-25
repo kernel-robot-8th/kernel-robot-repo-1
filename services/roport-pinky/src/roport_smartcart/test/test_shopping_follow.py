@@ -782,6 +782,69 @@ def test_result_failure_waits_for_terminal_evidence_of_the_same_goal(terminal_so
     handle.get_result_async.assert_called_once()
 
 
+@pytest.mark.parametrize('blocked_by', [None, 'goal', 'odom', 'guard', 'camera'])
+def test_next_customer_capture_after_nav_response_failure(monkeypatch, blocked_by):
+    from concurrent.futures import Future
+    from threading import RLock
+    from unittest.mock import Mock
+
+    from action_msgs.msg import GoalStatus
+    from roport_smartcart import shopping_follow
+    from roport_smartcart.fleet_appearance import FleetAppearance
+
+    now = 10.
+    monkeypatch.setattr(shopping_follow.time, 'monotonic', lambda: now)
+    shop = make_shop(now)
+    nav, handle = shop.nav, shop.nav.handle
+    handle.status = GoalStatus.STATUS_EXECUTING
+    nav.result, retry = Future(), Future()
+    nav.result.set_exception(RuntimeError('terminal result lost'))
+    handle.get_result_async.return_value = retry
+    nav.poll()
+    assert nav.response_failed and not nav.quiescent()
+
+    appearance = FleetAppearance(shop, RLock(), clock=lambda: now)
+    appearance.stop(forget=True)
+    if blocked_by != 'goal':
+        retry.set_result(NS(status=GoalStatus.STATUS_CANCELED))
+        nav.poll()
+        assert nav.quiescent()
+    if blocked_by != 'guard':
+        nav.guard['owner'] = 'none'
+    shop.still_since = now - .3
+    if blocked_by == 'odom':
+        shop.odom_at = now - .5
+    photo_at = now - .6 if blocked_by == 'camera' else now
+    photo = b'\xff\xd8jpeg'
+    shop.packet = (photo_at, np.zeros((120, 100, 3), np.uint8), None, None, None, None, photo)
+    shop.detector = Mock()
+    shop.detector.detect.return_value = []
+
+    command = {
+        'type': 'follow_registration.requested',
+        'payload': {'operation': 'capture', 'follow_session_id': 'next-customer',
+                    'binding_id': 'binding', 'expected_boot_id': 'boot',
+                    'map_id': 'airport_map', 'map_version': 'v16'},
+    }
+    appearance.register(command)
+    outcome = appearance.tick(following=False, controller_ready=True, stopped=shop.stopped(now))
+    assert not shop.armed
+    nav.client.send_goal_async.assert_not_called()
+    if blocked_by is not None:
+        assert outcome == (None, (command, 'failed', {'error_code': 'follow_registration_failed'}))
+        assert nav.response_failed and shop.frozen is None
+        return
+
+    assert outcome == (None, None)
+    assert nav.fault is None
+    shop.detect_capture(shop.frozen)
+    error, (original, phase, details) = appearance.tick(
+        following=False, controller_ready=True, stopped=shop.stopped(now))
+    assert error is None and original is command and phase == 'completed'
+    assert details['follow_session_id'] == 'next-customer'
+    assert appearance.image(details['image_ref']) == photo
+
+
 @pytest.mark.parametrize('jitter_ns', [0, 40_000_000])
 def test_shopping_global_cadence_keeps_active_direct_leg_until_grid_expires(jitter_ns):
     pytest.importorskip('nav2_msgs')
