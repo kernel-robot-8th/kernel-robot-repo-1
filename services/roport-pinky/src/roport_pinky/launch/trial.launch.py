@@ -91,6 +91,11 @@ def _nodes(context):
     if not math.isfinite(planner_tolerance) or not .05 <= planner_tolerance <= .3:
         raise ValueError('planner_tolerance must be finite and in [0.05, 0.3] m')
     config = LaunchConfiguration('params_file')
+    parameters = [config]
+    if os.environ.get('ROPORT_APPEARANCE_CONFIG'):
+        parameters.append(PathJoinSubstitution([
+            FindPackageShare('roport_smartcart'), 'config', 'shopping_costmaps.yaml']))
+        goal_xy_tolerance = min(goal_xy_tolerance, .015)
     nodes = [
         Node(package='roport_pinky', executable='trial_guard', output='screen'),
         Node(package='roport_line_nav', executable='line_nav', output='screen',
@@ -142,7 +147,7 @@ def _nodes(context):
             overrides['min_velocity'] = [-max_linear, 0.0, -max_angular]
             remaps.append(('cmd_vel_smoothed', 'trial/nav2_cmd_vel'))
         nodes.append(Node(package=package, executable=name, name=name, output='screen',
-                          parameters=[config, overrides], remappings=remaps))
+                          parameters=[*parameters, overrides], remappings=remaps))
     nodes.append(Node(package='nav2_lifecycle_manager', executable='lifecycle_manager',
                       name='trial_lifecycle_manager', output='screen', parameters=[{
                           'autostart': True, 'node_names': [name for _, name in servers]}]))

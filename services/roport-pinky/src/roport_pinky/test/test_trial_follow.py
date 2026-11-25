@@ -402,6 +402,40 @@ def test_follow_observation_echoes_session_and_other_commands_have_no_follow(mon
     assert _observed(d) is None
 
 
+def test_appearance_dispatch_reports_real_lease_and_pause_keeps_selection(monkeypatch, tmp_path):
+    d = driver(monkeypatch, tmp_path)
+    checks, starts, stops = [], [], []
+    d.appearance = SimpleNamespace(validate_start=checks.append, start=starts.append,
+                                   stop=lambda **kw: stops.append(kw),
+                                   pending=None, motion_requested=False, live=lambda: True)
+    d._guard_fault = lambda **kw: None
+    _guard(d, 'none')
+    identity = {'follow_session_id': 'session-3', 'target_ref': 'target-3',
+                'perception_boot_id': 'perception-3'}
+    command = follow_cmd(follow_mode='appearance', **identity)
+    d.validate_action(command)
+    assert checks == [command['payload']]
+    assert starts == d.leases == []
+    d.dispatch(command)
+    assert starts == [command['payload']] and d.nav.started == []
+    d.heartbeat()
+    assert d.leases[-1] == 'none'
+    assert _observed(d) == {'active': False, 'follow_mode': 'appearance', **identity}
+    d.appearance.motion_requested = True
+    d.heartbeat()
+    assert d.leases[-1] == 'nav2'
+    assert _observed(d)['active'] is False
+    _guard(d)
+    assert _observed(d) == {'active': True, 'follow_mode': 'appearance', **identity}
+    _guard(d, age=.31)
+    assert _observed(d)['active'] is False
+    d.safe_stop('operator_stop')
+    assert stops == [{'forget': False}]
+    assert _observed(d) is None
+    d.heartbeat()
+    assert d.leases[-1] == 'none'
+
+
 def test_driver_rejects_appearance_follow(monkeypatch, tmp_path):
     d = driver(monkeypatch, tmp_path)
     with pytest.raises(ValueError, match='unsupported_operation'):

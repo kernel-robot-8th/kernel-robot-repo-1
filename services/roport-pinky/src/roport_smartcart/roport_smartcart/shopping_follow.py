@@ -90,11 +90,11 @@ class ShoppingEncoder:
 
 class Shopping:
     def __init__(self, node, detector, encoder, optical_frame=None, floor_z=0., calibration=None, compressed=False,
-                 follow_distance_m=.34):
+                 follow_distance_m=.34, *, external_lease=False):
         self.node, self.detector, self.encoder = node, detector, encoder
         self.optical_frame, self.floor_z = optical_frame, floor_z
         self.lock, self.closed = Condition(), Event()
-        self.nav, self.tf = ShoppingNav(node, follow_distance_m), Buffer()
+        self.nav, self.tf = ShoppingNav(node, follow_distance_m, external_lease=external_lease), Buffer()
         self.default_gap = follow_distance_m
         self.field_camera = calibration is not None
         self.gap_selected = False
@@ -260,9 +260,9 @@ class Shopping:
     def hold_motion(self, now):
         self.bypass = None
         self.armed = False
-        self.nav.cancel()
         self.nav.heartbeat(False, now)
         self.drive = 'HOLD'
+        self.nav.cancel()
 
     def expire_operator(self, now):
         idle = now-self.touch
@@ -335,11 +335,7 @@ class Shopping:
                     self.lock.wait(timeout=.08)
                 if self.owner != key or self.order != order or not self.can_start(time.monotonic()):
                     raise ValueError(self.reason or '같은 대상과 주행 준비를 확인 중입니다')
-                self.nav.fault = None
-                self.nav.path_failures = 0
-                self.nav.retry_after = 0.
-                self.gap_selected = True
-                self.armed = True
+                self.arm()
             elif action in ('stop', 'end'):
                 self.hold_motion(now)
                 self.proximity = ProximityNotice()
@@ -351,6 +347,14 @@ class Shopping:
             else:
                 raise ValueError('알 수 없는 명령입니다')
             return self.status(key)
+
+    def arm(self):
+        """Called under the shopping lock after a fresh can_start check."""
+        self.nav.fault = None
+        self.nav.path_failures = 0
+        self.nav.retry_after = 0.
+        self.gap_selected = True
+        self.armed = True
 
     def can_start(self, now):
         return bool(self.seed and self.track.state in ('FOLLOWING','CLOSE') and 0 <= now-self.observed < .55
