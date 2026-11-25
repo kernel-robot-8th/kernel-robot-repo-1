@@ -190,9 +190,10 @@ class InferenceServer:
 
         Cumulative counters (a restart resets them; "started" tells): fragments_expected =
         fragments_received + fragments_missing + still pending. Requests lost after arriving =
-        timeout + superseded + conflict (fragments missing) + checksum + bad_mac + malformed (all
-        fragments came, message refused). Kernel drops before the socket (RcvbufErrors) are not
-        visible here; they show in /proc/net/udp.
+        timeout + superseded + conflict (fragments missing) + checksum + bad_mac + malformed_body
+        (all fragments came, message refused). malformed_datagram counts single datagrams
+        refused before reassembly (bad size, version or fragment fields), not requests. Kernel
+        drops before the socket (RcvbufErrors) are not visible here; they show in /proc/net/udp.
         """
         now = time.monotonic() if now is None else now
         counters = dict(sorted(self.stats.items()))
