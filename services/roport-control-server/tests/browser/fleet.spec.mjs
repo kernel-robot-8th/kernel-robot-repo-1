@@ -270,3 +270,33 @@ test('fleet inputs and long goal options fit a narrow control panel', async ({pa
     expect(overflows).toEqual([]);
   } finally { await owner.close(); }
 });
+
+test('follow registration waits for selection before showing operator approval', async ({ page }) => {
+  const owner = await fixture('hardware', true);
+  let stage = 'follow_register';
+  await page.routeWebSocket('**/api/state?mode=fleet*', socket => {
+    const server = socket.connectToServer();
+    server.onMessage(message => {
+      const data = JSON.parse(String(message));
+      const task = Object.values(data.fleet.tasks)[0];
+      Object.assign(task, { stage, follow_mode: 'appearance', follow_card: null });
+      socket.send(JSON.stringify(data));
+    });
+  });
+  try {
+    await page.goto(`${owner.url}/ui/?mode=fleet`);
+    await expect(page.locator('#fleet-work')).toContainText('대상 등록 대기');
+    await expect(page.locator('#fleet-work')).toContainText('외형 인식 추종');
+    await expect(page.getByRole('button', { name: '추종 승인', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '추종 취소 및 복귀', exact: true })).toHaveCount(1);
+    stage = 'follow_registering';
+    await expect(page.locator('#fleet-work')).toContainText('등록 처리 중');
+    await expect(page.locator('#fleet-work button')).toHaveCount(0);
+    stage = 'follow_pending';
+    await expect(page.locator('#fleet-work')).toContainText('운영자 승인 대기');
+    await expect(page.getByRole('button', { name: '추종 승인', exact: true })).toHaveCount(1);
+    stage = 'follow_start';
+    await expect(page.locator('#fleet-work')).toContainText('시작 확인 중');
+    await expect(page.getByRole('button', { name: '추종 정지', exact: true })).toHaveCount(1);
+  } finally { await owner.close(); }
+});

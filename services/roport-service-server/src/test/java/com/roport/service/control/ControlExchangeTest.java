@@ -151,6 +151,26 @@ class ControlExchangeTest {
                 .param("receipt:"+id).query(String.class).single());
         assertThat(message.path("payload").path("package_ids").get(0).asString()).isEqualTo(id);
         assertThat(message.path("task_id").asString()).isEqualTo(id);
+        assertThat(message.path("payload").has("follow_mode")).isFalse();
+        assertThat(message.path("payload").has("follow_card")).isFalse();
+    }
+
+    @Test
+    void explicitAppearanceReceiptPublishesModeWithoutMarkerCard() {
+        exchange.receive("LINK-TEST", json.writeValueAsString(event("task.progress", "RUNNING", 1)));
+        db.sql("INSERT INTO verifications(verification_id,verification_request_id,pickup_id,method,result,actor_ref) VALUES(?,?,?,'test','VERIFIED','test')")
+                .param(id).param(id).param(id).update();
+        db.sql("INSERT INTO handover_approvals(approval_id,pickup_id,order_id,verification_id,task_ref,cart_ref,order_revision,manifest_hash) VALUES(?,?,?,?,?,'cart-test',0,'test')")
+                .param(id).param(id).param(id).param(id).param(id).update();
+        db.sql("INSERT INTO receipts(receipt_id,order_id,pickup_id,approval_id,confirmation_request_id,confirmed_by,channel,received_at,order_revision,follow_mode) VALUES(?,?,?,?,?,?,'test',now(),0,'appearance')")
+                .param(id).param(id).param(id).param(id).param(id).param(id).update();
+        db.sql("INSERT INTO receipt_packages(receipt_id,order_id,package_id,package_revision) VALUES(?,?,?,0)")
+                .param(id).param(id).param(id).update();
+        exchange.publishReceipts("LINK-TEST");
+        var message = json.readTree(db.sql("SELECT message::text FROM control_link_outbox WHERE source_ref=?")
+                .param("receipt:" + id).query(String.class).single());
+        assertThat(message.path("payload").path("follow_mode").asString()).isEqualTo("appearance");
+        assertThat(message.path("payload").has("follow_card")).isFalse();
     }
 
     @Test

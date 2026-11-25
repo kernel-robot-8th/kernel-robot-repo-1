@@ -58,9 +58,13 @@ class Harness:
         self.ex.add_node(self.probe)
         self.thread = threading.Thread(target=self.ex.spin, daemon=True)
         self.thread.start()
-        self.wait(lambda: (self.node.cmd_pub.get_subscription_count() > 0
-                           and self.enable_pub.get_subscription_count() > 0
-                           and self.ir_pub.get_subscription_count() > 0))
+        try:
+            self.wait(lambda: (self.node.cmd_pub.get_subscription_count() > 0
+                               and self.enable_pub.get_subscription_count() > 0
+                               and self.ir_pub.get_subscription_count() > 0))
+        except BaseException:
+            self.close()
+            raise
 
     @staticmethod
     def wait(cond, timeout=5.0):
@@ -80,6 +84,8 @@ class Harness:
 
     def close(self):
         self.ex.shutdown(timeout_sec=1.0)
+        self.thread.join(timeout=5.0)
+        assert not self.thread.is_alive(), 'ROS executor did not stop'
         self.node.destroy_node()
         self.probe.destroy_node()
         rclpy.shutdown(context=self.ctx)

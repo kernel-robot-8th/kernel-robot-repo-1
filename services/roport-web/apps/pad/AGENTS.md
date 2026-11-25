@@ -2,8 +2,8 @@
 
 - 스마트카트(Pinky3) 옆 태블릿에서 띄우는 고객 화면이다(SR-20 패드 GUI 대체). 구현 위치는 `src/`, workspace 이름은 `@roport/pad`다.
 - `services/roport-web/`에서 `npm run typecheck --workspace @roport/pad`, `npm run build --workspace @roport/pad`, `node --test 'apps/pad/src/**/*.test.ts'`로 검사한다.
-- 기본은 `src/api.ts`의 데모 데이터로 동작한다. `VITE_PAD_API=server`로 빌드·실행하면 QR·예약번호 확인은 서비스 서버 `POST /cart-api/verifications`(개발 전용 카트 인증 `X-Cart-Id`)를 부르고, 수령은 `POST /cart-api/receipts`로 명시 요청한다. 안내·추종·정지 호출은 서버 모드에서 제공하지 않는다. 서버 호출은 `api.ts`에만 두고 화면에서 직접 fetch하지 않는다. 응답 해석은 `src/verify.ts`, 실패 안내 문구는 `src/messages.ts`에 두고 각각의 `*.test.ts`로 검사한다.
+- 기본은 `src/api.ts`의 데모 데이터로 동작한다. `VITE_PAD_API=server`로 빌드·실행하면 QR·예약번호 확인은 서비스 서버 `POST /cart-api/verifications`(개발 전용 카트 인증 `X-Cart-Id`)를 부르고, 수령은 `POST /cart-api/receipts`로 명시 요청한다. `VITE_PAD_FOLLOW=1`이면 수령과 함께 `none/marker/appearance` 선택을 원자적으로 저장한다. 추종 지원 여부는 `GET /cart-api/follow/capabilities`, 세션 상태는 `GET /cart-api/follow/{receiptId}`로 확인하고 명시 조작만 `/actions`로 요청한다. `FollowSession.tsx`는 서버 상태만 표시하며 단독 시험 `Shopping.tsx`의 직접 시작·heartbeat를 호출하지 않는다. 서버 호출은 `api.ts`에만 두고 화면에서 직접 fetch하지 않는다. 응답 해석은 `src/verify.ts`, 실패 안내 문구는 `src/messages.ts`에 두고 각각의 `*.test.ts`로 검사한다. 추종 브라우저 회귀는 `npx playwright test -c apps/pad/playwright.follow.config.ts`로 검사한다(격리 HTTP fixture, 실로봇 미연결).
 - 인도 승인은 서비스 서버가 판단한다(SR-18-2). 패드는 QR 인식 결과만으로 승인 화면을 띄우지 않는다.
 - 중지·재개·안내 시작 버튼은 로봇 명령으로 이어질 수 있다. 화면 진입·자동 새로고침으로 명령을 보내지 않고, 접수와 실제 로봇 상태를 구분해 표시한다.
 - 화면 상태 전이는 `src/flow.ts`에 둔다. 요청 응답은 보낸 뒤 화면이 바뀌지 않았을 때만 반영하고, 정지·주행 표시는 카트 상태 보고(데모: 모의 상태 입력)로만 바꾼다.
-- 탑승 시간 알림 창(`BoardingAlert.tsx`)은 카트·관제의 알림 보고(`boardingAlert` Action)로만 뜬다. 패드는 시간을 재지 않는다. 관제 → 패드 알림 통로가 아직 없어 서버 모드에서는 창이 뜨지 않고, 데모 조작 패널의 「탑승 알림」 모의 입력으로만 확인한다.
+- 탑승 시간 알림 창(`BoardingAlert.tsx`)을 데모와 서버 모드에서 공유한다. 데모는 「탑승 알림」 모의 입력으로 열고 기존 게이트 안내 요청을 유지한다. 서버 모드 `FollowSession`은 최신 `following` 상태에 `boardingAlert: true`가 있을 때만 열고, 같은 수령에서 확인한 알림을 다시 표시하지 않는다. 창 안의 「잠시 멈추기」는 기존 `pause`를 호출한다. 알림 시점 결정과 상태 발행은 관제·서비스 후속 작업이다. `VITE_PAD_BOARDING_ROBOT=1`의 로봇 표시는 개발 시험용이다. 검사: `npx playwright test --config apps/pad/playwright.boarding.config.ts`.

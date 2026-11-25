@@ -11,7 +11,7 @@ Pinky와 OMX v2 Host에 같은 계약을 적용한다. OMX 단독·공동 작업
 
 | 토픽 | 메시지 | 방향 / QoS |
 | --- | --- | --- |
-| `roport/robot/{robot}/cmd` | `robot_state_request`, `line_route_command`, `set_drive_mode_command`, `nav_goal_command`, `follow_target_command`, `arm_action_command`, `warehouse_load_command`, `robot_stop_command` | 관제 → 로봇 / 1 |
+| `roport/robot/{robot}/cmd` | `robot_state_request`, `line_route_command`, `set_drive_mode_command`, `nav_goal_command`, `follow_target_command`, `follow_registration_command`, `arm_action_command`, `warehouse_load_command`, `robot_stop_command` | 관제 → 로봇 / 1 |
 | `roport/workcell/shelf-01/cmd` | `robot_state_request`, `shelf_transfer_command`, `hold_release_command`, `robot_stop_command` | 관제 → 공동 작업셀 / 1 |
 | `roport/robot/{robot}/event`, `roport/workcell/shelf-01/event` | `robot_state`, `command_status` | 로봇/작업셀 → 관제 / 1 |
 | `roport/robot/{robot}/ack`, `roport/workcell/shelf-01/ack` | `event_stored` | 관제 → 발행 주체 / 1 |
@@ -70,3 +70,24 @@ npx @asyncapi/cli@latest generate fromTemplate services/roport-control-server/in
 
 
 카드 추종의 `follow_target_command`는 현재 기동, 지도 버전과 카드 번호 35~49를 바인딩한다. 관제는 회당 최대 추종 시간 `max_duration_s`(1~240초)를 자체 명령 제한 시간보다 짧게 내려보낸다. 일시정지 요청 시 기존 추종 명령의 실행 허가를 끊고 `robot_stop_command`를 보낸다. 정지 응답이 거절되거나 만료되면 HOLD로 전환한다. 추종 재개와 복귀는 종료 결과보다 새로운 정지 상태를 확인한 뒤에 허용한다.
+
+
+### 추종 모드 선택·외형 등록 (FFT1-207)
+
+`follow_target_command`는 기존 `{expected_boot_version, map_version, card_id}`를 그대로 지원한다. `follow_mode`를 생략하면 `marker`다. 명시한 `marker`도 카드 번호 35~49를 사용하며 선택적으로 `follow_session_id`를 붙인다. `appearance`는 `follow_session_id`, `target_ref`, `perception_boot_id`를 모두 요구하고 `card_id`를 받지 않는다. 두 모드는 한 번에 하나만 실행한다.
+
+외형 등록은 **주행 명령이 아니다**. `follow_registration_command`도 현재 기동·지도 버전과 `follow_session_id`를 요구하며, 신선한 정지·라인 비활성·Nav2 준비 상태에서만 받는다. 기존 명령 journal·중복 방지·만료·watchdog를 공유한다.
+
+| `operation` | 추가 요청 필드 | `completed.result`의 등록 근거 (`stopped:true` 공통) |
+| --- | --- | --- |
+| `capture` | 없음 | `follow_session_id`, `frame_ref`, `image_ref`, `expires_at`, `perception_boot_id`, `candidates:[{candidate_id,box}]` |
+| `select` | `frame_ref`, 그리고 `candidate_id` 또는 `box` 중 하나 | `follow_session_id`, `target_ref`, `expires_at`, `perception_boot_id` |
+| `release` | 없음 | `follow_session_id`, `cleared:true` |
+
+`box`는 정규화한 `[x1,y1,x2,y2]`이며 범위는 0~1, 좌상단은 우하단보다 작아야 한다. 후보 ID는 한 프레임 안에서 중복되지 않는다. `image_ref`는 이미지 원문·URL이 아닌 불투명 참조다. 이미지 제공은 별도 인증된 HTTP 경로가 맡고 MQTT에 얼굴 사진·외형 특징 벡터를 싣지 않는다. 인식 실행부는 촬영과 대상 참조를 세션·기체·현재 인식 프로세스 기동·유효 기간에 묶고 재촬영·해제·재기동 시 이전 참조를 무효화해야 한다.
+
+Pinky 실행부는 `follow_registration.requested`를 기존 `validate_action → dispatch → drain_results` 경로로 처리한다. 미지원 실행부는 `unsupported_operation`을 반환해야 한다. 등록 실패를 성공/준비 완료로 바꾸지 않으며, 잘못된 등록 결과는 정지하고 `invalid_registration_result`로 종료한다. 이 PR은 실제 ROS 인식/추종 실행부를 추가하지 않는다.
+
+`accepted`는 명령 접수다. 실제 추종 시작은 `observe()`의 선택 필드 `follow={active:true, follow_mode, follow_session_id?, target_ref?, perception_boot_id?}`가 현재 요청 대상과 일치하고 Nav2 소유권·준비·신선한 관측이 확인됐을 때만 `in_progress.result.follow_active=true`로 알린다. `result.follow`에도 같은 대상 근거가 포함된다. 기존 marker 실행부가 이 관측을 구현하지 않았다면 접수는 가능하지만 서비스 화면은 시작 확인 대기 상태를 유지한다. 관제의 `follow_modes` 현장 설정은 실행부 연동을 확인한 모드만 허용해야 한다.
+
+가상 실행부의 `--preview-port`는 `127.0.0.1`에만 HTTP 서버를 연다. 24자 이상 `ROPORT_FOLLOW_FRAME_TOKEN`을 설정하고 `Authorization: Bearer ...`로 `GET /frames/{image_ref}`를 호출한다. 현재 프레임·인식 기동·120초 유효 기간을 검사하며 응답은 `Cache-Control: no-store`인 합성 JPEG다. 사진 대신 `VIRTUAL FOLLOW TEST` 그림을 사용하며 이 모의 기능은 `scripts/virtual_follow_frames.py`에만 있다. 서비스/관제 API는 등록한 원본 서버에서 인증 후 이미지를 중계한다.

@@ -606,3 +606,271 @@ def test_host_metrics_rate_and_failure_never_stop_motion(tmp_path, caplog):
     finally:
         client.close()
         driver.close()
+
+
+@pytest.fixture
+def follow_endpoint(endpoint, monkeypatch):
+    client, driver = endpoint
+    state = driver.observe()
+    state.pop("observed_at", None)
+    state.update(
+        mode="nav2",
+        stopped=True,
+        line_enabled=False,
+        nav2_ready=True,
+        localization_ready=True,
+        drive_owner="none",
+        fault=None,
+    )
+    dispatched, stopped = [], []
+    monkeypatch.setattr(
+        driver,
+        "observe",
+        lambda: {"observed_at": datetime.now(UTC).isoformat(), **state},
+    )
+    monkeypatch.setattr(driver, "validate_action", lambda command: None)
+    monkeypatch.setattr(driver, "dispatch", dispatched.append)
+
+    def safe_stop(reason):
+        stopped.append(reason)
+        state.update(stopped=True, fault=reason, drive_owner="none")
+
+    monkeypatch.setattr(driver, "safe_stop", safe_stop)
+    return client, state, dispatched, stopped
+
+
+def follow_request(client, kind="follow_registration_command", **payload):
+    return request(
+        client,
+        kind,
+        {
+            "expected_boot_version": client.boot,
+            "map_version": client.profile["map_version"],
+            "follow_session_id": "follow-session-1",
+            **payload,
+        },
+        identifier="follow-1",
+    )
+
+
+def registration_evidence(**changed):
+    return {
+        "follow_session_id": "follow-session-1",
+        "frame_ref": "frame-1",
+        "image_ref": "image-1",
+        "perception_boot_id": "perception-1",
+        "expires_at": (datetime.now(UTC) + timedelta(seconds=60)).isoformat(),
+        "candidates": [{"candidate_id": "candidate-1", "box": [0.1, 0.2, 0.4, 0.8]}],
+        **changed,
+    }
+
+
+def last_status(client):
+    return client.journal.data["records"]["follow-1"]["event"]["payload"]
+
+
+def test_registration_waits_for_async_driver_result_and_replays_once(follow_endpoint):
+    client, _, dispatched, stopped = follow_endpoint
+    data = deepcopy(client.journal.data)
+    data["arrival"] = "last-physical-arrival"
+    client.journal.save(data)
+    message = follow_request(client, operation="capture")
+    deliver(client, message)
+    deliver(client, message)
+    assert len(dispatched) == 1
+    assert dispatched[0]["type"] == "follow_registration.requested"
+    assert last_status(client)["status"] == "accepted"
+    assert client.journal.data["active"] == "follow-1"
+    assert "follow_active" not in last_status(client)["result"]
+    assert client.report(dispatched[0], "completed", **registration_evidence())
+    assert last_status(client)["status"] == "completed"
+    assert client.journal.data["arrival"] == "last-physical-arrival"
+    assert last_status(client)["result"]["stopped"] is True
+    assert client.journal.data["active"] is None
+    deliver(client, message)
+    assert len(dispatched) == 1
+    assert last_status(client)["status"] == "completed"
+    assert stopped == []
+
+
+@pytest.mark.parametrize(
+    "changed,reason",
+    [
+        ({"stopped": False}, "fresh_stop_required"),
+        ({"line_enabled": True}, "fresh_stop_required"),
+        ({"observed_at": "2020-01-01T00:00:00+00:00"}, "fresh_stop_required"),
+        ({"mode": "line"}, "registration_not_ready"),
+        ({"nav2_ready": False}, "registration_not_ready"),
+        ({"localization_ready": False}, "registration_not_ready"),
+        ({"drive_owner": "line"}, "registration_not_ready"),
+    ],
+)
+def test_registration_requires_fresh_stopped_nav2(follow_endpoint, changed, reason):
+    client, state, dispatched, _ = follow_endpoint
+    state.update(changed)
+    deliver(client, follow_request(client, operation="capture"))
+    assert last_status(client)["status"] == "rejected"
+    assert last_status(client)["reason"] == reason
+    assert dispatched == []
+
+
+def test_registration_unsupported_driver_is_explicitly_rejected(
+    follow_endpoint, monkeypatch
+):
+    client, _, dispatched, _ = follow_endpoint
+
+    def unsupported(command):
+        raise ValueError("unsupported_operation")
+
+    monkeypatch.setattr(client.driver, "validate_action", unsupported)
+    deliver(client, follow_request(client, operation="capture"))
+    assert last_status(client)["reason"] == "unsupported_operation"
+    assert last_status(client)["status"] == "rejected"
+    assert dispatched == []
+    assert client.journal.data["active"] is None
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"follow_session_id": "old-session"},
+        {"expires_at": "2020-01-01T00:00:00+00:00"},
+        {"candidates": [{"candidate_id": "same", "box": [0, 0, 1, 1]}] * 2},
+        {"stopped": False},
+    ],
+)
+def test_bad_registration_result_fails_closed_without_ending_runner(
+    follow_endpoint, details
+):
+    client, _, dispatched, stopped = follow_endpoint
+    deliver(client, follow_request(client, operation="capture"))
+    assert not client.report(
+        dispatched[0], "completed", **registration_evidence(**details)
+    )
+    assert last_status(client)["status"] == "failed"
+    assert last_status(client)["reason"] == "invalid_registration_result"
+    assert stopped == ["invalid_registration_result"]
+    assert client.journal.data["active"] is None
+    client.poll(0)
+
+
+def test_registration_result_cannot_claim_stop_while_observation_moves(follow_endpoint):
+    client, state, dispatched, stopped = follow_endpoint
+    deliver(client, follow_request(client, operation="capture"))
+    state["stopped"] = False
+    assert not client.report(
+        dispatched[0], "completed", stopped=True, **registration_evidence()
+    )
+    assert stopped == ["invalid_registration_result"]
+
+
+def test_registration_dispatch_exception_is_reported_without_ending_runner(
+    follow_endpoint, monkeypatch
+):
+    client, _, _, stopped = follow_endpoint
+
+    def unavailable(command):
+        raise RuntimeError("camera unavailable")
+
+    monkeypatch.setattr(client.driver, "dispatch", unavailable)
+    deliver(client, follow_request(client, operation="capture"))
+    assert last_status(client)["status"] == "failed"
+    assert last_status(client)["reason"] == "registration_failed"
+    assert client.journal.data["active"] is None
+    assert stopped == ["registration_failed"]
+
+
+def appearance_request(client):
+    return follow_request(
+        client,
+        "follow_target_command",
+        follow_mode="appearance",
+        target_ref="target-1",
+        perception_boot_id="perception-1",
+    )
+
+
+def active_follow():
+    return {
+        "active": True,
+        "follow_mode": "appearance",
+        "follow_session_id": "follow-session-1",
+        "target_ref": "target-1",
+        "perception_boot_id": "perception-1",
+    }
+
+
+def test_follow_active_requires_observed_target_and_is_not_forged_by_progress(
+    follow_endpoint,
+):
+    client, state, dispatched, _ = follow_endpoint
+    message = appearance_request(client)
+    deliver(client, message)
+    assert dispatched[0]["type"] == "follow.requested"
+    assert "card_id" not in dispatched[0]["payload"]
+    assert last_status(client)["status"] == "accepted"
+    client.poll(0)
+    assert last_status(client)["status"] == "accepted"
+    assert client.report(
+        dispatched[0], "progress", follow_active=True, follow=active_follow()
+    )
+    assert last_status(client)["result"]["follow_active"] is False
+    assert "follow" not in last_status(client)["result"]
+    state.update(follow=active_follow(), drive_owner="nav2", stopped=False)
+    client.poll(0)
+    assert last_status(client)["status"] == "in_progress"
+    assert last_status(client)["result"]["follow_active"] is True
+    assert last_status(client)["result"]["follow"] == active_follow()
+    sequence = last_status(client)["sequence"]
+    client.poll(0)
+    deliver(client, message)
+    assert last_status(client)["sequence"] == sequence
+    assert len(dispatched) == 1
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"follow_mode": "marker"},
+        {"follow_session_id": "another-session"},
+        {"perception_boot_id": "restarted"},
+        {"target_ref": "another-person"},
+        {"active": 1},
+    ],
+)
+@pytest.mark.parametrize("via_progress", [False, True])
+def test_invalid_follow_observation_stops_instead_of_confirming(
+    follow_endpoint, changed, via_progress
+):
+    client, state, dispatched, stopped = follow_endpoint
+    deliver(client, appearance_request(client))
+    state.update(
+        follow={**active_follow(), **changed}, drive_owner="nav2", stopped=False
+    )
+    if via_progress:
+        assert not client.report(dispatched[0], "progress")
+    else:
+        client.poll(0)
+    assert last_status(client)["status"] == "failed"
+    assert last_status(client)["reason"] == "invalid_follow_observation"
+    assert stopped == ["invalid_follow_observation"]
+    assert client.journal.data["active"] is None
+
+
+def test_legacy_marker_follow_needs_actual_active_evidence_too(follow_endpoint):
+    client, state, _, _ = follow_endpoint
+    message = follow_request(client, "follow_target_command", card_id=35)
+    deliver(client, message)
+    client.poll(0)
+    assert last_status(client)["status"] == "accepted"
+    state.update(
+        follow={
+            "active": True,
+            "follow_mode": "marker",
+            "follow_session_id": "follow-session-1",
+        },
+        drive_owner="nav2",
+        stopped=False,
+    )
+    client.poll(0)
+    assert last_status(client)["result"]["follow_active"] is True

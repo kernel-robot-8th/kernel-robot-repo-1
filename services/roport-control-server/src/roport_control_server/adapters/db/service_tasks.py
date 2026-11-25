@@ -90,6 +90,8 @@ class ServiceTaskStore:
         try:
             if message["type"] == "handover.receipt_recorded":
                 self.accept_receipt(message)
+            elif message["type"] == "follow.control_requested":
+                self.accept_follow(message)
             else:
                 self.accept(message)
         except ValueError as exc:
@@ -373,6 +375,74 @@ class ServiceTaskStore:
             return conn.execute(
                 "SELECT * FROM control_service_receipts WHERE arrival_verified ORDER BY recorded_at"
             ).fetchall()
+
+    def accept_follow(self, message):
+        validate_service_message(message, "follow.control_requested")
+        p = message["payload"]
+        with self._connection() as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(71519004)")
+            received = self._received(conn, message)
+            if received:
+                return
+            receipt = conn.execute(
+                "SELECT r.*, t.site_id,t.order_id,t.reservation_id FROM control_service_receipts r JOIN control_service_tasks t USING(task_id) WHERE receipt_id=%s",
+                (p["receipt_id"],),
+            ).fetchone()
+            if (
+                not receipt
+                or not receipt["arrival_verified"]
+                or (
+                    receipt["task_id"],
+                    receipt["site_id"],
+                    receipt["order_id"],
+                    receipt["reservation_id"],
+                )
+                != (
+                    message["task_id"],
+                    message["site_id"],
+                    p["order_id"],
+                    p["reservation_id"],
+                )
+            ):
+                raise ValueError("follow does not match receipt")
+            previous = conn.execute(
+                "SELECT message FROM control_service_follow_requests WHERE request_id=%s",
+                (p["request_id"],),
+            ).fetchone()
+            if previous and previous["message"]["payload"] != p:
+                raise ValueError("conflicting follow request")
+            snapshot = conn.execute(
+                "SELECT data FROM control_operational_state WHERE singleton FOR SHARE"
+            ).fetchone()["data"]
+            if not any(
+                snapshot.get("tasks", {})
+                .get(f"{message['task_id']}:{package}", {})
+                .get("robot")
+                == p["robot_id"]
+                for package in receipt["message"]["payload"]["package_ids"]
+            ):
+                raise ValueError("follow robot does not match receipt")
+            conn.execute(
+                "INSERT INTO control_service_follow_requests(request_id,task_id,message) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING",
+                (p["request_id"], message["task_id"], Jsonb(message)),
+            )
+            conn.execute(
+                "INSERT INTO control_service_inbox(message_id,message,task_id) VALUES(%s,%s,%s)",
+                (message["message_id"], Jsonb(message), message["task_id"]),
+            )
+
+    def follow_requests(self):
+        with self._connection() as conn:
+            return conn.execute(
+                "SELECT * FROM control_service_follow_requests WHERE processed_at IS NULL ORDER BY seq"
+            ).fetchall()
+
+    def follow_processed(self, request_id):
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE control_service_follow_requests SET processed_at=now() WHERE request_id=%s AND processed_at IS NULL",
+                (request_id,),
+            )
 
     def pending_tasks(self):
         with self._connection() as conn:

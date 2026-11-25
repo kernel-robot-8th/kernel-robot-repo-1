@@ -62,6 +62,8 @@ def profiles(*, map_path=MAP, layout_path=LAYOUT, simulation=True):
             r: {"model_version": None, "calibration_version": None}
             for r in fleet["omx"]
         }
+    else:
+        fleet["follow_modes"] = {"pinky3": ["marker", "appearance"]}
     robots = {}
     for robot, role, start in [
         ("pinky1", "logistics", "N16"),

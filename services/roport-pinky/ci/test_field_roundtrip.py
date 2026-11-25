@@ -148,7 +148,8 @@ class FieldChecks(unittest.TestCase):
         exec(compile(ast.Module(body=setup, type_ignores=[]), str(SOURCE), 'exec'), ns)
         dictionary = ns['marker_dictionary']
         image = np.full((480, 640), 255, np.uint8)
-        image[195:285, 275:365] = cv2.aruco.drawMarker(dictionary, 8, 90)
+        generate_marker = getattr(cv2.aruco, "generateImageMarker", None) or cv2.aruco.drawMarker
+        image[195:285, 275:365] = generate_marker(dictionary, 8, 90)
         ok, data = cv2.imencode('.png', image)
         self.assertTrue(ok)
         calibration = yaml.safe_dump({'camera_matrix': {'data': [300.,0.,320.,0.,300.,240.,0.,0.,1.]},

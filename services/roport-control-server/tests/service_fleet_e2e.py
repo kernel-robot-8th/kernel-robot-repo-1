@@ -367,7 +367,10 @@ def exercise(output, pg_port, url, token, case, *, confirm_receipt=False):
                         "SELECT progress_payload FROM control_task_views WHERE task_ref=%s",
                         (task["task_id"],),
                     ).fetchone()
-                    return row and row[0]["progress"]["packages"] == [
+                    return row and [
+                        {key: item[key] for key in ("package_id", "robot", "stage")}
+                        for item in row[0]["progress"]["packages"]
+                    ] == [
                         {
                             "package_id": package,
                             "robot": "pinky3",

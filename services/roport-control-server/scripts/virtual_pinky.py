@@ -9,9 +9,11 @@ import os
 import sys
 import threading
 import time
+from copy import deepcopy
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 PINKY = Path(__file__).resolve().parents[2] / "roport-pinky"
 LAYOUT = PINKY / "src/roport_gz_world/layout/roport_airport.yaml"
@@ -142,6 +144,11 @@ class VirtualPinky(TrialDriver):
         self.last = None
         self.follow = None
         self.follow_deadline = None
+        self.follow_engaged = False
+        self.robot = profile["robots"][role]
+        self.perception_boot_id = "sim-perception-" + uuid4().hex
+        self.registration = self.registration_pending = None
+        self.registration_results = []
         self.fault = fault
         self.motion_time = 0.0
         self.logic = TrialLogic(
@@ -163,27 +170,185 @@ class VirtualPinky(TrialDriver):
             self.thread.start()
 
     def validate_action(self, command):
-        if command["type"] != "follow.requested":
+        if command["type"] not in {"follow.requested", "follow_registration.requested"}:
             return super().validate_action(command)
         with self.lock:
             state = self.observe()
             if (
                 self.follow
+                or self.registration_pending
                 or self.nav_command
                 or self.mode != "nav2"
                 or state["fault"]
                 or not state["stopped"]
+                or state["line_enabled"]
                 or not state["nav2_ready"]
                 or not state["localization_ready"]
             ):
                 raise ValueError("follow_not_ready")
+            p = command["payload"]
+            if (
+                command["target"] != self.robot["robot_id"]
+                or p["binding_id"] != self.robot["binding_id"]
+                or p["map_version"] != self.logic.map_version
+                or p["map_id"] != self.logic.map_id
+            ):
+                raise ValueError("follow_binding_mismatch")
+            if command["type"] == "follow_registration.requested":
+                if p["operation"] not in {"capture", "select", "release"}:
+                    raise ValueError("unsupported_operation")
+                if p["operation"] == "select":
+                    registration = self._registration_for(p)
+                    if p["frame_ref"] != registration["frame_ref"]:
+                        raise ValueError("frame_mismatch")
+                    if "candidate_id" in p and p["candidate_id"] not in {
+                        c["candidate_id"] for c in registration["candidates"]
+                    }:
+                        raise ValueError("candidate_mismatch")
+                elif p["operation"] == "release" and self.registration:
+                    if any(
+                        p[key] != self.registration[key]
+                        for key in (
+                            "follow_session_id",
+                            "expected_boot_id",
+                            "binding_id",
+                            "map_version",
+                        )
+                    ):
+                        raise ValueError("follow_session_mismatch")
+                return
+            if p.get("follow_mode", "marker") == "appearance":
+                registration = self._registration_for(p)
+                if (
+                    not registration.get("target_ref")
+                    or p.get("target_ref") != registration["target_ref"]
+                    or p.get("perception_boot_id") != self.perception_boot_id
+                ):
+                    raise ValueError("follow_target_mismatch")
+            elif p.get("follow_mode", "marker") != "marker":
+                raise ValueError("unsupported_operation")
+            elif type(p.get("card_id")) is not int or not 35 <= p["card_id"] <= 49:
+                raise ValueError("invalid_card_id")
+
+    def _registration_for(self, payload):
+        registration = self.registration
+        if (
+            not registration
+            or any(
+                payload.get(key) != registration[key]
+                for key in (
+                    "follow_session_id",
+                    "expected_boot_id",
+                    "binding_id",
+                    "map_version",
+                )
+            )
+            or registration["perception_boot_id"] != self.perception_boot_id
+        ):
+            raise ValueError("follow_registration_mismatch")
+        if time.monotonic() >= registration["expires_mono"]:
+            raise ValueError("follow_registration_expired")
+        return registration
+
+    def _finish_registration(self):
+        command, self.registration_pending = self.registration_pending, None
+        if command is None:
+            return
+        p = command["payload"]
+        try:
+            self.validate_action(command)
+            if p["operation"] == "capture":
+                self.registration = {
+                    **{
+                        key: p[key]
+                        for key in (
+                            "follow_session_id",
+                            "expected_boot_id",
+                            "binding_id",
+                            "map_version",
+                        )
+                    },
+                    "frame_ref": "sim-frame-" + uuid4().hex,
+                    "image_ref": "sim-image-" + uuid4().hex,
+                    "expires_at": (
+                        datetime.now(UTC) + timedelta(seconds=120)
+                    ).isoformat(),
+                    "expires_mono": time.monotonic() + 120,
+                    "perception_boot_id": self.perception_boot_id,
+                    "candidates": [
+                        {
+                            "candidate_id": "virtual-person-1",
+                            "box": [0.15, 0.15, 0.4, 0.9],
+                        },
+                        {
+                            "candidate_id": "virtual-person-2",
+                            "box": [0.6, 0.15, 0.85, 0.9],
+                        },
+                    ],
+                }
+                result = {
+                    key: deepcopy(self.registration[key])
+                    for key in (
+                        "follow_session_id",
+                        "frame_ref",
+                        "image_ref",
+                        "expires_at",
+                        "perception_boot_id",
+                        "candidates",
+                    )
+                }
+            elif p["operation"] == "select":
+                self.registration["target_ref"] = "sim-target-" + uuid4().hex
+                result = {
+                    key: self.registration[key]
+                    for key in (
+                        "follow_session_id",
+                        "target_ref",
+                        "expires_at",
+                        "perception_boot_id",
+                    )
+                }
+            else:
+                self.registration = None
+                result = {"follow_session_id": p["follow_session_id"], "cleared": True}
+            self.registration_results.append((command, "completed", result))
+        except ValueError as exc:
+            self.registration_results.append(
+                (command, "failed", {"error_code": str(exc)})
+            )
+
+    def observe(self):
+        with self.lock:
+            state = super().observe()
+            if self.follow:
+                p = self.follow["payload"]
+                state["follow"] = {
+                    "active": self.follow_engaged
+                    and self.guard["owner"] == "nav2"
+                    and not state["fault"],
+                    "follow_mode": p.get("follow_mode", "marker"),
+                    **{
+                        key: p[key]
+                        for key in (
+                            "follow_session_id",
+                            "target_ref",
+                            "perception_boot_id",
+                        )
+                        if key in p
+                    },
+                }
+            return state
 
     def dispatch(self, command):
-        if command["type"] != "follow.requested":
+        if command["type"] not in {"follow.requested", "follow_registration.requested"}:
             return super().dispatch(command)
         with self.lock:
             self.validate_action(command)
+            if command["type"] == "follow_registration.requested":
+                self.registration_pending = deepcopy(command)
+                return
             self.follow = command
+            self.follow_engaged = False
             self.follow_start = dict(self.nav.pose)
             duration = command["payload"].get("max_duration_s")
             self.follow_deadline = time.monotonic() + duration if duration else None
@@ -200,6 +365,9 @@ class VirtualPinky(TrialDriver):
 
     def drain_results(self):
         with self.lock:
+            if self.registration_results:
+                results, self.registration_results = self.registration_results, []
+                return results
             if (
                 self.follow
                 and self.follow_deadline is not None
@@ -214,6 +382,8 @@ class VirtualPinky(TrialDriver):
         with self.lock:
             following = self.follow is not None
             self.follow = None
+            self.follow_engaged = False
+            self.registration_pending = None
             if reason in {"follow_lost", "follow_max_duration"} or (
                 following and reason == "operator_stop"
             ):
@@ -300,6 +470,19 @@ class VirtualPinky(TrialDriver):
             else:
                 self.sim.cmd = (0.0, 0.0)
                 self.sim.t += self.sim.dt
+                if (
+                    self.follow
+                    and not self._guard_fault()
+                    and self.follow["payload"].get("follow_mode") == "appearance"
+                ):
+                    try:
+                        self._registration_for(self.follow["payload"])
+                    except ValueError as exc:
+                        command = self.follow
+                        self.safe_stop(str(exc))
+                        self.registration_results.append(
+                            (command, "failed", {"error_code": str(exc)})
+                        )
                 if self.follow and not self._guard_fault():
                     # A virtual customer walks back and forth within a short aisle.
                     self.nav.goal = {
@@ -307,6 +490,7 @@ class VirtualPinky(TrialDriver):
                         "x": self.follow_start["x"] + 0.3 * math.sin(self.sim.t),
                     }
                     self.nav.stopped = False
+                    self.follow_engaged = True
                 self.nav.tick(self.sim.dt)
                 a = math.radians(self.frame["yaw_deg"])
                 x, y = (
@@ -320,6 +504,7 @@ class VirtualPinky(TrialDriver):
                 self.sim.yaw = self.nav.pose["yaw"] - a
                 self.sim.odom = (self.sim.x, self.sim.y, self.sim.yaw)
             self._feed(reading)
+            self._finish_registration()
             self.sim.trace.clear()  # Persistent MQTT journals hold progress; avoid unbounded tick history.
 
     def _run(self):
@@ -360,6 +545,11 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--role", required=True)
     parser.add_argument("--journal", required=True)
+    parser.add_argument(
+        "--preview-port",
+        type=int,
+        help="authenticated virtual frame server on loopback",
+    )
     parser.add_argument("--nav2", choices=("simulated", "off"), default="simulated")
     parser.add_argument(
         "--fault",
@@ -376,8 +566,26 @@ def main():
         profile, args.role, nav2=args.nav2 == "simulated", fault=args.fault
     )
     if args.fault != "d660-line-loss":
-        run(profile, args.role, connection, args.journal, driver)
+        preview = None
+        try:
+            if args.preview_port is not None:
+                from virtual_follow_frames import start_preview
+
+                preview = start_preview(
+                    driver,
+                    args.preview_port,
+                    os.environ.get("ROPORT_FOLLOW_FRAME_TOKEN"),
+                )
+            run(profile, args.role, connection, args.journal, driver)
+        finally:
+            if preview is not None:
+                preview.shutdown()
+                preview.server_close()
+            driver.close()
         return
+    if args.preview_port is not None:
+        driver.close()
+        parser.error("preview requires a virtual scenario without placement replay")
 
     # A manual placement in the simulator is independent of the operator's Fleet confirmation.
     placed = threading.Event()

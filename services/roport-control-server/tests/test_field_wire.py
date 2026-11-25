@@ -117,3 +117,162 @@ def test_host_metrics_never_uses_qos1_task_publish():
     transport._ready.set()  # no broker: rejection happens before any network I/O
     with pytest.raises(ValueError):
         transport.publish(wire.topic("pinky1", "host"), host_sample())
+
+
+def follow_message(kind="follow_target_command", **payload):
+    from datetime import UTC, datetime, timedelta
+
+    return wire.build_message(
+        kind,
+        "control-01",
+        "pinky1",
+        {"expected_boot_version": "boot-1", "map_version": "map-1", **payload},
+        command_id="follow-1",
+        expires_at=(datetime.now(UTC) + timedelta(seconds=30)).isoformat(),
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"card_id": 35},
+        {"card_id": 35, "follow_mode": "marker", "follow_session_id": "receipt-1"},
+        {
+            "follow_mode": "appearance",
+            "follow_session_id": "receipt-1",
+            "target_ref": "target-1",
+            "perception_boot_id": "camera-1",
+        },
+    ],
+)
+def test_follow_modes_preserve_legacy_card_and_bind_appearance(payload):
+    message = follow_message(**payload)
+    assert wire.decode(wire.encode(message)) == message
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"card_id": 35, "target_ref": "target-1"},
+        {
+            "card_id": 35,
+            "follow_mode": "appearance",
+            "follow_session_id": "receipt-1",
+            "target_ref": "target-1",
+            "perception_boot_id": "camera-1",
+        },
+        {
+            "follow_mode": "appearance",
+            "follow_session_id": "receipt-1",
+            "target_ref": "target-1",
+        },
+        {
+            "follow_mode": "appearance",
+            "target_ref": "target-1",
+            "perception_boot_id": "camera-1",
+        },
+        {"follow_mode": "human", "card_id": 35},
+    ],
+)
+def test_follow_modes_reject_missing_or_mixed_targets(payload):
+    with pytest.raises(ValueError):
+        follow_message(**payload)
+
+
+@pytest.mark.parametrize(
+    "operation,selection",
+    [
+        ("capture", {}),
+        ("release", {}),
+        ("select", {"frame_ref": "frame-1", "candidate_id": "candidate-1"}),
+        ("select", {"frame_ref": "frame-1", "box": [0.1, 0.2, 0.4, 0.8]}),
+    ],
+)
+def test_registration_command_shape(operation, selection):
+    message = follow_message(
+        "follow_registration_command",
+        operation=operation,
+        follow_session_id="receipt-1",
+        **selection,
+    )
+    assert wire.decode(wire.encode(message)) == message
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"operation": "capture", "frame_ref": "frame-1"},
+        {"operation": "release", "candidate_id": "candidate-1"},
+        {"operation": "select", "frame_ref": "frame-1"},
+        {"operation": "select", "candidate_id": "candidate-1"},
+        {
+            "operation": "select",
+            "frame_ref": "frame-1",
+            "candidate_id": "candidate-1",
+            "box": [0, 0, 1, 1],
+        },
+        {"operation": "select", "frame_ref": "frame-1", "box": [0.7, 0.1, 0.2, 0.9]},
+        {"operation": "select", "frame_ref": "frame-1", "box": [0.1, 0.1, 1.1, 0.9]},
+    ],
+)
+def test_registration_rejects_unbound_or_ambiguous_selection(payload):
+    with pytest.raises(ValueError):
+        follow_message(
+            "follow_registration_command", follow_session_id="receipt-1", **payload
+        )
+
+
+def capture_evidence():
+    from datetime import UTC, datetime, timedelta
+
+    return {
+        "stopped": True,
+        "follow_session_id": "receipt-1",
+        "frame_ref": "frame-1",
+        "image_ref": "image-1",
+        "perception_boot_id": "camera-1",
+        "expires_at": (datetime.now(UTC) + timedelta(seconds=30)).isoformat(),
+        "candidates": [{"candidate_id": "candidate-1", "box": [0.1, 0.2, 0.4, 0.8]}],
+    }
+
+
+def test_registration_evidence_requires_stop_fresh_session_and_valid_candidates():
+    p = {"operation": "capture", "follow_session_id": "receipt-1"}
+    result = capture_evidence()
+    assert wire.validate_follow_registration_result(p, result)["frame_ref"] == "frame-1"
+    for changed in (
+        {"stopped": False},
+        {"stopped": 1},
+        {"follow_session_id": "other-receipt"},
+        {"expires_at": "2020-01-01T00:00:00+00:00"},
+        {"expires_at": "2026-11-24T12:00:00"},
+        {"image_ref": "https://example.com/image"},
+        {"candidates": result["candidates"] * 2},
+        {"candidates": [{"candidate_id": "candidate-1", "box": [0.8, 0.2, 0.4, 0.8]}]},
+        {"target_ref": "not-a-capture-result"},
+    ):
+        with pytest.raises(ValueError):
+            wire.validate_follow_registration_result(p, {**result, **changed})
+
+
+def test_registration_selected_target_and_release_evidence():
+    result = capture_evidence()
+    select = {
+        key: result[key]
+        for key in ("stopped", "follow_session_id", "expires_at", "perception_boot_id")
+    }
+    select["target_ref"] = "target-1"
+    p = {"operation": "select", "follow_session_id": "receipt-1"}
+    assert (
+        wire.validate_follow_registration_result(p, select)["target_ref"] == "target-1"
+    )
+    with pytest.raises(ValueError):
+        wire.validate_follow_registration_result(
+            p, {**select, "perception_boot_id": ""}
+        )
+    release = {"follow_session_id": "receipt-1", "stopped": True, "cleared": True}
+    p["operation"] = "release"
+    assert wire.validate_follow_registration_result(p, release)["cleared"] is True
+    with pytest.raises(ValueError):
+        wire.validate_follow_registration_result(p, {**release, "cleared": 1})

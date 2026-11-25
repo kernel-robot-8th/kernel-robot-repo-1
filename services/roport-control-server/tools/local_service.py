@@ -94,7 +94,7 @@ def databases(pg_bin, output, *, keep=False):
 
 
 @contextmanager
-def java_service(pg_port, output):
+def java_service(pg_port, output, *, preview_url="", preview_token=""):
     project = REPO / "services/roport-service-server"
     with (output / "java-build.log").open("w") as log:
         subprocess.run(
@@ -121,6 +121,8 @@ def java_service(pg_port, output):
         SERVICE_DEV_CART="true",
         SERVER_ADDRESS="127.0.0.1",
         SERVER_PORT=str(port),
+        SERVICE_FOLLOW_PREVIEW_BASE_URL=preview_url,
+        SERVICE_FOLLOW_PREVIEW_TOKEN=preview_token,
     )
     with (output / "java-service.log").open("w") as log:
         process = subprocess.Popen(

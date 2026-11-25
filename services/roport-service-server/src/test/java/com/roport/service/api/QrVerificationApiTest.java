@@ -1,6 +1,7 @@
 package com.roport.service.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.net.CookieManager;
 import java.net.URI;
@@ -8,6 +9,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.UUID;
+import java.util.Map;
+import java.util.List;
+import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +31,8 @@ class QrVerificationApiTest {
     JdbcClient db;
     @Autowired
     ObjectMapper json;
+    @Autowired
+    com.roport.service.control.ControlExchange exchange;
 
     String s;
     HttpClient alice;
@@ -377,5 +383,214 @@ class QrVerificationApiTest {
         assertThat(result.status()).as(result.body().toString()).isEqualTo(200);
         assertThat(result.body().path("submitted").asBoolean()).isTrue();
         assertThat(call(alice, "POST", "/api/pickups/pa" + s + "/manifest-refresh", null, null).body().path("submitted").asBoolean()).isFalse();
+    }
+
+    void followProjection(String receipt, String stage, long revision, Instant observed, String state) {
+        var item = new java.util.LinkedHashMap<String, Object>();
+        item.put("package_id", "a-" + s); item.put("robot", cartId()); item.put("stage", stage);
+        item.put("robot_observed_at", observed.toString());
+        item.put("supported_follow_modes", List.of("marker", "appearance"));
+        item.put("status", state);
+        if (receipt != null) item.put("follow", Map.of("session_id", receipt, "mode", "appearance", "revision", revision,
+                "reason", "", "observed_at", observed.toString(), "allowed_actions", List.of("capture", "select", "return"),
+                "registration", Map.of("frame_ref", "frame-" + s, "image_ref", "private-robot-url-not-for-client",
+                        "expires_at", Instant.now().plusSeconds(30).toString(), "perception_boot_id", "boot-test",
+                        "candidates", List.of(Map.of("candidate_id", "person-1", "box", List.of(0.1, 0.2, 0.4, 0.8))))));
+        db.sql("UPDATE control_task_views SET progress_payload=?::jsonb,state=?,synced_at=now() WHERE task_ref=?")
+                .param(json.writeValueAsString(Map.of("progress", Map.of("packages", List.of(item)))))
+                .param(state).param("task-" + s).update();
+    }
+
+    String appearanceReceipt() throws Exception {
+        packageRow("a-" + s); arrived("a-" + s);
+        followProjection(null, "await_receipt", 0, Instant.now(), "RUNNING");
+        String verification = verify("verify-" + s, "RESERVATION_NO", reservationNo).body().path("verificationId").asString();
+        var result = call(cart, "POST", "/cart-api/receipts", json.writeValueAsString(Map.of("verificationId", verification,
+                "confirmationRequestId", "receipt-" + s, "followMode", "appearance")), cartId());
+        assertThat(result.status()).as(result.body().toString()).isEqualTo(200);
+        assertThat(result.body().path("followMode").asString()).isEqualTo("appearance");
+        String receipt = result.body().path("receiptId").asString();
+        followProjection(receipt, "follow_register", 3, Instant.now(), "RUNNING");
+        return receipt;
+    }
+
+    Res followAction(String receipt, String request, long revision, String operation) throws Exception {
+        return call(cart, "POST", "/cart-api/follow/" + receipt + "/actions", json.writeValueAsString(
+                Map.of("requestId", request, "expectedRevision", revision, "operation", operation)), cartId());
+    }
+
+    @Test
+    void explicitFollowModeRequiresFreshRobotCapabilityAndCompatibleCard() throws Exception {
+        packageRow("a-" + s); arrived("a-" + s);
+        String verification = verify("verify-" + s, "RESERVATION_NO", reservationNo).body().path("verificationId").asString();
+        String path = "/cart-api/follow/capabilities?verificationId=" + verification;
+        assertThat(call(cart, "GET", path, null, cartId()).body().path("modes").size()).isZero();
+        var body = new java.util.HashMap<String, Object>(Map.of("verificationId", verification,
+                "confirmationRequestId", "receipt-" + s, "followMode", "appearance"));
+        problem(call(cart, "POST", "/cart-api/receipts", json.writeValueAsString(body), cartId()), 409, "FOLLOW_MODE_UNSUPPORTED");
+        followProjection(null, "await_receipt", 0, Instant.now(), "RUNNING");
+        assertThat(call(cart, "GET", path, null, cartId()).body().path("modes").toString()).isEqualTo("[\"marker\",\"appearance\"]");
+        problem(call(cart, "GET", path, null, "other"), 409, "VERIFICATION_REQUIRED");
+        body.put("followCard", 42);
+        problem(call(cart, "POST", "/cart-api/receipts", json.writeValueAsString(body), cartId()), 400, "VALIDATION_FAILED");
+        body.remove("followCard");
+        followProjection(null, "await_receipt", 0, Instant.now().minusSeconds(4), "RUNNING");
+        problem(call(cart, "POST", "/cart-api/receipts", json.writeValueAsString(body), cartId()), 409, "FOLLOW_MODE_UNSUPPORTED");
+        // No-follow remains available without a follow executor, preserving receipt and return behavior.
+        body.put("followMode", "none");
+        var receipt = call(cart, "POST", "/cart-api/receipts", json.writeValueAsString(body), cartId());
+        assertThat(receipt.status()).as(receipt.body().toString()).isEqualTo(200);
+        assertThat(receipt.body().path("followMode").asString()).isEqualTo("none");
+    }
+
+    @Test
+    void followStatusRestoresOnlyOwnedSessionAndFailsClosedOnStaleOrHold() throws Exception {
+        String receipt = appearanceReceipt();
+        String path = "/cart-api/follow/" + receipt;
+        var status = call(cart, "GET", path, null, cartId());
+        assertThat(status.status()).isEqualTo(200);
+        assertThat(status.cacheControl()).contains("no-store");
+        assertThat(status.body().path("stage").asString()).isEqualTo("follow_register");
+        assertThat(status.body().path("revision").asLong()).isEqualTo(3);
+        assertThat(status.body().path("stale").asBoolean()).isFalse();
+        assertThat(status.body().path("registration").path("imagePath").asString()).isEqualTo(path + "/frames/frame-" + s);
+        assertThat(status.body().toString()).doesNotContain("private-robot-url", "target_ref");
+        assertThat(call(cart, "GET", path, null, cartId()).body()).isEqualTo(status.body());
+        problem(call(cart, "GET", path, null, "other"), 404, "FOLLOW_NOT_FOUND");
+        problem(call(cart, "GET", path, null, null), 401, "CART_UNAUTHENTICATED");
+        followProjection(receipt, "follow_register", 3, Instant.now().minusSeconds(4), "RUNNING");
+        assertThat(call(cart, "GET", path, null, cartId()).body().path("allowedActions").size()).isZero();
+        problem(followAction(receipt, "capture-stale-" + s, 3, "capture"), 409, "FOLLOW_ACTION_UNAVAILABLE");
+        followProjection(receipt, "follow_register", 3, Instant.now(), "HOLD");
+        assertThat(call(cart, "GET", path, null, cartId()).body().path("status").asString()).isEqualTo("HOLD");
+        problem(followAction(receipt, "capture-hold-" + s, 3, "capture"), 409, "FOLLOW_ACTION_UNAVAILABLE");
+        followProjection(receipt, "follow_register", 3, Instant.now(), "RUNNING");
+        db.sql("UPDATE control_task_views SET synced_at=now()-interval '11 seconds' WHERE task_ref=?").param("task-" + s).update();
+        assertThat(call(cart, "GET", path, null, cartId()).body().path("stale").asBoolean()).isTrue();
+        followProjection("different-session", "following", 5, Instant.now(), "RUNNING");
+        assertThat(call(cart, "GET", path, null, cartId()).body().path("stale").asBoolean()).isTrue();
+    }
+
+    @Test
+    void boardingAlertRequiresFreshFollowingAndAnExplicitControlFlag() throws Exception {
+        String receipt = appearanceReceipt();
+        String path = "/cart-api/follow/" + receipt;
+        followProjection(receipt, "following", 4, Instant.now(), "RUNNING");
+        assertThat(call(cart, "GET", path, null, cartId()).body().has("boardingAlert")).isFalse();
+        for (String stage : List.of("following", "follow_paused", "return_nav")) {
+            for (String state : List.of("RUNNING", "HOLD")) {
+                for (int age : List.of(0, 5)) {
+                    followProjection(receipt, stage, 4, Instant.now().minusSeconds(age), state);
+                    db.sql("""
+                            UPDATE control_task_views
+                            SET progress_payload=jsonb_set(progress_payload,'{progress,packages,0,follow,boarding_alert}','true')
+                            WHERE task_ref=?
+                            """).param("task-" + s).update();
+                    var body = call(cart, "GET", path, null, cartId()).body();
+                    assertThat(body.path("boardingAlert").asBoolean())
+                            .isEqualTo(stage.equals("following") && state.equals("RUNNING") && age == 0);
+                }
+            }
+        }
+    }
+
+    @Test
+    void selectedTargetRestoresWithoutRetiredCaptureOrPrivateTargetReference() throws Exception {
+        String receipt = appearanceReceipt();
+        String expires = Instant.now().plusSeconds(30).toString();
+        // MQTT select completion carries only target evidence; the capture is no longer current.
+        var registration = Map.of("target_ref", "private-target-ref", "expires_at", expires, "perception_boot_id", "boot-test");
+        db.sql("UPDATE control_task_views SET progress_payload=jsonb_set(jsonb_set(progress_payload,'{progress,packages,0,stage}', '\"follow_pending\"'::jsonb),'{progress,packages,0,follow,registration}',?::jsonb),synced_at=now() WHERE task_ref=?")
+                .param(json.writeValueAsString(registration)).param("task-" + s).update();
+        var response = call(cart, "GET", "/cart-api/follow/" + receipt, null, cartId());
+        assertThat(response.status()).isEqualTo(200);
+        assertThat(response.body().path("stage").asString()).isEqualTo("follow_pending");
+        assertThat(response.body().path("registration")).isEqualTo(json.valueToTree(
+                Map.of("registered", true, "expiresAt", expires, "perceptionBootId", "boot-test")));
+        assertThat(response.body().toString()).doesNotContain("private-target-ref", "frameRef", "imagePath", "candidates");
+    }
+
+    @Test
+    void followActionsAreDurableIdempotentAndDoNotPretendRegistrationSucceeded() throws Exception {
+        String receipt = appearanceReceipt(), request = "capture-" + s;
+        problem(followAction(receipt, request, 2, "capture"), 409, "FOLLOW_REVISION_CHANGED");
+        var accepted = followAction(receipt, request, 3, "capture");
+        assertThat(accepted.status()).as(accepted.body().toString()).isEqualTo(202);
+        assertThat(accepted.body().path("accepted").asBoolean()).isTrue();
+        JsonNode message = json.readTree(db.sql("SELECT message::text FROM control_link_outbox WHERE source_ref=?")
+                .param("follow:" + request).query(String.class).single());
+        assertThat(message.path("type").asString()).isEqualTo("follow.control_requested");
+        assertThat(message.path("task_id").asString()).isEqualTo("task-" + s);
+        assertThat(message.path("payload").path("robot_id").asString()).isEqualTo(cartId());
+        assertThat(message.path("payload").path("receipt_id").asString()).isEqualTo(receipt);
+        followProjection(receipt, "follow_registering", 4, Instant.now(), "RUNNING");
+        assertThat(followAction(receipt, request, 3, "capture").body()).isEqualTo(accepted.body());
+        assertThat(db.sql("SELECT count(*) FROM control_link_outbox WHERE source_ref=?").param("follow:" + request)
+                .query(Integer.class).single()).isEqualTo(1);
+        problem(followAction(receipt, request, 4, "return"), 409, "IDEMPOTENCY_CONFLICT");
+        assertThat(call(cart, "GET", "/cart-api/follow/" + receipt, null, cartId()).body()
+                .path("registration").path("registered").asBoolean()).isFalse();
+    }
+
+    @Test
+    void selectRejectsMixedTargetsUnknownFramesAndClientTargetReference() throws Exception {
+        String receipt = appearanceReceipt(), path = "/cart-api/follow/" + receipt + "/actions";
+        var body = new java.util.HashMap<String, Object>(Map.of("requestId", "select-" + s, "expectedRevision", 3,
+                "operation", "select", "frameRef", "frame-" + s, "candidateId", "person-1"));
+        body.put("target_ref", "fabricated");
+        problem(call(cart, "POST", path, json.writeValueAsString(body), cartId()), 400, "VALIDATION_FAILED");
+        body.remove("target_ref"); body.put("box", List.of(0.1, 0.2, 0.3, 0.4));
+        problem(call(cart, "POST", path, json.writeValueAsString(body), cartId()), 400, "VALIDATION_FAILED");
+        body.remove("box"); body.put("candidateId", "unknown");
+        problem(call(cart, "POST", path, json.writeValueAsString(body), cartId()), 409, "FOLLOW_CANDIDATE_CHANGED");
+        body.put("candidateId", "person-1"); body.put("frameRef", "old-frame");
+        problem(call(cart, "POST", path, json.writeValueAsString(body), cartId()), 409, "FOLLOW_FRAME_EXPIRED");
+        body.put("frameRef", "frame-" + s);
+        assertThat(call(cart, "POST", path, json.writeValueAsString(body), cartId()).status()).isEqualTo(202);
+        String framePath = "/cart-api/follow/" + receipt + "/frames/frame-" + s;
+        problem(call(cart, "GET", framePath, null, cartId()), 503, "FOLLOW_PREVIEW_UNAVAILABLE");
+        problem(call(cart, "GET", framePath, null, "other"), 404, "FOLLOW_NOT_FOUND");
+        db.sql("UPDATE control_task_views SET progress_payload=jsonb_set(progress_payload,'{progress,packages,0,follow,registration,expires_at}',?::jsonb) WHERE task_ref=?")
+                .param(json.writeValueAsString(Instant.now().minusSeconds(1).toString())).param("task-" + s).update();
+        body.put("requestId", "expired-select-" + s);
+        problem(call(cart, "POST", path, json.writeValueAsString(body), cartId()), 409, "FOLLOW_FRAME_EXPIRED");
+        problem(call(cart, "GET", framePath, null, cartId()), 409, "FOLLOW_FRAME_EXPIRED");
+    }
+
+    @Test
+    void followFrameProxyUsesOnlyConfiguredOriginWithBoundedImagesAndNoRedirects() throws Exception {
+        String receipt = appearanceReceipt();
+        var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        var response = new java.util.concurrent.atomic.AtomicInteger(200);
+        var oversized = new java.util.concurrent.atomic.AtomicBoolean();
+        var requestedPath = new java.util.concurrent.atomic.AtomicReference<String>();
+        var authorization = new java.util.concurrent.atomic.AtomicReference<String>();
+        server.createContext("/", request -> {
+            requestedPath.set(request.getRequestURI().getPath());
+            authorization.set(request.getRequestHeaders().getFirst("Authorization"));
+            byte[] bytes = java.util.Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aEmkAAAAASUVORK5CYII=");
+            request.getResponseHeaders().set("Content-Type", "image/png");
+            request.getResponseHeaders().set("Location", "http://127.0.0.1:1/forbidden");
+            request.sendResponseHeaders(response.get(), oversized.get() ? 2 * 1024 * 1024 + 1 : bytes.length);
+            try (var out = request.getResponseBody()) { out.write(bytes); }
+            catch (java.io.IOException ignored) { /* Oversized response is intentionally rejected before reading. */ }
+        });
+        server.start();
+        try {
+            var service = new FollowService(db, json, exchange, java.time.Clock.systemUTC(), java.time.Duration.ofMinutes(5),
+                    "http://127.0.0.1:" + server.getAddress().getPort(), "isolated-preview-token");
+            var frame = service.frame(cartId(), receipt, "frame-" + s);
+            assertThat(frame.contentType()).isEqualTo("image/png");
+            assertThat(requestedPath.get()).isEqualTo("/api/fleet/follow/" + receipt + "/frames/frame-" + s);
+            assertThat(authorization.get()).isEqualTo("Bearer isolated-preview-token");
+            response.set(302);
+            assertThatThrownBy(() -> service.frame(cartId(), receipt, "frame-" + s)).isInstanceOf(ApiException.class);
+            response.set(200); oversized.set(true);
+            assertThatThrownBy(() -> service.frame(cartId(), receipt, "frame-" + s)).isInstanceOf(ApiException.class);
+            assertThatThrownBy(() -> service.frame("other", receipt, "frame-" + s)).isInstanceOf(ApiException.class);
+            assertThatThrownBy(() -> new FollowService(db, json, exchange, java.time.Clock.systemUTC(),
+                    java.time.Duration.ofMinutes(5), "http://example.invalid", "isolated-preview-token"))
+                    .isInstanceOf(IllegalArgumentException.class);
+        } finally { server.stop(0); }
     }
 }

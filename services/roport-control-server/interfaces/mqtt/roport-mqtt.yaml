@@ -23,6 +23,8 @@ channels:
         $ref: '#/components/messages/line_route_command'
       follow_target_command:
         $ref: '#/components/messages/follow_target_command'
+      follow_registration_command:
+        $ref: '#/components/messages/follow_registration_command'
       nav_goal_command:
         $ref: '#/components/messages/nav_goal_command'
       robot_state_request:
@@ -932,6 +934,28 @@ components:
                 oneOf:
                 - type: object
                   properties:
+                    follow:
+                      type: object
+                      properties:
+                        active:
+                          type: boolean
+                        follow_mode:
+                          enum:
+                          - marker
+                          - appearance
+                        follow_session_id:
+                          type: string
+                          pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                        target_ref:
+                          type: string
+                          pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                        perception_boot_id:
+                          type: string
+                          pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                      required:
+                      - active
+                      - follow_mode
+                      additionalProperties: false
                     node:
                       anyOf:
                       - type: string
@@ -1000,7 +1024,7 @@ components:
                     home_reached:
                       type: boolean
                     holding_state:
-                      enum: &id004
+                      enum:
                       - empty
                       - holding
                       - unknown
@@ -1057,7 +1081,10 @@ components:
                           home_reached:
                             type: boolean
                           holding_state:
-                            enum: *id004
+                            enum:
+                            - empty
+                            - holding
+                            - unknown
                           holding_package_id:
                             anyOf:
                             - type: string
@@ -1544,6 +1571,19 @@ components:
                 type: integer
                 minimum: 35
                 maximum: 49
+              follow_mode:
+                enum:
+                - marker
+                - appearance
+              follow_session_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              target_ref:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              perception_boot_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
               max_duration_s:
                 type: number
                 minimum: 1
@@ -1551,8 +1591,139 @@ components:
             required:
             - expected_boot_version
             - map_version
-            - card_id
             additionalProperties: false
+            oneOf:
+            - required:
+              - card_id
+              properties:
+                follow_mode:
+                  const: marker
+              not:
+                anyOf:
+                - required:
+                  - target_ref
+                - required:
+                  - perception_boot_id
+            - required:
+              - follow_mode
+              - follow_session_id
+              - target_ref
+              - perception_boot_id
+              properties:
+                follow_mode:
+                  const: appearance
+              not:
+                required:
+                - card_id
+          command_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          expires_at:
+            type: string
+            format: date-time
+        additionalProperties: false
+    follow_registration_command:
+      name: follow_registration_command
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        - command_id
+        - expires_at
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: follow_registration_command
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              expected_boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              map_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              follow_session_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              operation:
+                enum:
+                - capture
+                - select
+                - release
+              frame_ref:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              candidate_id:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              box:
+                type: array
+                items:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                minItems: 4
+                maxItems: 4
+            required:
+            - expected_boot_version
+            - map_version
+            - follow_session_id
+            - operation
+            additionalProperties: false
+            oneOf:
+            - properties:
+                operation:
+                  enum:
+                  - capture
+                  - release
+              not:
+                anyOf:
+                - required:
+                  - frame_ref
+                - required:
+                  - candidate_id
+                - required:
+                  - box
+            - required:
+              - frame_ref
+              properties:
+                operation:
+                  const: select
+              oneOf:
+              - required:
+                - candidate_id
+                not:
+                  required:
+                  - box
+              - required:
+                - box
+                not:
+                  required:
+                  - candidate_id
           command_id:
             type: string
             pattern: ^[A-Za-z0-9_.:-]{1,128}$

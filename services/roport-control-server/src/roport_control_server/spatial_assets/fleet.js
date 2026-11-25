@@ -1,7 +1,7 @@
 import { newRequestId } from './scenario.js';
 
 // Requests go to the single owner; roles, shelf stock and tasks share its saved state.
-const stages = {queued:'배차 대기', warehouse_route:'창고로 이동', warehouse_load:'창고 상차', choose_slot:'선반 배정 대기', shelf_route:'인도장으로 이동', transfer:'선반 상하차', return_route:'대기 장소로 복귀', await_shelf_alignment:'선반 정렬 완료 대기', switch_route:'N12로 이동', switch_nav:'Nav2 전환', navigate:'고객에게 이동', await_receipt:'고객 수령 대기', follow_pending:'추종 승인 대기', follow_start:'추종 시작 확인 중', following:'추종 중', follow_stopping:'추종 정지 확인 중', follow_paused:'추종 정지', return_nav:'N12로 복귀', switch_line:'라인 주행 전환', done:'완료'};
+const stages = {queued:'배차 대기', warehouse_route:'창고로 이동', warehouse_load:'창고 상차', choose_slot:'선반 배정 대기', shelf_route:'인도장으로 이동', transfer:'선반 상하차', return_route:'대기 장소로 복귀', await_shelf_alignment:'선반 정렬 완료 대기', switch_route:'N12로 이동', switch_nav:'Nav2 전환', navigate:'고객에게 이동', await_receipt:'고객 수령 대기', follow_register:'대상 등록 대기', follow_registering:'등록 처리 중', follow_pending:'운영자 승인 대기', follow_start:'시작 확인 중', following:'추종 중', follow_stopping:'추종 정지 확인 중', follow_paused:'추종 정지', return_nav:'N12로 복귀', switch_line:'라인 주행 전환', done:'완료'};
 const shelfStates = {empty:'빈 칸', occupied:'보관 중', reserved:'작업 예약'};
 const $ = id => document.getElementById(id);
 let state, online = false, busy = false, request;
@@ -148,13 +148,15 @@ export function renderFleet(data) {
   // Keep clickable controls mounted between robot pose updates.
   const work = $('fleet-work');
   const workKey = JSON.stringify([state.session_id, state.mode, Object.entries(state.tasks ?? {}).map(([id, t]) =>
-    [id, t.robot, t.request.package_id, t.stage, t.status, t.reason, t.follow_card])]);
+    [id, t.robot, t.request.package_id, t.stage, t.status, t.reason, t.follow_mode, t.follow_card])]);
   if (work.dataset.key !== workKey) {
     work.dataset.key = workKey;
     work.replaceChildren(...Object.entries(state.tasks ?? {}).map(([id, task]) => {
       const item = document.createElement('li');
       item.textContent = [task.request.package_id, task.robot ?? '배정 대기', task.status === 'CANCELED' ? '운영자 처리로 종료' : (stages[task.stage] ?? task.stage), task.reason].filter(Boolean).join(' · ');
-      const operations = {follow_pending: [['approve','추종 승인'],['return','복귀']], follow_start: [['pause','추종 정지']], following: [['pause','추종 정지']], follow_paused: [['resume','추종 재개'],['return','추종 종료 및 복귀']]}[task.stage] ?? [];
+      const operations = {follow_register: [['return','추종 취소 및 복귀']], follow_pending: [['approve','추종 승인'],['return','복귀']], follow_start: [['pause','추종 정지']], following: [['pause','추종 정지']], follow_paused: [['resume','추종 재개'],['return','추종 종료 및 복귀']]}[task.stage] ?? [];
+      if (task.follow_mode === 'appearance') item.append(document.createTextNode(' · 외형 인식 추종'));
+      if (task.follow_mode === 'marker') item.append(document.createTextNode(' · 마커 카드 추종'));
       if (task.follow_card) item.append(document.createTextNode(` · 카드 ${task.follow_card}`));
       for (const [operation, label] of operations) {
         const button = document.createElement('button');

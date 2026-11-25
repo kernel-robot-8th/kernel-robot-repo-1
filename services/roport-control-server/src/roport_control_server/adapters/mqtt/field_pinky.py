@@ -22,6 +22,7 @@ OPERATIONS = {
     "line_route_command": "route",
     "set_drive_mode_command": "mode_switch",
     "follow_target_command": "follow",
+    "follow_registration_command": "follow_registration",
     "nav_goal_command": "navigate",
 }
 LOAD_NODES = {"N01", "N11", "N21", "N22"}
@@ -139,7 +140,7 @@ class FieldPinkyClient:
         return state
 
     def _state_payload(self, state):
-        return {
+        payload = {
             "node": state["node_id"],
             "arrival_command_id": self.journal.data["arrival"],
             **{
@@ -158,6 +159,16 @@ class FieldPinkyClient:
                 )
             },
         }
+
+        follow = state.get("follow")
+        if follow is not None:
+            try:
+                wire._check(follow, wire.FOLLOW_STATE)
+            except ValueError:
+                LOG.warning("Invalid optional follow observation")
+            else:
+                payload["follow"] = deepcopy(follow)
+        return payload
 
     def state_message(self):
         self.sequence += 1
@@ -215,7 +226,11 @@ class FieldPinkyClient:
             data["active"] = command["command_id"]
         elif data["active"] == command["command_id"]:
             data["active"] = None
-        if event["payload"]["status"] == "accepted" and command["type"] in OPERATIONS:
+        if (
+            event["payload"]["status"] == "accepted"
+            and command["type"] in OPERATIONS
+            and command["type"] != "follow_registration_command"
+        ):
             data["arrival"] = None
         if (
             event["payload"]["status"] == "completed"
@@ -308,6 +323,13 @@ class FieldPinkyClient:
             ):
                 raise ValueError("fresh_stop_required")
             p = m["payload"]
+            if m["type"] == "follow_registration_command" and (
+                s["mode"] != "nav2"
+                or not s["nav2_ready"]
+                or not s["localization_ready"]
+                or s["drive_owner"] not in {"none", "nav2"}
+            ):
+                raise ValueError("registration_not_ready")
             if m["type"] == "line_route_command":
                 if (
                     s["node_id"] != p["start_node"]
@@ -364,13 +386,50 @@ class FieldPinkyClient:
             )
             return
         self.last_keep = monotonic()
-        self.driver.dispatch(deepcopy(legacy))
+        try:
+            self.driver.dispatch(deepcopy(legacy))
+        except (ValueError, RuntimeError):
+            if m["type"] != "follow_registration_command":
+                raise
+            self._follow_failed(m, "registration_failed")
+
+    def _follow_failed(self, command, reason):
+        self.driver.safe_stop(reason)
+        previous = self.journal.data["records"][command["command_id"]]["event"]
+        self._save_event(
+            command,
+            self._event(
+                command,
+                "failed",
+                previous["payload"]["sequence"] + 1,
+                self._state_payload(self._observation()),
+                reason,
+            ),
+        )
 
     def report(self, legacy, phase, **details):
         try:
             return self._report(legacy, phase, **details)
         except (ConnectionError, TimeoutError):
             self._connection_lost()
+            return False
+        except (ValueError, TypeError, KeyError):
+            active = self.journal.data["active"]
+            record = self.journal.data["records"].get(active)
+            if not record or record["command"]["type"] not in {
+                "follow_registration_command",
+                "follow_target_command",
+            }:
+                raise
+            reason = (
+                "invalid_registration_result"
+                if record["command"]["type"] == "follow_registration_command"
+                else "invalid_follow_observation"
+            )
+            try:
+                self._follow_failed(record["command"], reason)
+            except (ConnectionError, TimeoutError):
+                self._connection_lost()
             return False
 
     def _report(self, legacy, phase, **details):
@@ -398,12 +457,45 @@ class FieldPinkyClient:
         check_result(legacy, event)
         result = self._state_payload(observation)
         for key, value in details.items():
-            if key not in {"error_code", "goal_version", "goal_id"}:
+            if key not in {
+                "error_code",
+                "goal_version",
+                "goal_id",
+                "follow_active",
+                "follow",
+            }:
                 result[
                     {"node_id": "node", "nav2_result": "navigation_result"}.get(
                         key, key
                     )
                 ] = value
+        if (
+            record["command"]["type"] == "follow_registration_command"
+            and phase == "completed"
+        ):
+            if (
+                not observation["stopped"]
+                or observation["line_enabled"]
+                or observation["mode"] != "nav2"
+                or not observation["nav2_ready"]
+                or not observation["localization_ready"]
+                or observation["drive_owner"] not in {"none", "nav2"}
+                or observation["map_version"]
+                != record["command"]["payload"]["map_version"]
+                or not -0.5
+                <= (
+                    datetime.now(UTC) - wire.timestamp(observation["observed_at"])
+                ).total_seconds()
+                <= 3
+            ):
+                raise ValueError("registration requires fresh stop")
+            wire.validate_follow_registration_result(
+                record["command"]["payload"], result
+            )
+        if record["command"]["type"] == "follow_target_command" and phase == "progress":
+            result["follow_active"] = self._follow_active(
+                record["command"], observation
+            )
         status = {
             "progress": "in_progress",
             "completed": "completed",
@@ -421,6 +513,64 @@ class FieldPinkyClient:
             self.driver.safe_stop(details["error_code"])
         self._send(self.state_message())
         return True
+
+    def _follow_active(self, command, state):
+        follow = state.get("follow")
+        if follow is None:
+            return False  # Older drivers cannot yet attest actual follow activation.
+        wire._check(follow, wire.FOLLOW_STATE)
+        if not follow["active"]:
+            return False
+        p = command["payload"]
+        if (
+            follow["follow_mode"] != p.get("follow_mode", "marker")
+            or any(
+                follow.get(key) != p[key]
+                for key in ("follow_session_id", "target_ref", "perception_boot_id")
+                if key in p
+            )
+            or state["fault"] is not None
+            or state["mode"] != "nav2"
+            or state["drive_owner"] != "nav2"
+            or state["line_enabled"]
+            or not state["nav2_ready"]
+            or not state["localization_ready"]
+            or state["map_version"] != p["map_version"]
+            or not -0.5
+            <= (
+                datetime.now(UTC) - wire.timestamp(state["observed_at"])
+            ).total_seconds()
+            <= 3
+        ):
+            raise ValueError("invalid_follow_observation")
+        return True
+
+    def _report_follow_active(self):
+        active = self.journal.data["active"]
+        record = self.journal.data["records"].get(active)
+        if (
+            not record
+            or record["command"]["type"] != "follow_target_command"
+            or record["event"]["payload"].get("result", {}).get("follow_active") is True
+        ):
+            return
+        state = self._observation()
+        try:
+            if not self._follow_active(record["command"], state):
+                return
+        except (ValueError, KeyError, TypeError):
+            self._follow_failed(record["command"], "invalid_follow_observation")
+            return
+        self._save_event(
+            record["command"],
+            self._event(
+                record["command"],
+                "in_progress",
+                record["event"]["payload"]["sequence"] + 1,
+                {**self._state_payload(state), "follow_active": True},
+            ),
+            active=True,
+        )
 
     def _finish_stop(self):
         active = self.journal.data["active"]
@@ -480,6 +630,8 @@ class FieldPinkyClient:
                 LOG.warning("Rejected field MQTT message: %s", exc)
             self.transport.ack(delivery)
         self._finish_stop()
+        if self.transport.ready and not self.halted:
+            self._report_follow_active()
         if self.transport.ready and monotonic() - self.last_send >= 1:
             self._send(self.state_message())
             for event in self.journal.data["outbox"].values():
