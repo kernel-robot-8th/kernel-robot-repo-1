@@ -31,6 +31,8 @@
   가로선 정지 → a ≠ 0 이면 a 이동(접근 방향, 음수 = 후진) → 반시계 r° → b ≠ 0 이면 b 이동(새 방향) → 상차 대기 →
   b ≠ 0 이면 −b 이동 → a = 0 이면 반시계 회전해 진입선 찾기((180 − r)° 기준, 창 = turn_min·turn_max 와 같은 폭),
   a ≠ 0 이면 시계 r° → −a 이동(기본 정지 자세로) → 반시계 90 + turn_min ~ 90 + turn_max 로 진입선 찾기 → 끝·경유.
+  r 범위는 노드별(dock.py): N21·N22 만 정면 0° 띠(−10..10)도 됨.
+  r = 0 이면 회전·되돌림 회전 없음, r < 0 이면 도착 회전은 시계·되돌림은 반시계.
   도킹 이동은 odom 이 멈춘 뒤(구동 지연으로 남은 움직임을 먼저 흘려보냄) 시작 자세에서 부호 있는 거리로 재고,
   approach_speed 이하·끝으로 갈수록 감속(min_speed 까지)·방향 유지. 거리 초과·시간 초과·멈추지 않음은 오류 정지.
 교차선 출발(start_cross): IR 3개가 route[0](가로선 노드 아님)을 지나는 선 위, 로봇은 start_facing 을 봄
@@ -523,12 +525,14 @@ class RouteExecutor:
             da += p['proj']
         elif moving:
             db += p['proj']
+        if self.state == ROTATE:
+            turned *= p['dir']                # 반시계 + (r < 0 이면 도착 회전이 시계)
         if phase in ('a', '-a'):
             heading = approach
         elif phase == 'r':
             heading = approach + (turned if self.state == ROTATE else r)
-        elif phase == 'unr':                  # 시계로 r° 되돌림
-            heading = approach + (r - turned if self.state == ROTATE else 0.0)
+        elif phase == 'unr':                  # r° 되돌림(r > 0 이면 시계)
+            heading = approach + (r + turned if self.state == ROTATE else 0.0)
         elif phase == 'back':
             heading = approach + (r + turned if self.state == ROTATE else 180.0)
         elif phase == 'back_a':
@@ -733,12 +737,17 @@ class RouteExecutor:
         elif leg.action == LOAD:
             # (a 이동) → 반시계 r° → (b 이동) → 상차 대기 → (−b 이동) → 반시계로 진입선을 다시 찾음(합계 약 180°)
             # 기본 (0, 90, 0) 이면 반시계 90° → 상차 대기 → 반시계 turn_min~turn_max(예전과 같음)
+            # r 은 노드별 범위(dock.ROTATE_BANDS): N21·N22 는 −10..10 도 됨. 음수 = 시계로 |r|°.
+            # r = 0 이면 도착 회전·되돌림 회전을 건너뜀(③ b 는 접근 방향 그대로 앞뒤).
             dv = self.dock.get(leg.to)
             r = dv.rotate_deg
+            r_dir = 1.0 if r >= 0 else -1.0
             self._dock_disp = (0.0, 0.0)
+            self._dock_phase = 'r'          # 표시용(회전을 건너뛰어도 상차 자세 추정이 되게)
             if dv.advance_cm:
                 steps.append((ADVANCE, dv.advance_cm, 'a'))
-            steps.append((ROTATE, 1.0, r, r, False, 'r'))
+            if r:
+                steps.append((ROTATE, r_dir, abs(r), abs(r), False, 'r'))
             if dv.move_cm:
                 steps.append((ADVANCE, dv.move_cm, 'b'))
             steps.append((LOADING,))
@@ -748,7 +757,8 @@ class RouteExecutor:
                 # a ≠ 0(2026-11-09 사용자 결정 (나)): 시계 r° 로 접근 방향을 다시 보고 −a 만큼 되돌아와 기본 정지
                 # 자세로 → 반시계 90 + turn_min ~ 90 + turn_max(기본값 경로의 합계)로 진입선 찾기.
                 # a > +4.5 cm 그대로 돌아보면 IR 이 가로선 위에 남아 진입선을 구분 못 함(시뮬 a +6 에서 22/24 정지).
-                steps.append((ROTATE, -1.0, r, r, False, 'unr'))
+                if r:
+                    steps.append((ROTATE, -r_dir, abs(r), abs(r), False, 'unr'))
                 steps.append((ADVANCE, -dv.advance_cm, '-a'))
                 lo, hi = 90.0 + c.turn_min_deg, 90.0 + c.turn_max_deg
                 phase = 'back_a'

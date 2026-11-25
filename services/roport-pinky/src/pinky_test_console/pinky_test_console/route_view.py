@@ -21,6 +21,12 @@ SPEED_CAPS = {'base_speed': 0.15, 'rotate_speed': 1.5}   # 형식 검사용(실�
 DOCK_NODES = ('N01', 'N11', 'N21', 'N22')
 LOAD_PLACES = ('P4', 'P7')       # roport_line_nav graph.LOAD_PLACES 와 같게
 DOCK_LIMITS = {'advance_cm': (-6.0, 6.0), 'rotate_deg': (60.0, 120.0), 'move_cm': (-6.0, 6.0)}
+# ② rotate_deg 노드별 범위(양 끝 포함, roport_line_nav dock.ROTATE_BANDS 와 같게). 없는 노드 = DOCK_LIMITS 값.
+# N21·N22 = 2026-11-16 OMX 팀 요청·사용자 결정(정면 0° 추가, 180° 는 안 씀).
+DOCK_ROTATE_BANDS = {
+    'N21': ((-10.0, 10.0), (60.0, 120.0)),
+    'N22': ((-10.0, 10.0), (60.0, 120.0)),
+}
 DOCK_DEFAULT = {'advance_cm': 0.0, 'rotate_deg': 90.0, 'move_cm': 0.0}   # = 지금 동작
 # 교차선 위 출발(계약 3절): 로봇이 보는 방향
 FACINGS = ('E', 'N', 'W', 'S')
@@ -143,13 +149,18 @@ def parse_route_command(data):
     return out
 
 
-def _dock_number(data, key):
+def dock_rotate_bands(node):
+    return DOCK_ROTATE_BANDS.get(node, (DOCK_LIMITS['rotate_deg'],))
+
+
+def _dock_number(data, key, node):
     v = data.get(key)
-    lo, hi = DOCK_LIMITS[key]
+    bands = dock_rotate_bands(node) if key == 'rotate_deg' else (DOCK_LIMITS[key],)
     if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) \
-            or not lo <= v <= hi:
-        raise RouteCommandError(f'{key} must be a number in {lo:g}..{hi:g}')
-    return float(v)
+            or not any(lo <= v <= hi for lo, hi in bands):
+        text = ', '.join(f'{lo:g}..{hi:g}' for lo, hi in bands)
+        raise RouteCommandError(f'{node} {key} must be a number in {text}')
+    return float(v) + 0.0
 
 
 def _parse_dock(data):
@@ -169,7 +180,7 @@ def _parse_dock(data):
         return {'cmd': 'dock', 'node': node, 'reset': True}
     out = {'cmd': 'dock', 'node': node}
     for k in DOCK_LIMITS:
-        out[k] = _dock_number(data, k)
+        out[k] = _dock_number(data, k, node)
     return out
 
 
