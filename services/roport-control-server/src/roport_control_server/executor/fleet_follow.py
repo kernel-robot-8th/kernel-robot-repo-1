@@ -102,6 +102,8 @@ def projection(control, task):
         follow.pop("return_requested", None)
         first_following = follow.pop("first_following_at", None)
         alert_after = control.config.get("boarding_alert_after_s")
+        robot_state = control.observed.get(robot, {}).get("state", {})
+        observed_follow = robot_state.get("follow", {})
         if (
             alert_after is not None
             and first_following
@@ -109,6 +111,10 @@ def projection(control, task):
             and result["status"] == "RUNNING"
             and control.data["enabled"]
             and control.state_age(robot) <= 3
+            and robot_state.get("fault") is None
+            and observed_follow.get("active") is True
+            and observed_follow.get("follow_mode") == follow["mode"]
+            and observed_follow.get("follow_session_id") == follow["session_id"]
             and (
                 datetime.now(UTC) - datetime.fromisoformat(first_following)
             ).total_seconds()
