@@ -12,12 +12,15 @@ def supported_modes(control, robot):
         or control.data["roles"][robot] != "smartcart"
     ):
         return []
-    if control.config["mode"] == "hardware" and (
+    hardware = control.config["mode"] == "hardware"
+    if hardware and (
         control.config.get("field_verified") is not True
         or control.config.get("verified_follow_robot") != robot
     ):
         return []
-    return control.config.get("follow_modes", {}).get(robot, ["marker"])
+    return control.config.get("follow_modes", {}).get(
+        robot, [] if hardware else ["marker"]
+    )
 
 
 def registration_ready(control, task, *, target=False):
@@ -60,6 +63,8 @@ def allowed_actions(control, task):
     except ValueError:
         return []
     actions = ["return"]
+    if follow["mode"] not in supported_modes(control, robot):
+        return actions
     if follow["mode"] == "appearance":
         actions.append("capture")
         if follow.get("registration"):

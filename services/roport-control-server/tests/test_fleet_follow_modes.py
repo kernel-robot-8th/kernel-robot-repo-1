@@ -301,6 +301,44 @@ def test_marker_wire_compatibility_and_none_return(waiting):
     assert "follow_mode" not in cmd["payload"]
 
 
+@pytest.mark.parametrize("modes", [None, [], ["appearance"]])
+def test_hardware_marker_requires_explicit_mode(waiting, modes):
+    c = waiting
+    c.config.pop("follow_modes")
+    c.config.update(
+        mode="hardware", field_verified=True, verified_follow_robot="pinky3"
+    )
+    if modes is not None:
+        c.config["follow_modes"] = {"pinky3": modes}
+    task = c.data["tasks"]["outbound"]
+    assert c.service_projection(task)["supported_follow_modes"] == (modes or [])
+    before = deepcopy(c.data)
+    with pytest.raises(ValueError, match="unavailable"):
+        c.receipt("outbound", 42, session_id="receipt")
+    assert c.data == before
+    c.receipt("outbound", follow_mode="none", session_id="receipt")
+    assert c.data["tasks"]["outbound"]["stage"] == "return_nav"
+
+
+def test_existing_hardware_session_can_return_with_mode_disabled(waiting):
+    c = waiting
+    c.config.update(
+        mode="hardware",
+        field_verified=True,
+        verified_follow_robot="pinky3",
+        follow_modes={"pinky3": ["marker"]},
+    )
+    c.receipt("outbound", 42, session_id="receipt")
+    task = c.data["tasks"]["outbound"]
+    assert c.service_projection(task)["supported_follow_modes"] == ["marker"]
+    c.config["follow_modes"].clear()
+    with pytest.raises(ValueError, match="허용한 추종 모드"):
+        c.follow_control("outbound", "approve")
+    assert c.next_action() is None
+    c.follow_control("outbound", "return")
+    assert c.data["tasks"]["outbound"]["stage"] == "return_nav"
+
+
 def test_disabled_appearance_and_invalid_card_fail_before_receipt_changes(waiting):
     c = waiting
     c.config.pop("follow_modes")

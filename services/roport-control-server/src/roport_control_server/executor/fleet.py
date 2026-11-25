@@ -464,13 +464,12 @@ class FleetControl:
         self.save(data)
 
     def check_follow_robot(self, task):
-        if self.config["mode"] == "hardware" and (
-            self.config.get("field_verified") is not True
-            or task["robot"] != self.config.get("verified_follow_robot")
-            or self.data["roles"].get(task["robot"]) != "smartcart"
+        mode = task.get("follow", {}).get("mode", "marker")
+        if self.config["mode"] == "hardware" and mode not in (
+            fleet_follow.supported_modes(self, task["robot"])
         ):
             raise ValueError(
-                "현장에서 추종 시작·정지 보고를 확인한 스마트카트만 승인할 수 있습니다."
+                "현장에서 시작·정지 보고를 검증하고 허용한 추종 모드만 실행할 수 있습니다."
             )
         if self.config["command_timeout_s"] < 9:
             raise ValueError("추종에는 9초 이상의 관제 명령 제한 시간이 필요합니다.")
