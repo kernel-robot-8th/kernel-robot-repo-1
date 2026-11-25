@@ -32,6 +32,15 @@ CHUNK_BYTES = DATAGRAM_BYTES - _HEADER.size
 
 PING, PONG, LOAD, LOADED, INFER, ACTIONS, ERROR = range(1, 8)
 KINDS = {PING, PONG, LOAD, LOADED, INFER, ACTIONS, ERROR}
+KIND_NAMES = {
+    PING: "ping",
+    PONG: "pong",
+    LOAD: "load",
+    LOADED: "loaded",
+    INFER: "infer",
+    ACTIONS: "actions",
+    ERROR: "error",
+}
 REPLIES = {PING: PONG, LOAD: LOADED, INFER: ACTIONS}
 
 # INFER header identifiers from the team's AI UDP draft (Confluence MFS 10125435): the reply echoes
@@ -177,8 +186,7 @@ class Reassembler:
         now = time.monotonic() if now is None else now
         for stream, pending in list(self._pending.items()):
             if now >= pending.deadline:
-                del self._pending[stream]
-                self.stats["timeout"] += 1
+                self._drop(stream, "timeout")
 
     def feed(self, packet: bytes, peer: Peer) -> Message | None:
         now = time.monotonic()
@@ -191,7 +199,7 @@ class Reassembler:
                 packet
             )
         except (ValueError, struct.error):
-            self.stats["malformed"] += 1
+            self.stats["malformed_datagram"] += 1  # one datagram, not a whole request
             return None
         stream = (peer, session)
         pending = self._pending.get(stream)
@@ -201,9 +209,8 @@ class Reassembler:
             self.stats["late"] += 1
             return None
         if pending is not None and request_id > pending.request_id:
-            del self._pending[stream]
+            self._drop(stream, "superseded")
             pending = None
-            self.stats["superseded"] += 1
         if pending is None:
             if len(self._pending) >= self.max_pending:
                 self.stats["capacity"] += 1
@@ -211,14 +218,15 @@ class Reassembler:
             fields = (kind, count, size, crc, mac)
             pending = _Pending(request_id, fields, now + self.timeout)
             self._pending[stream] = pending
+            self.stats["fragments_expected"] += count
         if pending.fields != (kind, count, size, crc, mac):
-            del self._pending[stream]
-            self.stats["conflict"] += 1
+            self._drop(stream, "conflict")
             return None
         if index in pending.chunks:
             self.stats["duplicate"] += 1
             return None
         pending.chunks[index] = chunk
+        self.stats["fragments_received"] += 1
         if len(pending.chunks) != count:
             return None
         del self._pending[stream]
@@ -239,7 +247,18 @@ class Reassembler:
         try:
             header, data = decode_body(body)
         except (ValueError, TypeError):
-            self.stats["malformed"] += 1
+            self.stats["malformed_body"] += (
+                1  # a whole request, verified but unreadable
+            )
             return None
         self.stats["completed"] += 1
+        self.stats[f"completed_{KIND_NAMES[kind]}"] += 1
         return Message(kind, session, request_id, header, data)
+
+    def _drop(self, stream: tuple, reason: str):
+        """Forget an incomplete message; count it and the fragments that never arrived."""
+        pending = self._pending.pop(stream)
+        count = pending.fields[1]
+        self.stats[reason] += 1
+        self.stats["fragments_missing"] += count - len(pending.chunks)
+        self.stats[f"{reason}_{KIND_NAMES[pending.fields[0]]}"] += 1
