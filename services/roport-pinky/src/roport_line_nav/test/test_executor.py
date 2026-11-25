@@ -200,8 +200,9 @@ def test_load_waits_until_done(graph):
     (['N16', 'N14', 'N02', 'N10', 'N18', 'N07', 'N23', 'N21'], 'N21'),
     (['N11', 'N19', 'N24', 'N22'], 'N22'),
 ])
-def test_delivery_side_stops_load_like_n11(graph, route, stop):
-    """02 인도장 새 정차 노드(N21·N22, arrival: load): N11처럼 반시계 90° 뒤 상차 대기."""
+def test_delivery_side_stops_front_facing_with_reverse(graph, route, stop):
+    """02 인도장 정차 노드(N21·N22, arrival: load) 처음 값 (0, 0, -3): 도착 회전 없이 가로선에서 3 cm 후진해
+    상차 대기 → 상차 뒤 3 cm 전진 → 반시계 약 180° 로 진입선을 찾아 나감(2026-11-25 사용자 결정)."""
     seen = []
 
     def loading(sim):
@@ -211,9 +212,11 @@ def test_delivery_side_stops_load_like_n11(graph, route, stop):
     heading, offset = ('S', 0.0) if route[0] == 'N16' else ('N', 7.0)
     sim, ex = run_route(graph, route, heading, offset, loading=loading)
     assert ex.state == ARRIVED, ex.as_dict()
-    assert seen and abs(seen[0] - 0.0) < 8, seen       # 남쪽으로 들어와 반시계 90° = 동쪽
-    assert abs(_heading_deg(sim) - 90.0) < 15          # 상차 뒤 간선(북) 쪽을 봄
+    assert seen and abs(seen[0] - (-90.0)) < 8, seen   # 남쪽으로 들어와 돌지 않고 그대로 남쪽
+    assert abs(_heading_deg(sim) - 90.0) < 15          # 상차 뒤 반 바퀴 돌아 간선(북) 쪽을 봄
     assert _axle_to(sim, stop) < 6.0
+    moves = [e['detail'] for e in ex.events if e['event'] in ('advance', 'rotate')]
+    assert not any(m.startswith('r ') for m in moves), moves   # 도착 회전(r) 없음
 
 
 def test_load_to_p6_park(graph):

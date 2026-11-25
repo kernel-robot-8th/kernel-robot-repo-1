@@ -295,6 +295,147 @@ def test_extreme_dock_values_round_trip(graph, delay):
     assert not fails, fails
 
 
+# ---------------------------------------------------------------- N21·N22 정면 0°(2026-11-16 OMX 팀 요청·사용자 결정, 180° 는 안 씀)
+_BACK = ['N05', 'N15', 'N14', 'N16']
+TO_N21 = TO_N11[:6] + ['N21']                                          # P5 → N21 (N23 에서 우회전)
+TO_N22 = TO_N11[:7] + ['N24', 'N22']                                   # P5 → N22 (N19 직진, N24 우회전)
+ROUND_N2X = {
+    'N21': TO_N21 + ['N23', 'N07'] + _BACK,
+    'N22': TO_N22 + ['N24', 'N19', 'N23', 'N07'] + _BACK,
+}
+TO_N2X = {'N21': TO_N21, 'N22': TO_N22}
+N2X_RUNS = [(0.03, 0.2), (0.08, 0.2)]
+# a·b 조합(0·±3·±6). 전체 곱(5 × 5 × 속도·지연 5가지)은 CI 밖 스크립트로 확인(README)
+N2X_AB = [(0.0, 0.0), (0.0, 3.0), (0.0, -3.0), (0.0, 6.0), (0.0, -6.0), (3.0, 0.0), (-3.0, 0.0),
+          (6.0, 0.0), (-6.0, 0.0), (3.0, -3.0), (-6.0, 6.0), (6.0, -6.0)]
+
+
+@pytest.mark.parametrize('delay', DELAYS)
+@pytest.mark.parametrize('speed', (0.03, 0.06))
+@pytest.mark.parametrize('dock', [(0.0, 0.0, 0.0), (3.0, 0.0, -3.0), (-6.0, 0.0, 6.0),
+                                  (0.0, -10.0, 3.0), (3.0, 10.0, 0.0),
+                                  (0.0, 90.0, 0.0), (3.0, 90.0, -3.0)])
+@pytest.mark.parametrize('node', ['N21', 'N22'])
+def test_n2x_dock_pose_at_loading(graph, node, dock, speed, delay):
+    """N21·N22: r 0·±10·90(회귀) × a·b 조합. 상차 대기 자세가 목표 ±1 cm·±3° 안(정의는 위와 같음)."""
+    a, r, b = dock
+    route = TO_N2X[node]
+    # 밀림(over) 기준 회차는 이동 없는 (0, 90, 0) 을 명시한다(N21·N22 처음 값은 (0, 0, -3)).
+    _, ex0, base = _run_to_loading(graph, route, speed, delay, {node: (0.0, 90.0, 0.0)})
+    assert ex0.state == ARRIVED and 'pose' in base
+    n, th = _approach(graph, node)
+    cfg = ex0.cfg
+    x0, y0, _ = base['pose']
+    over = (x0 - n.x) * math.cos(th) + (y0 - n.y) * math.sin(th) + cfg.half_line_cm + cfg.ir_ahead_cm
+    assert 0.0 <= over <= 1.5, over
+    _, ex, got = _run_to_loading(graph, route, speed, delay, {node: dock})
+    assert ex.state == ARRIVED, ex.as_dict()
+    tx, ty, th_t = _target(graph, node, over, a, r, b, cfg)
+    x, y, yaw = got['pose']
+    err_cm = math.hypot(x - tx, y - ty)
+    err_deg = _ang(math.degrees(yaw - th_t))
+    assert err_cm <= POS_TOL_CM and abs(err_deg) <= HEAD_TOL_DEG, (err_cm, err_deg)
+    ex_t = _target(graph, node, 0.0, a, r, b, cfg)       # 화면 추정 = 밀림 0 목표(0.1 cm 반올림 + 이동 끝 오차)
+    est = got['est']
+    assert math.hypot(est['x_cm'] - ex_t[0], est['y_cm'] - ex_t[1]) <= 0.2
+    assert abs(_ang(est['heading_deg'] - math.degrees(ex_t[2]))) <= 0.1
+    rot = [e['detail'] for e in ex.events if e['event'] == 'rotate']
+    if r == 0.0:                                                        # 도착 회전·되돌림 회전 없음
+        assert not [d for d in rot if d.endswith("'r')") or d.endswith("'unr')")], rot
+    elif r < 0:
+        assert [d for d in rot if d.startswith('(-1.0, 10.0, 10.0') and d.endswith("'r')")], rot
+
+
+@pytest.mark.parametrize('node', ['N21', 'N22'])
+def test_n2x_round_trip_zero(graph, node):
+    """N21·N22 r 0·90 × (a, b) 12조합 × 속도·지연 2가지: load_done 뒤 진입선을 찾아 P5 로 복귀."""
+    fails, found = [], {}
+    for r in (0.0, 90.0):
+        for a, b in N2X_AB:
+            for speed, delay in N2X_RUNS:
+                sim = Sim(graph, cmd_delay_s=delay)
+                sim.place('N16', 'S', 0.0)
+                ex = RouteExecutor(graph, _cfg(speed))
+                ex.set_dock(node, a, r, b)
+                ex.start(ROUND_N2X[node])
+                events = _drive_all(sim, ex)
+                n16 = graph.nodes['N16']
+                if ex.state != ARRIVED or math.hypot(sim.x - n16.x, sim.y - n16.y) >= 8.0:
+                    fails.append((a, r, b, speed, delay, ex.state, ex.reason))
+                    continue
+                kinds = [e['event'] for e in events]
+                i = kinds.index('load_done')
+                deg = float(events[i + kinds[i:].index('line_found')]['detail'].rstrip('°'))
+                found.setdefault((r, a == 0.0), []).append(deg)
+    assert not fails, fails
+    c = NavConfig()
+    for (r, a0), degs in found.items():          # 상차 뒤 선을 찾은 각 = 정해진 창 안
+        if not a0:
+            lo, hi = 90 + c.turn_min_deg, 90 + c.turn_max_deg
+        else:
+            lo, hi = 180 - r - 30, 180 - r + 30
+        assert all(lo <= d <= hi for d in degs), (r, a0, min(degs), max(degs))
+
+
+def test_n2x_zero_rotation_no_turn_command(graph):
+    """r = 0, a = b = 0: 가로선 정지 → 회전 명령 없이 바로 상차 대기(0 회전으로 멈추거나 시간 초과 없음)."""
+    sim = Sim(graph, cmd_delay_s=0.2)
+    sim.place('N16', 'S', 0.0)
+    ex = RouteExecutor(graph)
+    ex.set_dock('N22', 0.0, 0.0, 0.0)
+    ex.start(TO_N22)
+    assert sim.run(ex, lambda e: e.state in (LOADING, ERROR, ARRIVED))
+    assert ex.state == LOADING
+    yaw_at = sim.yaw
+    for _ in range(40):
+        sim.tick(ex)
+    assert ex.state == LOADING and sim.cmd == (0.0, 0.0)
+    assert abs(_ang(math.degrees(sim.yaw - yaw_at))) < 1.0
+    assert abs(_ang(math.degrees(sim.yaw) + 90.0)) < 3.0            # 접근 방향(남쪽) 그대로
+
+
+@pytest.mark.parametrize('r', [0.0, 10.0, -10.0, 170.0, 180.0, -180.0, 190.0])
+def test_n01_n11_reject_wide_rotation(graph, r):
+    """N01·N11 은 60..120 그대로. 0° 띠·반바퀴는 거부하고 이전 값 유지(오류 문구에 노드별 범위)."""
+    for node in ('N01', 'N11'):
+        ex = RouteExecutor(graph)
+        ex.set_dock(node, 1.0, 95.0, 1.0)
+        with pytest.raises(ValueError, match=f'{node} rotate_deg must be in 60..120'):
+            ex.set_dock(node, 0.0, r, 0.0)
+        assert ex.dock.get(node) == DockValue(1.0, 95.0, 1.0)
+
+
+def test_n2x_rotation_bands_edges(graph):
+    """N21·N22: −10..10 · 60..120 양 끝 포함, 사이 값·170..190·±180 은 거부(180° 는 안 씀, 2026-11-16 사용자)."""
+    ex = RouteExecutor(graph)
+    for node in ('N21', 'N22'):
+        for r in (-10.0, 0.0, 10.0, 60.0, 120.0, 5.0):
+            assert ex.set_dock(node, 0.0, r, 1.0).rotate_deg == r
+        for r in (-10.01, 10.01, 59.99, 120.01, 170.0, 180.0, -180.0, 190.0, -170.0, 270.0):
+            with pytest.raises(ValueError, match=f'{node} rotate_deg must be in -10..10, 60..120:'):
+                ex.set_dock(node, 0.0, r, 0.0)
+        assert ex.dock.get(node).rotate_deg == 5.0
+    assert ex.set_dock('N21', 0.0, -0.0, 1.0).rotate_deg == 0.0
+    assert math.copysign(1.0, ex.dock.get('N21').rotate_deg) == 1.0
+
+
+def test_n2x_dock_file_bands(graph, tmp_path):
+    """파일 읽기도 노드별 범위: N21 −10·N22 0 은 읽고, N21 180·N11 0 이 하나라도 있으면 전체 기본값."""
+    path = tmp_path / 'dock.yaml'
+    path.write_text('version: 1\nnodes:\n  N21: {rotate_deg: -10}\n  N22: {rotate_deg: 0, move_cm: 2}\n')
+    table, warning = load_file(str(path), graph)
+    assert warning is None
+    assert table.get('N21') == DockValue(0.0, -10.0, 0.0) and table.get('N22') == DockValue(0.0, 0.0, 2.0)
+    save_file(str(path), table)
+    again, warning = load_file(str(path), graph)
+    assert warning is None and again.as_dict() == table.as_dict()
+    for text, msg in (('  N22: {rotate_deg: 0}\n  N11: {rotate_deg: 0}\n', 'N11 rotate_deg must be in 60..120'),
+                      ('  N21: {rotate_deg: 180}\n', 'N21 rotate_deg must be in -10..10, 60..120')):
+        path.write_text('version: 1\nnodes:\n' + text)
+        table, warning = load_file(str(path), graph)
+        assert warning and msg in warning and table.as_dict() == {}
+
+
 # ---------------------------------------------------------------- 정지 경로
 def _to_dock_move(graph, phase='a'):
     sim = Sim(graph)
@@ -418,8 +559,14 @@ def test_dock_limits_and_nodes(graph):
     for node in ('N16', 'N07', 'N12', 'X1'):        # 대기 칸·분기·handoff·없는 노드
         with pytest.raises(ValueError, match='not a load node'):
             ex.set_dock(node, 0, 90, 0)
-    ex.set_dock('N21', 0, 90, 0)                    # 기본값이면 표에 남기지 않음
+    ex.set_dock('N11', 0, 90, 0)                    # 그 노드의 처음 값이면 표에 남기지 않음
+    ex.set_dock('N21', 0, 0, -3)
     assert ex.as_dict()['dock'] == {}
+    assert ex.dock.get('N11') == DEFAULT and ex.dock.get('N21') == DockValue(0.0, 0.0, -3.0)
+    ex.set_dock('N21', 0, 90, 0)                    # N21·N22 는 (0, 90, 0) 이 처음 값이 아니라 표에 남는다
+    assert ex.as_dict()['dock'] == {'N21': {'advance_cm': 0.0, 'rotate_deg': 90.0, 'move_cm': 0.0}}
+    ex.reset_dock('N21')
+    assert ex.dock.get('N21') == DockValue(0.0, 0.0, -3.0) and ex.as_dict()['dock'] == {}
     assert DEFAULT.is_default
 
 

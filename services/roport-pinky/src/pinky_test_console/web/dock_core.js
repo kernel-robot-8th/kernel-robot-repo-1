@@ -69,16 +69,21 @@ const DockCore = (() => {
     return [[f, w], [f, -w], [r, -w], [r, w]].map(([a, b]) => [pose.x + a * c - b * s, pose.y + a * s + b * c]);
   }
   // 예상 → 원하는 자세: 선 따라 a cm 더 가고(접근 방향 u), 회전 rot, 새 방향으로 b cm(+ 앞)
+  // 0.1° 로 반올림한 ②가 0° 이면 회전 뒤 방향이 접근선과 같음 → ③ 없이 ①만(옆으로는 못 맞춤, side_cm).
+  // 180° 쪽 평행(det ≈ 0)은 예전처럼 ①만 계산하지만 ② 가 범위 밖이라 적용 안 됨.
   function plan(pred, want) {
     const u = [Math.cos(pred.approach), Math.sin(pred.approach)], h = [Math.cos(want.th), Math.sin(want.th)];
     const dx = want.x - pred.x, dy = want.y - pred.y, det = u[0] * h[1] - u[1] * h[0];
+    let rot = wrapDeg((want.th - pred.approach) * 180 / Math.PI);
+    const zero = Math.round(rot * 10) / 10 === 0, parallel = zero || Math.abs(det) < 1e-6;
     let a, b;
-    if (Math.abs(det) < 1e-6) { a = dx * u[0] + dy * u[1]; b = 0; }   // 원하는 방향이 선과 평행: 회전 뒤 이동 불가
+    if (zero) rot = 0;
+    if (parallel) { a = dx * u[0] + dy * u[1]; b = 0; }
     else { a = (dx * h[1] - dy * h[0]) / det; b = (u[0] * dy - u[1] * dx) / det; }
-    const rot = wrapDeg((want.th - pred.approach) * 180 / Math.PI);
     const dth = wrapDeg((want.th - pred.th) * 180 / Math.PI);
     const lat = -dx * u[1] + dy * u[0];                                 // 접근선 왼쪽 + (cm)
-    return { advance_cm: a, rotate_deg: rot, move_cm: b, dx, dy, dtheta_deg: dth, along_cm: dx * u[0] + dy * u[1], left_cm: lat, parallel: Math.abs(det) < 1e-6 };
+    return { advance_cm: a, rotate_deg: rot, move_cm: b, dx, dy, dtheta_deg: dth, along_cm: dx * u[0] + dy * u[1], left_cm: lat,
+      parallel, side_cm: parallel ? lat : 0 };
   }
   // 지금 코드 예상 자세 + ①②③ → 바퀴 축 자세(로봇에 적용된 값 표시용)
   function poseFromPlan(pred, pl) {
@@ -90,12 +95,17 @@ const DockCore = (() => {
     const u = [Math.cos(approach), Math.sin(approach)], dx = measured.x - target.x, dy = measured.y - target.y;
     return { along_cm: dx * u[0] + dy * u[1], left_cm: -dx * u[1] + dy * u[0], dtheta_deg: wrapDeg((measured.th - target.th) * 180 / Math.PI) };
   }
-  // 계약 1절 허용 범위
+  // 계약 1절 허용 범위. ② 는 노드별(roport_line_nav dock.ROTATE_BANDS 와 같게, 양 끝 포함)
   const LIMITS = { advance_cm: 6, move_cm: 6, rotate_min: 60, rotate_max: 120 };
-  function inLimits(pl) {
-    return [pl.advance_cm, pl.rotate_deg, pl.move_cm].every(Number.isFinite)
-      && Math.abs(pl.advance_cm) <= LIMITS.advance_cm && Math.abs(pl.move_cm) <= LIMITS.move_cm
-      && pl.rotate_deg >= LIMITS.rotate_min && pl.rotate_deg <= LIMITS.rotate_max;
+  const ROTATE_BANDS_DEFAULT = [[60, 120]];
+  const ROTATE_BANDS = { N21: [[-10, 10], [60, 120]], N22: [[-10, 10], [60, 120]] };
+  const rotateBands = (node) => ROTATE_BANDS[node] || ROTATE_BANDS_DEFAULT;
+  const bandsText = (node) => rotateBands(node).map(([lo, hi]) => `${lo}~${hi}°`).join(" · ");
+  function inLimits(pl, node) {
+    if (![pl.advance_cm, pl.rotate_deg, pl.move_cm].every(Number.isFinite)) return false;
+    const r = pl.rotate_deg;
+    return Math.abs(pl.advance_cm) <= LIMITS.advance_cm && Math.abs(pl.move_cm) <= LIMITS.move_cm
+      && rotateBands(node).some(([lo, hi]) => r >= lo && r <= hi);
   }
   // /api/route/graph(route_view.graph_view) → 이 계산이 쓰는 배치 L
   function layoutFromGraph(g) {
@@ -119,6 +129,7 @@ const DockCore = (() => {
     return pts;
   }
   return { solve, homography, inv3, apply, predictedDock, box, plan, poseFromPlan, resultError, inLimits, LIMITS,
+    ROTATE_BANDS, rotateBands, bandsText,
     layoutFromGraph, refPoints, heading, wrapDeg, DIRS };
 })();
 if (typeof module !== "undefined") module.exports = DockCore;

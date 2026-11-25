@@ -71,7 +71,7 @@
     <div id="applyMsg" class="status-msg" role="status"></div>
     <div class="tiny-note">로봇에 적용된 값: <span id="appliedTxt">-</span></div>
     <div class="tiny-note">마지막 명령 결과: <span id="lastCmd">-</span></div>
-    <div class="tiny-note">허용 범위: ① −6~+6 cm · ② 60~120° · ③ −6~+6 cm (넘으면 적용 거부). 주행 중에는 로봇이 거부.</div>
+    <div class="tiny-note">허용 범위: ① −6~+6 cm · ② 60~120°(N21·N22 는 −10~10° · 60~120°) · ③ −6~+6 cm (넘으면 적용 거부). ②가 0°면 ③ 없이 ①만. 주행 중에는 로봇이 거부.</div>
     <div class="tiny-note">상차 뒤 ③·①을 되돌린 다음 선을 찾음(③ 되돌림 → 시계 방향 ② 회전 → ① 되돌림 → 선 찾기, line_nav).</div>
   </div>
   <div class="dk-card">
@@ -79,7 +79,9 @@
     <div class="form-line"><span class="tiny-note">출발</span><span>N07 · 남쪽(OMX 쪽)을 보고 IR 3개가 동서 선 위</span></div>
     <div class="form-line"><span class="tiny-note">목적지</span><span>
       <label><input type="radio" name="goal" value="N11" checked> N11 (P7, OMX1·2)</label>
-      <label><input type="radio" name="goal" value="N01"> N01 (P4, OMX3)</label></span></div>
+      <label><input type="radio" name="goal" value="N01"> N01 (P4, OMX3)</label>
+      <label><input type="radio" name="goal" value="N21"> N21 (02 인도장 왼쪽)</label>
+      <label><input type="radio" name="goal" value="N22"> N22 (02 인도장 오른쪽)</label></span></div>
     <div class="form-line"><span class="tiny-note">경로</span><span id="routeTxt" class="tiny-note">-</span></div>
     <div class="dk-bar">
       <button id="start" class="btn btn-primary btn-small" type="button">▶ 시작</button>
