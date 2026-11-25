@@ -233,7 +233,8 @@ class RouteExecutor:
         """경로 시작. 잘못된 경로는 GraphError(현재 상태 유지). 주행 중이면 거부.
 
         start_cross: IR 3개가 route[0] 교차선 위, start_facing(E·N·W·S) 방향으로 출발.
-        confirmed_start: 실제 센서로 확인한 출발 오프셋에 gate_early 거리 창을 적용.
+        confirmed_start: 실제 센서로 확인한 출발 오프셋에 gate_early 거리 창을 적용. 기억한 끝 방향은 쓰지 않는다
+                         (첫 구간 방향을 보고 선 것으로 보고 출발 전 회전을 하지 않음).
         hold_at_goal: 마지막 교차점에서 축을 중심으로 옮겨 정지하고 재출발 자세를 보존.
         """
         if self.state not in TERMINAL:
@@ -251,6 +252,10 @@ class RouteExecutor:
         self.legs = legs
         self._seg_ends = seg_ends
         self.index = 0
+        # 멈춰 있는 동안(TERMINAL)에는 odom 을 따라가지 않는다. 그 사이 Nav2·손으로 옮겨진 거리와 회전이 첫 샘플에서
+        # 이 경로의 이동 거리에 더해지지 않게 기준 자세를 버린다(11-24 d660: N12 복귀 뒤 13.6 cm 가 더해져 N08 창이
+        # 실제 34.8 cm 에서 끝남 → node_missed).
+        self._pose = None
         self.reason = ''
         self._loaded = False
         self._steps.clear()
@@ -258,7 +263,9 @@ class RouteExecutor:
         self.route_seq0 = self.event_seq
         self._log('start', ' → '.join(self.route))
         self._dock_phase = None
-        end = self._end
+        # confirmed_start = 출발 위치·방향을 방금 실제로 확인한 출발(Nav2 로 다녀온 뒤의 N12 등). 앞 경로가 끝났을 때
+        # 기억한 방향은 그 사이 달라졌으므로 쓰지 않는다: 출발 전 회전 없이 첫 구간 방향을 보고 선 것으로 본다.
+        end = None if confirmed_start else self._end
         self._end = None
         if start_cross:
             self._depart_cross(legs[0], start_facing)
