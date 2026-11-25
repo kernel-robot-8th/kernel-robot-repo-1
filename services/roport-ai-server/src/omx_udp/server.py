@@ -42,7 +42,7 @@ from .wire import (
 DEFAULT_PORT = 5600
 RCVBUF_BYTES = 8 * 1024 * 1024
 STATS_EVERY_S = 10.0
-INFER_MS_KEPT = 4096  # bound when no stats line empties it (--stats-every 0)
+INFER_MS_KEPT = 4096  # bound on infer ms samples between two stats lines
 
 
 class Policy(Protocol):
@@ -166,7 +166,8 @@ class InferenceServer:
                 started = time.perf_counter()
                 reply = self.policy.infer(header, message.data)
                 infer_ms = round((time.perf_counter() - started) * 1000, 1)
-                self._infer_ms.append(infer_ms)
+                if self.stats_every > 0:  # samples only while stats lines empty them
+                    self._infer_ms.append(infer_ms)
                 if not all(_finite(reply.get(k)) for k in ("actions", "original")):
                     raise ValueError("policy returned a non-finite action")
                 return ACTIONS, {"infer_ms": infer_ms} | reply | {

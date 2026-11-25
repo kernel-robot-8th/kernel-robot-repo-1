@@ -353,6 +353,7 @@ def test_host_copy_of_wire_matches():
 
 def test_stats_line_counts_requests_replies_and_infer_time(link, capsys):
     call, server, _ = link
+    server.stats_every = 3600  # on; this test calls stats_line itself
     assert call(request(PING, 1)).kind == PONG
     for request_id in (2, 3, 4):
         assert call(infer(request_id, "a", b"j" * 3000)).kind == ACTIONS
@@ -376,8 +377,16 @@ def test_stats_line_counts_requests_replies_and_infer_time(link, capsys):
     assert logged["infer_ms_n"] == 0  # a failed inference has no time
 
 
-def test_infer_times_stay_bounded_without_stats_lines(link):
+def test_no_infer_time_samples_while_stats_are_off(link):
+    call, server, _ = link
+    assert server.stats_every == 0  # --stats-every 0
+    for request_id in range(1, 21):
+        assert call(infer(request_id, "a")).kind == ACTIONS
+    assert len(server._infer_ms) == 0
+    assert server.stats["replied_actions"] == 20  # counters still count
+
+
+def test_infer_time_samples_are_bounded(link):
     _, server, _ = link
-    assert server.stats_every == 0
     server._infer_ms.extend([1.0] * (server_module.INFER_MS_KEPT + 100))
     assert len(server._infer_ms) == server_module.INFER_MS_KEPT
