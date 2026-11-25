@@ -489,6 +489,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "on for v2 (TK 2026-11-24; control stores and ACKs the intermediate report, #158)",
     )
     parser.add_argument(
+        "--report-unload-placement",
+        action="store_true",
+        help="v2 panel: also report unloading completed the moment the box is on the Pinky tray (evidence "
+        "pinky_placed), then pinky_load. Off by default: control main does not store that first report yet and "
+        "would HOLD the unloading (#169 review)",
+    )
+    parser.add_argument(
         "--end-on-place",
         action=argparse.BooleanOptionalAction,
         default=True,  # on by default (TK 2026-11-22); --no-end-on-place for the older flow
@@ -525,6 +532,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     elif args.report_placement and args.protocol != "v2":
         # the v1 panel executor in this task has no early placement report
         parser.error("--report-placement is v2 only")
+    if args.report_unload_placement and args.protocol != "v2":
+        parser.error("--report-unload-placement is v2 only")
     if str(args.journal.resolve()).startswith("/tmp/"):
         parser.error("journal must survive a restart; do not use /tmp")
     if args.executor == "panel" and args.routes is None:
@@ -544,6 +553,7 @@ def main() -> None:
             {
                 "end_on_place": args.end_on_place,
                 "report_placement": args.report_placement,
+                "report_unload_placement": args.report_unload_placement,
             }
             if args.protocol == "v2"
             else {}
@@ -580,6 +590,7 @@ def main() -> None:
                 control=args.control,
                 require_pinky=args.require_pinky,
                 report_placement=args.report_placement,
+                report_unload_placement=args.report_unload_placement,
                 readiness=sampler,
             )
         else:

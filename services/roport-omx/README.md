@@ -328,10 +328,12 @@ uv run python scripts/cooperative_host.py --executor mock \
 
 실물 v2 제어판 설정은 `config/shelf_routes.example.json`을 기준으로 한다. 실물 이송은 해당 Pinky의 자체 상태(8초 이내 관측, N11 정차, 도착 ID·boot 일치)로 방문을 확인한다. 작업셀 도킹 센서 확인(`docking_alignment_unconfirmed`)은 쓰지 않으며(2026-11-23 결정, #154) `robot_state`의 `docking.alignment`는 `unknown`이다. 실물 정지 표본 확인은 현장 적용 단계다.
 
-`task/omx-cooperative` #156·#157·#162·#163과 같은 동작이다(`cooperative_v2.py`는 같은 파일, `shelf_panel.py`는 그 `panel_executor.py` 사본).
+`task/omx-cooperative` #156·#157·#162·#163·#169·#171과 같은 동작이다(`cooperative_v2.py`는 같은 파일, `shelf_panel.py`는 그 `panel_executor.py` 사본).
 
 - 신선도 기준은 관제와 같은 8초(`FRESH_S`): Pinky 상태, Host 상태 표본, 명령 `sent_at`, 작업 유지 확인(watchdog).
 - 입고 놓였음 즉시 완료(`--report-placement`, v2 기본 켜짐, `--no-report-placement`로 끔): 놓음 판정이 상자가 명령 칸에 놓이고 두 손이 빠진 것을 보면 `completed`(`evidence: "shelf_placed"`)를 보내고, 정렬이 끝나면 같은 명령으로 `completed`(`shelf_align`/`shelf_load_not_aligned`) 또는 `failed`+HOLD를 다시 보낸다(관제 #158). 정렬 중에도 watchdog은 유지하고, Pinky 이탈 감시는 관제가 놓였음 보고를 저장할 때까지 유지한다.
+- 출고 쟁반 놓음 즉시 완료(`--report-unload-placement`, 기본 꺼짐, 제어판 3.24.1 `tray_judge` on): 상자가 Pinky 쟁반에 놓이고 두 손이 빠진 것을 보면 `completed`(`evidence: "pinky_placed"`)를 먼저 보내고, 양팔이 홈에 오면 `completed`(`pinky_load`)를 다시 보낸다. 관제 Fleet이 출고 첫 보고를 저장·ACK해야 켤 수 있어 기본은 지금처럼 한 번만 보고한다(#169). 홈 복귀 중 손끝이 쟁반 구역에 다시 들어와 5초 안에 못 빼면 `PANEL_TRAY_REENTRY_HOLD`로 실패·HOLD.
+- 한팔 이송(#171, 제어판 3.25.0): `omx1`·`omx2` 토픽의 `arm_action_command`(`operation: transfer`)를 받는다. 칸 열이 그 팔과 맞아야 하고(A = omx1, C = omx2, 아니면 `slot_arm_mismatch`), Pinky는 그 열의 정차 노드(A N21, C N22)에 있어야 한다. 경로는 `(작업, 칸, DEDICATED)`이며, 팔이 홈에 온 뒤 `completed`를 한 번 보낸다(입고 `shelf_load_one_arm`, 출고 `pinky_load`). `return_home`은 `unsupported_operation`으로 거절한다. 한팔 경로가 없으면 지금과 같다.
 - 제어판 `/api/eval/start`(수 초)는 MQTT 반복문 밖 스레드에서 기다리고, 접수 검사는 상태 표본 스레드의 값을 쓴다. 기다리는 동안에도 Pinky 상태·작업 유지 확인을 받고 `robot_state`를 보낸다(2026-11-23 현장 첫 v2 입고의 HOLD 원인). 작업 중에는 `robot_state`에 fault를 싣지 않는다.
 - 제어판 학습 모델 목록을 아직 한 번도 받지 못했으면(Host 시작 직후, 제어판이 늦게 켜짐) 이송 접수를 보류하고 목록은 뒤에서 받는다. 3초 안에 준비되지 않으면 `rejected` `executor_state_stale`이며, 관제는 이 거절을 HOLD로 처리하므로 운영자 복구가 필요하다(#162).
 - 명령마다 journal `timing`에 수신·접수·시작·제어판 단계·종료 시각을 남기고 Host 로그에 `timing <명령> <구간> +초`로 찍는다.

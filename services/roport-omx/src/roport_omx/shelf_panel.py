@@ -1,6 +1,6 @@
 """Executor that runs shelf-01 COOPERATIVE tasks through the local OMX control panel (v3.14+).
 
-Copied from f476a73's panel_executor.py (task/omx-cooperative #156, #157, #162, #163);
+Copied from 5dd0f9e's panel_executor.py (task/omx-cooperative #156, #157, #162, #163, #169, #171);
 consolidate when task/omx-cooperative is integrated.
 
 The panel owns the arms, cameras and safety stop. This adapter only calls its HTTP API on this PC:
@@ -65,6 +65,19 @@ PANEL_END_ON_PLACE = (3, 18, 0)
 # the hands' state at that moment and the camera's own capture time (not the panel's read time),
 # marked observed_clock "capture" (a "control_step" time or no mark never counts).
 PANEL_PLACEMENT_EVIDENCE = (3, 20, 0)
+# Panel 3.24.1: the unloading's tray judge with the pre-mission photo check (job.info.tray_placed).
+PANEL_TRAY_PLACED = (3, 24, 1)
+# Panel 3.25.0: control-tower one-arm missions (2A left, 2C right): placement / tray judges, the tray read again with
+# the arm home, /api/arms?arm= for a one-arm model's home.
+PANEL_ONE_ARM = (3, 25, 0)
+COLUMN_ARM = {
+    "a": ("omx1", "left"),
+    "c": ("omx2", "right"),
+}  # one-arm columns (Fleet SLOTS)
+ONE_ARM_LOAD = "shelf_load_one_arm"
+# Unloading completed at the tray (TK 2026-11-24): the panel's tray judge saw the box on the Pinky tray,
+# the slot empty and both hands out of the tray zone; the arms still go home. First report.
+PINKY_PLACED = "pinky_placed"
 # An early COMPLETE uses a capture at most this old (seconds, same PC clock).
 PLACEMENT_FRESH_S = 3.0
 # package_id is the box's ArUco marker number as a string (agreed with control, same rule as OMX3's
@@ -175,6 +188,8 @@ def _hold_code(result: dict) -> str:
         return "PANEL_EMERGENCY_STOP"
     if _handover_hold(result):
         return "PANEL_HANDOVER_HOLD"
+    if (result.get("hold") or {}).get("reason") == "tray_reentry":
+        return "PANEL_TRAY_REENTRY_HOLD"
     if align.get("released") is False:
         return "PANEL_ALIGN_RELEASE_FAILED"
     return "PANEL_HOLD"
@@ -215,6 +230,9 @@ HOLD_ERRORS = {
     # the shelf, and the tray is not checked afterwards, so a drop cannot be ruled out.
     "PANEL_BOX_DROPPED",
     "PANEL_BOX_NOT_ON_SHELF",
+    # panel 3.24: after an unloading completed at the tray, a hand came back into the tray zone on
+    # the way home and could not get out (the Pinky may be leaving): held in place, torque on
+    "PANEL_TRAY_REENTRY_HOLD",
 }
 HOME_RETURN_TIMEOUT_S = 90.0
 # The panel takes episodes of 3-600 s. A control-tower evaluation ends on its own (end_on_return:
@@ -311,13 +329,37 @@ def _pinky_error(pinky, slot: str | None) -> str | None:
     return "PANEL_PINKY_UNREADABLE"
 
 
-def _home_and_released(arms: dict) -> bool:
-    """The Host's completion test: every arm connected, home, safe and not grasping."""
+def _home_and_released(arms: dict, names=ARMS) -> bool:
+    """The Host's completion test: every arm of the task connected, home, safe and not grasping."""
     want = {"connected": True, "returned": True, "safe": True, "grasping": False}
     return all(
         all((arms.get(name) or {}).get(k) is v for k, v in want.items())
-        for name in ARMS
+        for name in names
     )
+
+
+def _one_arm_unload_error(pinky, slot: str | None) -> str | None:
+    """A one-arm unloading's tray read again with the arm home (panel 3.25.0, side camera): the same outcomes as
+    _pinky_error, except the tray reference is this run's own first frame of the side camera (the top camera's
+    pre-mission photo does not see the side trays)."""
+    if not isinstance(pinky, dict) or pinky.get("ran") is not True:
+        return "PANEL_PINKY_CHECK_NOT_RUN"
+    on_pinky, slot_empty = pinky.get("on_pinky"), _slot_empty(pinky, slot)
+    if slot_empty is False:
+        return (
+            "PANEL_PINKY_CHECK_CONFLICT"
+            if on_pinky is True
+            else "PANEL_BOX_STILL_ON_SHELF"
+        )
+    if slot_empty is None:
+        return "PANEL_SLOT_UNREADABLE"
+    if pinky.get("tray_reference_state") not in ("eval_first_frame", "ok"):
+        return "PANEL_PINKY_NO_REFERENCE"
+    if on_pinky is True:
+        return None
+    if on_pinky is False:
+        return "PANEL_BOX_DROPPED"
+    return "PANEL_PINKY_UNREADABLE"
 
 
 def _align_error(align: dict, slot: str | None) -> str | None:
@@ -557,6 +599,7 @@ class PanelExecutor:
         timeout: float = 5.0,
         start_timeout: float = 300.0,
         report_placement: bool = False,
+        report_unload_placement: bool = False,
         end_on_place: bool = False,
         place_shadow: bool = False,
     ):
@@ -566,6 +609,9 @@ class PanelExecutor:
         # Loading in two reports: COMPLETE once the box is in its slot (Pinky may leave), then the
         # alignment result as a progress event. Needs a control tower that accepts "shelf_placed".
         self.report_placement = report_placement
+        # Unloading in two reports (pinky_placed, then pinky_load): only with a control tower that stores the first
+        # one (#169 review: control main treats it as the final report and HOLDs). Off unless asked for.
+        self.report_unload_placement = report_unload_placement
         self.end_on_place = end_on_place
         # panel 3.18: run the placement judge during loading and only record it (no hand-over)
         self.place_shadow = place_shadow
@@ -637,7 +683,11 @@ class PanelExecutor:
         """
         merged: dict[str, dict] = {}
         read = None
-        for model in sorted({r.model_path for r in self.routes.values()}):
+        # two-arm routes as before; a one-arm route's model is read for its own arm only (panel 3.25 ?arm=)
+        coop = sorted(
+            {r.model_path for k, r in self.routes.items() if k[2] == "COOPERATIVE"}
+        )
+        for model in coop:
             try:
                 seen = self._call(
                     "GET",
@@ -668,6 +718,33 @@ class PanelExecutor:
                     both = (prev["returned"], flags["returned"])
                     flags["returned"] = False if False in both else None
                 merged[name] = flags
+        # An arm resting at a one-arm model's home (after an A / C mission) is home too: every mission's safe
+        # start first goes to its own model's home from there (the two homes are a few units apart).
+        for key, route in sorted(self.routes.items()):
+            if key[2] != "DEDICATED" or key[1][1:] not in COLUMN_ARM:
+                continue
+            name, side = COLUMN_ARM[key[1][1:]]
+            if (merged.get(name) or {}).get("returned") is True:
+                continue
+            try:
+                seen = self._call(
+                    "GET",
+                    "/api/arms?model="
+                    + urllib.parse.quote(route.model_path)
+                    + "&arm="
+                    + side,
+                    timeout=ARMS_TIMEOUT_S,
+                )
+            except Exception as exc:  # noqa: BLE001 - unknown stays as it is
+                logging.getLogger(__name__).debug(
+                    "one-arm home read for %s failed: %s", route.model_path, exc
+                )
+                continue
+            arm = _by_side(seen.get("arms")).get(name)
+            if arm is not None and seen.get("source") == "bus":
+                flags = _live_flags(arm)
+                if flags["returned"] is True:
+                    merged[name] = flags
         self._arms_read = read
         return merged
 
@@ -676,10 +753,12 @@ class PanelExecutor:
         route = self.routes.get(_route_key(task))
         if route is None:
             raise Rejected("UNSUPPORTED_SLOT")
-        if task["manipulation_mode"] != "COOPERATIVE":
-            # A/C columns (one arm): panel 3.21 has no single-arm control-tower evaluation and
-            # would run its default arm set, both arms with a cooperative model (2026-11-21
-            # review). Refused before acceptance even when a route is configured.
+        if (
+            task["manipulation_mode"] != "COOPERATIVE"
+            and (self._version or ()) < PANEL_ONE_ARM
+        ):
+            # A/C columns (one arm): a panel before 3.25 has no single-arm control-tower evaluation and
+            # would run its default arm set, both arms with a cooperative model (2026-11-21 review)
             raise Rejected("UNSUPPORTED_SLOT")
         marker = package_marker(task["package_id"])  # INVALID_TARGET
         if route.markers is not None and marker not in route.markers:
@@ -747,12 +826,11 @@ class PanelExecutor:
         self._models_refresh.start()
 
     def start(self, task: dict) -> None:
+        one_arm = task["manipulation_mode"] == "DEDICATED"
         if (
-            task["manipulation_mode"] != "COOPERATIVE"
+            one_arm and (self._version or ()) < PANEL_ONE_ARM
         ):  # never reached past check(); no arm move
-            raise StartRefused(
-                "UNSUPPORTED_SLOT", "one-arm slots are not run by the panel yet"
-            )
+            raise StartRefused("UNSUPPORTED_SLOT", "one-arm missions need panel 3.25+")
         route = self.routes[_route_key(task)]
         box = package_marker(task["package_id"])
         body = {
@@ -767,7 +845,21 @@ class PanelExecutor:
             # released, so the policy does not start the task again before episode_s runs out
             "end_on_return": True,
         }
-        if task["operation"] == "OUTBOUND":
+        if one_arm:
+            # panel 3.25 (TK 2026-11-24): that arm alone; loading ends on the placement judge (box in its slot,
+            # hand clear; not on the policy's return, which could come first and leave no evidence), unloading on
+            # the tray judge with the tray read again once the arm is home. No aligner, no hand-over.
+            _name, side = COLUMN_ARM[task["slot_id"][1]]
+            body |= {
+                "arm": side,
+                "slot": task["slot_id"].upper(),
+                "pinky_id": task.get("pinky_id"),
+            }
+            if task["operation"] == "OUTBOUND":
+                body |= {"pinky_check": True, "draw_target": False}
+            else:
+                body |= {"end_on_place": True, "end_on_return": False}
+        elif task["operation"] == "OUTBOUND":
             # Unloading ends with the cameras checking the box on the Pinky tray, never with a
             # shelf alignment (the panel refuses both at once).
             body |= {"shelf_align": False, "pinky_check": True}
@@ -784,11 +876,17 @@ class PanelExecutor:
             # a full stop. Unloading has no aligner after it, so it keeps the full safe stop.
             body["fast_release"] = True
         version = self._version or ()
-        if version >= PANEL_COMMAND_SLOT or task["operation"] == "OUTBOUND":
+        if one_arm:
+            pass  # slot and Pinky already set above
+        elif version >= PANEL_COMMAND_SLOT or task["operation"] == "OUTBOUND":
             # the panel aligns and checks at the commanded slot and that Pinky's tray reference
             # (unloading always: it needs panel 3.20 for the pre-mission tray photo)
             body |= {"slot": task["slot_id"].upper(), "pinky_id": task.get("pinky_id")}
-        if task["operation"] == "INBOUND" and version >= PANEL_END_ON_PLACE:
+        if (
+            task["operation"] == "INBOUND"
+            and version >= PANEL_END_ON_PLACE
+            and not one_arm
+        ):
             if self.end_on_place:
                 body["end_on_place"] = True
             elif self.place_shadow:
@@ -823,6 +921,8 @@ class PanelExecutor:
         self.repo_id, self._missing_since = reply["repo_id"], None
         self.slot, self._recovery = task["slot_id"], None
         self.operation, self.box = task["operation"], box
+        self.mode = task["manipulation_mode"]
+        self.arm_names = tuple(task.get("robot_ids") or ARMS)
         self._placed = False
 
     def stop(self) -> None:
@@ -888,6 +988,71 @@ class PanelExecutor:
             "placement": {k: placement.get(k) for k in keys if k in placement},
         }
 
+    def _tray_placement(self, job: dict, info: dict) -> dict | None:
+        """The unloading's box judged on the Pinky tray while the eval still runs (panel 3.24.1, TK 11/24).
+
+        The same rule as the camera check after an unloading (_pinky_error) plus the hands: box on the tray,
+        the commanded slot empty, the tray compared with this mission's own photo, both fingertips out of
+        the tray zone and both grippers released, a capture at most PLACEMENT_FRESH_S old."""
+        if (
+            not self.report_unload_placement
+            or self.operation != "OUTBOUND"
+            or getattr(self, "mode", "COOPERATIVE")
+            != "COOPERATIVE"  # one arm: one report after the arm is home
+            or self._placed
+            or not job.get("running")
+            or info.get("repo_id") != self.repo_id
+            or info.get("tray_hold")
+        ):
+            return None
+        p = info.get("tray_placed")
+        if not isinstance(p, dict) or (self._version or ()) < PANEL_TRAY_PLACED:
+            return None
+        if (
+            p.get("source") != "eval_judge"
+            or p.get("operation") != "OUTBOUND"
+            or p.get("mode") != "on"
+            or p.get("on_pinky") is not True
+            or _slot_empty(p, self.slot) is not True
+            or str(p.get("box")) != str(self.box)
+            or p.get("tips_clear") is not True
+            or p.get("grippers_released") is not True
+            or p.get("tray_reference_state") != "ok"
+            or p.get("pre_mission_match") is not True
+            or p.get("observed_clock") != "capture"
+        ):
+            return None
+        captured = p.get("observed_ts")
+        if (
+            not isinstance(captured, (int, float))
+            or not 0 <= time.time() - captured <= PLACEMENT_FRESH_S
+        ):
+            return None
+        self._placed = True
+        keys = (
+            "slot",
+            "box",
+            "source",
+            "on_pinky",
+            "slot_empty",
+            "tray_marker",
+            "tray_changed",
+            "tips_clear",
+            "grippers_released",
+            "tray_reference",
+            "tray_reference_state",
+            "observed_ts",
+            "observed_clock",
+            "judged_at",
+        )
+        return {
+            "state": "placed",
+            "step": "tray_placed",
+            "evidence": PINKY_PLACED,
+            "grasp_released": True,
+            "placement": {k: p.get(k) for k in keys if k in p},
+        }
+
     def observe(self) -> dict:
         if self.repo_id is None:
             return {"state": "idle"}
@@ -899,6 +1064,16 @@ class PanelExecutor:
             return placed
         job = status.get("job") or {}
         info = job.get("info") or {}
+        placed = self._tray_placement(job, info)
+        if placed is not None:
+            return placed
+        if (
+            job.get("running")
+            and info.get("repo_id") == self.repo_id
+            and isinstance(info.get("tray_hold"), dict)
+        ):
+            # panel 3.24: held over the tray zone on the way home; the run waits for a person
+            return {"state": "failed", "error": "PANEL_TRAY_REENTRY_HOLD", "arms": {}}
         if job.get("running") and info.get("repo_id") == self.repo_id:
             self._missing_since = None
             phase = info.get("phase")
@@ -921,16 +1096,24 @@ class PanelExecutor:
                     "state": "running",
                     "step": step if isinstance(step, str) else None,
                 }
-            observation = self._result(result, self.slot, self.operation, self.box)
+            one_arm = getattr(self, "mode", "COOPERATIVE") == "DEDICATED"
+            names = self.arm_names if one_arm else ARMS
+            if one_arm:
+                observation = self._result_one_arm(
+                    result, self.slot, self.operation, names
+                )
+            else:
+                observation = self._result(result, self.slot, self.operation, self.box)
             if observation["state"] == "finished":
                 # Evaluation snapshots predate alignment; every completion (aligned or not)
                 # also needs the final motor pose: arms home with grippers released.
                 live = self._arms_now()
-                if self.operation == "OUTBOUND":
+                if self.operation == "OUTBOUND" or one_arm:
                     # judged after the camera check, with the arms at rest: the motors now
-                    # (an evaluation that ended on an error left "safe" False in its snapshot)
+                    # (an evaluation that ended on an error left "safe" False in its snapshot);
+                    # a one-arm run's snapshot holds that arm under the one-arm model's names
                     observation["arms"] = {
-                        name: dict(live.get(name) or {}) for name in ARMS
+                        name: dict(live.get(name) or {}) for name in names
                     }
                 for name, flags in observation["arms"].items():
                     for flag in ("connected", "returned", "safe"):
@@ -938,7 +1121,7 @@ class PanelExecutor:
                             flags[flag] = live.get(name, {}).get(flag)
                     if flags.get("grasping") is False:
                         flags["grasping"] = live.get(name, {}).get("grasping")
-                if not _home_and_released(observation["arms"]):
+                if not _home_and_released(observation["arms"], names):
                     return self._recover("ARM_NOT_RETURNED", status)
                 return observation
             if observation.get("operator_stop") or observation["error"] in HOLD_ERRORS:
@@ -1001,6 +1184,69 @@ class PanelExecutor:
             {"state": "failed", "error": error, "arms": live, "recovered": recovered},
             why,
         )
+
+    @staticmethod
+    def _result_one_arm(
+        result: dict, slot: str | None, operation: str | None, names
+    ) -> dict:
+        """A one-arm mission's outcome (panel 3.25.0): loading by the placement judge, unloading by the tray read
+        again with the arm home. The arms are filled in from the live read by observe()."""
+        arms = {name: {} for name in names}
+        stopped_by = result.get("stopped_by")
+        if stopped_by in OPERATOR_STOPS:
+            return {
+                "state": "failed",
+                "error": STOPS[stopped_by],
+                "arms": arms,
+                "operator_stop": True,
+            }
+        if stopped_by in STOPS:
+            return {"state": "failed", "error": STOPS[stopped_by], "arms": arms}
+        err = result.get("err") or {}
+        if _wrist_check_refused(err):
+            # as #163 for two arms: the panel 3.25 one-arm run checks the wrist cameras too; refused (err 13), the
+            # policy never ran, so there is no placement or tray read - the refusal and its numbers are the cause
+            return _wrist_check_failure(err, result, arms)
+        if operation == "OUTBOUND":
+            pinky = result.get("pinky")
+            error = _one_arm_unload_error(pinky, slot)
+            if error is None:
+                check = {
+                    k: pinky.get(k)
+                    for k in (
+                        "on_pinky",
+                        "slot_empty",
+                        "tray_marker",
+                        "tray_changed",
+                        "tray_reference_state",
+                        "observed_ts",
+                        "observed_clock",
+                    )
+                }
+                return {
+                    "state": "finished",
+                    "step": "pinky",
+                    "arms": arms,
+                    "evidence": PINKY_LOAD,
+                    "unload_check": check,
+                }
+            return {"state": "failed", "error": error, "arms": arms}
+        placement = (
+            result.get("placement") if isinstance(result.get("placement"), dict) else {}
+        )
+        if (
+            placement.get("on_shelf") is True
+            and placement.get("source") == "eval_judge"
+            and str(placement.get("slot") or "").lower() == str(slot or "").lower()
+        ):
+            return {
+                "state": "finished",
+                "step": "placed",
+                "arms": arms,
+                "evidence": ONE_ARM_LOAD,
+            }
+        # not seen placed (ran to its limit, error, or another slot): the box may be anywhere - a person checks
+        return {"state": "failed", "error": "PANEL_BOX_NOT_ON_SHELF", "arms": arms}
 
     @staticmethod
     def _result(
