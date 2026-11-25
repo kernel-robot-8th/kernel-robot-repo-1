@@ -18,6 +18,7 @@ COMMANDS = {
     "set_drive_mode_command",
     "nav_goal_command",
     "follow_target_command",
+    "follow_registration_command",
     "shelf_transfer_command",
     "arm_action_command",
     "warehouse_load_command",
@@ -68,7 +69,30 @@ ARM = {
     "holding_package_id": NULL_ID,
     "fault": NULL_ID,
 }
+FOLLOW_STATE = obj(
+    required=["active", "follow_mode"],
+    active=BOOL,
+    follow_mode=choice("marker", "appearance"),
+    follow_session_id=ID,
+    target_ref=ID,
+    perception_boot_id=ID,
+)
 PINKY_STATE = obj(
+    required=[
+        "node",
+        "arrival_command_id",
+        "mode",
+        "stopped",
+        "line_enabled",
+        "nav2_ready",
+        "localization_ready",
+        "drive_owner",
+        "graph_version",
+        "map_version",
+        "heading_rad",
+        "fault",
+    ],
+    follow=FOLLOW_STATE,
     node=NULL_ID,
     arrival_command_id=NULL_ID,
     mode=choice("line", "nav2", "unknown"),
@@ -153,11 +177,25 @@ SCHEMAS = {
         map_version=ID,
     ),
     "follow_target_command": obj(
-        required=[*FENCE, "map_version", "card_id"],
+        required=[*FENCE, "map_version"],
         **FENCE,
         map_version=ID,
         card_id={"type": "integer", "minimum": 35, "maximum": 49},
+        follow_mode=choice("marker", "appearance"),
+        follow_session_id=ID,
+        target_ref=ID,
+        perception_boot_id=ID,
         max_duration_s={"type": "number", "minimum": 1, "maximum": 240},
+    ),
+    "follow_registration_command": obj(
+        required=[*FENCE, "map_version", "follow_session_id", "operation"],
+        **FENCE,
+        map_version=ID,
+        follow_session_id=ID,
+        operation=choice("capture", "select", "release"),
+        frame_ref=ID,
+        candidate_id=ID,
+        box=array({"type": "number", "minimum": 0, "maximum": 1}, 4, 4),
     ),
     "nav_goal_command": obj(
         required=[
@@ -310,6 +348,55 @@ def _check(value, schema, path="payload"):
             _check(item, schema["items"], path)
 
 
+def validate_follow_registration_result(payload, result):
+    """Validate non-motion registration evidence shared by endpoint and owner."""
+    if not isinstance(result, dict) or result.get("stopped") is not True:
+        raise ValueError("registration requires stopped result")
+    for key, schema in PINKY_STATE["properties"].items():
+        if key in result:
+            _check(result[key], schema)
+    operation = payload["operation"]
+    common = {"follow_session_id": ID}
+    if operation == "capture":
+        common.update(
+            frame_ref=ID,
+            image_ref=ID,
+            expires_at={"type": "string"},
+            perception_boot_id=ID,
+            candidates=array(
+                obj(
+                    candidate_id=ID,
+                    box=array({"type": "number", "minimum": 0, "maximum": 1}, 4, 4),
+                ),
+                0,
+                20,
+            ),
+        )
+    elif operation == "select":
+        common.update(
+            target_ref=ID, expires_at={"type": "string"}, perception_boot_id=ID
+        )
+    elif operation == "release":
+        common.update(cleared={**BOOL, "enum": [True]})
+    else:
+        raise ValueError("invalid registration operation")
+    extra = {k: v for k, v in result.items() if k not in PINKY_STATE["properties"]}
+    _check(extra, obj(**common))
+    if extra["follow_session_id"] != payload["follow_session_id"]:
+        raise ValueError("registration session mismatch")
+    if "expires_at" in extra and timestamp(extra["expires_at"]) <= datetime.now(UTC):
+        raise ValueError("expired registration")
+    if operation == "capture":
+        ids = [item["candidate_id"] for item in extra["candidates"]]
+        if len(set(ids)) != len(ids):
+            raise ValueError("duplicate candidate")
+        for item in extra["candidates"]:
+            a, b, c, d = item["box"]
+            if not a < c or not b < d:
+                raise ValueError("invalid candidate box")
+    return extra
+
+
 def topic(target, channel):
     if target not in ROBOTS | {"shelf-01"} or channel not in {
         "cmd",
@@ -412,9 +499,32 @@ def validate(message):
     if kind in {
         "nav_goal_command",
         "follow_target_command",
+        "follow_registration_command",
         "robot_pose",
     } and not endpoint.startswith("pinky"):
         raise ValueError("navigation and motion require Pinky")
+    if kind == "follow_target_command":
+        mode = p.get("follow_mode", "marker")
+        if mode == "marker":
+            if "card_id" not in p or {"target_ref", "perception_boot_id"} & p.keys():
+                raise ValueError("marker follow requires only a card target")
+        elif (
+            "card_id" in p
+            or not {"follow_session_id", "target_ref", "perception_boot_id"} <= p.keys()
+        ):
+            raise ValueError("appearance follow requires a registered target")
+    if kind == "follow_registration_command":
+        fields = set(FENCE) | {"map_version", "follow_session_id", "operation"}
+        if p["operation"] == "select":
+            if ("candidate_id" in p) == ("box" in p):
+                raise ValueError("select requires one target selection")
+            fields |= {"frame_ref", "candidate_id" if "candidate_id" in p else "box"}
+            if "box" in p and not (
+                p["box"][0] < p["box"][2] and p["box"][1] < p["box"][3]
+            ):
+                raise ValueError("invalid selection box")
+        if p.keys() != fields:
+            raise ValueError("invalid registration fields")
     if kind == "shelf_transfer_command" and (
         endpoint != "shelf-01" or {a["robot_id"] for a in p["arms"]} != {"omx1", "omx2"}
     ):
@@ -515,6 +625,49 @@ def json_schema():
     variants = []
     for kind, payload in SCHEMAS.items():
         p = convert(payload)
+        if kind == "follow_target_command":
+            p["oneOf"] = [
+                {
+                    "required": ["card_id"],
+                    "properties": {"follow_mode": {"const": "marker"}},
+                    "not": {
+                        "anyOf": [
+                            {"required": ["target_ref"]},
+                            {"required": ["perception_boot_id"]},
+                        ]
+                    },
+                },
+                {
+                    "required": [
+                        "follow_mode",
+                        "follow_session_id",
+                        "target_ref",
+                        "perception_boot_id",
+                    ],
+                    "properties": {"follow_mode": {"const": "appearance"}},
+                    "not": {"required": ["card_id"]},
+                },
+            ]
+        if kind == "follow_registration_command":
+            p["oneOf"] = [
+                {
+                    "properties": {"operation": {"enum": ["capture", "release"]}},
+                    "not": {
+                        "anyOf": [
+                            {"required": [key]}
+                            for key in ("frame_ref", "candidate_id", "box")
+                        ]
+                    },
+                },
+                {
+                    "required": ["frame_ref"],
+                    "properties": {"operation": {"const": "select"}},
+                    "oneOf": [
+                        {"required": ["candidate_id"], "not": {"required": ["box"]}},
+                        {"required": ["box"], "not": {"required": ["candidate_id"]}},
+                    ],
+                },
+            ]
         if kind == "robot_state":
             p["properties"]["state"] = {
                 "oneOf": [convert(s) for s in (PINKY_STATE, ARM_STATE, WORKCELL_STATE)]
