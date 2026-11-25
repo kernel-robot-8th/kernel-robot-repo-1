@@ -8,6 +8,8 @@ const registration = { frameRef: 'frame-test', imagePath: `/cart-api/follow/${re
   candidates: [{ candidateId: 'person-test', box: [.2,.1,.7,.9] }] };
 
 test('reload only reads status, explicit capture/selection waits for control and actual following', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const fitsScreen = () => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
   let state: Record<string, unknown> = { ...base };
   const actions: Record<string, unknown>[] = [];
   await page.addInitScript(id => sessionStorage.setItem('roport.pad.receipt.pinky3', id), receipt);
@@ -30,6 +32,10 @@ test('reload only reads status, explicit capture/selection waits for control and
   await page.getByRole('button', { name: '내 모습 찾기' }).click();
   await expect(page.getByRole('button', { name: '1번 선택' })).toBeVisible();
   await expect(page.getByRole('img', { name: '대상 등록을 위해 촬영한 카트 앞 모습' })).toBeVisible();
+  expect(await fitsScreen()).toBe(true);
+  const camera = (await page.locator('.shopping-camera').boundingBox())!;
+  const controls = (await page.locator('.shop-controls').boundingBox())!;
+  expect(controls.y).toBeGreaterThanOrEqual(camera.y + camera.height);
   await page.getByRole('button', { name: '1번 선택' }).click();
   await expect.poll(() => actions.length).toBe(2);
   expect(actions[1]).toMatchObject({ expectedRevision: 2, operation: 'select', frameRef: 'frame-test', candidateId: 'person-test' });
@@ -41,8 +47,11 @@ test('reload only reads status, explicit capture/selection waits for control and
   await expect(page.getByRole('heading', { name: '출발 승인을 기다리고 있습니다' })).toBeVisible();
   expect(actions).toHaveLength(2);
   state = { ...state, revision: 4, stage: 'following', allowedActions: ['pause'] };
-  await expect(page.getByRole('button', { name: '잠시 멈추기' })).toBeEnabled();
-  await page.getByRole('button', { name: '잠시 멈추기' }).click();
+  const pause = page.getByRole('button', { name: '잠시 멈추기' });
+  await expect(pause).toBeEnabled();
+  expect((await pause.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect(await fitsScreen()).toBe(true);
+  await pause.click();
   await expect.poll(() => actions.length).toBe(3);
   expect(actions[2].operation).toBe('pause');
   await expect(page.getByRole('heading', { name: '카트가 따라가고 있습니다' })).toBeVisible();
