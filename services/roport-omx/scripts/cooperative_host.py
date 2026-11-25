@@ -542,6 +542,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--report-unload-placement is v2 only")
     if args.place_shadow and args.protocol != "v2":
         parser.error("--place-shadow is v2 only")
+    if args.place_shadow and args.end_on_place:
+        # #180 review: end_on_place wins in the executor, so a record-only request would hand over
+        parser.error("--place-shadow only records the placement; add --no-end-on-place")
     if str(args.journal.resolve()).startswith("/tmp/"):
         parser.error("journal must survive a restart; do not use /tmp")
     if args.executor == "panel" and args.routes is None:

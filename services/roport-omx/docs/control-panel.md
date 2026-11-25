@@ -84,8 +84,8 @@ Host가 요구하는 제어판 최소 버전: **3.14.0**(입고만), **3.20.0**(
 
 | 파일 | 내용 |
 | --- | --- |
-| `~/.config/roport/omx-host.json` | Host 실행 폴더(`repo`), `protocol`(`v2` 기본), `control`(v2 관제 ID, 기본 `control-01`), `broker_env`, `routes`, `box_marker`, `journal_v2`(v2 journal, 없으면 `<journal>-v2.json`), `client_id`. v1일 때만 `link_config`(site·binding)와 `journal`. 예시 `config/omx-host.example.json` |
-| `~/.config/roport/shelf-01-routes.json` | `(operation, slot_id)`별 모델·작업 문장·시간·필터·받을 상자(`markers`). v2는 파일 최상위(또는 경로별) `model_version`·`calibration_version`이 관제 명령 값과 정확히 같을 때만 시작합니다. 예시 `config/cooperative_routes.example.json` |
+| `~/.config/roport/omx-host.json` | Host 실행 폴더(`repo`), `protocol`(`v2` 기본), `control`(v2 관제 ID, 기본 `control-01`), `broker_env`, `routes`, `box_marker`, `journal`(공통 필수: 제어판 실행기 `omx_host.py`가 항상 요구), `journal_v2`(v2 journal, 없으면 `<journal>-v2.json`), `client_id`. v1일 때만 `link_config`(site·binding). 예시 `config/omx-host.example.json` |
+| `~/.config/roport/shelf-01-routes.json` | `(operation, slot_id)`별 모델·작업 문장·시간·필터·받을 상자(`markers`). v2는 파일 최상위(또는 경로별) `model_version`·`calibration_version`이 관제 Fleet 명령 값과 정확히 같을 때만 시작합니다(다르면 `executor_version_mismatch`로 거절). v2 예시 `config/shelf_routes.example.json`(두 버전 값 포함). `config/cooperative_routes.example.json`은 v1(OmxTrial) 예시라 버전 값이 없어 v2에 그대로 쓰면 안 됩니다 |
 | broker 접속 파일(`broker_env`) | `ROPORT_MQTT_*` 접속 정보(비밀값, 커밋 금지) |
 | journal | 명령 기록·HOLD·구간 시간(`timing`). 프로토콜마다 따로 쓰며 Host는 다른 프로토콜의 journal을 거절합니다. `/tmp`는 쓰지 않습니다 |
 

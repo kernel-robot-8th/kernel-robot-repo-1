@@ -111,6 +111,25 @@ class HostStartTest(unittest.TestCase):
             ch.parse_args(["--protocol", "v1", *journal, "--report-placement"])
         self.assertEqual(stop.exception.code, 2)
 
+    def test_place_shadow_needs_no_end_on_place(self):
+        journal = ["--journal", str(self.dir / "j.json")]
+        # record only: the hand-over stays off, else the executor would send end_on_place
+        args = ch.parse_args([*journal, "--place-shadow", "--no-end-on-place"])
+        self.assertTrue(args.place_shadow)
+        self.assertFalse(args.end_on_place)
+        self.assertTrue(ch.parse_args(journal).end_on_place)
+        for extra in (
+            ["--place-shadow"],
+            ["--protocol", "v1", "--place-shadow", "--no-end-on-place"],
+        ):
+            with (
+                self.subTest(extra=extra),
+                self.assertRaises(SystemExit) as stop,
+                patch("sys.stderr"),
+            ):
+                ch.parse_args([*journal, *extra])
+            self.assertEqual(stop.exception.code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
