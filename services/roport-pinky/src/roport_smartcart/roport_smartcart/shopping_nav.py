@@ -1,10 +1,12 @@
 """Exclusive supervised Nav2 client. Only trial_guard writes motor velocity."""
 import json
 import math
+from pathlib import Path
 import time
 from uuid import uuid4
 
 from action_msgs.msg import GoalStatus
+from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import FollowPath, NavigateToPose, Spin
 from rclpy.action import ActionClient
@@ -17,6 +19,8 @@ from .shopping_track import bypass_segment_costs
 
 MIN_FOLLOW_GAP_M = .22
 START_DELTA_M = .03
+RESPONSE_FAILED = 'NAV_RESPONSE_FAILED'
+TERMINAL_GOAL_STATES = (GoalStatus.STATUS_SUCCEEDED, GoalStatus.STATUS_CANCELED, GoalStatus.STATUS_ABORTED)
 
 
 def following_distances(reference):
@@ -79,9 +83,9 @@ def clear_short_leg(grid, start, end):
     return all(grid.data[y*meta.width+x] == 0 for y in range(y0, y1+1) for x in range(x0, x1+1))
 
 
-def straight_follow_goal(start, end, heading, stamp):
+def straight_follow_goal(start, end, heading, stamp, *, goal_checker_id='general_goal_checker'):
     goal = FollowPath.Goal()
-    goal.controller_id, goal.goal_checker_id = 'FollowPath', 'general_goal_checker'
+    goal.controller_id, goal.goal_checker_id = 'FollowPath', goal_checker_id
     goal.path.header.frame_id, goal.path.header.stamp = 'map', stamp
     steps = max(1, math.ceil(math.dist(start, end)/.02))
     for index in range(steps+1):
@@ -98,6 +102,10 @@ class ShoppingNav:
     looking = False
     last_look = None
     look_completed = False
+    unknown_goal_ack = False
+    result_retried = False
+    behavior_tree = ''
+    goal_checker_id = 'general_goal_checker'
 
     def __init__(self, node, follow_distance_m=.34, *, external_lease=False):
         self.node = node
@@ -106,6 +114,10 @@ class ShoppingNav:
         self.spin_client = ActionClient(node, Spin, 'spin')
         self.follow_client = ActionClient(node, FollowPath, 'follow_path')
         self.external_lease = external_lease
+        if external_lease:
+            self.goal_checker_id = 'appearance_goal_checker'
+            self.behavior_tree = str(Path(get_package_share_directory('roport_smartcart'))
+                                     / 'config' / 'appearance_follow.xml')
         self.motion_requested = False
         self.motion_at = float('-inf')
         self.lease = None if external_lease else node.create_publisher(String, 'trial/lease', 1)
@@ -203,24 +215,79 @@ class ShoppingNav:
                 and self.guard.get('owner') in ('none', 'nav2') and self.client.server_is_ready()
                 and (self.boot is None or self.boot == self.guard.get('boot')))
 
+    def quiescent(self):
+        return (not self.unknown_goal_ack and self.pending is None
+                and self.handle is None and self.result is None)
+
+    @property
+    def response_failed(self):
+        return self.fault == RESPONSE_FAILED
+
     def cancel(self):
-        if self.pending or self.handle:
-            if not self.cancelled and self.handle:
-                self.handle.cancel_goal_async()
+        if (self.pending is not None or self.handle is not None) and not self.cancelled:
             self.cancelled = True
+            if self.handle is not None:
+                self._cancel_handle()
+
+    def _cancel_handle(self):
+        try:
+            self.handle.cancel_goal_async()
+        except Exception as exc:  # The result may still establish that this goal ended.
+            self._response_failed('cancel request', exc)
+
+    def _response_failed(self, phase, exc):
+        self.fault = RESPONSE_FAILED
+        self.heartbeat(False, time.monotonic())
+        self.node.get_logger().error(f'{RESPONSE_FAILED} {phase}: {type(exc).__name__}')
+
+    def _request_result(self):
+        try:
+            self.result = self.handle.get_result_async()
+        except Exception as exc:
+            self._result_failed(exc)
+
+    def _result_failed(self, exc):
+        self._response_failed('terminal result', exc)
+        self.cancel()
+        if not self.result_retried:
+            self.result_retried = True
+            try:
+                self.result = self.handle.get_result_async()
+            except Exception as retry_error:
+                self._response_failed('terminal result retry', retry_error)
+
+    def _clear_goal(self):
+        self.result = self.handle = self.anchor = None
+        self.result_retried = False
 
     def poll(self):
-        if self.pending and self.pending.done():
-            self.handle, self.pending = self.pending.result(), None
-            if self.handle.accepted:
-                self.result = self.handle.get_result_async()
+        if self.pending and (self.pending.done() or self.pending.cancelled()):
+            pending, self.pending = self.pending, None
+            try:
+                handle = pending.result()
+                accepted = handle.accepted
+            except Exception as exc:
+                # A failed submission reply cannot prove the server rejected the goal.
+                self.unknown_goal_ack = True
+                self._response_failed('goal acknowledgement', exc)
+                return
+            if accepted:
+                self.handle = handle
                 if self.cancelled:
-                    self.handle.cancel_goal_async()
+                    self._cancel_handle()
+                self._request_result()
             else:
-                self.handle = self.anchor = None
+                self._clear_goal()
                 self.fault = 'NAV_REJECTED'
-        if self.result and self.result.done():
-            response = self.result.result()
+        if self.result and (self.result.done() or self.result.cancelled()):
+            terminal, self.result = self.result, None
+            try:
+                response = terminal.result()
+                if response.status not in TERMINAL_GOAL_STATES:
+                    raise ValueError('nonterminal action result')
+            except Exception as exc:
+                self._result_failed(exc)
+                return
             if self.looking:
                 self.looking = False
                 self.look_completed = not self.cancelled
@@ -244,7 +311,12 @@ class ShoppingNav:
                     self.fault = 'PATH_BLOCKED' if blocked else 'NAV_FAILED'
                     self.node.get_logger().error(
                         f'{self.fault} error_code={outcome.error_code} goal={self.destination} {outcome.error_msg}')
-            self.result = self.handle = self.anchor = None
+            self._clear_goal()
+        elif (self.response_failed and self.handle is not None
+              and self.handle.status in TERMINAL_GOAL_STATES):
+            # The action status for this exact handle can prove termination if both result requests failed.
+            self.looking = False
+            self._clear_goal()
 
     def heartbeat(self, moving, now):
         if self.external_lease:
@@ -370,11 +442,13 @@ class ShoppingNav:
                 stamp = self.node.get_clock().now().to_msg()
                 self.direct_path = direct
                 if direct:
-                    goal = straight_follow_goal(pose[:2], self.destination, yaw, stamp)
+                    goal = straight_follow_goal(pose[:2], self.destination, yaw, stamp,
+                                                goal_checker_id=self.goal_checker_id)
                     self.pending = self.follow_client.send_goal_async(goal)
                     mode = 'follow_path'
                 else:
                     goal = NavigateToPose.Goal()
+                    goal.behavior_tree = self.behavior_tree
                     goal.pose.header.frame_id, goal.pose.header.stamp = 'map', stamp
                     goal.pose.pose.position.x, goal.pose.pose.position.y = self.destination
                     goal.pose.pose.orientation.z, goal.pose.pose.orientation.w = math.sin(yaw/2), math.cos(yaw/2)

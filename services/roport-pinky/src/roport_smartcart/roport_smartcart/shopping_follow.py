@@ -154,9 +154,9 @@ class Shopping:
         self.odom_at = stamp
 
     def stopped(self, now):
-        return (self.nav.boot is None or self.still_since is not None and now-self.still_since>.25
-                and now-self.odom_at<.4 and now-self.nav.guard_at<.3 and self.nav.guard.get('owner')=='none'
-                and not self.nav.pending and not self.nav.handle)
+        return self.nav.quiescent() and (
+            self.nav.boot is None or self.still_since is not None and now-self.still_since>.25
+            and now-self.odom_at<.4 and now-self.nav.guard_at<.3 and self.nav.guard.get('owner')=='none')
 
     def scan(self, msg):
         stamp = self.received(msg)
@@ -306,7 +306,7 @@ class Shopping:
                         raise ValueError('사진을 다시 찍어 주세요.')
                     jpeg = encoded.tobytes()
                 self.touch = now
-                if self.nav.pending is None and self.nav.handle is None:
+                if self.nav.quiescent():
                     self.nav.fault = None
                 self.frozen = (uuid4().hex, (stamp, frame, None, jpeg))
             elif action == 'select':
@@ -361,7 +361,7 @@ class Shopping:
                     and (not self.field_camera or self.gap_selected or self.track.state == 'CLOSE')
                     and now-self.touch < 1.5 and not self.reason
                     and (not self.nav.fault or self.nav.fault == 'PATH_BLOCKED' and self.stopped(now))
-                    and self.nav.guard.get('owner')=='none' and not self.nav.handle and not self.nav.pending)
+                    and self.nav.guard.get('owner')=='none' and self.nav.quiescent())
 
     def status(self, key):
         with self.lock:

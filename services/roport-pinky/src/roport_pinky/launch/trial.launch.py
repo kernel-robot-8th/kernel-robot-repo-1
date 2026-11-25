@@ -58,6 +58,13 @@ FINE_ALIGN_CONTROLLER_OVERRIDES = {
     'GateDock.approach_velocity_scaling_dist': .05,
 }
 
+APPEARANCE_CHECKER_OVERRIDES = {
+    'appearance_goal_checker.plugin': 'nav2_controller::SimpleGoalChecker',
+    'appearance_goal_checker.xy_goal_tolerance': .015,
+    'appearance_goal_checker.yaw_goal_tolerance': .10,
+    'appearance_goal_checker.stateful': True,
+}
+
 
 def _docking_mode():
     """GateDock 제어기·gate_dock_goal_checker 를 넣는 방식: 'gate'(게이트 마커 주차), 'fine_align'(마커 없는
@@ -92,10 +99,10 @@ def _nodes(context):
         raise ValueError('planner_tolerance must be finite and in [0.05, 0.3] m')
     config = LaunchConfiguration('params_file')
     parameters = [config]
-    if os.environ.get('ROPORT_APPEARANCE_CONFIG'):
+    appearance = bool(os.environ.get('ROPORT_APPEARANCE_CONFIG'))
+    if appearance:
         parameters.append(PathJoinSubstitution([
             FindPackageShare('roport_smartcart'), 'config', 'shopping_costmaps.yaml']))
-        goal_xy_tolerance = min(goal_xy_tolerance, .015)
     nodes = [
         Node(package='roport_pinky', executable='trial_guard', output='screen'),
         Node(package='roport_line_nav', executable='line_nav', output='screen',
@@ -135,6 +142,10 @@ def _nodes(context):
                 if docking == 'fine_align':
                     overrides.update(FINE_ALIGN_CONTROLLER_OVERRIDES)
                 overrides['GateDock.desired_linear_vel'] = min(.02, max_linear)
+            if appearance:
+                checkers = overrides.get('goal_checker_plugins', ['general_goal_checker'])
+                overrides['goal_checker_plugins'] = [*checkers, 'appearance_goal_checker']
+                overrides.update(APPEARANCE_CHECKER_OVERRIDES)
             overrides['FollowPath.rotate_to_heading_angular_vel'] = max_angular
         if name in ('controller_server', 'behavior_server', 'velocity_smoother'):
             overrides['enable_stamped_cmd_vel'] = False

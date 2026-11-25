@@ -630,7 +630,13 @@ def test_follow_wait_pause_resume_and_return_over_mqtt(fleet_mqtt):
 
 @pytest.mark.parametrize(
     "reason",
-    ["follow_card_mismatch", "follow_lost", "follow_max_duration", "nav2_not_ready"],
+    [
+        "follow_card_mismatch",
+        "follow_lost",
+        "follow_max_duration",
+        "follow_action_response_failed",
+        "nav2_not_ready",
+    ],
 )
 def test_follow_outcomes_over_mqtt(fleet_mqtt, monkeypatch, reason):
     env = fleet_mqtt

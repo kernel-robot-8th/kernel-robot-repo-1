@@ -194,6 +194,7 @@ def test_shopping_goal_respects_configured_following_gap(gap, separation, sends_
     from roport_smartcart.shopping_nav import ShoppingNav
 
     nav = Mock(follow_distance_m=gap, fault=None, boot=None, anchor=None, retry_after=0., last_reached=None,
+               behavior_tree='',
                pending=None, handle=None, guard={'owner': 'none', 'boot': 'test'})
     nav.ready.return_value = True
     nav.node.get_clock().now().to_msg.return_value = Time()
@@ -217,7 +218,7 @@ def test_near_shopper_turns_symmetrically_without_changing_forward_goals(
     from builtin_interfaces.msg import Time
     from roport_smartcart.shopping_nav import ShoppingNav
 
-    nav = Mock(follow_distance_m=.32, fault=None, boot=None, anchor=None, retry_after=0.,
+    nav = Mock(follow_distance_m=.32, fault=None, boot=None, anchor=None, retry_after=0., behavior_tree='',
                last_reached=None, pending=None, handle=None,
                guard={'owner': 'none', 'boot': 'test'})
     nav.ready.return_value = True
@@ -399,7 +400,7 @@ def test_acknowledged_short_goal_is_not_resent_until_shopper_moves():
     from builtin_interfaces.msg import Time
     from roport_smartcart.shopping_nav import ShoppingNav
 
-    nav = Mock(follow_distance_m=.26, fault=None, boot=None, anchor=None, pending=None,
+    nav = Mock(follow_distance_m=.26, fault=None, boot=None, anchor=None, pending=None, behavior_tree='',
                handle=None, retry_after=0., last_reached=((.05, 0.), 0.), guard={'owner':'none','boot':'test'})
     nav.node.get_clock().now().to_msg.return_value = Time()
     for stamp in (1., 1.05, 1.1):
@@ -464,6 +465,7 @@ def test_clear_aisle_tracks_exact_visual_bearing_otherwise_uses_planner(cost, re
     grid = make_grid()
     grid.data[10*20+11] = cost
     nav = Mock(follow_distance_m=.26, boot='boot', retry_after=0., path_failures=retry,
+               goal_checker_id='appearance_goal_checker', behavior_tree='/nav/appearance_follow.xml',
                pending=None, handle=None, anchor=None, last_reached=None, fault=None)
     nav.node.get_clock().now().to_msg.return_value = Time()
     nav.node.get_clock().now().nanoseconds = 10_000_000_000
@@ -473,11 +475,15 @@ def test_clear_aisle_tracks_exact_visual_bearing_otherwise_uses_planner(cost, re
     assert nav.follow_client.send_goal_async.called is direct
     assert nav.client.send_goal_async.called is not direct
     if direct:
-        path = nav.follow_client.send_goal_async.call_args.args[0].path
+        goal = nav.follow_client.send_goal_async.call_args.args[0]
+        assert goal.goal_checker_id == 'appearance_goal_checker'
+        path = goal.path
         assert path.header.frame_id == 'map' and len(path.poses) >= 5
         for p in path.poses[1:]:
             assert math.atan2(p.pose.position.y, p.pose.position.x) == pytest.approx(yaw)
         assert math.hypot(path.poses[-1].pose.position.x, path.poses[-1].pose.position.y) == pytest.approx(.08)
+    else:
+        assert nav.client.send_goal_async.call_args.args[0].behavior_tree == '/nav/appearance_follow.xml'
 
 
 def make_grid(sec=9, nanosec=100_000_000):
@@ -503,6 +509,7 @@ def test_direct_path_requires_authentic_fresh_map_and_receipt(sec, ns, receipt, 
     from roport_smartcart.shopping_nav import ShoppingNav
 
     nav = Mock(follow_distance_m=.26, boot='boot', retry_after=0., path_failures=0,
+               goal_checker_id='general_goal_checker', behavior_tree='',
                pending=None, handle=None, anchor=None, last_reached=None, fault=None)
     nav.node.get_clock().now().to_msg.return_value = Time()
     nav.node.get_clock().now().nanoseconds = 10_000_000_000
@@ -724,6 +731,55 @@ def test_loss_cancels_pending_goal_even_if_acceptance_arrives_in_that_tick(monke
     handle.cancel_goal_async.assert_called_once()
     nav.heartbeat.assert_called_once_with(False, now)
     nav.client.send_goal_async.assert_not_called()
+
+
+@pytest.mark.parametrize('cancelled', [False, True])
+def test_goal_ack_failure_is_consumed_and_keeps_ownership_unconfirmed(cancelled):
+    from rclpy.task import Future
+
+    nav = make_shop(10.).nav
+    nav.handle = None
+    nav.pending = Future()
+    if cancelled:
+        nav.pending.cancel()
+    else:
+        nav.pending.set_exception(RuntimeError('goal acknowledgement lost'))
+    nav.poll()
+    assert nav.pending is None and nav.response_failed and not nav.quiescent()
+    nav.poll()
+    nav.node.get_logger().error.assert_called_once()
+    nav.heartbeat.assert_called_once()
+    assert nav.heartbeat.call_args.args[0] is False
+
+
+@pytest.mark.parametrize('terminal_source', ['retry', 'action_status'])
+def test_result_failure_waits_for_terminal_evidence_of_the_same_goal(terminal_source):
+    from concurrent.futures import Future
+    from action_msgs.msg import GoalStatus
+
+    nav = make_shop(10.).nav
+    handle = nav.handle
+    handle.status = GoalStatus.STATUS_EXECUTING
+    nav.result, retry = Future(), Future()
+    nav.result.set_exception(RuntimeError('terminal result lost'))
+    handle.get_result_async.return_value = retry
+    nav.poll()
+    assert nav.response_failed and nav.result is retry and not nav.quiescent()
+    nav.poll()
+    handle.cancel_goal_async.assert_called_once()
+    handle.get_result_async.assert_called_once()
+    assert not nav.quiescent()
+
+    if terminal_source == 'retry':
+        retry.set_result(NS(status=GoalStatus.STATUS_CANCELED))
+    else:
+        retry.set_exception(RuntimeError('retry failed'))
+        nav.poll()
+        assert nav.result is None and not nav.quiescent()
+        handle.status = GoalStatus.STATUS_CANCELED
+    nav.poll()
+    assert nav.quiescent()
+    handle.get_result_async.assert_called_once()
 
 
 @pytest.mark.parametrize('jitter_ns', [0, 40_000_000])

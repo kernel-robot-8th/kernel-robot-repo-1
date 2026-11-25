@@ -14,7 +14,8 @@ class Shop:
     def __init__(self):
         self.lock = Condition()
         self.nav = SimpleNamespace(pending=None, handle=None, result=None, motion_requested=False,
-                                   motion_at=100., cancelled=False, fault=None)
+                                   motion_at=100., cancelled=False, fault=None, response_failed=False)
+        self.nav.quiescent = lambda: self.nav.pending is self.nav.handle is self.nav.result is None
         self.track = SimpleNamespace(state='FOLLOWING')
         self.observed = self.odom_at = 100.
         self.packet = (100.,)

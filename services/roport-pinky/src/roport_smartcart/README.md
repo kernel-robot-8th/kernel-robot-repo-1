@@ -823,7 +823,7 @@ export ROPORT_APPEARANCE_CONFIG=/absolute/path/to/appearance.yaml
 export ROPORT_FINE_ALIGN_GOALS=N12_RETURN
 ```
 
-팀의 기존 현장 프로필과 기체 이름을 사용해 `trial.launch.py`에 `max_linear:=0.08 max_angular:=0.4`를 지정한다. 위 환경 변수를 받은 launch는 기존 지도·라인 그래프에 쇼핑용 초음파 비용지도와 짧은 추종 경로용 설정을 추가한다. runner는 같은 현장 프로필에 `--role smartcart`와 기존 `--driver roport_pinky.trial_driver:create_driver`로 실행한다. [관제 키트 실행 명령](../roport_pinky/README.md)
+팀의 기존 현장 프로필과 기체 이름을 사용해 `trial.launch.py`에 `max_linear:=0.08 max_angular:=0.4`를 지정한다. 위 환경 변수를 받은 launch는 쇼핑용 초음파 비용지도와 추종 전용 도착 허용오차 1.5cm를 추가한다. 배송·일반 복귀는 launch의 `goal_xy_tolerance` 값(기본 8cm)을 사용하고 N12 FineAlign은 기존 정밀 접근 기준을 사용한다. runner는 같은 현장 프로필에 `--role smartcart`와 기존 `--driver roport_pinky.trial_driver:create_driver`로 실행한다. [관제 키트 실행 명령](../roport_pinky/README.md)
 
 ```bash
 # 위 환경 설정을 읽고 기존 키트 작업 디렉터리에서 실행한다.
@@ -836,3 +836,5 @@ export ROPORT_FINE_ALIGN_GOALS=N12_RETURN
 관제 프레임 프록시의 `ROPORT_FOLLOW_FRAME_SOURCES`에 `{"pinky3":"https://<PINKY_LAN_IP>:8443"}`를 지정한다. HTTPS 인증서 SAN에는 실제 접속 IP 또는 호스트명이 있어야 하며 관제 환경에서 발급 CA를 신뢰해야 한다. 프록시와 runner는 같은 `ROPORT_FOLLOW_FRAME_TOKEN`(24자 이상)을 각자의 비밀 환경에서 읽는다. 사진 API는 Bearer 인증한 `GET /frames/{image_ref}`에만 촬영 JPEG를 제공한다.
 
 촬영은 정차 확인 후 시작하며 프레임은 촬영 요청 처리 시점부터 15초, 선택된 대상은 등록 후 300초 동안 유효하다. 추종 명령당 상한은 240초다. 대상이 등록 거리 안에 정면으로 서 있으면 출발할 목표가 생길 때까지 패드는 시작 확인을 기다린다. 대상을 놓치거나 영상이 오래되면 구동을 해제하고 관제에 사유를 보고한다. 일시정지 후 같은 대상이 다시 인식되면 만료 전에 관제에서 재개할 수 있다. 복귀 전환은 구동권 반납과 정차를 확인한 뒤 기존 관제 복귀 경로를 받는다. 실제 주행으로 등록·승인·유실 정지·복귀를 확인한 뒤 pinky3에 `appearance`를 허용한다. [관제 메시지 규격](../../../roport-control-server/docs/follow-modes-handover.md)
+
+Nav2 응답 오류는 관제에 `follow_action_response_failed`로 보고한다. 수락된 목표는 취소를 요청하고 그 목표의 종료 결과를 다시 확인한다. 관제는 같은 목표가 종료되고 최신 odom 정차가 보고될 때까지 추종 정지 확인 단계에서 기다린다. 확인 후 복귀를 요청할 수 있다. 수락 응답 자체가 유실돼 기존 목표의 종료를 확인할 수 없으면, 현장에서 정차한 뒤 관제 절차에 따라 Nav2와 runner를 함께 재기동한다.

@@ -226,9 +226,10 @@ def test_max_duration_stops():
     assert s.step(inputs, 102.0, 52.0, shift(), POSE) == ('stop', 'follow_max_duration')
 
 
-def test_soft_stops_are_only_normal_follow_endings():
+def test_follow_recovery_faults_require_separate_ownership_checks():
     assert tf.SOFT_STOPS == {'follow_lost', 'follow_status_stale', 'follow_target_stale',
-                             'follow_max_duration', 'follow_not_tracking', 'follow_card_mismatch'}
+                             'follow_max_duration', 'follow_not_tracking', 'follow_card_mismatch',
+                             'follow_action_response_failed'}
     assert not {'follow_tf_unavailable', 'follow_nav2_failed', 'nav2_not_ready'} & tf.SOFT_STOPS
 
 
@@ -441,6 +442,37 @@ def test_driver_rejects_appearance_follow(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match='unsupported_operation'):
         d.validate_action(follow_cmd(follow_mode='appearance'))
     assert d.nav.started == [] and d.leases == []
+
+
+def test_appearance_response_failure_requires_action_terminal_and_fresh_odometry(monkeypatch, tmp_path):
+    d = driver(monkeypatch, tmp_path)
+    del d.observe
+    evidence = SimpleNamespace(terminal=False, odom_stopped=True)
+    d.logic.observe = lambda: {**PROFILE, 'fault': None, 'stopped': True, 'line_enabled': False}
+    d.nav.snapshot = lambda: {'nav2_ready': True, 'localization_ready': True, 'pose': POSE,
+                              'stopped': evidence.odom_stopped}
+    d._guard_fault = lambda **kw: d.halted
+    d.runner_seen = Clocks.mono
+
+    class Appearance:
+        pending = None
+
+        def quiescent(self):
+            return evidence.terminal
+
+        def stop(self, *, forget):
+            pass
+
+    d.appearance = Appearance()
+    d.nav_command = follow_cmd(follow_mode='appearance')
+    d._end_follow('follow_action_response_failed')
+    assert d.drain_results() == [(follow_cmd(follow_mode='appearance'), 'failed',
+                                 {'error_code': 'follow_action_response_failed'})]
+    assert not d.observe()['stopped']
+    evidence.terminal, evidence.odom_stopped = True, False
+    assert not d.observe()['stopped']
+    evidence.odom_stopped = True
+    assert d.observe()['stopped'] and d.observe()['fault'] is None
 
 
 @pytest.mark.parametrize('mode, code', [('line', 'not_in_nav2_mode')])

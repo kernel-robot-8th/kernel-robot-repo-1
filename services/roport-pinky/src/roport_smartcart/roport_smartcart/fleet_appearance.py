@@ -123,8 +123,7 @@ class FleetAppearance:
         return self.scope is not None and self.clock() < self.expires
 
     def quiescent(self):
-        nav = self.shop.nav
-        return nav.pending is None and nav.handle is None and nav.result is None
+        return self.shop.nav.quiescent()
 
     @property
     def motion_requested(self):
@@ -273,7 +272,9 @@ class FleetAppearance:
                 if error:
                     self.shop.hold_motion(now)
             self.shop.tick()
-            if following and not self.shop.armed and not error:
+            if following and self.shop.nav.response_failed:
+                error = 'follow_action_response_failed'
+            elif following and not self.shop.armed and not error:
                 error = 'follow_nav2_failed' if self.shop.nav.fault else 'follow_status_stale'
         result = None
         if self.pending:
