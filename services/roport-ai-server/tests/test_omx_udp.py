@@ -73,6 +73,24 @@ def test_incomplete_message_expires():
     assert r.stats["timeout"] == 1
 
 
+def test_lost_fragments_are_counted():
+    first = wire.pack(request(INFER, 1, {}, b"x" * 5000), KEY)
+    second = wire.pack(request(INFER, 2, {}, b"y" * 5000), KEY)
+    r = wire.Reassembler(KEY, timeout=0.01)
+    for d in first[:-2]:  # two fragments of #1 never come
+        r.feed(d, PEER)
+    for d in second[:-1]:  # a newer request replaces #1, then loses its last fragment
+        r.feed(d, PEER)
+    time.sleep(0.02)
+    r.expire()
+    n = len(first)
+    assert r.stats["fragments_expected"] == 2 * n
+    assert r.stats["fragments_received"] == 2 * n - 3
+    assert r.stats["fragments_missing"] == 3
+    assert (r.stats["superseded_infer"], r.stats["timeout_infer"]) == (1, 1)
+    assert r.stats["completed"] == 0
+
+
 @pytest.mark.parametrize(
     "case", ["wrong_key", "flipped_byte", "untrusted_peer", "replayed", "bad_magic"]
 )
@@ -328,3 +346,28 @@ def test_host_copy_of_wire_matches():
     if not host.is_file():
         pytest.skip("roport-omx is not next to this service")
     assert host.read_text().split("\n", 1)[1] == ours
+
+
+def test_stats_line_counts_requests_replies_and_infer_time(link, capsys):
+    call, server, _ = link
+    assert call(request(PING, 1)).kind == PONG
+    for request_id in (2, 3, 4):
+        assert call(infer(request_id, "a", b"j" * 3000)).kind == ACTIONS
+    line = server.stats_line()
+    assert (line["completed_ping"], line["completed_infer"]) == (1, 3)
+    assert (line["replied_pong"], line["replied_actions"]) == (1, 3)
+    assert line["fragments_expected"] == line["fragments_received"]
+    assert line["infer_by_peer"] == {"127.0.0.1": 3}
+    assert line["infer_ms_n"] == 3
+    assert line["infer_ms_p50"] <= line["infer_ms_p95"] <= line["infer_ms_max"]
+    assert server.stats_line() is None  # nothing new since the last line
+
+    server.stats_every = 0.01
+    call(infer(5, "boom"))
+    time.sleep(0.02)
+    server._log_stats()
+    out = capsys.readouterr().out.strip().splitlines()[-1]
+    assert out.startswith("[omx-udp] stats {")
+    logged = json.loads(out.removeprefix("[omx-udp] stats "))
+    assert logged["failed"] == logged["replied_error"] == 1
+    assert logged["infer_ms_n"] == 0  # a failed inference has no time
