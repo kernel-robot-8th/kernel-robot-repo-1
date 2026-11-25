@@ -95,3 +95,65 @@ test('느린 실시간 영상과 일시 실패한 선택 사진을 상태 폴링
     await server.close();
   }
 });
+
+test('좁은 패드에서 예약 입력과 추종 조작을 가로 스크롤 없이 사용한다', async ({ page }) => {
+  const server = await createServer({
+    root: resolve('apps/pad'),
+    define: { 'import.meta.env.VITE_PAD_API': 'undefined', 'import.meta.env.VITE_PAD_SHOPPING_DEMO': '"true"' },
+    server: { host: '127.0.0.1', port: 0 },
+  });
+  try {
+    await server.listen();
+    await page.setViewportSize({ width: 320, height: 667 });
+    const button = (name: string | RegExp) => page.getByRole('button', { name });
+    const pageFits = async () => expect(await page.evaluate(() =>
+      document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const jpeg = await page.evaluate(() => document.createElement('canvas').toDataURL('image/jpeg').split(',')[1]);
+    let ownsCamera = false;
+    let frame: string | null = null;
+    let selected = false;
+    let armed = false;
+    await page.route('**/shopping/**', route => {
+      const action = new URL(route.request().url()).pathname.split('/').at(-1);
+      if (action === 'image') return route.fulfill({contentType: 'image/jpeg', body: Buffer.from(jpeg, 'base64')});
+      if (action === 'preview') ownsCamera = true;
+      if (action === 'capture') frame = 'mobile';
+      if (action === 'select') { selected = true; frame = null; }
+      if (action === 'start') armed = true;
+      return route.fulfill({json: {ownsCamera, stopped: !armed, armed, selected,
+        canStart: selected && !armed, frame, detecting: false, state: 'FOLLOWING',
+        boxes: [[.3,.1,.65,.7]]}});
+    });
+    await page.goto(server.resolvedUrls!.local[0]);
+    await pageFits();
+    await button(/예약번호 입력/).click();
+    await pageFits();
+    expect((await page.locator('.key').first().boundingBox())!.width).toBeGreaterThanOrEqual(44);
+    await button('취소').click();
+    await button('QR: 입국장 수령').click();
+    await pageFits();
+    await button('물품을 확인했습니다').click();
+    await pageFits();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await button(/외형 추종 단독 시험/).click();
+    await button('카메라 켜기').click();
+    await button('내 모습 찾기').click();
+    await button('따라가기 시작').click();
+    await expect(button('잠시 멈추기')).toBeVisible();
+    await pageFits();
+    const camera = (await page.locator('.shopping-camera').boundingBox())!;
+    const controls = (await page.locator('.shop-controls').boundingBox())!;
+    const stop = (await button('잠시 멈추기').boundingBox())!;
+    expect(controls.y).toBeGreaterThanOrEqual(camera.y + camera.height);
+    expect(stop.width).toBeGreaterThanOrEqual(controls.width - 1);
+    expect(stop.height).toBeGreaterThanOrEqual(44);
+    await page.setViewportSize({ width: 844, height: 390 });
+    await pageFits();
+    const landscapeCamera = (await page.locator('.shopping-camera').boundingBox())!;
+    const landscapeControls = (await page.locator('.shop-controls').boundingBox())!;
+    expect(landscapeControls.x).toBeGreaterThanOrEqual(landscapeCamera.x + landscapeCamera.width);
+  } finally {
+    await page.close();
+    await server.close();
+  }
+});
