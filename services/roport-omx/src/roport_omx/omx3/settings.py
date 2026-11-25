@@ -51,13 +51,20 @@ class Omx3Settings:
     # 원격 추론(7단계 ChunkPolicy). 통신 방식(8단계 UDP)과 무관한 값
     # 큐가 빈 뒤 이 시간 안에 새 묶음이 안 오면 INFERENCE_UNAVAILABLE(실측 전 기본값)
     infer_timeout_s: float = 2.0
-    # 남은 동작이 이 개수 이하면 다음 묶음을 미리 요청(실측 전 기본값)
+    # 남은 동작이 이 개수 이하면 다음 묶음을 미리 요청(실측 전 기본값). 앙상블을 켜면 쓰지 않는다
     refill_at: int = 30
+    # 시간 앙상블 계수(None = 끔, 묶음 통째 교체). 패널 "부드럽게 실행"과 ACT 원 논문 값은 0.01.
+    # 실물 조립(field.build)에서 켠다. 0.01이면 100스텝 차이 예측의 가중치가 약 0.37배
+    ensemble_coeff: float | None = None
+    # 앙상블 예측 간격(스텝). 1 = 앞 요청이 끝나는 대로(왕복 약 40 ms라 실제 1~2스텝마다)
+    ensemble_every: int = 1
     # 패널 평가 때 보낸 문장과 같게(eval 데이터 tasks). ACT는 문장을 쓰지 않지만 서버 기록·다른 정책용
     task: str = "Pick up the box with marker {marker_id} and put it on the tray"
     robot_type: str = "omx_follower"
 
     def __post_init__(self) -> None:
+        if self.ensemble_every < 1:
+            raise ValueError("ensemble_every는 1 이상이어야 합니다")
         if len(self.init_pose) != len(JOINTS):
             raise ValueError(
                 f"init_pose는 {len(JOINTS)}개여야 합니다: {len(self.init_pose)}"

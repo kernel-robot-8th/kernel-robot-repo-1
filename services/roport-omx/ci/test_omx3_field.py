@@ -238,6 +238,9 @@ class BuildTest(unittest.TestCase):
             executor.marker_ids, {"15": 15, "16": 16, "17": 17, "21": 21, "22": 22}
         )
         self.assertEqual(executor.package_sizes, SIZES)
+        # 패널 "부드럽게 실행"과 같은 시간 앙상블(이 모델을 평가한 설정)
+        self.assertEqual(executor.runner.settings.ensemble_coeff, 0.01)
+        self.assertIs(executor.runner.policy.settings, executor.runner.settings)
         self.assertEqual(executor.versions["model_version"], "marker_act_x")
         self.assertRegex(
             executor.versions["calibration_version"], r"^omx_follower_arm-[0-9a-f]{8}$"
