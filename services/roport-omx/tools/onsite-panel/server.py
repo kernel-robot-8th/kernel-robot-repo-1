@@ -801,9 +801,23 @@ def act(path: str, body: dict) -> dict:
     raise RuntimeError("알 수 없는 요청입니다.")
 
 
+OK_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args) -> None:
         pass
+
+    def _same_origin(self, write: bool) -> bool:
+        """Requests only from this panel's own page (PR #182 review, CSRF): the Host header must be this panel's
+        address (a DNS rebinding name is refused), an Origin, when sent, the same, and a POST must be JSON (a
+        cross-site JSON POST needs a CORS preflight, which this server never answers). index.html sends JSON."""
+        origin = self.headers.get("Origin")
+        if self.headers.get("Host", "") not in OK_HOSTS:
+            return False
+        if origin is not None and origin.removeprefix("http://") not in OK_HOSTS:
+            return False
+        return not write or self.headers.get("Content-Type", "").split(";")[0].strip() == "application/json"
 
     def _json(self, obj: dict, code: int = 200) -> None:
         data = json.dumps(obj, ensure_ascii=False).encode()
@@ -815,6 +829,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self) -> None:
+        if not self._same_origin(write=False):
+            return self._json({"error": "forbidden"}, 403)
         if self.path in ("/", "/index.html"):
             data = (HERE / "index.html").read_bytes()
             self.send_response(200)
@@ -876,6 +892,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0)
+        if not self._same_origin(write=True):
+            return self._json({"error": "forbidden"}, 403)
         try:
             body = json.loads(raw or b"{}")
             self._json(act(self.path, body) or {"ok": True})
