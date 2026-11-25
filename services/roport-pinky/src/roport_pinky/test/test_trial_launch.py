@@ -1,5 +1,6 @@
 """Generate trial parameters without starting any ROS or motor process."""
 import importlib.util
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,34 @@ def test_close_gate_tolerance_is_explicit_and_finite(trial_launch):
         ctx.launch_configurations['goal_xy_tolerance'] = invalid
         with pytest.raises(ValueError):
             trial_launch._nodes(ctx)
+
+
+def test_appearance_launch_reports_missing_optional_package(trial_launch, monkeypatch):
+    def missing(name):
+        raise trial_launch.PackageNotFoundError(name)
+
+    monkeypatch.setenv('ROPORT_APPEARANCE_CONFIG', '/unused/appearance.yaml')
+    monkeypatch.setattr(trial_launch, 'get_package_share_directory', missing)
+    with pytest.raises(RuntimeError, match='ROPORT_APPEARANCE_CONFIG requires roport_smartcart'):
+        trial_launch._nodes(context(.4))
+
+
+def test_appearance_checker_is_separate_from_general_and_n12_checkers(trial_launch, monkeypatch):
+    monkeypatch.setenv('ROPORT_APPEARANCE_CONFIG', '/unused/appearance.yaml')
+    monkeypatch.setenv('ROPORT_FINE_ALIGN_GOALS', 'N12_RETURN')
+    monkeypatch.delenv('ROPORT_GATE_DOCK_CONFIG', raising=False)
+    nodes = {n['executable']: n for n in trial_launch._nodes(context(.4, .08))}
+    cfg = nodes['controller_server']['parameters'][-1]
+    assert cfg['goal_checker_plugins'] == [
+        'general_goal_checker', 'gate_dock_goal_checker', 'appearance_goal_checker']
+    assert cfg['general_goal_checker.xy_goal_tolerance'] == .08
+    assert cfg['gate_dock_goal_checker.xy_goal_tolerance'] == .01
+    assert cfg['appearance_goal_checker.xy_goal_tolerance'] == .015
+    source = Path(__file__).resolve().parents[2]
+    tree = ET.parse(source / 'roport_smartcart/config/appearance_follow.xml')
+    assert tree.find('.//FollowPath').attrib['goal_checker_id'] == 'appearance_goal_checker'
+    tree = ET.parse(source / 'roport_pinky/behavior_trees/bounded_recovery.xml')
+    assert tree.find('.//FollowPath').attrib['goal_checker_id'] == 'general_goal_checker'
 
 
 def test_hardware_trial_preserves_base_tracking_and_collision_checks(trial_launch):

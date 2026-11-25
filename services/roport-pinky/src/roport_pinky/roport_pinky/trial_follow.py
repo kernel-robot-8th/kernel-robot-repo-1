@@ -68,7 +68,8 @@ STATES = ('searching', 'tracking', 'lost')
 # 정상적인 추종 종료(고객을 놓침·노트북 끊김·시간)와 수락 뒤 첫 목표 전에 노트북 입력이 바뀐 경우(구동 전).
 # driver 를 잠그지 않아 새 follow.requested 로 다시 시작한다.
 SOFT_STOPS = frozenset(('follow_lost', 'follow_status_stale', 'follow_target_stale',
-                        'follow_max_duration', 'follow_not_tracking', 'follow_card_mismatch'))
+                        'follow_max_duration', 'follow_not_tracking', 'follow_card_mismatch',
+                        'follow_action_response_failed', 'follow_appearance_failed'))
 
 
 def _finite(*values):

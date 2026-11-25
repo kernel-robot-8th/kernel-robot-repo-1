@@ -20,6 +20,7 @@ import os
 import re
 import threading
 import time
+import traceback
 from datetime import UTC, datetime
 
 from roport_line_nav.graph import Graph, GraphError, plan_route
@@ -270,6 +271,7 @@ NAV_RETRY_FAULTS = frozenset(('nav2_goal_failed', 'nav2_recovery_limit',
     'nav2_recovery_timeout', 'gate_dock_marker_missing', 'gate_dock_marker_lost',
     'gate_dock_timeout'))
 NAV2_COMMANDS = ('navigate.requested', 'follow.requested')
+APPEARANCE_REGISTRATION = 'follow_registration.requested'
 FOLLOW_BT = 'follow_target.xml'
 FOLLOW_PERIOD = 0.1     # s, 추종 판정·goal_update 주기(ROS spin 스레드)
 BOARDING_PERIOD = 0.5   # s, 탑승 알림 True 재발행 주기(status_indicator stale_sec 2 s 보다 짧게)
@@ -315,6 +317,17 @@ class TrialDriver:
         self.node.create_subscription(Odometry, 'odom', self._on_odom, 10)
         self._init_follow()
         self._init_boarding()
+        self.appearance = None
+        if role == 'smartcart' and os.environ.get('ROPORT_APPEARANCE_CONFIG'):
+            try:
+                from roport_smartcart.fleet_appearance import FleetAppearance
+            except ModuleNotFoundError as exc:
+                if exc.name not in ('roport_smartcart', 'roport_smartcart.fleet_appearance'):
+                    raise
+                raise RuntimeError('ROPORT_APPEARANCE_CONFIG requires roport_smartcart with '
+                                   'fleet_appearance installed in the active workspace') from exc
+            self.appearance = FleetAppearance.from_env(self.node, self.lock)
+            self.appearance_timer = self.node.create_timer(.05, self._appearance_tick)
         self._ex = SingleThreadedExecutor()
         self._ex.add_node(self.node)
         self.thread = threading.Thread(target=self._ex.spin, daemon=True)
@@ -441,9 +454,40 @@ class TrialDriver:
             else:
                 self._publish_goal_update(step[1])
 
+    def _appearance_running(self):
+        cmd = self.nav_command
+        return bool(cmd and cmd['type'] == 'follow.requested'
+                    and cmd['payload'].get('follow_mode') == 'appearance')
+
+    def _appearance_tick(self):
+        with self.lock:
+            following = self._appearance_running()
+            try:
+                state = self.observe()
+                controller_ready = bool(
+                    state['fault'] is None and state['mode'] == 'nav2'
+                    and state['nav2_ready'] and state['localization_ready']
+                    and not state['line_enabled'])
+                error, result = self.appearance.tick(
+                    following=following, controller_ready=controller_ready,
+                    stopped=state['stopped'] and self.guard is not None
+                    and self.guard['owner'] == 'none')
+            except Exception:  # ROS action replies and camera decodes may fail asynchronously.
+                self.node.get_logger().error(f'Appearance tick failed:\n{traceback.format_exc()}')
+                pending = self.appearance.pending
+                if following:
+                    self._lease('none')
+                self.appearance.stop(forget=True)
+                error = 'follow_appearance_failed' if following else None
+                result = (pending, 'failed', {'error_code': 'follow_registration_failed'}) if pending else None
+            if error:
+                self._end_follow(error)
+            if result:
+                self.follow_results.append(result)
+
     def _end_follow(self, code):
         cmd = self.nav_command
-        if self.nav.navigation is not None:
+        if not self._appearance_running() and self.nav.navigation is not None:
             self.nav.navigation.update(phase='failed', error_code=code)
         self.safe_stop(code)      # Nav2 취소 + lease none(guard 가 0 속도) + 코드별 잠금
         self.follow_results.append((cmd, 'failed', {'error_code': code}))
@@ -511,7 +555,9 @@ class TrialDriver:
                 self._lease('none')
                 return
             owner = 'line' if self.logic.active else 'none'
-            if self.nav_command and self.nav_command['type'] in NAV2_COMMANDS and not self.nav.result:
+            if self._appearance_running():
+                owner = 'nav2' if self.appearance.motion_requested else 'none'
+            elif self.nav_command and self.nav_command['type'] in NAV2_COMMANDS and not self.nav.result:
                 owner = 'nav2'
             self._lease(owner)
 
@@ -528,6 +574,9 @@ class TrialDriver:
                     state['heading_rad'] = _wrap(nav['pose']['yaw'])
                 if not nav['nav2_ready'] or not nav['localization_ready']:
                     state['fault'] = 'nav2_not_ready'
+            appearance = getattr(self, 'appearance', None)
+            if appearance is not None and not self._appearance_running():
+                state['stopped'] = state['stopped'] and appearance.quiescent()
             # Existing trial consumers reject unknown fields; enable only after both sides update.
             if os.environ.get('ROPORT_NAV_DIAGNOSTICS') == '1':
                 diagnostic = self.nav.diagnostic()
@@ -552,13 +601,21 @@ class TrialDriver:
         if not cmd or cmd['type'] != 'follow.requested':
             return None
         guard = self.guard
-        active = bool(
-            self.follow is not None
-            and self.nav.handle is not None and self.nav.result is None
-            and guard is not None and time.monotonic() - self.guard_at <= 0.3
+        guard_ready = bool(
+            guard is not None and time.monotonic() - self.guard_at <= 0.3
             and guard['owner'] == 'nav2' and not guard['blocked']
             and state['fault'] is None and state['mode'] == 'nav2'
             and state['nav2_ready'] and state['localization_ready'] and not state['line_enabled'])
+        if self._appearance_running():
+            return {
+                'active': guard_ready and self.appearance.motion_requested
+                and self.appearance.live(),
+                'follow_mode': 'appearance',
+                **{key: cmd['payload'][key] for key in (
+                    'follow_session_id', 'target_ref', 'perception_boot_id')},
+            }
+        active = bool(guard_ready and self.follow is not None
+                      and self.nav.handle is not None and self.nav.result is None)
         follow = {'active': active, 'follow_mode': 'marker'}
         session = cmd['payload'].get('follow_session_id')
         if session is not None:
@@ -620,6 +677,9 @@ class TrialDriver:
                 raise ValueError(state['fault'])
             if self.nav_command or self.logic.active or not state['stopped'] or state['line_enabled']:
                 raise ValueError('drive_busy')
+            appearance = getattr(self, 'appearance', None)
+            if appearance is not None and appearance.pending:
+                raise ValueError('drive_busy')
             if command['type'] == 'route.requested':
                 if self.mode != 'line':
                     raise ValueError('not_in_line_mode')
@@ -635,6 +695,12 @@ class TrialDriver:
                         raise ValueError('N12_physical_alignment_required')
                 elif self.mode != 'line' or state['node_id'] != 'N12' or self.logic.st['state'] != 'handoff':
                     raise ValueError('not_at_switch_node')
+            elif command['type'] == APPEARANCE_REGISTRATION:
+                if appearance is None:
+                    raise ValueError('unsupported_operation')
+                if self.mode != 'nav2' or not self.nav.quiescent() or self.guard['owner'] != 'none':
+                    raise ValueError('registration_not_ready')
+                appearance.validate_registration(p)
             elif command['type'] == 'follow.requested':
                 self._admit_follow(p)
             elif command['type'] != 'navigate.requested' or self.mode != 'nav2' or p['frame_id'] != 'map':
@@ -643,12 +709,17 @@ class TrialDriver:
     def _admit_follow(self, payload):
         """읽기 전용 출발 검사. 첫 목표 (x, y, yaw, stamp) 를 돌려준다."""
         from .trial_follow import admit
-        if payload.get('follow_mode', 'marker') != 'marker':    # 외형 추종은 이 드라이버가 하지 않는다
-            raise ValueError('unsupported_operation')
         if self.mode != 'nav2':
             raise ValueError('not_in_nav2_mode')
         if not self.nav.quiescent():
             raise ValueError('drive_busy')
+        if payload.get('follow_mode') == 'appearance':
+            appearance = getattr(self, 'appearance', None)
+            if appearance is None:
+                raise ValueError('unsupported_operation')
+            return appearance.validate_start(payload)
+        if payload.get('follow_mode', 'marker') != 'marker':
+            raise ValueError('unsupported_operation')
         if not os.path.isfile(self.follow_bt):
             raise ValueError('follow_bt_missing')
         return admit(payload, self.follow_input, self._ros_now(), time.monotonic(),
@@ -682,10 +753,26 @@ class TrialDriver:
                     raise ValueError('recovery_required')
                 self.halted = None
                 self.failed_navigation = None
+            appearance = getattr(self, 'appearance', None)
+            if appearance is not None and command['type'] in (
+                    'route.requested', 'navigate.requested', 'mode_switch.requested'):
+                # Release the previous customer's target before a new route can own the drive.
+                appearance.stop(forget=True)
             if command['type'] == 'route.requested':
                 self._lease('line')
                 return self.logic.dispatch(command)
+            if command['type'] == APPEARANCE_REGISTRATION:
+                return self.appearance.register(command)
             if command['type'] == 'follow.requested':
+                if command['payload'].get('follow_mode') == 'appearance':
+                    try:
+                        self.appearance.start(command['payload'])
+                    except ValueError as exc:
+                        self.follow_results.append((command, 'failed', {'error_code': str(exc)}))
+                        return
+                    self.logic.node = None
+                    self.nav_command = command
+                    return
                 return self._start_follow(command)
             self.nav_command = command
             if command['type'] == 'mode_switch.requested':
@@ -704,13 +791,17 @@ class TrialDriver:
         with self.lock:
             following = bool(self.nav_command and self.nav_command['type'] == 'follow.requested')
             self.follow = None
+            appearance = getattr(self, 'appearance', None)
+            if appearance is not None:
+                appearance.stop(forget=reason not in SOFT_STOPS and reason != 'operator_stop')
             if (reason in NAV_RETRY_FAULTS and self.nav_command
                     and self.nav_command['type'] == 'navigate.requested'):
                 self.failed_navigation = self.nav_command
             elif reason not in NAV_RETRY_FAULTS:
                 self.failed_navigation = None
             # 고객 놓침·노트북 끊김·시간 종료·추종 중 운영자 정지는 정상 종료: 새 follow 를 다시 받는다.
-            if not (reason in SOFT_STOPS or (following and reason == 'operator_stop')):
+            if not (reason in SOFT_STOPS or reason == 'follow_registration_failed'
+                    or (following and reason == 'operator_stop')):
                 self.halted = reason
             self.nav_command = None
             self.nav.cancel()
@@ -816,6 +907,8 @@ class TrialDriver:
                         pass
         self._ex.shutdown(timeout_sec=2)
         self.thread.join(timeout=2)
+        if getattr(self, 'appearance', None) is not None:
+            self.appearance.close()
         self.node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

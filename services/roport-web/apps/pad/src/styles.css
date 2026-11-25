@@ -181,9 +181,9 @@ h1 { font-size: 2.3rem; line-height: 1.3; margin: 0; font-weight: 700; color: va
 .shop-person { display:flex; gap:12px; align-items:center; font-weight:650; color:var(--navy); }
 .shop-person img { object-fit:contain; height:68px; width:60px; border-radius:8px; background:var(--ice-soft); }
 .shop-error { margin:0; padding:10px 14px; background:var(--orange-soft); border-radius:8px; }
-@media (max-width:760px), (max-height:610px) {
+@media (max-height:610px) {
   .pad:has(.shopping) { height:auto; min-height:100dvh; overflow:visible; }
-  .shopping { grid-template-columns:1fr; gap:20px; padding:16px; align-content:start; }
+  .shopping { gap:20px; padding:16px; align-content:start; }
   .pad:has(.shopping) .topbar { height:auto; padding:10px 16px; flex-wrap:wrap; }
   .pad:has(.shopping) .flight > div { padding:4px 8px; }
   .pad:has(.shopping) .progress { overflow-x:auto; justify-content:start; gap:12px; padding:0 16px; }
@@ -206,3 +206,78 @@ h1 { font-size: 2.3rem; line-height: 1.3; margin: 0; font-weight: 700; color: va
 .boarding-card { display: grid; gap: 16px; justify-items: start; max-width: 720px; padding: 32px 36px; border-radius: 18px; background: var(--white); box-shadow: 0 18px 48px rgba(0, 0, 0, .25); }
 .boarding-card .actions { display: flex; flex-wrap: wrap; gap: 12px; }
 .boarding-card .status-icon { width: 88px; height: 88px; font-size: 2.6rem; }
+
+@media (max-width:760px) {
+  .pad {
+    height:auto; min-height:100vh; min-height:100dvh; overflow:visible;
+    grid-template-columns:minmax(0,1fr); grid-template-rows:auto auto 1fr auto;
+  }
+  .topbar, .pad:has(.shopping) .topbar {
+    height:auto; flex-direction:column; align-items:stretch; gap:8px; padding:10px 12px;
+  }
+  .brand { flex-wrap:wrap; gap:8px; }
+  .logo { font-size:1.35rem; }
+  .cart-id { padding-left:8px; font-size:.88rem; }
+  .badge-demo { font-size:.72rem; padding:2px 5px; }
+  .flight { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); }
+  .flight > div, .pad:has(.shopping) .flight > div { padding:4px 6px; }
+  .flight > .flight-gate { margin:0 3px; }
+  .flight dt, .flight small { font-size:.69rem; }
+  .flight dd { font-size:1rem; }
+  .flight small { display:block; }
+  .progress, .pad:has(.shopping) .progress {
+    display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); gap:4px; padding:0 8px;
+  }
+  .progress li, .pad:has(.shopping) .progress li {
+    flex-direction:column; justify-content:center; gap:4px; padding:6px 0;
+    text-align:center; white-space:normal; font-size:.75rem;
+  }
+  .progress .num { width:20px; height:20px; font-size:.7rem; flex:none; }
+  .split, .shopping { grid-template-columns:minmax(0,1fr); height:auto; }
+  .split-visual { gap:8px; padding:12px 16px; border-right:0; border-bottom:1px solid var(--line); }
+  .phone-qr { width:80px; }
+  .status-icon { width:72px; height:72px; font-size:2.4rem; }
+  .split-body, .choose, .finale { height:auto; gap:14px; padding:20px 16px; }
+  .pad h1 { font-size:1.55rem; }
+  .pad .lead { font-size:1rem; }
+  .guide { gap:8px; }
+  .guide li { gap:8px; font-size:.95rem; }
+  .guide li::before { width:22px; height:22px; font-size:.78rem; }
+  .items { font-size:1rem; }
+  .items td { padding:10px 4px; }
+  .items th:last-child, .items td:last-child { width:56px; }
+  .btn { min-height:48px; max-width:100%; padding:8px 12px; font-size:1rem; }
+  .btn-block { min-height:52px; }
+  .choices { grid-template-rows:none; gap:8px; margin-top:0; }
+  .choices .choice { grid-template-columns:auto minmax(0,1fr) auto; gap:10px; padding:12px; }
+  .choices .choice-icon { width:44px; height:44px; font-size:1.55rem; }
+  .choice-arrow { font-size:1.25rem; }
+  .choice-text { gap:4px; font-size:.9rem; }
+  .choice-text b { font-size:1.05rem; }
+  .keypad-screen { height:auto; gap:12px; padding:20px 12px; }
+  .slots, .keypad { width:min(100%, 430px); gap:4px; }
+  .slot { flex:1; min-width:0; height:46px; font-size:1.15rem; }
+  .slots-input { width:100%; font-size:1rem; }
+  .keypad { grid-template-columns:repeat(6,minmax(0,1fr)); }
+  .key { height:44px; font-size:1rem; }
+  .demo-bar { position:static; padding:8px 12px; }
+  .btn-mini { min-height:44px; }
+  .notice { position:static; transform:none; max-width:none; margin:0 12px 12px; }
+  .shopping { overflow:visible; align-content:start; gap:12px; padding:12px 16px 20px; }
+  .follow-options { min-inline-size:0; padding:12px; }
+  .follow-options label { min-height:44px; }
+  .follow-options input { flex:none; }
+  .follow-session .split-visual { min-height:0; }
+  .shopping-camera-head { padding:8px 12px; }
+  .shop-controls { gap:8px; }
+  .shop-controls .actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+  .shop-controls .btn { min-height:48px; padding:6px 8px; font-size:.95rem; }
+  .shop-controls .actions :is(.btn-primary,.btn-stop,.btn-block) { grid-column:1 / -1; width:100%; }
+  .shop-person img { width:44px; height:48px; }
+  .boarding { position:fixed; padding:12px; }
+  .boarding-card { max-height:calc(100dvh - 24px); overflow:auto; padding:20px 16px; }
+}
+
+@media (min-width:600px) and (max-width:760px) and (orientation:landscape) {
+  .shopping { grid-template-columns:minmax(0,1.26fr) minmax(0,1fr); }
+}

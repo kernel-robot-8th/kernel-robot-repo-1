@@ -789,8 +789,54 @@ ros2 run roport_smartcart shopping_follow --sim --pad-dist "$PAD_DIST" \
   --onnx "$DETECTOR_ONNX" --encoder-source "$DINO_SOURCE" --weights "$DINO_WEIGHTS"
 ```
 
-`http://127.0.0.1:8182`를 연다. Gazebo에서는 실기와 구분된 ROS 도메인, localhost discovery, 카메라 영상·CameraInfo·광학 TF, 지도 위치 추정이 필요하다. Gazebo가 `camera/image_raw/compressed`를 발행하면 `--compressed`로 실물과 같은 JPEG 입력을 사용할 수 있다. 현장 단독 시험에서는 `--field-standalone --calibration "$CAMERA_YAML" --optical-frame "$OPTICAL_FRAME"`을 사용한다. 이 모드는 실측한 광학 TF와 180도 회전된 실물 영상에 맞춘 보정 파일을 사용하고, 실물 카메라의 compressed 토픽을 받는다. 발끝 또는 인형 바닥이 보이는 범위에서 지도상 대상 위치를 계산한다. 관제와 명령 소유권을 공유하는 모드는 별도 연동 대상이다.
+`http://127.0.0.1:8182`를 연다. Gazebo에서는 실기와 구분된 ROS 도메인, localhost discovery, 카메라 영상·CameraInfo·광학 TF, 지도 위치 추정이 필요하다. Gazebo가 `camera/image_raw/compressed`를 발행하면 `--compressed`로 실물과 같은 JPEG 입력을 사용할 수 있다. 현장 단독 시험에서는 `--field-standalone --calibration "$CAMERA_YAML" --optical-frame "$OPTICAL_FRAME"`을 사용한다. 이 모드는 실측한 광학 TF와 180도 회전된 실물 영상에 맞춘 보정 파일을 사용하고, 실물 카메라의 compressed 토픽을 받는다. 발끝 또는 인형 바닥이 보이는 범위에서 지도상 대상 위치를 계산한다.
 
 쇼핑 전용 글로벌 비용지도는 갱신·발행 목표 3 Hz로 설정한다. 짧은 직선 경로와 초음파 우회 판단은 지도 원본 시각과 수신 시각이 모두 1초 이내일 때만 사용한다. 직선 주행 중 지도가 오래되거나 경로가 막히면 취소하고, 새 목표에는 일반 Nav2 계획 경로를 사용한다. 현장에서는 CPU 부하와 비용지도 실제 발행 간격, `SHOP_HOLD`·`SHOP_GOAL` 빈도(특히 전체 YOLO 실행 직후), 재확인 뒤 안내가 풀리는 시간을 확인한다. 이 설정의 실물 성능은 별도 검증 대상이다.
 
 쇼핑 중 패드 안내와 본체 안내는 같은 판정을 사용한다. 본체의 기존 `status_indicator`를 스마트카트 모드로 실행하면 얼굴·쇼핑 모드·재접근 요청과 경로 막힘이 LCD와 LED에 반영된다. [본체 실행 방법과 색상](../roport_line_nav/README.md#상태-표시-lcdled-status_indicator)
+
+### 관제 패드의 외형 추종 (pinky3)
+
+현장에서 `ROPORT_APPEARANCE_CONFIG`는 외형 추종 전용 3호기(pinky3·764e)에만 설정하고 마커 추종 1호기(d660)에서는 해제한다. 이 설정은 Nav2 기동 때 쇼핑 비용지도와 경로 추종기 파라미터를 읽으므로 3호기의 ARR 배송과 복귀에도 적용된다. 쇼핑 비용지도는 초음파 층을 사용하며 기존 마커 프로필의 `/doll_obstacles` 층을 포함하지 않는다.
+
+`roport_pinky`와 `roport_smartcart`가 모두 설치된 ROS 작업공간을 읽는다. 관제 MQTT 키트에 등록·외형 추종 규격이 들어 있어야 한다. 키트의 Python 환경에는 ROS와 호환되는 OpenCV·NumPy, ONNX Runtime, paho-mqtt 2.1.0이 필요하다. 카메라 노드 한 개가 보정된 `camera/image_raw/compressed`와 광학 TF를 발행한다. 기존 관제 runner가 유일한 `trial/lease` 발행자이고 `trial_guard`가 `cmd_vel`을 발행한다. 단독 쇼핑 실행기는 종료한 상태에서 시작한다.
+
+로봇의 로컬 설정 파일 예시
+
+```yaml
+detector_onnx: models/best.onnx
+dinov2_onnx: models/dino140-int8.onnx
+calibration: shopping-camera.yaml
+optical_frame: shopping_camera_optical
+frames:
+  host: REPLACE_WITH_PINKY_LAN_IP
+  port: 8443
+  cert: tls/server-chain.pem
+  key: tls/server-key.pem
+```
+
+경로는 설정 파일 기준 상대 경로 또는 절대 경로를 받는다. 카메라 보정 파일은 현재 해상도·영상 방향과 맞고 `optical_tf_verified: true`를 포함해야 한다. 두 실행 터미널에서 ROS 도메인과 `ROPORT_APPEARANCE_CONFIG`를 지정한다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /absolute/path/to/robot_ws/install/setup.bash
+export ROS_DOMAIN_ID=13
+export ROPORT_APPEARANCE_CONFIG=/absolute/path/to/appearance.yaml
+export ROPORT_FINE_ALIGN_GOALS=N12_RETURN
+```
+
+팀의 기존 현장 프로필과 기체 이름을 사용해 `trial.launch.py`에 `max_linear:=0.08 max_angular:=0.4`를 지정한다. 위 환경 변수를 받은 launch는 쇼핑용 초음파 비용지도와 추종 전용 도착 허용오차 1.5cm를 추가한다. 배송·일반 복귀는 launch의 `goal_xy_tolerance` 값(기본 8cm)을 사용하고 N12 FineAlign은 기존 정밀 접근 기준을 사용한다. runner는 같은 현장 프로필에 `--role smartcart`와 기존 `--driver roport_pinky.trial_driver:create_driver`로 실행한다. [관제 키트 실행 명령](../roport_pinky/README.md)
+
+```bash
+# 위 환경 설정을 읽고 기존 키트 작업 디렉터리에서 실행한다.
+/absolute/path/to/venv/bin/python -m pinky_mqtt.trial_runner \
+  --config /absolute/path/to/active-hardware-profile.json --role smartcart \
+  --journal /absolute/path/to/pinky3-journal.json \
+  --driver roport_pinky.trial_driver:create_driver --hardware-authorized
+```
+
+관제 프레임 프록시의 `ROPORT_FOLLOW_FRAME_SOURCES`에 `{"pinky3":"https://<PINKY_LAN_IP>:8443"}`를 지정한다. HTTPS 인증서 SAN에는 실제 접속 IP 또는 호스트명이 있어야 하며 관제 환경에서 발급 CA를 신뢰해야 한다. 프록시와 runner는 같은 `ROPORT_FOLLOW_FRAME_TOKEN`(24자 이상)을 각자의 비밀 환경에서 읽는다. 사진 API는 Bearer 인증한 `GET /frames/{image_ref}`에만 촬영 JPEG를 제공한다.
+
+촬영은 정차 확인 후 시작하며 프레임은 촬영 요청 처리 시점부터 15초, 선택된 대상은 등록 후 300초 동안 유효하다. 추종 명령당 상한은 240초다. 대상이 등록 거리 안에 정면으로 서 있으면 출발할 목표가 생길 때까지 패드는 시작 확인을 기다린다. 대상을 놓치거나 영상이 오래되면 구동을 해제하고 관제에 사유를 보고한다. 일시정지 후 같은 대상이 다시 인식되면 만료 전에 관제에서 재개할 수 있다. 복귀 전환은 구동권 반납과 정차를 확인한 뒤 기존 관제 복귀 경로를 받는다. 실제 주행으로 등록·승인·유실 정지·복귀를 확인한 뒤 pinky3에 `appearance`를 허용한다. [관제 메시지 규격](../../../roport-control-server/docs/follow-modes-handover.md)
+
+Nav2 응답 오류는 관제에 `follow_action_response_failed`로 보고한다. 수락된 목표는 취소를 요청하고 그 목표의 종료 결과를 다시 확인한다. 관제는 같은 목표가 종료되고 최신 odom 정차가 보고될 때까지 추종 정지 확인 단계에서 기다린다. 확인 후 복귀를 요청할 수 있다. 수락 응답 자체가 유실돼 기존 목표의 종료를 확인할 수 없으면, 현장에서 정차한 뒤 관제 절차에 따라 Nav2와 runner를 함께 재기동한다.

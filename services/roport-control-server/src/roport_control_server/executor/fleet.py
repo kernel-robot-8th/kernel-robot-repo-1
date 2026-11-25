@@ -36,6 +36,8 @@ FOLLOW_SOFT_STOPS = {
     "follow_max_duration",
     "follow_not_tracking",
     "follow_card_mismatch",
+    "follow_action_response_failed",
+    "follow_appearance_failed",
 }
 
 

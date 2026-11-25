@@ -90,11 +90,11 @@ class ShoppingEncoder:
 
 class Shopping:
     def __init__(self, node, detector, encoder, optical_frame=None, floor_z=0., calibration=None, compressed=False,
-                 follow_distance_m=.34):
+                 follow_distance_m=.34, *, external_lease=False):
         self.node, self.detector, self.encoder = node, detector, encoder
         self.optical_frame, self.floor_z = optical_frame, floor_z
         self.lock, self.closed = Condition(), Event()
-        self.nav, self.tf = ShoppingNav(node, follow_distance_m), Buffer()
+        self.nav, self.tf = ShoppingNav(node, follow_distance_m, external_lease=external_lease), Buffer()
         self.default_gap = follow_distance_m
         self.field_camera = calibration is not None
         self.gap_selected = False
@@ -154,9 +154,9 @@ class Shopping:
         self.odom_at = stamp
 
     def stopped(self, now):
-        return (self.nav.boot is None or self.still_since is not None and now-self.still_since>.25
-                and now-self.odom_at<.4 and now-self.nav.guard_at<.3 and self.nav.guard.get('owner')=='none'
-                and not self.nav.pending and not self.nav.handle)
+        return self.nav.quiescent() and (
+            self.nav.boot is None or self.still_since is not None and now-self.still_since>.25
+            and now-self.odom_at<.4 and now-self.nav.guard_at<.3 and self.nav.guard.get('owner')=='none')
 
     def scan(self, msg):
         stamp = self.received(msg)
@@ -260,9 +260,9 @@ class Shopping:
     def hold_motion(self, now):
         self.bypass = None
         self.armed = False
-        self.nav.cancel()
         self.nav.heartbeat(False, now)
         self.drive = 'HOLD'
+        self.nav.cancel()
 
     def expire_operator(self, now):
         idle = now-self.touch
@@ -306,7 +306,7 @@ class Shopping:
                         raise ValueError('사진을 다시 찍어 주세요.')
                     jpeg = encoded.tobytes()
                 self.touch = now
-                if self.nav.pending is None and self.nav.handle is None:
+                if self.nav.quiescent():
                     self.nav.fault = None
                 self.frozen = (uuid4().hex, (stamp, frame, None, jpeg))
             elif action == 'select':
@@ -335,11 +335,7 @@ class Shopping:
                     self.lock.wait(timeout=.08)
                 if self.owner != key or self.order != order or not self.can_start(time.monotonic()):
                     raise ValueError(self.reason or '같은 대상과 주행 준비를 확인 중입니다')
-                self.nav.fault = None
-                self.nav.path_failures = 0
-                self.nav.retry_after = 0.
-                self.gap_selected = True
-                self.armed = True
+                self.arm()
             elif action in ('stop', 'end'):
                 self.hold_motion(now)
                 self.proximity = ProximityNotice()
@@ -352,12 +348,20 @@ class Shopping:
                 raise ValueError('알 수 없는 명령입니다')
             return self.status(key)
 
+    def arm(self):
+        """Called under the shopping lock after a fresh can_start check."""
+        self.nav.fault = None
+        self.nav.path_failures = 0
+        self.nav.retry_after = 0.
+        self.gap_selected = True
+        self.armed = True
+
     def can_start(self, now):
         return bool(self.seed and self.track.state in ('FOLLOWING','CLOSE') and 0 <= now-self.observed < .55
                     and (not self.field_camera or self.gap_selected or self.track.state == 'CLOSE')
                     and now-self.touch < 1.5 and not self.reason
                     and (not self.nav.fault or self.nav.fault == 'PATH_BLOCKED' and self.stopped(now))
-                    and self.nav.guard.get('owner')=='none' and not self.nav.handle and not self.nav.pending)
+                    and self.nav.guard.get('owner')=='none' and self.nav.quiescent())
 
     def status(self, key):
         with self.lock:
@@ -655,7 +659,10 @@ class Shopping:
                                            via, allow_new=target is not None, direct_grid=self.grid)
             if self.nav.fault:
                 self.armed = False
-                if self.nav.fault != 'PATH_BLOCKED':
+                # A new capture clears a response error after the old goal has ended.
+                # Keep any current sensor or guard reason for the capture check.
+                if self.nav.fault != 'PATH_BLOCKED' and not (
+                        self.nav.response_failed and self.nav.quiescent()):
                     self.reason = '경로 확인 필요 · 대상을 다시 선택해 주세요'
             distance = math.dist(pose[:2], target) if pose and target else None
             observed_state = self.track.state if fresh_result else 'SEARCHING'

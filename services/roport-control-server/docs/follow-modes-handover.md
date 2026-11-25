@@ -143,6 +143,8 @@ MQTT `completed.result`에는 endpoint의 관측 상태가 함께 붙고 `stoppe
 
 ## 8. 현장 허용 설정과 적용 순서
 
+현장에서 `ROPORT_APPEARANCE_CONFIG`는 외형 추종 전용 3호기(pinky3·764e)에만 설정하고 마커 추종 1호기(d660)에서는 해제한다. 이 설정은 Nav2 기동 때 쇼핑 비용지도와 경로 추종기 파라미터를 읽으므로 3호기의 ARR 배송과 복귀에도 적용된다. 쇼핑 비용지도는 초음파 층을 사용하며 기존 마커 프로필의 `/doll_obstacles` 층을 포함하지 않는다.
+
 `follow_modes`는 실행부의 지원 목록을 새 MQTT 광고로 추정하는 기능이 아니다. **담당자가 연동을 검증한 뒤 배포 설정에 등록하는 허용 목록**이다. hardware에서는 `field_verified:true`, 현재 smartcart 역할, `verified_follow_robot` 일치도 필요하다. 확인하지 않은 기체에 승인값을 복사하지 않는다.
 
 설정 예시는 다음과 같다. 실제 확인 전에는 `field_verified:false`, `verified_follow_robot:null`, 해당 기체의 허용 목록을 빈 배열로 유지한다.

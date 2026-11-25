@@ -226,9 +226,10 @@ def test_max_duration_stops():
     assert s.step(inputs, 102.0, 52.0, shift(), POSE) == ('stop', 'follow_max_duration')
 
 
-def test_soft_stops_are_only_normal_follow_endings():
+def test_follow_recovery_faults_require_separate_ownership_checks():
     assert tf.SOFT_STOPS == {'follow_lost', 'follow_status_stale', 'follow_target_stale',
-                             'follow_max_duration', 'follow_not_tracking', 'follow_card_mismatch'}
+                             'follow_max_duration', 'follow_not_tracking', 'follow_card_mismatch',
+                             'follow_action_response_failed', 'follow_appearance_failed'}
     assert not {'follow_tf_unavailable', 'follow_nav2_failed', 'nav2_not_ready'} & tf.SOFT_STOPS
 
 
@@ -402,11 +403,94 @@ def test_follow_observation_echoes_session_and_other_commands_have_no_follow(mon
     assert _observed(d) is None
 
 
+def test_appearance_dispatch_reports_real_lease_and_pause_keeps_selection(monkeypatch, tmp_path):
+    d = driver(monkeypatch, tmp_path)
+    checks, starts, stops = [], [], []
+    d.appearance = SimpleNamespace(validate_start=checks.append, start=starts.append,
+                                   stop=lambda **kw: stops.append(kw),
+                                   pending=None, motion_requested=False, live=lambda: True)
+    d._guard_fault = lambda **kw: None
+    _guard(d, 'none')
+    identity = {'follow_session_id': 'session-3', 'target_ref': 'target-3',
+                'perception_boot_id': 'perception-3'}
+    command = follow_cmd(follow_mode='appearance', **identity)
+    d.validate_action(command)
+    assert checks == [command['payload']]
+    assert starts == d.leases == []
+    d.dispatch(command)
+    assert starts == [command['payload']] and d.nav.started == []
+    d.heartbeat()
+    assert d.leases[-1] == 'none'
+    assert _observed(d) == {'active': False, 'follow_mode': 'appearance', **identity}
+    d.appearance.motion_requested = True
+    d.heartbeat()
+    assert d.leases[-1] == 'nav2'
+    assert _observed(d)['active'] is False
+    _guard(d)
+    assert _observed(d) == {'active': True, 'follow_mode': 'appearance', **identity}
+    _guard(d, age=.31)
+    assert _observed(d)['active'] is False
+    d.safe_stop('operator_stop')
+    assert stops == [{'forget': False}]
+    assert _observed(d) is None
+    d.heartbeat()
+    assert d.leases[-1] == 'none'
+
+
 def test_driver_rejects_appearance_follow(monkeypatch, tmp_path):
     d = driver(monkeypatch, tmp_path)
     with pytest.raises(ValueError, match='unsupported_operation'):
         d.validate_action(follow_cmd(follow_mode='appearance'))
     assert d.nav.started == [] and d.leases == []
+
+
+def test_unexpected_appearance_error_reports_cause_and_releases_lease(monkeypatch, tmp_path):
+    d = driver(monkeypatch, tmp_path)
+    _guard(d)
+    errors, stops = [], []
+    d.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(error=errors.append))
+
+    def fail(**kwargs):
+        raise RuntimeError('test camera decode failure')
+
+    d.appearance = SimpleNamespace(tick=fail, pending=None, stop=lambda **kw: stops.append(kw))
+    command = follow_cmd(follow_mode='appearance')
+    d.nav_command = command
+    d._appearance_tick()
+    assert d.leases[-1] == 'none' and {'forget': True} in stops
+    assert d.drain_results() == [(command, 'failed', {'error_code': 'follow_appearance_failed'})]
+    assert 'Traceback' in errors[0] and 'RuntimeError: test camera decode failure' in errors[0]
+
+
+def test_appearance_response_failure_requires_action_terminal_and_fresh_odometry(monkeypatch, tmp_path):
+    d = driver(monkeypatch, tmp_path)
+    del d.observe
+    evidence = SimpleNamespace(terminal=False, odom_stopped=True)
+    d.logic.observe = lambda: {**PROFILE, 'fault': None, 'stopped': True, 'line_enabled': False}
+    d.nav.snapshot = lambda: {'nav2_ready': True, 'localization_ready': True, 'pose': POSE,
+                              'stopped': evidence.odom_stopped}
+    d._guard_fault = lambda **kw: d.halted
+    d.runner_seen = Clocks.mono
+
+    class Appearance:
+        pending = None
+
+        def quiescent(self):
+            return evidence.terminal
+
+        def stop(self, *, forget):
+            pass
+
+    d.appearance = Appearance()
+    d.nav_command = follow_cmd(follow_mode='appearance')
+    d._end_follow('follow_action_response_failed')
+    assert d.drain_results() == [(follow_cmd(follow_mode='appearance'), 'failed',
+                                 {'error_code': 'follow_action_response_failed'})]
+    assert not d.observe()['stopped']
+    evidence.terminal, evidence.odom_stopped = True, False
+    assert not d.observe()['stopped']
+    evidence.odom_stopped = True
+    assert d.observe()['stopped'] and d.observe()['fault'] is None
 
 
 @pytest.mark.parametrize('mode, code', [('line', 'not_in_nav2_mode')])

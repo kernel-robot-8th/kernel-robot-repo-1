@@ -2,6 +2,7 @@
 import math
 import os
 
+from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
@@ -58,6 +59,13 @@ FINE_ALIGN_CONTROLLER_OVERRIDES = {
     'GateDock.approach_velocity_scaling_dist': .05,
 }
 
+APPEARANCE_CHECKER_OVERRIDES = {
+    'appearance_goal_checker.plugin': 'nav2_controller::SimpleGoalChecker',
+    'appearance_goal_checker.xy_goal_tolerance': .015,
+    'appearance_goal_checker.yaw_goal_tolerance': .10,
+    'appearance_goal_checker.stateful': True,
+}
+
 
 def _docking_mode():
     """GateDock 제어기·gate_dock_goal_checker 를 넣는 방식: 'gate'(게이트 마커 주차), 'fine_align'(마커 없는
@@ -91,6 +99,15 @@ def _nodes(context):
     if not math.isfinite(planner_tolerance) or not .05 <= planner_tolerance <= .3:
         raise ValueError('planner_tolerance must be finite and in [0.05, 0.3] m')
     config = LaunchConfiguration('params_file')
+    parameters = [config]
+    appearance = bool(os.environ.get('ROPORT_APPEARANCE_CONFIG'))
+    if appearance:
+        try:
+            share = get_package_share_directory('roport_smartcart')
+        except PackageNotFoundError as exc:
+            raise RuntimeError('ROPORT_APPEARANCE_CONFIG requires roport_smartcart installed '
+                               'in the active workspace') from exc
+        parameters.append(os.path.join(share, 'config', 'shopping_costmaps.yaml'))
     nodes = [
         Node(package='roport_pinky', executable='trial_guard', output='screen'),
         Node(package='roport_line_nav', executable='line_nav', output='screen',
@@ -130,6 +147,10 @@ def _nodes(context):
                 if docking == 'fine_align':
                     overrides.update(FINE_ALIGN_CONTROLLER_OVERRIDES)
                 overrides['GateDock.desired_linear_vel'] = min(.02, max_linear)
+            if appearance:
+                checkers = overrides.get('goal_checker_plugins', ['general_goal_checker'])
+                overrides['goal_checker_plugins'] = [*checkers, 'appearance_goal_checker']
+                overrides.update(APPEARANCE_CHECKER_OVERRIDES)
             overrides['FollowPath.rotate_to_heading_angular_vel'] = max_angular
         if name in ('controller_server', 'behavior_server', 'velocity_smoother'):
             overrides['enable_stamped_cmd_vel'] = False
@@ -142,7 +163,7 @@ def _nodes(context):
             overrides['min_velocity'] = [-max_linear, 0.0, -max_angular]
             remaps.append(('cmd_vel_smoothed', 'trial/nav2_cmd_vel'))
         nodes.append(Node(package=package, executable=name, name=name, output='screen',
-                          parameters=[config, overrides], remappings=remaps))
+                          parameters=[*parameters, overrides], remappings=remaps))
     nodes.append(Node(package='nav2_lifecycle_manager', executable='lifecycle_manager',
                       name='trial_lifecycle_manager', output='screen', parameters=[{
                           'autostart': True, 'node_names': [name for _, name in servers]}]))
