@@ -91,6 +91,7 @@
             <label>관제 조작 키 <input id="fleet-key" type="password" autocomplete="off" /></label>
             <div class="actions"><button id="fleet-enable" disabled>요청 처리 시작</button><button id="fleet-stop" disabled>관제 보류</button></div>
             <p id="fleet-roles"></p><p class="muted">현장에 배치하지 않은 슬롯은 시작 전에 배정 제외하세요. 이미 연결한 기체는 정지 상태를 확인하며 점유 위치를 유지합니다.</p>
+            <p id="fleet-registry-note" class="muted" hidden>기체 등록·역할 변경·배정 제외는 Pinky 탭의 설정에서 관리합니다.</p>
             <fieldset id="fleet-fields" disabled>
               <label>기체 <select id="fleet-robot"><option>pinky1</option><option>pinky2</option><option>pinky3</option></select></label>
               <label>역할 <select id="fleet-role"><option value="logistics">물류</option><option value="smartcart">스마트카트</option><option value="">배정 제외</option></select></label>

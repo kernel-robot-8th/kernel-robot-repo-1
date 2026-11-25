@@ -15,8 +15,10 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from ...contracts.robots import RegistryError
 from ...contracts.service_policy import manifest_change_reason
 from ...contracts.service_wire import ServiceStorageError, validate_service_message
+from .registry import RegistryStore
 
 SCHEMA = Path(__file__).with_name("002_service.sql")
 TERMINAL = {"COMPLETED", "FAILED", "REJECTED"}
@@ -56,6 +58,62 @@ class OperationalStore:
                 (Jsonb(data),),
             )
             self.data = deepcopy(data)
+
+    def registry_snapshot(self):
+        try:
+            with self._lock, self._conn.transaction():
+                self._conn.execute(
+                    "SET LOCAL statement_timeout='3s'; SET LOCAL lock_timeout='2s'"
+                )
+                return RegistryStore.snapshot_connection(self._conn)
+        except psycopg.Error:
+            raise RegistryError("registry_unavailable", 503) from None
+
+    def registry_update(
+        self,
+        update,
+        *,
+        robot=None,
+        action=None,
+        request=None,
+        check=None,
+        actor=None,
+        confirmed=None,
+    ):
+        """Commit registry metadata and the owner's roles in one transaction."""
+        with self._lock:
+            try:
+                with self._conn.transaction():
+                    self._conn.execute(
+                        "SET LOCAL statement_timeout='3s'; SET LOCAL lock_timeout='2s'"
+                    )
+                    result, changed = (None, False)
+                    if robot is None:
+                        RegistryStore.metadata(self._conn, lock=True)
+                    else:
+                        result, changed = RegistryStore.change_connection(
+                            self._conn,
+                            robot,
+                            action,
+                            request,
+                            check=check,
+                            actor=actor,
+                            confirmed=confirmed,
+                        )
+                    snapshot = RegistryStore.snapshot_connection(self._conn)
+                    data = deepcopy(self.data)
+                    update(data, snapshot, result, changed)
+                    if data != self.data:
+                        self._conn.execute(
+                            "UPDATE control_operational_state SET data=%s, updated_at=now() WHERE singleton",
+                            (Jsonb(data),),
+                        )
+            except psycopg.errors.UniqueViolation:
+                raise RegistryError("duplicate_device_domain_or_address", 409) from None
+            except psycopg.Error:
+                raise RegistryError("registry_unavailable", 503) from None
+            self.data = data
+            return result, changed
 
     def close(self):
         self._conn.close()

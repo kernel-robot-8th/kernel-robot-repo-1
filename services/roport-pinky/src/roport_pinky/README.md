@@ -88,9 +88,9 @@ trial launch는 `PoseProgressChecker`를 사용해 **15초 안에 0.05m 이동 �
 
 Pi에서 경로 재계산 중 `follow_path` 목표 수락 응답이 기본 20ms를 넘으면 전체 목표가 실패할 수 있어, trial의 `bt_navigator.default_server_timeout`은 500ms로 지정합니다. 지도 경계 가까운 공용공간 시험점의 주변 검색이 지도 밖을 조회하지 않도록 `planner_server.GridBased.tolerance`는 0.1m로 제한합니다. 이 값은 플래너의 대체 도착점 검색 범위이며, 실제 정지·목표 오차·독립 구동 감시의 완료 조건은 유지합니다.
 
-## 고객 카드 추종 `follow.requested` (FFT1-188, 관제 MQTT 연결 전)
+## 고객 카드 추종 `follow.requested` (FFT1-188)
 
-Nav2 모드에서 노트북 `roport_follow`가 보낸 고객 카드 위치를 Nav2가 따라간다. 별도 cmd_vel 추종기를 쓰지 않으므로 Nav2 비용 지도(LiDAR, `params_file`에 넣은 인형 층)와 `trial_guard`가 그대로 적용된다. 실로봇·실제 bt_navigator 검증 전이다.
+Nav2 모드에서 노트북 `roport_follow`가 보낸 고객 카드 위치를 Nav2가 따라간다. 별도 cmd_vel 추종기를 쓰지 않으므로 Nav2 비용 지도(LiDAR, `params_file`에 넣은 인형 층)와 `trial_guard`가 그대로 적용된다. 관제 MQTT를 거친 전체 추종 흐름의 실물 검증은 후속이다.
 
 | 구분 | 내용 |
 |---|---|
@@ -113,9 +113,11 @@ Nav2 모드에서 노트북 `roport_follow`가 보낸 고객 카드 위치를 Na
 | 새 target을 TF로 못 옮긴 채 1 s | `follow_tf_unavailable` | 있음(재시작 복구) |
 | Nav2 action 거부·중단·오류 | `follow_nav2_failed` | 있음 |
 | 위치 추정 상실, guard·lease 이상 | 기존 코드(`nav2_not_ready`, `drive_*` 등) | 있음 |
-| 운영자 정지(MQTT 모듈 safe_stop `operator_stop`) | 모듈이 `interrupted` 보고 | 드라이버 없음(관제 모듈은 현재 자체 잠금) |
+| 관제 추종 일시정지(`robot_stop_command`, 사유 `follow_pause`) | 기존 추종 `interrupted`와 STOP `completed` | 잠금 해제 조작 없이, 결과 이후 최신 정차·유휴 상태가 확인되면 관제에서 재개 |
 
-`follow_target.xml`은 Jazzy `follow_point.xml`의 `GoalUpdater` 구조를 따른다. 고객 점은 고객 자신의 비용 지도 장애물·inflation 안이라 계획이 실패할 수 있어 `TruncatePath` 대신 드라이버가 목표를 standoff만큼 당긴다. 막히면 1 s 기다렸다가 다시 한다(5 cm 이동 없이 30 s 면 드라이버가 멈춤, BT 재시도는 누적 100번까지, 회전·후진 복구와 비용 지도 비우기 없음 — 비우면 카메라로만 보이는 가까운 인형이 지도에서 사라져 부딪힌다). 그 뒤 action이 끝나고 드라이버가 `follow_nav2_failed`로 멈춘다. 추종 goal에는 공용 누적 복구 상한(`MAX_RECOVERIES`)을 쓰지 않는다. 기본 navigate BT·launch 인자는 바뀌지 않는다. 인형 층을 쓰려면 그 층이 들어간 전체 Nav2 설정을 `params_file:=`로 준다. 실로봇(d660) 시험에 쓴 설정은 `config/nav2_follow_real.yaml`(설치 위치 `share/roport_pinky/config/`, 2026-11-21 시험값)이다. 고객이 멈추면 로봇은 standoff에서 `general_goal_checker.xy_goal_tolerance`(trial 기본 0.08 m)만큼 떨어진 곳에 서 있을 수 있다. 관제 MQTT(`roport-control-v2`)에는 아직 추종 명령이 없다. 관제 쪽 명령 추가 전에는 이 경로로 주행할 수 없다.
+`follow_target.xml`은 Jazzy `follow_point.xml`의 `GoalUpdater` 구조를 따른다. 고객 점은 고객 자신의 비용 지도 장애물·inflation 안이라 계획이 실패할 수 있어 `TruncatePath` 대신 드라이버가 목표를 standoff만큼 당긴다. 막히면 1 s 기다렸다가 다시 한다(5 cm 이동 없이 30 s 면 드라이버가 멈춤, BT 재시도는 누적 100번까지, 회전·후진 복구와 비용 지도 비우기 없음 — 비우면 카메라로만 보이는 가까운 인형이 지도에서 사라져 부딪힌다). 그 뒤 action이 끝나고 드라이버가 `follow_nav2_failed`로 멈춘다. 추종 goal에는 공용 누적 복구 상한(`MAX_RECOVERIES`)을 쓰지 않는다. 기본 navigate BT·launch 인자는 바뀌지 않는다. 인형 층을 쓰려면 그 층이 들어간 전체 Nav2 설정을 `params_file:=`로 준다. 실로봇(d660) 시험에 쓴 설정은 `config/nav2_follow_real.yaml`(설치 위치 `share/roport_pinky/config/`, 2026-11-21 시험값)이다. 고객이 멈추면 로봇은 standoff에서 `general_goal_checker.xy_goal_tolerance`(trial 기본 0.08 m)만큼 떨어진 곳에 서 있을 수 있다.
+
+관제 MQTT(`roport-control-v2`)의 `follow_target_command`는 [관제 MQTT 명세](../../../roport-control-server/interfaces/mqtt/README.md)에 따른다. Pinky의 `field_pinky.py`와 `field_wire.py`는 관제와 같은 현장 번들에서 배포한다. 관제 경로의 카드 유실 기준은 SR-22 기본 1초, 목표 거리는 0.5 m다. 현장 준비 절차는 [Fleet 배포 가이드](../../../../docs/field/README.md#스마트카트-카드-추종)를 따른다.
 
 ## 검증 범위
 

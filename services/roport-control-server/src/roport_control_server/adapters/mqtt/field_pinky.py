@@ -27,6 +27,7 @@ OPERATIONS = {
 }
 LOAD_NODES = {"N01", "N11", "N21", "N22"}
 LOG = logging.getLogger(__name__)
+ROUTE_STOP_CONFIRM_S = 3
 
 
 def driver_command(message, profile, binding):
@@ -124,6 +125,7 @@ class FieldPinkyClient:
         self.last_keep = monotonic()
         self.last_send = self.last_motion = 0.0
         self.keep_messages = set()
+        self.pending_route_completion = None
         self.transport = MqttTransport(
             connection, [wire.topic(self.robot, c) for c in ("cmd", "ack")]
         )
@@ -191,6 +193,7 @@ class FieldPinkyClient:
 
     def _connection_lost(self):
         # Keep the process alive to report HOLD after reconnect; never resume motion.
+        self.pending_route_completion = None
         if not self.halted:
             self.halted = "control_link_lost"
             self.driver.safe_stop(self.halted)
@@ -242,10 +245,24 @@ class FieldPinkyClient:
 
     def _fresh(self, message):
         now = datetime.now(UTC)
-        if not -0.5 <= (now - wire.timestamp(message["sent_at"])).total_seconds() <= 3:
+        if message["type"] != "robot_stop_command" and not (
+            -0.5 <= (now - wire.timestamp(message["sent_at"])).total_seconds() <= 3
+        ):
             raise ValueError("stale_message")
         if "expires_at" in message and wire.timestamp(message["expires_at"]) <= now:
             raise ValueError("expired_command")
+
+    @staticmethod
+    def _fresh_stopped(state):
+        return (
+            -0.5
+            <= (
+                datetime.now(UTC) - wire.timestamp(state["observed_at"])
+            ).total_seconds()
+            <= 3
+            and state["stopped"]
+            and not state["line_enabled"]
+        )
 
     def handle(self, delivery):
         m = wire.decode(delivery.payload)
@@ -291,11 +308,25 @@ class FieldPinkyClient:
             self._fresh(m)
             if m["payload"]["expected_boot_version"] != self.boot:
                 raise ValueError("boot_mismatch")
-            if len(self.journal.data["records"]) >= 1024:
-                raise ValueError("command_history_full")
             if m["type"] == "robot_stop_command":
-                if m["payload"]["target_command_id"] != self.journal.data["active"]:
-                    raise ValueError("stop_target_mismatch")
+                target = m["payload"]["target_command_id"]
+                active = self.journal.data["active"]
+                if target != active:
+                    previous = self.journal.data["records"].get(target)
+                    if (
+                        active is not None
+                        or previous is None
+                        or previous["event"]["payload"]["status"] != "completed"
+                        or previous["event"]["payload"]["boot_version"] != self.boot
+                    ):
+                        raise ValueError("stop_target_mismatch")
+                    if not self._fresh_stopped(self._observation()):
+                        raise ValueError("fresh_stop_required")
+                    # A late STOP must not rewrite the already completed target.
+                    self._save_event(
+                        m, self._event(m, "completed", 1, {"stopped": True})
+                    )
+                    return
                 self._save_event(
                     m,
                     self._event(
@@ -305,6 +336,8 @@ class FieldPinkyClient:
                 )
                 self.driver.safe_stop("operator_stop")
                 return
+            if len(self.journal.data["records"]) >= 1024:
+                raise ValueError("command_history_full")
             if (
                 m["type"] not in OPERATIONS
                 or self.halted
@@ -312,15 +345,7 @@ class FieldPinkyClient:
             ):
                 raise ValueError("busy_or_recovery_required")
             s = self._observation()
-            if (
-                not -0.5
-                <= (
-                    datetime.now(UTC) - wire.timestamp(s["observed_at"])
-                ).total_seconds()
-                <= 3
-                or not s["stopped"]
-                or s["line_enabled"]
-            ):
+            if not self._fresh_stopped(s):
                 raise ValueError("fresh_stop_required")
             p = m["payload"]
             if m["type"] == "follow_registration_command" and (
@@ -440,6 +465,31 @@ class FieldPinkyClient:
         if record["command"]["type"] == "robot_stop_command":
             return False
         observation = self._observation()
+        if (
+            phase == "completed"
+            and record["command"]["type"] == "line_route_command"
+            and observation["fault"] is None
+            and (not observation["stopped"] or observation["line_enabled"])
+        ):
+            # The line callback can reach its goal before an updated wheel sample settles.
+            if self.pending_route_completion is None:
+                self.pending_route_completion = (
+                    legacy,
+                    details,
+                    monotonic() + ROUTE_STOP_CONFIRM_S,
+                )
+            if monotonic() < self.pending_route_completion[2]:
+                return False
+            LOG.warning(
+                "Route stop unconfirmed for %s (node=%s, stopped=%s, line_enabled=%s)",
+                active,
+                observation["node_id"],
+                observation["stopped"],
+                observation["line_enabled"],
+            )
+            phase, details = "failed", {"error_code": "route_stop_unconfirmed"}
+        if phase != "progress":
+            self.pending_route_completion = None
         payload = {
             **observation,
             "binding_id": self.binding,
@@ -454,7 +504,22 @@ class FieldPinkyClient:
             "target": self.control,
             "payload": payload,
         }
-        check_result(legacy, event)
+        try:
+            check_result(legacy, event)
+        except ValueError as exc:
+            LOG.warning(
+                "Driver result rejected for %s: %s (node=%s, stopped=%s, line_enabled=%s, mode=%s, owner=%s)",
+                active,
+                exc,
+                observation["node_id"],
+                observation["stopped"],
+                observation["line_enabled"],
+                observation["mode"],
+                observation["drive_owner"],
+            )
+            phase, details = "failed", {"error_code": "invalid_driver_result"}
+        if phase == "failed":
+            self.driver.safe_stop(details["error_code"])
         result = self._state_payload(observation)
         for key, value in details.items():
             if key not in {
@@ -509,8 +574,6 @@ class FieldPinkyClient:
             details.get("error_code"),
         )
         self._save_event(record["command"], outcome, active=phase == "progress")
-        if phase == "failed":
-            self.driver.safe_stop(details["error_code"])
         self._send(self.state_message())
         return True
 
@@ -577,9 +640,8 @@ class FieldPinkyClient:
         if not active:
             return
         rec = self.journal.data["records"][active]
-        if (
-            rec["command"]["type"] != "robot_stop_command"
-            or not self.driver.observe()["stopped"]
+        if rec["command"]["type"] != "robot_stop_command" or not self._fresh_stopped(
+            self.driver.observe()
         ):
             return
         original = self.journal.data["records"][
@@ -632,6 +694,12 @@ class FieldPinkyClient:
         self._finish_stop()
         if self.transport.ready and not self.halted:
             self._report_follow_active()
+        if self.pending_route_completion is not None:
+            legacy, details, _ = self.pending_route_completion
+            if legacy["command_id"] == self.journal.data["active"]:
+                self._report(legacy, "completed", **details)
+            else:
+                self.pending_route_completion = None
         if self.transport.ready and monotonic() - self.last_send >= 1:
             self._send(self.state_message())
             for event in self.journal.data["outbox"].values():

@@ -132,7 +132,7 @@ class RegistryRequest:
 
 @dataclass(frozen=True)
 class ReleaseEvidence:
-    """Future executor/maintenance input, never accepted from browser JSON."""
+    """Owner evidence; an operator's empty-load confirmation is not robot telemetry."""
 
     online: bool | None = None
     stopped: bool | None = None

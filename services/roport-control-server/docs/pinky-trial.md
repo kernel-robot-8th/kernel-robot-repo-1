@@ -407,7 +407,7 @@ uv run uvicorn roport_control_server.adapters.api.app:app \
 - 지도·OMX 설치 배치·탭은 기존 UI를 유지한다. Pinky는 고정 3자리 중 trial.json에 배정된 기체만 제어하고, 미배정 자리와 OMX 상태는 미수신으로 표시한다. 화면의 등록 편집기로 실기 시험 binding을 변경하지 않는다.
 - 화면을 닫거나 API만 재시작해도 실행부는 계속된다. 새로 열면 같은 작업 상태를 받는다. 실행부 재시작은 기존 HOLD 규칙을 유지한다. 기존 journal에 HOLD가 있으면 웹에서도 자동 출발/초기화하지 않는다.
 - `시험 중단 (보류)`는 후속 명령·lease 갱신을 막으며 조작 키가 필요하다. 무인증 중단은 팀 권한 정책 확정 전까지 적용하지 않는다. 즉시 물리 정지를 보증하는 비상정지 버튼이 아니다. 실제 정지는 Pinky watchdog·현장 정지 장치로 확인한다.
-- 지도는 마지막 확인 노드 또는 Nav2 완료 응답의 위치를 표시한다. 연속 위치 송수신은 후속이며 Nav2 주행 중 위치를 추측하지 않는다. 화면 지도 해시/노드 그래프가 시험과 다르면 표시·출발·더미 승인을 막는다.
+- 지도는 유효한 표시용 위치 표본으로 라인·Nav2 주행 중 위치를 갱신한다. 표본이 없거나 오래되면 마지막 위치와 경과 시간을 표시하며 현재 위치를 추측하지 않는다. 상세는 아래 「실시간 위치 표시」 절을 따른다. 화면 지도 해시/노드 그래프가 시험과 다르면 표시·출발·더미 승인을 막는다.
 - `mode=demo`는 기존 화면별 모의 재생이고 `mode=trial`은 실제 MQTT 시험이다. 가상 시험도 동일 TRIAL UI를 사용하되 `single/simulation`·loopback 브로커·`mock_pinky_trial.py`를 사용한다. 실물용 실행부와 연결하지 않는다.
 - 소켓은 사용자 전용 권한으로 만들고 Ctrl+C/SIGTERM 종료 시 제거한다. SIGKILL·전원 차단으로 파일이 남으면 소유 프로세스 종료를 확인한 뒤 소켓 파일만 정리한다. 실행 중 소켓이나 journal을 삭제해 잠금/복구를 우회하지 않는다. Unix 소켓 경로는 107바이트 이하로 사용한다.
 
@@ -642,7 +642,9 @@ Nav2 장애물 회피·실제 Wi-Fi 손실/지연·기체별 센서 편차·마�
 
 ## 11. 실시간 위치 표시 · DB 없이 연결
 
-`TrialDriver.observe_motion()` → 이식 MQTT runner → `roport/v1/{site}/robot/{pinky1|pinky2|pinky3}/motion` → 관제의 별도 수신 연결/메모리 최신값 → Unix socket → FastAPI → 원본 웹 UI. 기존 주행 명령·완료 응답 `trial-v1`과 `trial.json`은 변경하지 않는다.
+`TrialDriver.observe_motion()` → 이식 MQTT runner → `roport/robot/{pinky1|pinky2|pinky3}/motion`의 v2 `robot_pose` → 관제의 별도 수신 연결/메모리 최신값 → Unix socket → FastAPI → 원본 웹 UI. 실제 전송은 `schema_version=2.0`, `profile=roport-control-v2`이며 `boot_version`을 사용하고 `site_id`·`binding_id`는 보내지 않는다. 필드는 [현장 MQTT 계약](../interfaces/mqtt/README.md)을 따른다.
+
+아래 표는 순차 TRIAL 내부의 기존 `motion` 표현이다. `FieldTrialTransport`가 v2 `robot_pose`를 이 형태로 변환해 기존 journal·화면 처리와 호환한다. 표의 v1 식별자를 실물 MQTT 토픽이나 필드로 다시 추가하지 않는다.
 
 | 항목 | 규격/처리 |
 | --- | --- |
@@ -656,7 +658,7 @@ Nav2 장애물 회피·실제 Wi-Fi 손실/지연·기체별 센서 편차·마�
 
 이 motion 표본은 준비·도착·정지·자원 점유·다음 단계 승인에 사용하지 않는다. 위치 수신 연결과 작업 명령 연결의 큐를 분리해 표시 입력의 오류·적체가 작업 이벤트를 소비하지 않게 한다. 관제 프로세스가 재시작되면 메모리 위치는 새 표본을 기다리며, 운영 DB/보류된 registry 기능은 필요하지 않다.
 
-**실물 배포:** 관제 코드와 Pinky의 `roport_pinky/trial_driver.py` 및 MQTT 모듈(`motion.py`, `mqtt.py`, `pinky_trial.py`, `trial_runner.py`)을 함께 갱신한다. 재생성한 이식 키트에도 `motion.py`를 포함한다. 기존 실행 명령/브로커/기체 ID/binding/trial.json은 유지한다. ACL을 사용하는 현장은 기체의 자기 motion 토픽 발행과 관제의 해당 토픽 구독을 허용한다. 기존 드라이버에는 선택 hook이 없으므로 작업 시험은 계속 가능하지만 연속 위치는 표시되지 않는다. 실물 주행은 업데이트 후 별도 재검증해야 한다.
+**실물 배포:** 관제 코드와 Pinky의 `roport_pinky/trial_driver.py` 및 같은 버전의 MQTT 모듈 폴더(`field_pinky.py`, `field_wire.py`, `trial_runner.py`와 의존 모듈)를 함께 갱신한다. 재생성한 이식 키트에도 `motion.py`를 포함한다. 기존 실행 명령/브로커/기체 ID/binding/trial.json은 유지한다. ACL을 사용하는 현장은 기체의 자기 motion 토픽 발행과 관제의 해당 토픽 구독을 허용한다. 기존 드라이버에는 선택 hook이 없으므로 작업 시험은 계속 가능하지만 연속 위치는 표시되지 않는다. 실물 주행은 업데이트 후 별도 재검증해야 한다.
 
 위치 시각 보정에는 Pinky의 `trial_nav2.py`도 함께 갱신한다. 라인 추정은 현재 노드를 알며 STOPPED·ERROR가 아닐 때만 사용하고, HOLD·safe_stop 뒤에는 null을 발행해 이전 좌표를 마지막 확인 위치로 표시한다. 유효한 지도 TF는 정지 중에도 사용할 수 있다. 표시 hook의 예외는 작업 루프로 전파하지 않고 집계하며 첫 오류와 50건마다 예외 종류를 로그에 남긴다. 웹 시험 패널의 `위치 수신 거부 누적`에는 시각 지연/시계 차이·중복/역순·기체 식별 불일치·잘못된 표본의 건수를 표시한다. 시각 사유가 있으면 PC와 로봇 시계를 동기화하며 허용 시간 기준을 완화하지 않는다. 이 진단은 관제 실행부 재시작 시 초기화되고 주행 승인에는 사용하지 않는다.
 

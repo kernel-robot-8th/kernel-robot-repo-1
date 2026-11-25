@@ -53,13 +53,14 @@ Nav2로 N12 복귀 골에 이동 → 정지 → `nav2 → line` 전환 → 라�
 
 `confirmed_start`에도 `roport_line_nav`의 옆선 켜짐 확인(`side_rise_only`, 기본 켬)이 적용된다. 출발할 때부터 옆 IR이 본선 가장자리를 계속 밟고 그 run이 N08 옆선까지 이어지면 N08을 노드로 보지 않고 `node_missed`로 정지한다(안전 정지, 관제는 HOLD). 조건은 [roport_line_nav README](../../roport-pinky/src/roport_line_nav/README.md) 「옆선 켜짐 확인」 절에 있다. 실로봇에서 N12 출발 때 이 경우가 얼마나 자주 생기는지는 아직 재지 않았다.
 
-## 알려진 제한 (2026-11-17 연동 검토)
+## 정지 경로와 남은 제한
 
-main 96e05fa 기준 코드와 `VirtualPinky` 재현으로 확인했다. 실로봇·실브로커에서는 확인하지 않았다.
+순차 TRIAL과 Fleet의 정지 경로는 다르다. 아래 동작은 현재 코드 기준이며, 실제 정지거리 상한은 별도 실측이 필요하다.
 
-- **운영자 정지·HOLD는 정지 명령이 아니다.** 관제 시험 실행부(`field_trial_transport.py`)는 `robot_stop_command`를 보내지 않고, 정지·HOLD 때 `keep_running_command_id` 상태 요청만 멈춘다. Pinky는 마지막 유효 요청을 받은 뒤 3초가 넘은 것을 다음 `poll()`에서 확인하고 `control_link_lost`로 `safe_stop()`을 요청한다. 이 watchdog 대기 시간 동안 0.06 m/s 정속으로 주행한다고 가정한 이동 거리가 약 18 cm다(0.06 m/s × 3 s). 여기에는 폴링 주기, 정지 명령 반영, 실제 감속 시간이 들어 있지 않으므로 정지거리 상한이 아니며, 실제 정지거리 상한은 실측 전이라 미확정이다. 그동안 `trial_guard`는 로봇 안의 lease로 열려 있다.
-- **Pinky endpoint가 일부 stop을 거절한다.** `field_pinky.py`는 `robot_stop_command`도 일반 명령과 같은 순서로 `sent_at` 신선도(−0.5~3초), boot, 기록 1024개 한도를 먼저 검사한다. 늦게 도착한 stop은 `stale_message`, 기록이 찬 뒤의 stop은 `command_history_full`, 이미 끝난 명령을 가리키는 stop은 `stop_target_mismatch`로 거절되고, 주행 중이었다면 그대로 간다.
-- **수정 제안(미구현, 관제 담당 결정).** Pinky endpoint는 OMX 쪽(`task/control-integration-test` 91c0a84)처럼 stop을 신선도·기록 한도 검사보다 먼저 처리하고, 이미 끝난 명령을 가리키는 stop에는, 다른 활성 명령이 없고 최신 상태에서 실제 정지가 확인된 경우에만 「이미 정지」로 completed를 보낸다. 다른 명령이 실행 중이면(이전 주행 A가 끝난 뒤 주행 B가 시작된 상태에서 A를 가리키는 지연 stop이 도착한 경우) 대상 불일치(`stop_target_mismatch`)를 유지한다. 관제는 HOLD·운영자 정지 때 keep-running을 끊으면서 `robot_stop_command`도 한 번 보낸다. fleet runtime에서 stop을 보내게 되면 endpoint도 함께 고쳐야 한다.
+- **순차 TRIAL은 watchdog 정지 경로를 사용한다.** 순차 시험 연결부(`field_trial_transport.py`)는 `robot_stop_command`를 보내지 않고, 정지·HOLD 때 `keep_running_command_id` 상태 요청만 멈춘다. Pinky는 마지막 유효 요청을 받은 뒤 3초가 넘은 것을 다음 `poll()`에서 확인하고 `control_link_lost`로 `safe_stop()`을 요청한다. 이 watchdog 대기 시간 동안 0.06 m/s 정속으로 주행한다고 가정한 이동 거리가 약 18 cm다(0.06 m/s × 3 s). 여기에는 폴링 주기, 정지 명령 반영, 실제 감속 시간이 들어 있지 않으므로 정지거리 상한이 아니며, 실제 정지거리 상한은 실측 전이라 미확정이다. 그동안 `trial_guard`는 로봇 안의 lease로 열려 있다.
+- **Fleet은 STOP을 전송한다.** `FleetRuntime.publish_stops()`는 HOLD·운영자 정지 시 실행 허가 갱신을 끊고 현재 명령을 대상으로 `robot_stop_command`를 보낸다. 전송·수신 성공만으로 정차를 인정하지 않으며 정지 결과와 최신 기체 상태를 확인한다. 거절·만료·결과 불명은 복구 대상으로 남긴다.
+- **Pinky STOP은 일반 명령 지연·이력 한도와 분리한다.** `robot_stop_command`는 `sent_at`의 3초 창과 일반 명령 이력 1024개 한도 때문에 거절하지 않는다. 만료 시각·현재 기동·대상 명령·동일 ID의 본문 일치·전송 권한 검사는 유지한다. 활성 명령을 멈춘 뒤 3초 이내의 실제 정차·라인 비활성 관측으로만 완료한다.
+- **이미 완료된 명령의 늦은 STOP은 무해 완료할 수 있다.** 대상이 같은 기동에서 완료됐고 다른 활성 명령이 없으며 최신 정차가 확인된 경우에만 기존 결과를 보존한 채 STOP 완료를 보낸다. 후속 명령이 실행 중이거나 대상/기동이 다르면 `stop_target_mismatch`, 정차 관측이 오래됐으면 `fresh_stop_required`로 거절한다. 순차 TRIAL의 명시적 STOP 연결과 실물 정지거리 검증은 후속이다.
 - **host 토픽 ACL.** `--host-metrics-period-s`를 켜면 현장 브로커 ACL에 `roport/robot/{pinky}/host` 발행 권한이 있어야 한다. 없으면 QoS0이라 조용히 버려지고 관제 화면에는 `unknown`·`stale`만 보인다. 정지·HOLD·출발 판정에는 영향이 없다.
 
 ## 가상 시험 범위

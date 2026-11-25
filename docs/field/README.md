@@ -46,3 +46,4 @@ uv run python tools/check_field.py --bundle /tmp/field-handoff --targets pinky1 
 - 현장 카드 번호를 먼저 정하고 인식 노트북의 `roport_follow --follow-card`와 패드에서 고르는 번호를 일치시킨다. 인식기는 실행당 카드 한 장만 추적한다. 관제는 패드의 선택을 Pinky로 전달한다.
 - 검증 대상으로 배정된 Pinky에 관제와 같은 현장 번들의 `pinky_mqtt/`를 배포한다. 추종 명령을 해석하는 `field_pinky.py`와 `field_wire.py`가 포함되어야 한다.
 - 추종 승인 전 현장에서 카드가 카메라에 보이는 자세인지 확인한다. 이 경로는 Pinky 드라이버 기본값인 카드 유실 1초와 목표 거리 0.5 m를 사용한다. 카드 유실·인식 실패·시간 종료 시 해당 카트의 추종만 멈춘다. 운영자는 새 정지 상태 확인 후 재개하거나 복귀시킨다.
+- ARR에서 카메라가 벽쪽을 향하면 고객 카드가 보이는 자세와 정차를 현장에서 확인한 뒤 관제에서 추종을 승인한다. 180° 회전은 Pinky 시험 실행기 변경안 [#145](https://github.com/kernel-robot-8th/kernel-robot-repo-1/pull/145)에 있다. 관제 연결은 회전 완료·정차 및 실패·STOP 처리를 합의한 뒤 적용한다.

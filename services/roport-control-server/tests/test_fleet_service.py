@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 
 import pytest
-from test_fleet import finish
+from test_fleet import complete, dispatch, finish
 from test_fleet import fleet as fleet  # noqa: PLC0414
 from test_pinky_trial import profile  # noqa: F401
 from test_service_link import dsn as dsn  # noqa: PLC0414
@@ -112,6 +112,125 @@ def test_unavailable_package_holds_whole_service_request_before_creating_childre
     assert fleet.data == before
     assert fleet.data["tasks"] == {} and fleet.data["commands"] == {}
     assert fleet.next_action() is None
+
+
+def stock_wait_request(fleet):
+    fleet.submit(
+        {
+            "request_id": "stock-inbound",
+            "operation": "inbound",
+            "package_id": "box",
+            "marker": "16",
+            "goal": None,
+        }
+    )
+    message = request()
+    message["payload"].update(
+        operation="customer_service",
+        pickup_point_id="gate",
+        packages=[{"package_id": "box", "quantity": 1, "marker": "16"}],
+    )
+    return message
+
+
+def test_stock_wait_replays_then_dispatches_during_logistics_return(fleet, dsn):
+    store = ServiceTaskStore(dsn)
+    message = stock_wait_request(fleet)
+    task = store.accept(message)
+    child_id = task["task_id"] + ":box"
+    for _ in range(2):
+        service_tick(fleet, store)
+        saved = store.pending_tasks()[0]
+        assert saved["state"] == "QUEUED"
+        assert saved["progress"]["stages"] == ["waiting_for_stock"]
+        assert not saved["dispatch_locked"]
+        assert child_id not in fleet.data["tasks"]
+        assert store.accept(message)["task_id"] == task["task_id"]
+    assert len(store.outbox()) == 2
+    complete(fleet, dispatch(fleet))
+    complete(fleet, dispatch(fleet), size="large")
+    complete(fleet, dispatch(fleet))
+    shelf = dispatch(fleet)
+    service_tick(fleet, store)
+    assert store.pending_tasks()[0]["progress"]["reason"] == "waiting_for_stock"
+    placement = complete(fleet, shelf, broken={"evidence": "shelf_placed"})
+    fleet.shelf_placement_acked(shelf["command_id"], placement["message_id"])
+    returning = dispatch(fleet)
+    service_tick(fleet, store)
+    assert child_id not in fleet.data["tasks"]
+    complete(fleet, shelf, broken={"evidence": "shelf_align"}, sequence=3)
+    service_tick(fleet, store)
+    service_tick(fleet, store)
+    assert len(fleet.data["tasks"]) == 2
+    assert store.pending_tasks()[0]["dispatch_locked"]
+    assert fleet.data["tasks"]["stock-inbound"]["status"] == "RUNNING"
+    assert returning["command_id"] in fleet.data["commands"]
+    approach = dispatch(fleet)
+    assert approach["target"] != returning["target"]
+    assert approach["type"] == "line_route_command"
+    assert "N11" not in approach["payload"]["route"]
+    assert fleet.data["fault"] is None
+
+
+@pytest.mark.parametrize("state", ["HOLD", "FAILED", "CANCELED", "COMPLETE", "fault"])
+def test_stock_wait_does_not_hide_failed_or_missing_inbound(fleet, dsn, state):
+    store = ServiceTaskStore(dsn)
+    message = stock_wait_request(fleet)
+    data = deepcopy(fleet.data)
+    if state == "fault":
+        data["fault"] = "operator_stop"
+    else:
+        data["tasks"]["stock-inbound"]["status"] = state
+    fleet.save(data)
+    store.accept(message)
+    service_tick(fleet, store)
+    assert store.pending_tasks()[0]["state"] == "HOLD"
+    assert fleet.data == data
+
+
+@pytest.mark.parametrize("invalid_first", [True, False])
+def test_stock_wait_still_validates_whole_manifest(fleet, dsn, invalid_first):
+    store = ServiceTaskStore(dsn)
+    message = stock_wait_request(fleet)
+    missing = {"package_id": "unknown", "quantity": 1, "marker": "17"}
+    message["payload"]["packages"].insert(0 if invalid_first else 1, missing)
+    store.accept(message)
+    before = deepcopy(fleet.data)
+    service_tick(fleet, store)
+    saved = store.pending_tasks()[0]
+    assert saved["state"] == "HOLD"
+    assert saved["progress"]["reason"] != "waiting_for_stock"
+    assert fleet.data == before
+
+
+def test_stock_wait_rejects_marker_mismatch(fleet, dsn):
+    store = ServiceTaskStore(dsn)
+    message = stock_wait_request(fleet)
+    message["payload"]["packages"][0]["marker"] = "17"
+    store.accept(message)
+    service_tick(fleet, store)
+    assert store.pending_tasks()[0]["state"] == "HOLD"
+    assert store.pending_tasks()[0]["progress"]["reason"] == (
+        "inbound package marker differs from request"
+    )
+    assert len(fleet.data["tasks"]) == 1
+
+
+def test_stock_ready_before_dispatch_time_clears_stock_wait(fleet, dsn):
+    store = ServiceTaskStore(dsn)
+    message = stock_wait_request(fleet)
+    task = store.accept(message)
+    early = datetime(2030, 1, 1, 0, 50, tzinfo=UTC)
+    tick(fleet, store, now=early)
+    assert store.pending_tasks()[0]["progress"]["reason"] == "waiting_for_stock"
+    finish(fleet)
+    tick(fleet, store, now=early)
+    saved = store.pending_tasks()[0]
+    assert saved["state"] == "QUEUED" and saved["progress"] == {"stages": ["queued"]}
+    assert not saved["dispatch_locked"]
+    assert task["task_id"] + ":box" not in fleet.data["tasks"]
+    service_tick(fleet, store)
+    assert task["task_id"] + ":box" in fleet.data["tasks"]
 
 
 def test_service_metadata_is_not_lost_or_reinterpreted_as_dispatch_time(fleet, dsn):

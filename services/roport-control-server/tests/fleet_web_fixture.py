@@ -33,7 +33,7 @@ TOKEN = "fleet-test-only-operation-key"
 
 
 @contextmanager
-def owner(folder, mode="simulation"):
+def owner(folder, mode="simulation", *, store=None, registry=False):
     profile = prepare(MAP, LAYOUT, simulation=True, single_robot=False)
     goal = {
         k: v
@@ -53,7 +53,7 @@ def owner(folder, mode="simulation"):
         },
     }
     journal = Journal(folder / "fleet.json")
-    control = FleetControl(config, journal)
+    control = FleetControl(config, store or journal)
     for robot in TARGETS:
         node = {"pinky1": "N16", "pinky2": "N17", "pinky3": "H1"}.get(robot)
         state = {
@@ -79,11 +79,16 @@ def owner(folder, mode="simulation"):
             )
         control.observed[robot] = {
             "boot_version": robot + "-test-boot",
+            "observed_at": datetime.now(UTC).isoformat(),
             "sequence": 1,
             "active_command_id": None,
             "state": state,
         }
         control.heard[robot] = time.monotonic()
+    if registry:
+        from roport_control_server.executor.fleet_registry import FleetRegistry
+
+        FleetRegistry(control)
     channel = FleetSocket(folder / "s", control)
     done, fresh = threading.Event(), threading.Event()
     fresh.set()
@@ -141,9 +146,12 @@ def seed_stop(control):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "simulation"
+    factory = owner
+    if "--registry" in sys.argv:
+        from registry_web_fixture import owner as factory
     with (
         tempfile.TemporaryDirectory(prefix="rp-fleet-web-") as folder,
-        owner(Path(folder), mode) as fixture,
+        factory(Path(folder), mode) as fixture,
     ):
         if "--receipt" in sys.argv:
             # Seed a completed physical delivery to test only the receipt boundary.

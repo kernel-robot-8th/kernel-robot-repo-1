@@ -427,6 +427,10 @@ nav a { margin-left:auto; color:var(--muted); padding:10px; }
 #ps-msg[data-kind="warn"] { color: var(--warn); }
 #ps-msg[data-kind="err"] { color: #a33; }
 .ps-jobs { color: var(--muted); padding-left: 18px; }
+.ps-scroll { overflow-x: auto; }
+.ps-confirm { display: block; margin: 8px 0; }
+.ps-confirm input { margin-right: 8px; }
+#ps-registry input, #ps-registry select { min-width: 0; max-width: 100%; }
 /* The trial panel uses the existing neutral palette and explicit state labels. */
 :is(#trial-panel, #fleet-panel) { border-top: 1px solid var(--line); margin-top: 12px; padding: 12px; }
 :is(#trial-panel, #fleet-panel) p { line-height: 1.5; }
