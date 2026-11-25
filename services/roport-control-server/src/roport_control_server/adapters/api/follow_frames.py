@@ -2,10 +2,11 @@
 
 import json
 import secrets
+import ssl
 from datetime import UTC, datetime
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from fastapi import HTTPException
 from fastapi.responses import Response
@@ -19,8 +20,9 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class FollowFrames:
-    def __init__(self, token, sources, frame_token):
+    def __init__(self, token, sources, frame_token, *, ca_file=None):
         self.token, self.frame_token = token, frame_token
+        self.ca_file = ca_file
         self.sources = json.loads(sources or "{}")
         if not isinstance(self.sources, dict):
             raise TypeError("follow frame sources must map robot IDs to origins")
@@ -90,7 +92,12 @@ class FollowFrames:
         url = origin.rstrip("/") + "/frames/" + quote(image_ref, safe="")
         request = Request(url, headers={"Authorization": "Bearer " + self.frame_token})
         try:
-            with build_opener(NoRedirect()).open(request, timeout=2) as response:
+            handlers = [NoRedirect()]
+            if self.ca_file and urlsplit(origin).scheme == "https":
+                context = ssl.create_default_context()
+                context.load_verify_locations(cafile=self.ca_file)
+                handlers.append(HTTPSHandler(context=context))
+            with build_opener(*handlers).open(request, timeout=2) as response:
                 content_type = response.headers.get_content_type()
                 if content_type not in {"image/jpeg", "image/png"}:
                     raise ValueError("unsupported frame content")

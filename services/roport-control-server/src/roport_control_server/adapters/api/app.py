@@ -75,6 +75,7 @@ def create_app(
         os.environ.get("ROPORT_FOLLOW_PREVIEW_TOKEN", ""),
         os.environ.get("ROPORT_FOLLOW_FRAME_SOURCES", "{}"),
         os.environ.get("ROPORT_FOLLOW_FRAME_TOKEN", ""),
+        ca_file=os.environ.get("ROPORT_FOLLOW_FRAME_CA_FILE"),
     )
 
     @app.middleware("http")

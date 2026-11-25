@@ -324,6 +324,7 @@ def main():
                         for k in (
                             "ROPORT_FOLLOW_FRAME_SOURCES",
                             "ROPORT_FOLLOW_FRAME_TOKEN",
+                            "ROPORT_FOLLOW_FRAME_CA_FILE",
                         )
                         if k in os.environ
                     },
