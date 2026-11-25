@@ -80,6 +80,7 @@ export ROPORT_FINE_ALIGN_GOALS=N12_RETURN
 - 스스로 꺼지는 조건: runner 가 `heartbeat()` 를 1초 넘게 부르지 않을 때, 드라이버 `close()`. `safe_stop` 으로는 꺼지지 않는다.
 - 스스로 꺼진 뒤 다시 켜려면 `set_boarding_alert(True)` 를 다시 불러야 한다.
 - `observe()` 에는 알림 상태가 없다(기존 필드 그대로).
+- 추종 명령이 살아 있는 동안 `observe()` 에 선택 필드 `follow = {active, follow_mode: "marker"[, follow_session_id]}` 가 붙는다. `active` 는 Nav2 의 추종 goal 수락과 신선한 `trial_guard` 응답의 owner `nav2` 를 모두 확인했을 때만 true 다(자세한 조건은 `roport_pinky` README).
 
 ### MQTT 명령 형식 제안
 

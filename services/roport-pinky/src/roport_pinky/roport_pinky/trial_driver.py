@@ -536,7 +536,34 @@ class TrialDriver:
             state['fault'] = self._guard_fault() or state['fault']
             if self.runner_seen is None or time.monotonic() - self.runner_seen > 1:
                 state['fault'] = state['fault'] or 'runner_heartbeat_missing'
+            follow = self._follow_observation(state)
+            if follow is not None:
+                state['follow'] = follow
             return state
+
+    def _follow_observation(self, state):
+        """observe().follow(선택 필드): 추종 명령이 살아 있는 동안만 넣는다.
+
+        active 는 접수가 아니라 실제 구동 근거다. Nav2 가 추종 goal 을 수락했고(handle), 방금(0.3 s 이내)
+        받은 trial_guard 응답의 owner 가 nav2 이며 막혀 있지 않고, 이 관측에 fault 가 없을 때만 true.
+        구동권 전환 대기 중·goal 수락 전·종료 뒤에는 false. 고객이 서 있어 속도가 0 이어도 true 일 수 있다.
+        """
+        cmd = self.nav_command
+        if not cmd or cmd['type'] != 'follow.requested':
+            return None
+        guard = self.guard
+        active = bool(
+            self.follow is not None
+            and self.nav.handle is not None and self.nav.result is None
+            and guard is not None and time.monotonic() - self.guard_at <= 0.3
+            and guard['owner'] == 'nav2' and not guard['blocked']
+            and state['fault'] is None and state['mode'] == 'nav2'
+            and state['nav2_ready'] and state['localization_ready'] and not state['line_enabled'])
+        follow = {'active': active, 'follow_mode': 'marker'}
+        session = cmd['payload'].get('follow_session_id')
+        if session is not None:
+            follow['follow_session_id'] = session
+        return follow
 
     def observe_motion(self):
         """표시용 관측만 제공한다. 기존 상태/완료/구동권 판단에는 쓰지 않는다."""
@@ -616,6 +643,8 @@ class TrialDriver:
     def _admit_follow(self, payload):
         """읽기 전용 출발 검사. 첫 목표 (x, y, yaw, stamp) 를 돌려준다."""
         from .trial_follow import admit
+        if payload.get('follow_mode', 'marker') != 'marker':    # 외형 추종은 이 드라이버가 하지 않는다
+            raise ValueError('unsupported_operation')
         if self.mode != 'nav2':
             raise ValueError('not_in_nav2_mode')
         if not self.nav.quiescent():

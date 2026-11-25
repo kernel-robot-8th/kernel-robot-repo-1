@@ -351,6 +351,64 @@ def test_driver_starts_nav2_follow_tree_and_holds_nav2_lease(monkeypatch, tmp_pa
     assert d.drain_results() == []
 
 
+def _observed(d, **change):
+    state = {'fault': None, 'mode': 'nav2', 'nav2_ready': True, 'localization_ready': True,
+             'line_enabled': False, **change}
+    return d._follow_observation(state)
+
+
+def _guard(d, owner='nav2', *, blocked=False, age=0.0):
+    d.guard, d.guard_at = {'boot': 'g1', 'owner': owner, 'blocked': blocked}, Clocks.mono - age
+
+
+def test_follow_observation_is_active_only_with_accepted_goal_and_fresh_nav2_guard(monkeypatch, tmp_path):
+    d = driver(monkeypatch, tmp_path)
+    d.guard = d.guard_at = None
+    d.nav.handle = None
+    assert _observed(d) is None                                   # 추종 명령이 없으면 필드도 없다
+    d.dispatch(follow_cmd())
+    assert _observed(d) == {'active': False, 'follow_mode': 'marker'}      # 접수 직후: guard 응답 없음
+    _guard(d)
+    assert _observed(d)['active'] is False                        # Nav2 가 아직 goal 을 수락하지 않음
+    d.nav.handle = object()
+    assert _observed(d) == {'active': True, 'follow_mode': 'marker'}
+    for owner in ('none', 'line'):                                # 구동권 전환 대기
+        _guard(d, owner)
+        assert _observed(d)['active'] is False
+    _guard(d, blocked=True)
+    assert _observed(d)['active'] is False
+    _guard(d, age=0.31)                                           # 오래된 guard 응답
+    assert _observed(d)['active'] is False
+    _guard(d)
+    for change in ({'fault': 'drive_guard_unavailable'}, {'mode': 'line'}, {'nav2_ready': False},
+                   {'localization_ready': False}, {'line_enabled': True}):
+        assert _observed(d, **change)['active'] is False, change
+    d.nav.result = ('nav2_goal_aborted',)                         # Nav2 action 종료
+    assert _observed(d)['active'] is False
+    d.nav.result = None
+    assert _observed(d)['active'] is True
+    d.safe_stop('operator_stop')                                  # 정지 뒤에는 필드가 사라진다
+    assert _observed(d) is None
+
+
+def test_follow_observation_echoes_session_and_other_commands_have_no_follow(monkeypatch, tmp_path):
+    d = driver(monkeypatch, tmp_path)
+    d.nav.handle = object()
+    _guard(d)
+    d.dispatch(follow_cmd(follow_mode='marker', follow_session_id='follow-session-1'))
+    assert _observed(d) == {'active': True, 'follow_mode': 'marker',
+                            'follow_session_id': 'follow-session-1'}
+    d.nav_command = {'type': 'navigate.requested', 'payload': {}}
+    assert _observed(d) is None
+
+
+def test_driver_rejects_appearance_follow(monkeypatch, tmp_path):
+    d = driver(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match='unsupported_operation'):
+        d.validate_action(follow_cmd(follow_mode='appearance'))
+    assert d.nav.started == [] and d.leases == []
+
+
 @pytest.mark.parametrize('mode, code', [('line', 'not_in_nav2_mode')])
 def test_driver_rejects_follow_outside_nav2(monkeypatch, tmp_path, mode, code):
     d = driver(monkeypatch, tmp_path)
