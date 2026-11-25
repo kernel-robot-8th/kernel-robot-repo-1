@@ -35,6 +35,8 @@ out.limits = [{ advance_cm: 6.1, rotate_deg: 90, move_cm: 0 },
 // ② 노드별 범위: N21·N22 만 −10~10 · 60~120 (양 끝 포함), 180° 쪽은 거부
 const ROTS = [-10.1, -10, 0, 10, 10.1, 59.9, 60, 120, 120.1, 169.9, 170, 180, -180, 190, 190.1];
 out.bands = {};
+out.initial = {};
+for (const n of ['N01', 'N11', 'N21', 'N22']) out.initial[n] = { plan: C.initialPlan(n), text: C.initialText(n) };
 for (const n of ['N01', 'N11', 'N21', 'N22']) out.bands[n] = ROTS.map((r) => C.inLimits({ advance_cm: 0, rotate_deg: r, move_cm: 0 }, n));
 // 평행(②가 0°): ③ 없이 ①만, 옆 오차는 side_cm 로 알림. 180° 쪽은 범위 밖이라 적용 불가
 out.par = {};
@@ -103,6 +105,23 @@ def test_dock_core():
         assert s['parallel'] and abs(s['advance_cm'] - 1) < 1e-9 and abs(s['side_cm'] - 0.8) < 1e-9
         b0 = par['back0']                                           # ① 1.5 + ③ −2(같은 방향) = ① −0.5
         assert b0['parallel'] and abs(b0['advance_cm'] + 0.5) < 1e-9 and b0['move_cm'] == 0
+
+
+def test_initial_values_per_node_match_line_nav():
+    """값이 없을 때 표시·「로봇 값 지우기」 안내에 쓰는 처음 값: N21·N22 는 0·0°·−3 cm(roport_line_nav dock.NODE_INITIAL)."""
+    if shutil.which('node') is None:
+        pytest.skip('node not installed')
+    from roport_line_nav.dock import DEFAULT, initial_for
+    data = json.dumps({'graph': graph_view(LAYOUT), 'H': CALIB_N11})
+    res = subprocess.run(['node', '-e', SCRIPT, os.path.abspath(CORE)], input=data,
+                         capture_output=True, text=True, timeout=60)
+    assert res.returncode == 0, res.stderr
+    initial = json.loads(res.stdout)['initial']
+    for n in ('N01', 'N11', 'N21', 'N22'):
+        assert initial[n]['plan'] == initial_for(n).as_dict()
+    assert initial_for('N11') == DEFAULT
+    assert initial['N11']['text'] == '0 cm · 90° · 0 cm'
+    assert initial['N22']['text'] == '0 cm · 0° · -3 cm'
 
 
 def test_dock_routes_match_map():

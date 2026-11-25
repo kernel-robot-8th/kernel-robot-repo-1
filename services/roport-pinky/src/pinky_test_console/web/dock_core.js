@@ -101,6 +101,11 @@ const DockCore = (() => {
   const ROTATE_BANDS = { N21: [[-10, 10], [60, 120]], N22: [[-10, 10], [60, 120]] };
   const rotateBands = (node) => ROTATE_BANDS[node] || ROTATE_BANDS_DEFAULT;
   const bandsText = (node) => rotateBands(node).map(([lo, hi]) => `${lo}~${hi}°`).join(" · ");
+  // 로봇 상태의 dock 에 없는 노드가 쓰는 값(roport_line_nav dock.NODE_INITIAL 과 같게): N21·N22 는 0°·3 cm 후진
+  const INITIAL_DEFAULT = { advance_cm: 0, rotate_deg: 90, move_cm: 0 };
+  const NODE_INITIAL = { N21: { advance_cm: 0, rotate_deg: 0, move_cm: -3 }, N22: { advance_cm: 0, rotate_deg: 0, move_cm: -3 } };
+  const initialPlan = (node) => NODE_INITIAL[node] || INITIAL_DEFAULT;
+  const initialText = (node) => { const p = initialPlan(node); return `${p.advance_cm} cm · ${p.rotate_deg}° · ${p.move_cm} cm`; };
   function inLimits(pl, node) {
     if (![pl.advance_cm, pl.rotate_deg, pl.move_cm].every(Number.isFinite)) return false;
     const r = pl.rotate_deg;
@@ -129,7 +134,7 @@ const DockCore = (() => {
     return pts;
   }
   return { solve, homography, inv3, apply, predictedDock, box, plan, poseFromPlan, resultError, inLimits, LIMITS,
-    ROTATE_BANDS, rotateBands, bandsText,
+    ROTATE_BANDS, rotateBands, bandsText, initialPlan, initialText,
     layoutFromGraph, refPoints, heading, wrapDeg, DIRS };
 })();
 if (typeof module !== "undefined") module.exports = DockCore;

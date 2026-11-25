@@ -12,10 +12,8 @@
   // N07 교차선 출발(남쪽을 봄) → 상차 노드. 지도 links(roport_airport.yaml)와 같은 순서
   const ROUTES = { N11: ["N07", "N23", "N19", "N11"], N01: ["N07", "N18", "N01"],
     N21: ["N07", "N23", "N21"], N22: ["N07", "N23", "N19", "N24", "N22"] };
-  const DEFAULT_PLAN = { advance_cm: 0, rotate_deg: 90, move_cm: 0 };
-  // 로봇 상태의 dock 에 없는 노드가 쓰는 값(roport_line_nav dock.NODE_INITIAL 과 같음): N21·N22 는 0°·3 cm 후진
-  const NODE_INITIAL = { N21: { advance_cm: 0, rotate_deg: 0, move_cm: -3 }, N22: { advance_cm: 0, rotate_deg: 0, move_cm: -3 } };
-  const initialPlan = () => NODE_INITIAL[node()] || DEFAULT_PLAN;
+  // 로봇 상태의 dock 에 없는 노드가 쓰는 값(dock_core.js initialPlan): 기본 0·90°·0, N21·N22 는 0·0°·−3 cm
+  const initialPlan = () => Core.initialPlan(node());
   const LIVE_MAX_MS = 10 * 60 * 1000;
   const KEY = "pinkyDock.v1";
   const JSON_HDR = { "Content-Type": "application/json" };
@@ -130,7 +128,7 @@
     const d = robotDock();
     $("appliedTxt").textContent = !robotOk ? "로봇 상태 모름" : d
       ? `① ${f1(d.advance_cm)} cm · ② ${Number(d.rotate_deg).toFixed(1)}° · ③ ${f1(d.move_cm)} cm`
-      : (robotState && "dock" in robotState ? "없음(지금 코드 0 · 90° · 0)" : "로봇이 dock 값을 알리지 않음(line_nav 업데이트 필요?)");
+      : (robotState && "dock" in robotState ? `없음(처음 값 ${Core.initialText(node())})` : "로봇이 dock 값을 알리지 않음(line_nav 업데이트 필요?)");
     const lc = robotState && robotState.last_command;
     $("lastCmd").textContent = lc ? `${lc.cmd} ${lc.ok ? "ok" : "거부"} ${lc.detail || ""}` : "-";
     const m = store.meas[node()];
@@ -352,7 +350,7 @@
     } catch (e) { msg("applyMsg", e.message, "err"); }
   });
   $("resetRobot").addEventListener("click", async () => {
-    if (!confirm(`${robotName()} 의 ${cam.node} 도킹 값을 지우고 기본(0 · 90° · 0)으로 돌립니다.`)) return;
+    if (!confirm(`${robotName()} 의 ${cam.node} 도킹 값을 지우고 이 노드의 처음 값(${Core.initialText(cam.node)})으로 돌립니다.`)) return;
     try { await command({ cmd: "dock", node: cam.node, reset: true }, `dock ${cam.node} reset`); msg("applyMsg", "지우기 보냄", "ok"); } catch (e) { msg("applyMsg", e.message, "err"); }
   });
   document.querySelectorAll("input[name=goal]").forEach((r) => r.addEventListener("change", () => {
