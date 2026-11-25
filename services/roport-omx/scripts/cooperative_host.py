@@ -503,6 +503,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "clear, and let the aligner take the arms there (hand-over). Default on; "
         "--no-end-on-place returns home first and aligns from there",
     )
+    parser.add_argument(
+        "--place-shadow",
+        action="store_true",
+        help="panel 3.18+: judge the placement during loading and only record it (no hand-over); "
+        "only with --no-end-on-place",
+    )
     parser.add_argument("--mock-run-s", type=float, default=3.0)
     parser.add_argument("--mock-disarmed", action="store_true")
     parser.add_argument(
@@ -534,6 +540,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--report-placement is v2 only")
     if args.report_unload_placement and args.protocol != "v2":
         parser.error("--report-unload-placement is v2 only")
+    if args.place_shadow and args.protocol != "v2":
+        parser.error("--place-shadow is v2 only")
     if str(args.journal.resolve()).startswith("/tmp/"):
         parser.error("journal must survive a restart; do not use /tmp")
     if args.executor == "panel" and args.routes is None:
@@ -554,6 +562,7 @@ def main() -> None:
                 "end_on_place": args.end_on_place,
                 "report_placement": args.report_placement,
                 "report_unload_placement": args.report_unload_placement,
+                "place_shadow": args.place_shadow,
             }
             if args.protocol == "v2"
             else {}
