@@ -249,6 +249,10 @@ class RouteExecutor:
         self.legs = legs
         self._seg_ends = seg_ends
         self.index = 0
+        # 멈춰 있는 동안(TERMINAL)에는 odom 을 따라가지 않는다. 그 사이 Nav2·손으로 옮겨진 거리와 회전이 첫 샘플에서
+        # 이 경로의 이동 거리에 더해지지 않게 기준 자세를 버린다(11-24 d660: N12 복귀 뒤 13.6 cm 가 더해져 N08 창이
+        # 실제 34.8 cm 에서 끝남 → node_missed).
+        self._pose = None
         self.reason = ''
         self._loaded = False
         self._steps.clear()

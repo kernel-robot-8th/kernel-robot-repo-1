@@ -84,6 +84,23 @@ def test_confirmed_n12_default_side_rise_continuous_edge_is_ignored(graph):
     assert d > runner._max_ok
 
 
+def test_restart_does_not_count_odom_moved_while_idle(graph):
+    """멈춰 있는 동안 Nav2 로 다녀온 거리·회전은 다음 경로의 구간 거리에 더하지 않는다.
+
+    2026-11-24 d660: N12 넘김 뒤 Nav2 로 다녀와 N12 에서 다시 출발할 때, 넘김 때의 odom 자세와 13.6 cm·177° 차이가
+    첫 샘플에 더해져 N08 감지 창(48.4 cm)이 실제 34.8 cm 이동에서 끝나 node_missed.
+    """
+    runner = RouteExecutor(graph)
+    runner._pose = (38.5, -41.4, 0.0)                 # 앞 경로가 끝났을 때(동쪽을 봄)의 odom
+    runner.start(['N12', 'N08', 'N09', 'H1'], start_offset_cm=0., confirmed_start=True)
+    here = (38.5, -27.8, math.radians(176.6))        # 돌아와 서쪽을 보고 선 자리: 13.6 cm·176.6° 떨어짐
+    assert runner.step(_ir((False, True, False)), here, 0.0, 0.0) is not None
+    state = runner.as_dict()
+    assert state['traveled_cm'] == 0.0 and state['rotated_deg'] == 0.0
+    runner.step(_ir((False, True, False)), (36.5, -27.8, math.radians(176.6)), 0.05, 0.05)
+    assert runner.as_dict()['traveled_cm'] == 2.0   # 그 뒤 이동은 그대로 센다
+
+
 @pytest.mark.parametrize('offset', [None, -1., math.nan, math.inf, 1000.])
 def test_confirmed_start_rejects_unmeasured_offsets(graph, offset):
     runner = RouteExecutor(graph)
