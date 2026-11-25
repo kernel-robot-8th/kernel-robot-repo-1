@@ -108,6 +108,16 @@ def test_close_gate_tolerance_is_explicit_and_finite(trial_launch):
             trial_launch._nodes(ctx)
 
 
+def test_appearance_launch_reports_missing_optional_package(trial_launch, monkeypatch):
+    def missing(name):
+        raise trial_launch.PackageNotFoundError(name)
+
+    monkeypatch.setenv('ROPORT_APPEARANCE_CONFIG', '/unused/appearance.yaml')
+    monkeypatch.setattr(trial_launch, 'get_package_share_directory', missing)
+    with pytest.raises(RuntimeError, match='ROPORT_APPEARANCE_CONFIG requires roport_smartcart'):
+        trial_launch._nodes(context(.4))
+
+
 def test_appearance_checker_is_separate_from_general_and_n12_checkers(trial_launch, monkeypatch):
     monkeypatch.setenv('ROPORT_APPEARANCE_CONFIG', '/unused/appearance.yaml')
     monkeypatch.setenv('ROPORT_FINE_ALIGN_GOALS', 'N12_RETURN')

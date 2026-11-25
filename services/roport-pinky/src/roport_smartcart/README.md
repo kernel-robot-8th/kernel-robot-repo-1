@@ -797,6 +797,8 @@ ros2 run roport_smartcart shopping_follow --sim --pad-dist "$PAD_DIST" \
 
 ### 관제 패드의 외형 추종 (pinky3)
 
+현장에서 `ROPORT_APPEARANCE_CONFIG`는 외형 추종 전용 3호기(pinky3·764e)에만 설정하고 마커 추종 1호기(d660)에서는 해제한다. 이 설정은 Nav2 기동 때 쇼핑 비용지도와 경로 추종기 파라미터를 읽으므로 3호기의 ARR 배송과 복귀에도 적용된다. 쇼핑 비용지도는 초음파 층을 사용하며 기존 마커 프로필의 `/doll_obstacles` 층을 포함하지 않는다.
+
 `roport_pinky`와 `roport_smartcart`가 모두 설치된 ROS 작업공간을 읽는다. 관제 MQTT 키트에 등록·외형 추종 규격이 들어 있어야 한다. 키트의 Python 환경에는 ROS와 호환되는 OpenCV·NumPy, ONNX Runtime, paho-mqtt 2.1.0이 필요하다. 카메라 노드 한 개가 보정된 `camera/image_raw/compressed`와 광학 TF를 발행한다. 기존 관제 runner가 유일한 `trial/lease` 발행자이고 `trial_guard`가 `cmd_vel`을 발행한다. 단독 쇼핑 실행기는 종료한 상태에서 시작한다.
 
 로봇의 로컬 설정 파일 예시

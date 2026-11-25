@@ -635,6 +635,7 @@ def test_follow_wait_pause_resume_and_return_over_mqtt(fleet_mqtt):
         "follow_lost",
         "follow_max_duration",
         "follow_action_response_failed",
+        "follow_appearance_failed",
         "nav2_not_ready",
     ],
 )

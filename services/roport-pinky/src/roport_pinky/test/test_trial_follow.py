@@ -229,7 +229,7 @@ def test_max_duration_stops():
 def test_follow_recovery_faults_require_separate_ownership_checks():
     assert tf.SOFT_STOPS == {'follow_lost', 'follow_status_stale', 'follow_target_stale',
                              'follow_max_duration', 'follow_not_tracking', 'follow_card_mismatch',
-                             'follow_action_response_failed'}
+                             'follow_action_response_failed', 'follow_appearance_failed'}
     assert not {'follow_tf_unavailable', 'follow_nav2_failed', 'nav2_not_ready'} & tf.SOFT_STOPS
 
 
@@ -442,6 +442,24 @@ def test_driver_rejects_appearance_follow(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match='unsupported_operation'):
         d.validate_action(follow_cmd(follow_mode='appearance'))
     assert d.nav.started == [] and d.leases == []
+
+
+def test_unexpected_appearance_error_reports_cause_and_releases_lease(monkeypatch, tmp_path):
+    d = driver(monkeypatch, tmp_path)
+    _guard(d)
+    errors, stops = [], []
+    d.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(error=errors.append))
+
+    def fail(**kwargs):
+        raise RuntimeError('test camera decode failure')
+
+    d.appearance = SimpleNamespace(tick=fail, pending=None, stop=lambda **kw: stops.append(kw))
+    command = follow_cmd(follow_mode='appearance')
+    d.nav_command = command
+    d._appearance_tick()
+    assert d.leases[-1] == 'none' and {'forget': True} in stops
+    assert d.drain_results() == [(command, 'failed', {'error_code': 'follow_appearance_failed'})]
+    assert 'Traceback' in errors[0] and 'RuntimeError: test camera decode failure' in errors[0]
 
 
 def test_appearance_response_failure_requires_action_terminal_and_fresh_odometry(monkeypatch, tmp_path):

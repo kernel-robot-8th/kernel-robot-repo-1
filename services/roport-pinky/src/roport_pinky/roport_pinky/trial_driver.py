@@ -20,6 +20,7 @@ import os
 import re
 import threading
 import time
+import traceback
 from datetime import UTC, datetime
 
 from roport_line_nav.graph import Graph, GraphError, plan_route
@@ -318,7 +319,13 @@ class TrialDriver:
         self._init_boarding()
         self.appearance = None
         if role == 'smartcart' and os.environ.get('ROPORT_APPEARANCE_CONFIG'):
-            from roport_smartcart.fleet_appearance import FleetAppearance
+            try:
+                from roport_smartcart.fleet_appearance import FleetAppearance
+            except ModuleNotFoundError as exc:
+                if exc.name not in ('roport_smartcart', 'roport_smartcart.fleet_appearance'):
+                    raise
+                raise RuntimeError('ROPORT_APPEARANCE_CONFIG requires roport_smartcart with '
+                                   'fleet_appearance installed in the active workspace') from exc
             self.appearance = FleetAppearance.from_env(self.node, self.lock)
             self.appearance_timer = self.node.create_timer(.05, self._appearance_tick)
         self._ex = SingleThreadedExecutor()
@@ -454,24 +461,24 @@ class TrialDriver:
 
     def _appearance_tick(self):
         with self.lock:
-            state = self.observe()
-            controller_ready = bool(
-                state['fault'] is None and state['mode'] == 'nav2'
-                and state['nav2_ready'] and state['localization_ready']
-                and not state['line_enabled'])
             following = self._appearance_running()
             try:
+                state = self.observe()
+                controller_ready = bool(
+                    state['fault'] is None and state['mode'] == 'nav2'
+                    and state['nav2_ready'] and state['localization_ready']
+                    and not state['line_enabled'])
                 error, result = self.appearance.tick(
                     following=following, controller_ready=controller_ready,
                     stopped=state['stopped'] and self.guard is not None
                     and self.guard['owner'] == 'none')
-            except Exception as exc:  # ROS action replies and camera decodes may fail asynchronously.
-                self.node.get_logger().error(f'Appearance tick failed: {type(exc).__name__}')
+            except Exception:  # ROS action replies and camera decodes may fail asynchronously.
+                self.node.get_logger().error(f'Appearance tick failed:\n{traceback.format_exc()}')
                 pending = self.appearance.pending
                 if following:
                     self._lease('none')
                 self.appearance.stop(forget=True)
-                error = 'follow_status_stale' if following else None
+                error = 'follow_appearance_failed' if following else None
                 result = (pending, 'failed', {'error_code': 'follow_registration_failed'}) if pending else None
             if error:
                 self._end_follow(error)

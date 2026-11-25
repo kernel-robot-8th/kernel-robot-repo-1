@@ -2,6 +2,7 @@
 import math
 import os
 
+from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
@@ -101,8 +102,12 @@ def _nodes(context):
     parameters = [config]
     appearance = bool(os.environ.get('ROPORT_APPEARANCE_CONFIG'))
     if appearance:
-        parameters.append(PathJoinSubstitution([
-            FindPackageShare('roport_smartcart'), 'config', 'shopping_costmaps.yaml']))
+        try:
+            share = get_package_share_directory('roport_smartcart')
+        except PackageNotFoundError as exc:
+            raise RuntimeError('ROPORT_APPEARANCE_CONFIG requires roport_smartcart installed '
+                               'in the active workspace') from exc
+        parameters.append(os.path.join(share, 'config', 'shopping_costmaps.yaml'))
     nodes = [
         Node(package='roport_pinky', executable='trial_guard', output='screen'),
         Node(package='roport_line_nav', executable='line_nav', output='screen',
