@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 
 from omx_udp import errors, wire
+from omx_udp import server as server_module
 from omx_udp.panel_policy import PanelPolicy
 from omx_udp.server import InferenceServer, PolicyError, bind_address, read_key
 from omx_udp.wire import ACTIONS, ERROR, INFER, LOAD, LOADED, PING, PONG, Message
@@ -239,6 +240,8 @@ def test_reply_that_cannot_be_built_or_sent_never_stops_the_server(link):
     huge = call(infer(2, "huge"))
     assert (huge.kind, huge.header["code"]) == (ERROR, "REPLY_FAILED")
     assert server.stats["reply_failed"] == 1
+    # both went out as ERROR: the NaN refusal and the reply that could not be packed
+    assert (server.stats["replied_error"], server.stats["replied_actions"]) == (2, 0)
     real = server.sock
 
     class Refusing:  # a socket whose sends fail (ENOBUFS, firewall EPERM, ...)
@@ -371,3 +374,10 @@ def test_stats_line_counts_requests_replies_and_infer_time(link, capsys):
     logged = json.loads(out.removeprefix("[omx-udp] stats "))
     assert logged["failed"] == logged["replied_error"] == 1
     assert logged["infer_ms_n"] == 0  # a failed inference has no time
+
+
+def test_infer_times_stay_bounded_without_stats_lines(link):
+    _, server, _ = link
+    assert server.stats_every == 0
+    server._infer_ms.extend([1.0] * (server_module.INFER_MS_KEPT + 100))
+    assert len(server._infer_ms) == server_module.INFER_MS_KEPT

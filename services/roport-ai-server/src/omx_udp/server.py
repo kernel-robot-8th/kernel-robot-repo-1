@@ -16,7 +16,7 @@ import socket
 import stat
 import sys
 import time
-from collections import Counter
+from collections import Counter, deque
 from pathlib import Path
 from typing import Protocol
 
@@ -42,6 +42,7 @@ from .wire import (
 DEFAULT_PORT = 5600
 RCVBUF_BYTES = 8 * 1024 * 1024
 STATS_EVERY_S = 10.0
+INFER_MS_KEPT = 4096  # bound when no stats line empties it (--stats-every 0)
 
 
 class Policy(Protocol):
@@ -73,7 +74,7 @@ class InferenceServer:
         self.stats = self.reassembler.stats
         self.infer_by_peer: Counter = Counter()  # completed INFER requests per host PC
         self.stats_every = stats_every
-        self._infer_ms: list[float] = []  # since the last stats line
+        self._infer_ms: deque[float] = deque(maxlen=INFER_MS_KEPT)  # since last line
         self._started = time.time()
         self._last_line: tuple[float, dict] = (time.monotonic(), {})
 
@@ -125,8 +126,9 @@ class InferenceServer:
             self.stats["reply_failed"] += 1
             print(f"[omx-udp] reply {kind=} not packed: {exc!r}", file=sys.stderr)
             error = {"code": "REPLY_FAILED", "message": type(exc).__name__}
+            kind = ERROR  # count what is really sent
             datagrams = pack(
-                Message(ERROR, message.session, message.request_id, error), self.key
+                Message(kind, message.session, message.request_id, error), self.key
             )
         try:
             for datagram in datagrams:
@@ -186,8 +188,10 @@ class InferenceServer:
         """Counters since start plus infer ms of this interval; None when nothing changed.
 
         Cumulative counters (a restart resets them; "started" tells): fragments_expected =
-        fragments_received + fragments_missing + still pending. Kernel drops before the socket
-        (RcvbufErrors) are not visible here; they show in /proc/net/udp.
+        fragments_received + fragments_missing + still pending. Requests lost after arriving =
+        timeout + superseded + conflict (fragments missing) + checksum + bad_mac + malformed (all
+        fragments came, message refused). Kernel drops before the socket (RcvbufErrors) are not
+        visible here; they show in /proc/net/udp.
         """
         now = time.monotonic() if now is None else now
         counters = dict(sorted(self.stats.items()))
