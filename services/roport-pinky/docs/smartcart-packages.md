@@ -12,7 +12,7 @@
 - 로봇: `ros2 launch roport_pinky trial.launch.py ... params_file:=<share/roport_pinky/config/nav2_follow_real.yaml>`
 - 노트북(같은 ROS_DOMAIN_ID): `roport_follow`의 `follow_tool`이 로봇 카메라 영상에서 카드·인형을 인식해 `follow/target`·`follow/status`·`/doll_obstacles`를 보낸다. 노트북이 없으면 추종할 수 없다.
 - 드라이버 명령: `follow.requested` `{card_id, standoff_m, ...}` → 결과 `follow.failed`의 `error_code`. 상세는 [roport_pinky README](../src/roport_pinky/README.md)의 「고객 카드 추종」 절.
-- 관제 MQTT(`roport-control-v2`)에는 아직 추종 명령이 없다. 지금은 로봇 안 시험 도구(`roport_follow`의 `demo_runner`)가 드라이버를 직접 부른다.
+- 관제 MQTT(`roport-control-v2`)의 `follow_target_command`는 Pinky MQTT 실행부에서 `follow.requested`로 변환된다. d660에 관제와 같은 배포본의 `pinky_mqtt/field_pinky.py`와 `pinky_mqtt/field_wire.py`를 함께 설치한다. 개별 드라이버 시험은 `roport_follow`의 `demo_runner`를 사용한다.
 
 ## `pinky_764e`: `roport_smartcart`
 

@@ -54,18 +54,22 @@ class RegistryStore:
     def snapshot(self):
         with self.connection() as conn:
             conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-            meta = self.metadata(conn)
-            rows = conn.execute(
-                SELECT_SLOTS + " ORDER BY s.kind DESC, s.robot_id"
-            ).fetchall()
-            return {
-                "schema_version": 1,
-                "registry_id": str(meta["registry_id"]),
-                "revision": meta["revision"],
-                "development": meta["development"],
-                "available": True,
-                "robots": [self.view(row) for row in rows],
-            }
+            return self.snapshot_connection(conn)
+
+    @classmethod
+    def snapshot_connection(cls, conn):
+        meta = cls.metadata(conn)
+        rows = conn.execute(
+            SELECT_SLOTS + " ORDER BY s.kind DESC, s.robot_id"
+        ).fetchall()
+        return {
+            "schema_version": 1,
+            "registry_id": str(meta["registry_id"]),
+            "revision": meta["revision"],
+            "development": meta["development"],
+            "available": True,
+            "robots": [cls.view(row) for row in rows],
+        }
 
     @staticmethod
     def view(row):
@@ -113,75 +117,108 @@ class RegistryStore:
         if not development:
             raise RegistryError("operating_writes_disabled", 403)
         with self.connection() as conn:
-            # Six fixed slots: one short lock makes revisions, uniqueness and retry receipts atomic.
-            meta = self.metadata(conn, lock=True)
-            if not meta["development"]:
-                raise RegistryError("development_database_required", 403)
-            previous = conn.execute(
-                "SELECT * FROM control_registry_changes WHERE request_id=%s",
-                (request.request_id,),
-            ).fetchone()
-            if previous:
-                if (previous["robot_id"], previous["action"], previous["payload"]) != (
+            result, _ = self.change_connection(
+                conn,
+                robot_id,
+                action,
+                request,
+                development=True,
+                actor="local-development",
+            )
+            return result
+
+    @classmethod
+    def change_connection(
+        cls,
+        conn,
+        robot_id,
+        action,
+        request,
+        *,
+        actor,
+        development=False,
+        check=None,
+        confirmed=None,
+    ):
+        # The owner supplies runtime evidence; the public development API stays sim-only.
+        if not development and check is None:
+            raise RegistryError("owner_evidence_required", 403)
+        payload = request.payload()
+        if confirmed is not None:
+            payload["confirmed"] = confirmed
+        # Six fixed slots: one short lock makes revisions, uniqueness and retry receipts atomic.
+        meta = cls.metadata(conn, lock=True)
+        if development and not meta["development"]:
+            raise RegistryError("development_database_required", 403)
+        previous = conn.execute(
+            "SELECT * FROM control_registry_changes WHERE request_id=%s",
+            (request.request_id,),
+        ).fetchone()
+        if previous:
+            if (previous["robot_id"], previous["action"], previous["payload"]) != (
+                robot_id,
+                action,
+                payload,
+            ):
+                raise RegistryError("request_id_reused", 409)
+            return previous["result"], False
+        row = conn.execute(
+            SELECT_SLOTS + " WHERE s.robot_id=%s", (robot_id,)
+        ).fetchone()
+        if row["revision"] != request.expected_revision:
+            raise RegistryError("revision_conflict", 409)
+        binding = str(row["binding_id"]) if row["binding_id"] else None
+        if action == "registration":
+            if binding:
+                raise RegistryError("slot_occupied", 409)
+            if meta["development"] and not request.device_id.startswith("sim-"):
+                raise RegistryError("synthetic_device_required", 403)
+            if check:
+                check(row)
+            binding = str(uuid4())
+            config = request.config
+            conn.execute(
+                """INSERT INTO control_robot_bindings
+                (binding_id, robot_id, device_id, ip, role, ros_domain_id, calibration)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                (
+                    binding,
                     robot_id,
-                    action,
-                    request.payload(),
-                ):
-                    raise RegistryError("request_id_reused", 409)
-                return previous["result"]
-            row = conn.execute(
-                SELECT_SLOTS + " WHERE s.robot_id=%s", (robot_id,)
-            ).fetchone()
-            if row["revision"] != request.expected_revision:
-                raise RegistryError("revision_conflict", 409)
-            binding = str(row["binding_id"]) if row["binding_id"] else None
-            if action == "registration":
-                if binding:
-                    raise RegistryError("slot_occupied", 409)
-                if not request.device_id.startswith("sim-"):
-                    raise RegistryError("synthetic_device_required", 403)
-                binding = str(uuid4())
+                    request.device_id,
+                    config.ip,
+                    config.role,
+                    config.ros_domain_id,
+                    config.calibration,
+                ),
+            )
+        else:
+            if binding is None or binding != request.binding_id:
+                raise RegistryError("binding_conflict", 409)
+            if meta["development"] and not row["device_id"].startswith("sim-"):
+                raise RegistryError("synthetic_device_required", 403)
+            evidence = check(row) if check else None
+            if action == "config":
                 config = request.config
                 conn.execute(
-                    """INSERT INTO control_robot_bindings
-                    (binding_id, robot_id, device_id, ip, role, ros_domain_id, calibration)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                    """UPDATE control_robot_bindings SET ip=%s, role=%s, ros_domain_id=%s,
+                    calibration=%s, desired_revision=desired_revision+1 WHERE binding_id=%s""",
                     (
-                        binding,
-                        robot_id,
-                        request.device_id,
                         config.ip,
                         config.role,
                         config.ros_domain_id,
                         config.calibration,
+                        binding,
                     ),
                 )
+            elif action == "exclude":
+                conn.execute(
+                    "UPDATE control_robot_bindings SET excluded=%s WHERE binding_id=%s",
+                    (request.excluded, binding),
+                )
             else:
-                if binding is None or binding != request.binding_id:
-                    raise RegistryError("binding_conflict", 409)
-                if not row["device_id"].startswith("sim-"):
-                    raise RegistryError("synthetic_device_required", 403)
-                if action == "config":
-                    config = request.config
-                    conn.execute(
-                        """UPDATE control_robot_bindings SET ip=%s, role=%s, ros_domain_id=%s,
-                        calibration=%s, desired_revision=desired_revision+1 WHERE binding_id=%s""",
-                        (
-                            config.ip,
-                            config.role,
-                            config.ros_domain_id,
-                            config.calibration,
-                            binding,
-                        ),
-                    )
-                elif action == "exclude":
-                    conn.execute(
-                        "UPDATE control_robot_bindings SET excluded=%s WHERE binding_id=%s",
-                        (request.excluded, binding),
-                    )
-                else:
-                    # Synthetic registrations cannot own physical work. This is not a real release proof.
-                    evidence = ReleaseEvidence(
+                # Synthetic registrations cannot own physical work. This is not a real release proof.
+                evidence = (
+                    ReleaseEvidence(
                         online=True,
                         stopped=True,
                         active_task=False,
@@ -190,36 +227,42 @@ class RegistryStore:
                         loaded=False,
                         maintenance=False,
                     )
-                    if reasons := evidence.reasons(row["excluded"]):
-                        raise RegistryError(reasons[0], 409)
-                    conn.execute(
-                        "UPDATE control_robot_bindings SET closed_at=now() WHERE binding_id=%s",
-                        (binding,),
-                    )
-            conn.execute(
-                "UPDATE control_robot_slots SET revision=revision+1 WHERE robot_id=%s",
-                (robot_id,),
-            )
-            conn.execute("UPDATE control_registry_meta SET revision=revision+1")
-            result = {
-                "request_id": request.request_id,
-                "robot_id": robot_id,
-                "binding_id": binding,
-                "revision": row["revision"] + 1,
-                "registry_revision": meta["revision"] + 1,
-            }
-            conn.execute(
-                """INSERT INTO control_registry_changes(request_id,robot_id,action,payload,result,actor)
-                VALUES (%s,%s,%s,%s,%s,'local-development')""",
-                (
-                    request.request_id,
-                    robot_id,
-                    action,
-                    Jsonb(request.payload()),
-                    Jsonb(result),
-                ),
-            )
-            return result
+                    if development
+                    else evidence
+                )
+                if not isinstance(evidence, ReleaseEvidence):
+                    raise RegistryError("owner_evidence_required", 403)
+                if reasons := evidence.reasons(row["excluded"]):
+                    raise RegistryError(reasons[0], 409)
+                conn.execute(
+                    "UPDATE control_robot_bindings SET closed_at=now() WHERE binding_id=%s",
+                    (binding,),
+                )
+        conn.execute(
+            "UPDATE control_robot_slots SET revision=revision+1 WHERE robot_id=%s",
+            (robot_id,),
+        )
+        conn.execute("UPDATE control_registry_meta SET revision=revision+1")
+        result = {
+            "request_id": request.request_id,
+            "robot_id": robot_id,
+            "binding_id": binding,
+            "revision": row["revision"] + 1,
+            "registry_revision": meta["revision"] + 1,
+        }
+        conn.execute(
+            """INSERT INTO control_registry_changes(request_id,robot_id,action,payload,result,actor)
+            VALUES (%s,%s,%s,%s,%s,%s)""",
+            (
+                request.request_id,
+                robot_id,
+                action,
+                Jsonb(payload),
+                Jsonb(result),
+                actor,
+            ),
+        )
+        return result, True
 
     def history(self, robot_id: str, *, limit: int = 50):
         if (

@@ -45,6 +45,10 @@ def is_inbound_return(task):
     return task["stage"] == "return_route" and task["request"]["operation"] == "inbound"
 
 
+class StockPending(ValueError):
+    """A valid outbound request is waiting for its active inbound task."""
+
+
 class FleetControl:
     def __init__(self, config, store, *, clock=monotonic):
         self.config, self.store, self.clock = config, store, clock
@@ -54,6 +58,7 @@ class FleetControl:
             config.get("node_clearance_m"),
         )
         self.observed, self.poses, self.heard = {}, {}, {}
+        self.registry = None
         self.observed_since = {}
         self.awaiting_state = set()
         roles = config.get("initial_roles", ROLES)
@@ -133,7 +138,7 @@ class FleetControl:
             data["tasks"][active["task"]]["status"] = "HOLD"
         self.save(data)
 
-    def assign(self, robot, role):
+    def validate_assignment(self, robot, role):
         if robot not in ROLES or role not in {*PARKING, None}:
             raise ValueError("unknown robot/role")
         if self.config.get("mode") == "hardware" and robot not in self.config.get(
@@ -152,6 +157,13 @@ class FleetControl:
             and robot not in self.observed
         ):
             self.ready(robot)
+
+    def assign(self, robot, role, *, actor=None):
+        if self.registry:
+            if actor is None:
+                raise ValueError("operator peer credentials required")
+            return self.registry.assign(robot, role, actor=actor)
+        self.validate_assignment(robot, role)
         data = deepcopy(self.data)
         data["roles"][robot] = role
         self.save(data)
@@ -193,23 +205,42 @@ class FleetControl:
             raise ValueError("invalid physical package marker")
         if request["operation"] == "inbound":
             self.validate_warehouse_marker(request)
+        active = [
+            t
+            for t in self.data["tasks"].values()
+            if t["request"]["package_id"] == request["package_id"]
+            and t["status"] not in {"COMPLETE", "CANCELED"}
+        ]
+        waiting = (
+            request["operation"] == "outbound"
+            and not self.data["fault"]
+            and len(active) == 1
+            and active[0]["request"]["operation"] == "inbound"
+            and active[0]["status"] in {"QUEUED", "RUNNING"}
+        )
+        if waiting and active[0]["request"].get("marker") != request.get("marker"):
+            raise ValueError("inbound package marker differs from request")
         if request["operation"] == "outbound":
             for slot in self.data["slots"].values():
-                if slot["package_id"] == request["package_id"] and slot.get(
-                    "marker"
-                ) != request.get("marker"):
+                if (
+                    slot["package_id"] == request["package_id"]
+                    and slot.get("marker") != request.get("marker")
+                    and not (
+                        waiting and slot["state"] == "reserved" and "marker" not in slot
+                    )
+                ):
                     raise ValueError("shelf package marker differs from request")
         if any(
-            t["request"]["package_id"] == request["package_id"]
-            and t["status"] not in {"COMPLETE", "CANCELED"}
-            and not (
+            not (
                 request["operation"] == "outbound"
                 and is_inbound_return(t)
                 and t["status"] == "RUNNING"
                 and "shelf_alignment_pending" not in t
             )
-            for t in self.data["tasks"].values()
+            for t in active
         ):
+            if waiting:
+                raise StockPending("package already has an active task")
             raise ValueError("package already has an active task")
         if request["operation"] == "inbound" and any(
             s["package_id"] == request["package_id"]
@@ -288,6 +319,10 @@ class FleetControl:
 
     def observe(self, message, *, age=0):
         robot, p = message["source"], message["payload"]
+        if p["boot_version"] in self.data.get("registry_retired_boots", {}).get(
+            robot, []
+        ):
+            return
         old = self.observed.get(robot)
         if (
             old

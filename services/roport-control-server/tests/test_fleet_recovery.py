@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from test_fleet import complete, dispatch, finish, submit
+from test_fleet import complete, dispatch, finish, start_shelf_store, submit
 from test_fleet import fleet as fleet  # noqa: PLC0414
 from test_pinky_trial import profile  # noqa: F401
 
@@ -107,6 +107,77 @@ def test_removed_package_cancels_task_without_claiming_customer_receipt(fleet):
     submit(fleet, "another")
     fleet.enable()
     assert fleet.next_action()
+
+
+@pytest.mark.parametrize("outbound_reserved", [False, True])
+def test_canceling_empty_return_preserves_confirmed_shelf_stock(
+    fleet, outbound_reserved
+):
+    inbound, shelf = start_shelf_store(fleet)
+    complete(fleet, shelf, broken={"evidence": "shelf_load_not_aligned"})
+    returning = dispatch(fleet)
+    if outbound_reserved:
+        outbound = submit(fleet, "box", "outbound")
+        assert dispatch(fleet)["target"] != returning["target"]
+    task = fleet.data["tasks"][inbound]
+    stock = deepcopy(fleet.data["slots"][task["slot"]])
+
+    fleet.hold("line lost on empty return")
+    terminal(fleet, returning, "interrupted")
+    fleet.observed[returning["target"]]["state"]["node"] = task["parking"]
+    reconcile(fleet, returning["command_id"], "removed", "empty robot parked")
+
+    assert fleet.data["tasks"][inbound]["status"] == "CANCELED"
+    assert fleet.data["slots"][task["slot"]] == stock
+    assert stock["alignment"] == "unconfirmed"
+    if outbound_reserved:
+        assert fleet.data["tasks"][outbound]["status"] == "HOLD"
+        assert fleet.data["resources"]["slot:" + task["slot"]] == outbound
+
+
+def test_canceling_return_keeps_pending_alignment_until_its_own_reconciliation(fleet):
+    inbound, shelf = start_shelf_store(fleet)
+    placed = complete(fleet, shelf, broken={"evidence": "shelf_placed"})
+    fleet.shelf_placement_acked(shelf["command_id"], placed["message_id"])
+    returning = dispatch(fleet)
+    task = fleet.data["tasks"][inbound]
+    stock = deepcopy(fleet.data["slots"][task["slot"]])
+    fleet.hold("return interrupted while shelf aligns")
+    terminal(fleet, returning, "interrupted")
+    fleet.observed[returning["target"]]["state"]["node"] = task["parking"]
+
+    reconcile(fleet, returning["command_id"], "removed", "empty robot parked")
+
+    task = fleet.data["tasks"][inbound]
+    assert task["stage"] == "await_shelf_alignment" and task["status"] == "HOLD"
+    assert task["shelf_alignment_pending"] == shelf["command_id"]
+    assert fleet.data["slots"][task["slot"]] == stock
+    assert fleet.data["resources"]["slot:" + task["slot"]] == inbound
+    assert set(fleet.data["commands"]) == {shelf["command_id"]}
+    complete(fleet, shelf, broken={"evidence": "shelf_align"}, sequence=5)
+    reconcile(fleet, shelf["command_id"], "completed", "shelf aligned and arms home")
+    assert fleet.data["tasks"][inbound]["status"] == "COMPLETE"
+    assert fleet.data["slots"][task["slot"]]["state"] == "occupied"
+    assert not fleet.data["commands"]
+
+
+@pytest.mark.parametrize("placement_acked", [False, True])
+def test_removing_shelf_work_still_clears_stock_before_return_dispatch(
+    fleet, placement_acked
+):
+    inbound, shelf = start_shelf_store(fleet)
+    if placement_acked:
+        placed = complete(fleet, shelf, broken={"evidence": "shelf_placed"})
+        fleet.shelf_placement_acked(shelf["command_id"], placed["message_id"])
+    task = fleet.data["tasks"][inbound]
+    terminal(fleet, shelf, "interrupted")
+    fleet.observed[task["robot"]]["state"]["node"] = task["parking"]
+
+    reconcile(fleet, shelf["command_id"], "removed", "box removed and Pinky parked")
+
+    assert fleet.data["tasks"][inbound]["status"] == "CANCELED"
+    assert "shelf_alignment_pending" not in fleet.data["tasks"][inbound]
+    assert fleet.data["slots"][task["slot"]] == {"state": "empty", "package_id": None}
 
 
 def test_no_recovery_if_requested_stop_has_not_finished(fleet):

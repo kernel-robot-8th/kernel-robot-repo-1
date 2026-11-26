@@ -21,7 +21,7 @@ from roport_control_server.adapters.mqtt.mqtt import MqttTransport
 from roport_control_server.adapters.mqtt.trial_wire import mqtt_config
 from roport_control_server.contracts.service_policy import dispatch_at
 
-from .fleet import ROLES, TARGETS, FleetControl
+from .fleet import ROLES, TARGETS, FleetControl, StockPending
 from .fleet_recovery import new_stop, stop_current
 from .fleet_socket import FleetSocket
 
@@ -68,6 +68,10 @@ class FleetRuntime:
                 source,
                 age,
             )
+            return
+        if event["type"] in {"robot_state", "robot_pose"} and p[
+            "boot_version"
+        ] in self.control.data.get("registry_retired_boots", {}).get(source, []):
             return
         if event["type"] == "robot_state":
             if source in ROLES and any(
@@ -374,17 +378,36 @@ def service_tick(control, store, *, now=None):
                 for package in payload["packages"]
             ]
             # Reject an invalid manifest before creating any robot work.
+            waiting = []
             for request in requests:
                 if control.config["mode"] == "hardware" and "marker" not in request:
                     raise ValueError(
                         "physical package marker missing from service manifest"
                     )
-                control.validate_request(request)
+                try:
+                    control.validate_request(request)
+                except StockPending:
+                    waiting.append(request["package_id"])
+            if waiting:
+                store.update(
+                    task["task_id"],
+                    "QUEUED",
+                    {
+                        "reason": "waiting_for_stock",
+                        "stages": ["waiting_for_stock"],
+                        "packages": [
+                            {"package_id": package, "stage": "waiting_for_stock"}
+                            for package in waiting
+                        ],
+                    },
+                )
+                continue
             if (
                 payload["operation"] == "customer_service"
                 and not task["dispatch_locked"]
                 and now < dispatch_at(payload, control.config.get("service_policy", {}))
             ):
+                store.update(task["task_id"], "QUEUED", {"stages": ["queued"]})
                 continue
             if store.claim(task["task_id"], payload["order_revision"]) is None:
                 continue
@@ -423,6 +446,11 @@ def main(*, field_loader=None):
     )
     parser.add_argument("--socket", required=True)
     parser.add_argument("--hardware-authorized", action="store_true")
+    parser.add_argument(
+        "--registry",
+        action="store_true",
+        help="use the preinstalled shared robot registry in PostgreSQL",
+    )
     if field_loader:
         group = parser.add_mutually_exclusive_group()
         group.add_argument("--mock-omx", action="store_true")
@@ -459,6 +487,10 @@ def main(*, field_loader=None):
     service_url = os.environ.get("ROPORT_SERVICE_WSS_URL")
     if bool(args.journal) == bool(database):
         parser.error("choose --journal or ROPORT_DATABASE_URL")
+    if args.registry and not database:
+        parser.error(
+            "--registry requires ROPORT_DATABASE_URL and an installed registry"
+        )
     if service_url and (
         not database
         or not os.environ.get("ROPORT_SERVICE_TOKEN")
@@ -479,7 +511,13 @@ def main(*, field_loader=None):
         else:
             store = Journal(args.journal)
         stack.callback(store.close)
+        if store.data and store.data.get("registry_id") and not args.registry:
+            parser.error("this operational database uses --registry")
         control = FleetControl(config, store)
+        if args.registry:
+            from .fleet_registry import FleetRegistry
+
+            FleetRegistry(control)
         transport = MqttTransport(
             connection,
             [wire.topic(r, "event") for r in TARGETS]

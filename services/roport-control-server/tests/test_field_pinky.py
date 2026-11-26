@@ -250,6 +250,63 @@ def test_endpoint_restart_requires_reconciliation(endpoint, tmp_path, legacy_rec
         new_driver.close()
 
 
+@pytest.mark.parametrize("recovery", ["settled", "timeout", "invalid"])
+def test_route_completion_rechecks_stop_without_exiting_endpoint(
+    endpoint, monkeypatch, recovery
+):
+    client, driver = endpoint
+    command = request(client)
+    deliver(client, command)
+    route = command["payload"]["route"]
+    legacy = driver_command(command, client.profile, client.binding)
+    observation = {
+        **driver.observe(),
+        "node_id": route[-1],
+        "stopped": recovery == "invalid",
+        "line_enabled": False,
+        "drive_owner": "none",
+    }
+    monkeypatch.setattr(driver, "observe", lambda: observation.copy())
+    details = {
+        "node_id": route[-1],
+        "seq": len(route) - 1,
+        "total": len(route),
+        "prev_node": route[-2],
+        "next_node": None,
+    }
+    if recovery == "invalid":
+        details["prev_node"] = "wrong-node"
+        assert client.report(legacy, "completed", **details)
+    else:
+        assert not client.report(legacy, "completed", **details)
+        assert client.journal.data["active"] == "route-1"
+        assert client.journal.data["arrival"] is None
+        if recovery == "settled":
+            observation["stopped"] = True
+        else:
+            legacy_pending, details_pending, _ = client.pending_route_completion
+            client.pending_route_completion = (legacy_pending, details_pending, 0)
+        client.poll(0)
+    result = client.journal.data["records"]["route-1"]["event"]["payload"]
+    assert client.journal.data["active"] is None
+    assert client.pending_route_completion is None
+    if recovery == "settled":
+        assert result["status"] == "completed"
+        assert result["result"]["stopped"] is True
+        assert client.journal.data["arrival"] == "route-1"
+    else:
+        assert result["status"] == "failed"
+        assert result["reason"] == (
+            "route_stop_unconfirmed"
+            if recovery == "timeout"
+            else "invalid_driver_result"
+        )
+        assert client.journal.data["arrival"] is None
+        assert driver.logic.active is None
+    assert client.transport.ready
+    client.poll(0)
+
+
 def test_real_arrival_is_required_before_departure(endpoint):
     client, driver = endpoint
     deliver(client, request(client))
@@ -327,6 +384,43 @@ def test_n12_reverse_requires_pose_ir_and_continuous_stopped_samples(endpoint):
     assert driver.observe()["node_id"] == "N12"
     assert driver.logic.confirmed_return
     assert -math.pi <= driver.observe()["heading_rad"] <= math.pi
+
+
+@pytest.mark.parametrize(
+    ("target", "profile_options", "expected"),
+    [
+        ({"card_id": 35}, {}, None),
+        ({"card_id": 35}, {"follow_standoff_m": 0.25}, 0.25),
+        ({"follow_mode": "marker", "card_id": 35}, {"follow_standoff_m": 0.25}, 0.25),
+        (
+            {
+                "follow_mode": "appearance",
+                "follow_session_id": "session-1",
+                "target_ref": "target-1",
+                "perception_boot_id": "boot-1",
+            },
+            {"follow_standoff_m": 0.25},
+            None,
+        ),
+    ],
+)
+def test_marker_follow_standoff_is_local_to_driver(
+    endpoint, target, profile_options, expected
+):
+    client, _ = endpoint
+    message = request(
+        client,
+        "follow_target_command",
+        {
+            "expected_boot_version": client.boot,
+            "map_version": client.profile["map_version"],
+            **target,
+        },
+        "follow-distance",
+    )
+    legacy = driver_command(message, client.profile | profile_options, client.binding)
+    assert "standoff_m" not in message["payload"]
+    assert legacy["payload"].get("standoff_m") == expected
 
 
 def test_docking_selector_is_preserved_at_driver_boundary(endpoint):
@@ -874,3 +968,178 @@ def test_legacy_marker_follow_needs_actual_active_evidence_too(follow_endpoint):
     )
     client.poll(0)
     assert last_status(client)["result"]["follow_active"] is True
+
+
+def stop_request(client, target="route-1", identifier="stop-1"):
+    return request(
+        client,
+        "robot_stop_command",
+        {
+            "expected_boot_version": client.boot,
+            "target_command_id": target,
+            "reason": "operator_stop",
+        },
+        identifier,
+    )
+
+
+@pytest.mark.parametrize("limit", ["age", "history", "both"])
+def test_stop_bypasses_motion_admission_limits(endpoint, limit):
+    client, driver = endpoint
+    deliver(client, request(client))
+    if limit in {"history", "both"}:
+        record = client.journal.data["records"]["route-1"]
+        client.journal.data["records"].update(
+            {f"past-{i}": deepcopy(record) for i in range(1023)}
+        )
+        ordinary = request(client, identifier="another-route")
+        deliver(client, ordinary)
+        assert (
+            client.journal.data["records"]["another-route"]["event"]["payload"][
+                "reason"
+            ]
+            == "command_history_full"
+        )
+    command = stop_request(client)
+    if limit in {"age", "both"}:
+        command["sent_at"] = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    deliver(client, command)
+    assert client.journal.data["active"] == "stop-1"
+    assert driver.logic.active is None
+    # The non-threaded driver needs a new odom sample after the large journal write.
+    driver.tick()
+    client._finish_stop()
+    event = client.journal.data["records"]["stop-1"]["event"]
+    assert event["payload"]["status"] == "completed"
+    assert (
+        client.journal.data["records"]["route-1"]["event"]["payload"]["status"]
+        == "interrupted"
+    )
+    deliver(client, command)
+    assert client.transport.messages[-1][1] == event
+    changed = deepcopy(command)
+    changed["payload"]["reason"] = "changed_reason"
+    with pytest.raises(ValueError, match="idempotency_conflict"):
+        deliver(client, changed)
+
+
+@pytest.mark.parametrize(
+    ("fault", "reason"),
+    [
+        ("expired", "expired_command"),
+        ("boot", "boot_mismatch"),
+        ("target", "stop_target_mismatch"),
+    ],
+)
+def test_stop_preserves_expiry_boot_and_target_fences(endpoint, fault, reason):
+    client, driver = endpoint
+    deliver(client, request(client))
+    active = driver.logic.active
+    command = stop_request(client)
+    if fault == "expired":
+        command["sent_at"] = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+        command["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    elif fault == "boot":
+        command["payload"]["expected_boot_version"] = "old-boot"
+    else:
+        command["payload"]["target_command_id"] = "unknown-command"
+    deliver(client, command)
+    assert (
+        client.journal.data["records"]["stop-1"]["event"]["payload"]["reason"] == reason
+    )
+    assert client.journal.data["active"] == "route-1"
+    assert driver.logic.active is active
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "completed",
+        "unknown",
+        "failed",
+        "old_boot",
+        "newer_active",
+        "moving",
+        "stale",
+        "line_enabled",
+    ],
+)
+def test_stop_of_completed_target_requires_idle_fresh_stop(
+    endpoint, monkeypatch, condition
+):
+    client, driver = endpoint
+    route = request(client)
+    deliver(client, route)
+    driver.safe_stop("test_finished")
+    client._save_event(route, client._event(route, "completed", 2, {"stopped": True}))
+    state = driver.observe()
+    original = client.journal.data["records"]["route-1"]
+    if condition == "failed":
+        original["event"]["payload"]["status"] = "failed"
+    elif condition == "old_boot":
+        original["event"]["payload"]["boot_version"] = "previous-boot"
+    elif condition == "newer_active":
+        client.journal.data["active"] = "newer-route"
+    elif condition == "moving":
+        state["stopped"] = False
+    elif condition == "stale":
+        state["observed_at"] = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+    elif condition == "line_enabled":
+        state["line_enabled"] = True
+    monkeypatch.setattr(driver, "observe", lambda: state.copy())
+    stops = []
+    monkeypatch.setattr(driver, "safe_stop", stops.append)
+    before = deepcopy(client.journal.data)
+    command = stop_request(client, "unknown" if condition == "unknown" else "route-1")
+    deliver(client, command)
+    event = client.journal.data["records"]["stop-1"]["event"]
+    if condition == "completed":
+        assert event["payload"]["status"] == "completed"
+        assert event["payload"]["result"]["stopped"] is True
+        deliver(client, command)
+        assert client.transport.messages[-1][1] == event
+    else:
+        assert event["payload"]["status"] == "rejected"
+        assert event["payload"]["reason"] == (
+            "fresh_stop_required"
+            if condition in {"moving", "stale", "line_enabled"}
+            else "stop_target_mismatch"
+        )
+    assert client.journal.data["records"]["route-1"] == before["records"]["route-1"]
+    assert client.journal.data["active"] == before["active"]
+    assert client.journal.data["arrival"] == before["arrival"]
+    assert client.halted is None and stops == []
+
+
+@pytest.mark.parametrize("condition", ["moving", "line_enabled", "stale", "future"])
+def test_active_stop_waits_for_fresh_stopped_observation(
+    endpoint, monkeypatch, condition
+):
+    client, driver = endpoint
+    deliver(client, request(client))
+    deliver(client, stop_request(client))
+    state = driver.observe()
+    if condition in {"stale", "future"}:
+        offset = -5 if condition == "stale" else 5
+        state["observed_at"] = (
+            datetime.now(UTC) + timedelta(seconds=offset)
+        ).isoformat()
+    else:
+        state["stopped"] = condition != "moving"
+        state["line_enabled"] = condition == "line_enabled"
+    monkeypatch.setattr(driver, "observe", lambda: state.copy())
+    client._finish_stop()
+    assert client.journal.data["active"] == "stop-1"
+    assert (
+        client.journal.data["records"]["route-1"]["event"]["payload"]["status"]
+        == "accepted"
+    )
+    state.update(
+        stopped=True, line_enabled=False, observed_at=datetime.now(UTC).isoformat()
+    )
+    client._finish_stop()
+    assert client.journal.data["active"] is None
+    assert (
+        client.journal.data["records"]["stop-1"]["event"]["payload"]["status"]
+        == "completed"
+    )

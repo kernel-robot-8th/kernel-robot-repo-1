@@ -30,7 +30,9 @@ Pinky와 OMX v2 Host에 같은 계약을 적용한다. OMX 단독·공동 작업
 
 ## 시각 동기화 전제 (미정)
 
-Pinky는 **자기 시계의 현재 시각**으로 `sent_at`과 `expires_at`을 판정한다(Pinky: `field_pinky.py`의 `_fresh`). 먼저 `sent_at`이 로봇 시계 기준 −0.5~+3초 창 안인지 보고 벗어나면 `stale_message`로 거절하며, 그 다음 `expires_at`이 지났으면 `expired_command`로 거절한다. 그래서 로봇 시계가 이 창보다 크게 어긋나면(0.5초 넘게 늦거나 3초 넘게 빠르면) **모든 명령이 `stale_message`로 거절**된다. 안전한 쪽으로 실패하지만 시험이 되지 않는다. 만료된 명령이 유효로 판정될 수 있는 경우는 이 창 안의 어긋남(약 0.5초 이내)으로 좁혀진다. 관제의 `field_wire.py`는 `sent_at`보다 `expires_at`이 늦은지만 검사하고 시각 동기화를 요구하지 않는다. 현장망에서 Pinky 시계가 크게 어긋난 사례가 있었다고 한다(Pinky 쪽 리뷰 보고, 직접 확인하지 못함). 이 경우는 "만료 명령 수락"이 아니라 "전부 거절"로 나타난다. 코드를 현장에 적용하기 전에 관제·로봇 시각 동기화(NTP)와 허용 오차를 정해야 한다.
+Pinky는 **자기 시계의 현재 시각**으로 `sent_at`과 `expires_at`을 판정한다(`field_pinky.py`의 `_fresh`). 일반 명령과 상태 조회는 `sent_at`이 로봇 시계 기준 −0.5~+3초 창을 벗어나면 `stale_message`, 만료 시각이 지났으면 `expired_command`로 거절한다. `robot_stop_command`만 지연된 정지를 막지 않도록 이 신선도 창과 일반 명령 이력 한도를 제외한다. STOP도 만료·현재 기동·대상 명령·중복 본문 검사는 유지하며 완료에는 최신 실제 정차 관측이 필요하다.
+
+로봇 시계가 크게 어긋나면 일반 주행 명령과 유지 요청이 거절되고 STOP 만료 판정도 영향을 받는다. 관제·로봇의 NTP 동기화와 시각 오차를 현장 적용 전에 확인한다. `field_wire.py`의 `sent_at < expires_at` 검증은 시계 동기화를 대신하지 않는다.
 
 ## 검증과 보기
 
@@ -58,7 +60,7 @@ npx @asyncapi/cli@latest generate fromTemplate services/roport-control-server/in
 - 2차 결과가 없더라도 저장한 1차 적재와 그 뒤 새로 수신한 선반·양팔 유휴 상태가 모두 확인되면 재고를 확정한다. 모두 같은 기동 버전에서 오류 없이 정지하고 양팔이 홈·빈 그리퍼 상태여야 한다. 관제는 늦게 도착한 결과도 저장·ACK한다. 늦은 `shelf_align`이 같은 입고 명령·상자·칸·Pinky·도착을 확인하면 해당 재고의 정렬 미확인 표시만 해제한다. 출고 완료나 재입고 이후의 과거 결과는 재고를 변경하지 않는다. 제한 시간까지 안전 복귀 확인이 없거나 실행 실패가 보고되면 기존 HOLD·정지 절차를 적용한다.
 - 확정된 재고의 출고 요청은 Pinky 복귀 도중에도 접수한다. 남은 복귀 경로와 충돌하는 노드는 통행 예약이 풀릴 때까지 진입하지 않는다.
 - 단일 완료를 보내는 기존 Host도 지원한다. 1차 생략 경로에서 정렬 근거가 없으면 정렬 결과는 알 수 없다. 양팔 이송 중 관제가 허용하는 선반·양팔의 상태 공백은 8초이며 Pinky는 3초다.
-- OMX 새 이송 명령은 `sent_at` 나이 −0.5~3초와 `expires_at`을 검사합니다. `robot_stop_command`는 지연된 정지를 차단하지 않도록 `sent_at` 신선도만 제외하며, 만료·현재 boot·정지할 명령/대상 일치는 검사합니다. 정지 성공은 abort 이후 실제 정지 관측으로 확인하고 HOLD를 유지합니다. 동일 명령 재전송은 저장된 결과만 돌려줍니다. 이 예외는 OMX에만 적용하며 위 Pinky 판정은 유지합니다.
+- OMX 새 이송 명령은 `sent_at` 나이 −0.5~3초와 `expires_at`을 검사합니다. `robot_stop_command`는 지연된 정지를 차단하지 않도록 `sent_at` 신선도만 제외하며, 만료·현재 boot·정지할 명령/대상 일치는 검사합니다. 정지 성공은 abort 이후 실제 정지 관측으로 확인하고 HOLD를 유지합니다. 동일 명령 재전송은 저장된 결과만 돌려줍니다. Pinky도 STOP의 일반 신선도 창을 제외하며, 각 실행부의 실제 정차 확인은 유지합니다.
 - `(pinky_id, arrival_command_id)` 하나당 이송 접수는 한 번입니다. 접수 후 성공/실패·ACK·재시작과 무관하게 소모되며, 새 명령으로 재사용하면 `arrival_already_used`입니다. 사전 거절은 소모하지 않습니다. 재시도는 현장 조정 후 새 이동으로 확인된 도착이 필요합니다.
 - `arm_action_command.operation=return_home`은 예약 필드이며 현재 OMX Host에서는 `unsupported_operation`입니다.
 - 공동 작업의 `active_command_id`는 shelf-01 및 참여 팔 omx1/omx2만 공유합니다. 다른 대상은 null + `host_busy`로 표시합니다.
@@ -71,6 +73,8 @@ npx @asyncapi/cli@latest generate fromTemplate services/roport-control-server/in
 
 카드 추종의 `follow_target_command`는 현재 기동, 지도 버전과 카드 번호 35~49를 바인딩한다. 관제는 회당 최대 추종 시간 `max_duration_s`(1~240초)를 자체 명령 제한 시간보다 짧게 내려보낸다. 일시정지 요청 시 기존 추종 명령의 실행 허가를 끊고 `robot_stop_command`를 보낸다. 정지 응답이 거절되거나 만료되면 HOLD로 전환한다. 추종 재개와 복귀는 종료 결과보다 새로운 정지 상태를 확인한 뒤에 허용한다.
 
+
+관제 MQTT의 카드 유실 기준은 SR-22에 따라 1초다. 카드 추종의 목표 거리는 기체별 `trial.json`의 `follow_standoff_m`에서 읽고, 설정이 없으면 드라이버 기본값을 사용한다. MQTT v2 payload에는 이 필드를 넣지 않는다. 드라이버의 `lost_after_s`와 `standoff_m`은 개별 시험 명령에서 설정할 수 있다. 카드 유실·미인식 등 잠금 없이 종료 가능한 결과는 Pinky `trial_follow.SOFT_STOPS`와 관제 `FOLLOW_SOFT_STOPS`에 함께 반영한다.
 
 ### 추종 모드 선택·외형 등록 (FFT1-207)
 

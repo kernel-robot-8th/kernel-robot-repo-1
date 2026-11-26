@@ -68,8 +68,15 @@ def main():
     parser.add_argument(
         "--service-env", type=Path, help="isolated service launcher configuration"
     )
+    parser.add_argument(
+        "--registry",
+        action="store_true",
+        help="use the shared registry in the isolated service DB",
+    )
     parser.add_argument("--timeout", type=float, default=900)
     args = parser.parse_args()
+    if args.registry and (not args.service_env or args.verify):
+        parser.error("--registry requires --service-env and manual robot registration")
     if args.d660_line_loss and (args.verify or args.service_env):
         parser.error("use the line-loss replay with a standalone simulation")
     if not args.mosquitto:
@@ -247,6 +254,7 @@ def main():
                 *([] if service_env else ["--journal", str(root / "control.json")]),
                 "--socket",
                 str(root / "f"),
+                *(["--registry"] if args.registry else []),
             ],
             service_env,
         )

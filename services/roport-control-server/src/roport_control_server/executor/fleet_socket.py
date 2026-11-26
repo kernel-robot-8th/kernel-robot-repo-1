@@ -17,7 +17,25 @@ class FleetSocket(TrialSocket):
             "mode": self.control.config["mode"],
             "map_version": self.control.config["map_version"],
             "graph_version": self.control.config["graph_version"],
+            **(
+                {"registry": self.control.registry.snapshot()}
+                if self.control.registry
+                else {}
+            ),
         }
+
+    @staticmethod
+    def _actor(client):
+        if client is None:
+            raise ValueError("operator peer credentials required")
+        try:
+            credentials = client.getsockopt(
+                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("iII")
+            )
+            _, uid, _ = struct.unpack("iII", credentials)
+        except (OSError, struct.error) as exc:
+            raise ValueError("could not verify operator peer credentials") from exc
+        return f"uid:{uid}"
 
     def _release_status(self, request_id):
         if not isinstance(request_id, str) or not request_id:
@@ -28,7 +46,11 @@ class FleetSocket(TrialSocket):
         return {"status": record["status"]}
 
     def _dispatch_client(self, request, client):
-        if isinstance(request, dict) and request.get("action") == "release_workcell":
+        if isinstance(request, dict) and request.get("action") in {
+            "release_workcell",
+            "registry",
+            "assign",
+        }:
             return self.dispatch(request, client=client)
         return super()._dispatch_client(request, client)
 
@@ -66,7 +88,10 @@ class FleetSocket(TrialSocket):
             "release_hold": {"note"},
             "recover_stop": {"command_id", "stop_id", "boot_version", "note"},
             "confirm_arrival": {"robot", "command_id", "boot_version", "note"},
+            "registry": {"robot", "operation", "request"},
         }
+        if action == "registry" and request.get("operation") == "unregister":
+            fields[action].add("confirmed")
         if action == "reconcile" and request.get("outcome") == "repositioned_n16":
             fields[action] |= {"confirmed", "boot_version"}
             if request.get("confirmed") is not True or not isinstance(
@@ -83,7 +108,22 @@ class FleetSocket(TrialSocket):
         elif action == "stop":
             self.control.hold("operator_stop")
         elif action == "assign":
-            self.control.assign(request["robot"], request["role"])
+            self.control.assign(
+                request["robot"],
+                request["role"],
+                actor=self._actor(client) if self.control.registry else None,
+            )
+        elif action == "registry":
+            if self.control.registry is None:
+                raise ValueError("registry is not enabled for this owner")
+            result = self.control.registry.change(
+                request["robot"],
+                request["operation"],
+                request["request"],
+                actor=self._actor(client),
+                confirmed=request.get("confirmed"),
+            )
+            return {**self.snapshot(), "registry_result": result}
         elif action == "reconcile":
             reconcile(
                 self.control,
@@ -110,20 +150,11 @@ class FleetSocket(TrialSocket):
         elif action == "release_hold":
             release(self.control, request["note"])
         elif action == "release_workcell":
-            if client is None:
-                raise ValueError("operator peer credentials required")
-            try:
-                credentials = client.getsockopt(
-                    socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("iII")
-                )
-                _, uid, _ = struct.unpack("iII", credentials)
-            except (OSError, struct.error) as exc:
-                raise ValueError("could not verify operator peer credentials") from exc
             request_host_release(
                 self.control,
                 request["request_id"],
                 request["hold_command_id"],
-                f"uid:{uid}",
+                self._actor(client),
                 request["confirmed"],
             )
             return self._release_status(request["request_id"])

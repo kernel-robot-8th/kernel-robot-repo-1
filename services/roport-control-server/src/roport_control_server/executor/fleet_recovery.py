@@ -359,12 +359,17 @@ def reconcile(control, command_id, outcome, note, *, confirmed_boot=None):
                 )
             task["stage"] = "await_shelf_alignment"
         else:
-            # Operator confirms removal of this package; never edits unrelated shelf stock.
-            for slot in data["slots"].values():
-                if slot["package_id"] == task["request"]["package_id"]:
-                    slot.update(state="empty", package_id=None)
-                    slot.pop("alignment", None)
-                    slot.pop("alignment_command_id", None)
+            # Canceling the empty return does not remove stock already left on the shelf.
+            if not (
+                task["request"]["operation"] == "inbound"
+                and active["message"]["target"] == task["robot"]
+                and active.get("stage", task["stage"]) == "return_route"
+            ):
+                for slot in data["slots"].values():
+                    if slot["package_id"] == task["request"]["package_id"]:
+                        slot.update(state="empty", package_id=None)
+                        slot.pop("alignment", None)
+                        slot.pop("alignment_command_id", None)
             task.pop("shelf_alignment_pending", None)
             task.update(stage="done", status="CANCELED", reason=note)
     if other_commands:

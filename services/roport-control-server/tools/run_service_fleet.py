@@ -165,6 +165,11 @@ def start_field(
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--registry",
+        action="store_true",
+        help="start the virtual trial with empty shared robot slots",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--port", type=int, default=8000, help="control web port")
     parser.add_argument("--pg-bin", type=Path, default=os.environ.get("PG_BIN"))
@@ -198,6 +203,8 @@ def main():
     )
     args = parser.parse_args()
     field = args.field_bundle is not None
+    if field and args.registry:
+        parser.error("--registry here is for the isolated virtual trial only")
     if field != args.hardware_authorized or (
         not field and (args.mock_omx or args.real_shelf or args.broker_port)
     ):
@@ -293,6 +300,13 @@ def main():
                 seed_customer(dsn, "package-large-1", prefix="large", marker=marker)
             )
         migrate_service(f"postgresql://{getpass.getuser()}@127.0.0.1:{pg}/control_test")
+        if args.registry:
+            from roport_control_server.adapters.db.migrate import migrate
+
+            migrate(
+                f"postgresql://{getpass.getuser()}@127.0.0.1:{pg}/control_test",
+                development=True,
+            )
         connection = root / "service-env.json"
         connection.write_text(
             json.dumps(
@@ -342,6 +356,7 @@ def main():
                     str(args.port),
                     "--service-env",
                     str(connection),
+                    *(["--registry"] if args.registry else []),
                 ],
                 SERVICE,
             )
@@ -387,6 +402,7 @@ def main():
             "accounts": accounts,
             "reservations": reservations,
             "simulation": not field,
+            "registry": args.registry,
             "real_shelf_slot": args.real_shelf,
             "mock_omx": args.mock_omx if field else True,
         }
@@ -428,6 +444,10 @@ def main():
                     "marker": marker,
                     "goal": None,
                 },
+            )
+        if args.registry:
+            print(
+                "공유 등록 시험: Pinky 설정에서 기체와 역할을 등록한 뒤 요청 처리를 시작하세요."
             )
         if field:
             omx_label = "모의 OMX" if args.mock_omx else "실물 OMX"

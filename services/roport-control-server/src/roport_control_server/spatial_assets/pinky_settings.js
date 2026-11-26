@@ -1,6 +1,7 @@
-// Pinky 탭 > Pinky Settings (시안 v0.2). OFFLINE = 실행부 미연결이라 등록·작업은 검사만 하고 503,
-// DEMO = 이 브라우저 안에서만 바뀌는 예시 목록(새로고침하면 처음으로). 로봇·SSH·MQTT에 연결하지 않음.
-// 실제 설치·도메인 적용은 실행부가 생기기 전까지 Pinky 테스트 콘솔(mode:=fleet)에서 한다.
+// OFFLINE/DEMO는 기존 시안, opt-in Fleet 등록은 실행부의 공유 저장소를 사용한다.
+// 로봇 설치·ROS 도메인 적용은 이 화면에서 수행하지 않는다.
+import { newRequestId } from './scenario.js';
+
 const root = document.getElementById("pinky-detail");
 const demo = new URLSearchParams(location.search).get("mode") === "demo";
 const ROLE = { logistics: "물류", smartcart: "스마트카트" };
@@ -11,6 +12,8 @@ const ACTION_LABEL = {
 let view = null;
 let robots = [];
 const jobs = [];
+const SLOTS = ['pinky1', 'pinky2', 'pinky3'];
+let registryState, registryAccess, registryDraft, registryPending, registryDirty = false;
 
 function el(tag, attrs = {}, text = "") {
   const e = document.createElement(tag);
@@ -85,6 +88,7 @@ async function runJob(robot, action) {
 }
 
 function render() {
+  if (registryState) return;
   root.replaceChildren();
   const box = el("div", { class: "ps" });
   const head = el("div", { class: "section-head" });
@@ -162,6 +166,167 @@ function render() {
   root.append(box);
 }
 
+// Opt-in Fleet registration shares the owner, database and operator key with the overview.
+export function renderPinkyRegistry(state, access) {
+  if (!state?.registry) return;
+  registryState = state;
+  registryAccess = access;
+  if (!document.getElementById('ps-registry')) buildRegistry();
+  refreshRegistry();
+}
+
+function registryRow() {
+  return registryState.registry.robots?.find(r => r.robot_id === document.getElementById('ps-slot').value);
+}
+
+function loadRegistryRow() {
+  const row = registryRow();
+  registryDraft = row;
+  registryDirty = false;
+  registryPending = null;
+  const config = row?.desired_config ?? {};
+  for (const [id, value] of Object.entries({
+    'ps-device': row?.device_id ?? '', 'ps-ip': config.ip ?? '',
+    'ps-role': config.role ?? 'logistics', 'ps-domain': config.ros_domain_id ?? 14,
+    'ps-calib': config.calibration ?? '',
+  })) document.getElementById(id).value = value;
+  document.getElementById('ps-empty-load').checked = false;
+  document.getElementById('ps-off-lane').checked = false;
+  setMsg('등록값은 관제 설정입니다. 로봇의 설치·실제 적용 상태는 별도로 확인하세요.');
+}
+
+function refreshRegistry() {
+  const registry = registryState.registry;
+  const row = registryRow();
+  if (!registryDirty && !registryPending && row?.revision !== registryDraft?.revision) loadRegistryRow();
+  document.getElementById('ps-registry').disabled = registryAccess.disabled || registry.available === false || !row;
+  document.getElementById('ps-registry-status').textContent = !registryAccess.online || registry.available === false
+    ? '등록 저장소 연결 끊김 · 마지막 수신 정보'
+    : `${registry.development ? '가상 시험 등록' : '현장 등록'} · 고정 3자리 · 통합관제와 같은 저장소`;
+  const table = document.getElementById('ps-registry-rows');
+  const key = JSON.stringify(registry.robots);
+  if (table.dataset.key !== key) {
+    table.dataset.key = key;
+    table.replaceChildren(...SLOTS.map(slot => {
+      const r = registry.robots?.find(item => item.robot_id === slot);
+      const tr = el('tr', {'data-slot': slot}), config = r?.desired_config;
+      const status = !r?.registered ? '미등록' : r.excluded ? '배정 제외' : '등록됨';
+      for (const text of [slot, r?.device_id ?? '—', ROLE[config?.role] ?? '—',
+        config?.ip ?? '—', ROLE[r?.fleet_role] ?? '배정 없음', status]) tr.append(el('td', {}, text));
+      return tr;
+    }));
+  }
+  document.getElementById('ps-device').disabled = !!registryDraft?.registered;
+  document.getElementById('ps-save').textContent = registryDraft?.registered ? '설정 저장' : '기체 등록';
+  document.getElementById('ps-exclude').disabled = !row?.registered;
+  document.getElementById('ps-exclude').textContent = row?.excluded ? '배정에 다시 포함' : '배정에서 제외';
+  document.getElementById('ps-unregister').disabled = !row?.registered || !row.excluded ||
+    !document.getElementById('ps-empty-load').checked || !document.getElementById('ps-off-lane').checked;
+  document.getElementById('ps-retry').hidden = !registryPending;
+  document.getElementById('ps-revision').textContent = registryDirty && row?.revision !== registryDraft?.revision
+    ? '다른 조작에서 등록 정보가 바뀌었습니다. 다시 불러온 후 수정하세요.'
+    : `슬롯 변경 번호 ${row?.revision ?? '—'} · 로봇 설정 적용 여부 미확인`;
+  const report = registryState.robots?.[row?.robot_id];
+  const context = JSON.stringify([registryState.session_id, row?.binding_id, report?.boot_version, report?.active_command_id, report?.state?.stopped]);
+  const confirmation = document.getElementById('ps-confirmations');
+  if (registryAccess.disabled || confirmation.dataset.context !== context) {
+    document.getElementById('ps-empty-load').checked = false;
+    document.getElementById('ps-off-lane').checked = false;
+    document.getElementById('ps-unregister').disabled = true;
+  }
+  confirmation.dataset.context = context;
+}
+
+async function sendRegistry(operation) {
+  const row = registryDraft;
+  if (!row || registryAccess.disabled) return;
+  const request = {expected_revision: row.revision};
+  if (operation === 'registration' || operation === 'config') {
+    const fields = ['ps-ip', 'ps-domain', 'ps-calib', ...(operation === 'registration' ? ['ps-device'] : [])];
+    if (fields.some(id => !document.getElementById(id).reportValidity())) return;
+    request.config = {
+      ip: document.getElementById('ps-ip').value.trim(), role: document.getElementById('ps-role').value,
+      ros_domain_id: Number(document.getElementById('ps-domain').value), calibration: document.getElementById('ps-calib').value.trim(),
+    };
+  }
+  if (operation === 'registration') request.device_id = document.getElementById('ps-device').value.trim();
+  else request.binding_id = row.binding_id;
+  if (operation === 'exclude') request.excluded = !row.excluded;
+  const message = {robot: row.robot_id, operation, request};
+  if (operation === 'unregister') message.confirmed = {
+    empty_load: document.getElementById('ps-empty-load').checked,
+    removed_from_lane: document.getElementById('ps-off-lane').checked,
+  };
+  const key = JSON.stringify(message);
+  if (registryPending?.key !== key) registryPending = {key, message: {...message, request: {...request, request_id: newRequestId()}}};
+  await retryRegistry();
+}
+
+async function retryRegistry() {
+  if (!registryPending || registryAccess.disabled) return;
+  const pending = registryPending;
+  if (pending.message.operation === 'unregister' &&
+    (!document.getElementById('ps-empty-load').checked || !document.getElementById('ps-off-lane').checked)) {
+    setMsg('빈 적재함과 통로 밖 배치를 다시 확인하세요.', 'warn'); return;
+  }
+  setMsg('저장 결과 확인 중…');
+  const result = await registryAccess.send('registry', pending.message);
+  if (result) {
+    registryPending = null;
+    registryState = result.result;
+    loadRegistryRow();
+    setMsg('저장 완료 · 통합관제 배정에 반영했습니다. 로봇 설정 파일은 변경하지 않습니다.', 'ok');
+  } else setMsg(document.getElementById('fleet-feedback').textContent, 'err');
+  refreshRegistry();
+}
+
+function buildRegistry() {
+  root.replaceChildren();
+  const box = el('div', {class: 'ps'});
+  box.append(el('h2', {}, 'Pinky Settings'), el('p', {id: 'ps-registry-status', class: 'note'}));
+  const table = el('table', {class: 'ps-table'}), head = el('tr');
+  for (const label of ['슬롯', '기체 식별자', '설정 역할', 'IP', '현재 배차 역할', '등록 상태']) head.append(el('th', {}, label));
+  table.append(head, el('tbody', {id: 'ps-registry-rows'}));
+  const scroll = el('div', {class: 'ps-scroll'}); scroll.append(table); box.append(scroll);
+  box.append(el('p', {class: 'note'}, '통합관제의 조작 키를 먼저 입력하세요. 역할·IP·ROS 도메인·보정값은 등록 정보이며 로봇에 자동 설치하거나 적용하지 않습니다.'));
+  const form = el('fieldset', {id: 'ps-registry', class: 'ps-form'});
+  form.append(el('legend', {}, '기체 등록 / 설정'));
+  const slot = el('select', {id: 'ps-slot'}), role = el('select', {id: 'ps-role'});
+  for (const value of SLOTS) slot.append(el('option', {value}, value));
+  for (const [value, label] of Object.entries(ROLE)) role.append(el('option', {value}, label));
+  const fields = [
+    ['슬롯', slot], ['기체 식별자', el('input', {id: 'ps-device', required: '', maxlength: '64', pattern: '[a-zA-Z0-9][a-zA-Z0-9_.\\-]{0,63}', placeholder: 'sim-unit-1 또는 실제 기체 식별자'})],
+    ['IP', el('input', {id: 'ps-ip', required: '', maxlength: '15', placeholder: '192.0.2.11'})],
+    ['역할', role], ['ROS_DOMAIN_ID', el('input', {id: 'ps-domain', required: '', type: 'number', min: '0', max: '101'})],
+    ['보정 식별자', el('input', {id: 'ps-calib', required: '', maxlength: '14', pattern: 'pinky_[0-9a-z]{2,8}', placeholder: 'pinky_d660'})],
+  ];
+  for (const [label, input] of fields) {
+    const field = el('label', {class: 'ps-field', for: input.id}, label);
+    field.append(input); form.append(field);
+    if (input !== slot) input.addEventListener('input', () => {registryDirty = true; registryPending = null; refreshRegistry();});
+  }
+  slot.onchange = () => {loadRegistryRow(); refreshRegistry();};
+  const actions = el('div', {class: 'ps-actions'});
+  for (const [id, text, handler] of [
+    ['ps-save', '기체 등록', () => sendRegistry(registryDraft?.registered ? 'config' : 'registration')],
+    ['ps-reload', '다시 불러오기', () => {loadRegistryRow(); refreshRegistry();}],
+    ['ps-exclude', '배정에서 제외', () => sendRegistry('exclude')],
+    ['ps-retry', '같은 요청 다시 확인', retryRegistry],
+  ]) {const button = el('button', {id, type: 'button'}, text); button.onclick = handler; actions.append(button);}
+  form.append(actions, el('p', {id: 'ps-revision', class: 'note'}));
+  const confirmation = el('div', {id: 'ps-confirmations'});
+  for (const [id, label] of [['ps-empty-load', '물품이 실려 있지 않음을 확인했습니다.'], ['ps-off-lane', '기체를 주행 통로 밖으로 옮겼습니다.']]) {
+    const field = el('label', {class: 'ps-confirm'}), check = el('input', {id, type: 'checkbox'});
+    check.onchange = refreshRegistry; field.append(check, document.createTextNode(label)); confirmation.append(field);
+  }
+  const unregister = el('button', {id: 'ps-unregister', type: 'button'}, '등록 해제');
+  unregister.onclick = () => sendRegistry('unregister');
+  confirmation.append(unregister, el('p', {class: 'note'}, '먼저 배정에서 제외하세요. 실행부가 최신 정차·진행 작업·점유 상태를 확인한 뒤 해제합니다.'));
+  form.append(confirmation);
+  box.append(form, el('p', {id: 'ps-msg', role: 'status', class: 'note'}));
+  root.append(box); loadRegistryRow();
+}
+
 async function boot() {
   const res = await fetch(`/api/pinky/settings?mode=${demo ? "demo" : "offline"}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`pinky settings: ${res.status}`);
@@ -171,5 +336,6 @@ async function boot() {
 }
 
 boot().catch((e) => {
+  if (registryState) return;
   root.textContent = `Pinky Settings 초기화 실패: ${e.message}`;
 });
