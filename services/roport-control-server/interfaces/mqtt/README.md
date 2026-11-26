@@ -2,7 +2,7 @@
 
 현재 로컬 구현은 `schema_version=2.0`, `profile=roport-control-v2`다. PR #68의 AsyncAPI 초안에서 토픽의 `v1/{site}`와 `route.requested` 표현을 제거하고, 실행 중복 방지에 필요한 `command_id`와 기동 구분 `boot_version`을 유지했다. 아직 병합·실물 검증 완료를 뜻하지 않는다.
 
-- [AsyncAPI](roport-mqtt.yaml): 전체 14종의 토픽·JSON 구조.
+- [AsyncAPI](roport-mqtt.yaml): 메시지별 토픽·JSON 구조.
 - [JSON 예시](examples.json): 조회, 실행, 결과, 재시작 방어, 출발 승인, 양방향 N12 전환.
 - [실행 검증 코드](../../src/roport_control_server/adapters/mqtt/field_wire.py): 명령 대상, 상관관계, 필드 조합까지 검사하는 정본. 문서와 코드의 일치는 테스트로 확인한다.
 - [Pinky 이식·구동 경계](../../docs/mqtt-field.md).
@@ -15,6 +15,7 @@ Pinky와 OMX v2 Host에 같은 계약을 적용한다. OMX 단독·공동 작업
 | `roport/workcell/shelf-01/cmd` | `robot_state_request`, `shelf_transfer_command`, `hold_release_command`, `robot_stop_command` | 관제 → 공동 작업셀 / 1 |
 | `roport/robot/{robot}/event`, `roport/workcell/shelf-01/event` | `robot_state`, `command_status` | 로봇/작업셀 → 관제 / 1 |
 | `roport/robot/{robot}/ack`, `roport/workcell/shelf-01/ack` | `event_stored` | 관제 → 발행 주체 / 1 |
+| `roport/robot/{omx1\|omx2}/motion` | `omx_joint_state` (팔별 관측 시각, 순번, URDF 관절각 6개, rad) | 선반 OMX → 관제 표시 / 0 |
 | `roport/robot/{pinky}/motion` | `robot_pose` | Pinky → 표시 UI / 0 |
 | `roport/robot/{pinky1\|pinky2\|pinky3\|omx3}/host`, `roport/workcell/shelf-01/host` | `host_metrics` (CPU 수·loadavg·메모리 kB·CPU 온도 °C, 모르는 값은 null, `command_id`·`expires_at` 없음) | 발행 호스트 → 관제 표시 / 0 |
 

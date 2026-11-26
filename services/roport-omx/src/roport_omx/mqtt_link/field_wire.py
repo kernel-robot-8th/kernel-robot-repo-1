@@ -13,6 +13,8 @@ MAX_MESSAGE_BYTES = 65536
 ROBOTS = {"pinky1", "pinky2", "pinky3", "omx1", "omx2", "omx3"}
 # One process host per endpoint; OMX1/OMX2 share the shelf-01 workcell host.
 HOSTS = {"pinky1", "pinky2", "pinky3", "omx3", "shelf-01"}
+SHELF_ARMS = ("omx1", "omx2")
+JOINT_NAMES = ("joint1", "joint2", "joint3", "joint4", "joint5", "gripper_joint_1")
 COMMANDS = {
     "line_route_command",
     "set_drive_mode_command",
@@ -30,6 +32,7 @@ TYPES = COMMANDS | {
     "robot_state",
     "command_status",
     "robot_pose",
+    "omx_joint_state",
     "event_stored",
     "host_metrics",
 }
@@ -268,6 +271,11 @@ SCHEMAS = {
         pose_source=ID,
         pose={**POSE, "nullable": True},
     ),
+    "omx_joint_state": obj(
+        **REPORT,
+        sample_kind=choice("mission", "idle"),
+        joints=obj(**{name: {"type": "number"} for name in JOINT_NAMES}),
+    ),
     "event_stored": obj(acked_message_id=ID),
     # Display-only host telemetry; unknown values stay null and never gate control.
     "host_metrics": obj(
@@ -406,8 +414,12 @@ def topic(target, channel):
         "host",
     }:
         raise ValueError("unknown topic endpoint/channel")
-    if channel == "motion" and not target.startswith("pinky"):
-        raise ValueError("motion is Pinky only")
+    if (
+        channel == "motion"
+        and not target.startswith("pinky")
+        and target not in SHELF_ARMS
+    ):
+        raise ValueError("motion requires a Pinky or a shelf arm")
     if channel == "host" and target not in HOSTS:
         raise ValueError("unknown host")
     return (
@@ -455,11 +467,20 @@ def validate(message):
         timestamp(p["observed_at"])
     endpoint = (
         message["source"]
-        if kind in {"robot_state", "robot_pose", "command_status", "host_metrics"}
+        if kind
+        in {
+            "robot_state",
+            "robot_pose",
+            "omx_joint_state",
+            "command_status",
+            "host_metrics",
+        }
         else message["target"]
     )
     if endpoint not in ROBOTS | {"shelf-01"}:
         raise ValueError("unknown endpoint")
+    if kind == "omx_joint_state" and endpoint not in SHELF_ARMS:
+        raise ValueError("joint display requires a shelf arm")
     if kind == "host_metrics" and (
         endpoint not in HOSTS
         or None not in (p["mem_total_kb"], p["mem_available_kb"])
@@ -582,7 +603,7 @@ def decode(raw):
         message = json.loads(raw, object_pairs_hook=_unique)
         validate(message)
         return message
-    except (TypeError, UnicodeError, RecursionError) as exc:
+    except (TypeError, UnicodeError, RecursionError, OverflowError) as exc:
         raise ValueError("invalid field message") from exc
 
 
@@ -680,6 +701,9 @@ def json_schema():
             sent_at={"type": "string", "format": "date-time"},
             payload=p,
         )
+        if kind == "omx_joint_state":
+            props["source"] = {"enum": list(SHELF_ARMS)}
+            p["properties"]["observed_at"]["format"] = "date-time"
         if kind in COMMANDS | {"command_status"}:
             props["command_id"] = convert(ID)
         if kind in COMMANDS:

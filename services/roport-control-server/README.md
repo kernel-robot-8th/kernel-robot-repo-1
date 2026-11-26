@@ -323,6 +323,8 @@ API 실행: `uv run uvicorn roport_control_server.adapters.api.app:app --host 12
 
 아래는 `messages.py`와 `mqtt_demo.py`를 사용하는 기존 모의 예제입니다. 실물 Fleet의 MQTT v2 메시지·개별 OMX 명령은 [현장 계약](interfaces/mqtt/README.md)과 [Pinky 이식 안내](docs/mqtt-field.md)를 따릅니다. 전송 모듈 `mqtt.py`는 두 경로가 공유합니다.
 
+OMX1·2 관절 표시 메시지 규격과 2A 단독 작업의 실측 제출 형식은 [OMX 관절 표시 연동](docs/omx-joint-display.md)에서 확인할 수 있습니다.
+
 - `src/roport_control_server/adapters/mqtt/messages.py`: 공통 envelope, 토픽, 명령 검증 및 메모리 중복 기록.
 - `src/roport_control_server/adapters/mqtt/mqtt.py`: Paho MQTT 5 연결, 재구독, 제한된 큐, 수동 transport ACK, TLS 설정.
 - `scripts/mqtt_demo.py`: 관제 송신 및 가짜 Pinky·OMX 수신 예제(`MockExecutor`·`make_command`, 시험도 같은 정의를 사용). 실제 로봇 실행 코드가 아니며 wheel에 포함되지 않습니다.

@@ -486,7 +486,8 @@ def test_restarted_arrival_requires_stopped_state_and_separate_enable(local_owne
     assert c.data["enabled"]
 
 
-def test_websocket_fleet_is_read_only_and_requires_matching_origin(local_owner):
+@pytest.mark.parametrize("mode", ["fleet", "omx_joints"])
+def test_websocket_fleet_is_read_only_and_requires_matching_origin(local_owner, mode):
     from starlette.websockets import WebSocketDisconnect
 
     client, fixture = local_owner
@@ -494,12 +495,12 @@ def test_websocket_fleet_is_read_only_and_requires_matching_origin(local_owner):
     with (
         pytest.raises(WebSocketDisconnect),
         client.websocket_connect(
-            "/api/state?mode=fleet", headers={"origin": "https://elsewhere"}
+            f"/api/state?mode={mode}", headers={"origin": "https://elsewhere"}
         ),
     ):
         pass
     with client.websocket_connect(
-        "ws://127.0.0.1/api/state?mode=fleet", headers=HEADERS
+        f"ws://127.0.0.1/api/state?mode={mode}", headers=HEADERS
     ) as ws:
         ws.receive_json()
         ws.send_json({"action": "enable"})
@@ -507,6 +508,30 @@ def test_websocket_fleet_is_read_only_and_requires_matching_origin(local_owner):
             while True:
                 ws.receive_json()
     assert fixture.control.data == before
+
+
+def test_joint_websocket_only_reads_compact_owner_state(local_owner, monkeypatch):
+    client, fixture = local_owner
+    assert client.get("/api/bootstrap?mode=fleet").json()["omx_joint_stream"]
+    view = fixture.app.state.fleet
+    rpc = Mock(wraps=view.rpc)
+    monkeypatch.setattr(view, "rpc", rpc)
+    fixture.channel.joints = Mock()
+    fixture.channel.joints.snapshot.return_value = {"omx1": {"sequence": 4}}
+    with client.websocket_connect(
+        "ws://127.0.0.1/api/state?mode=omx_joints", headers=HEADERS
+    ) as ws:
+        assert ws.receive_json() == {
+            "available": True,
+            "arms": {"omx1": {"sequence": 4}},
+        }
+        rpc.side_effect = OSError("owner unavailable")
+        for _ in range(4):
+            frame = ws.receive_json()
+            if not frame["available"]:
+                break
+        assert frame == {"available": False, "arms": {}}
+    assert all(call.args == ({"action": "omx_joints"},) for call in rpc.call_args_list)
 
 
 @pytest.mark.parametrize(

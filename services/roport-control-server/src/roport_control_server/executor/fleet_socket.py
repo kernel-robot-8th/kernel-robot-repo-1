@@ -10,6 +10,10 @@ from .trial_socket import TrialSocket
 
 
 class FleetSocket(TrialSocket):
+    def __init__(self, path, control, *, joints=None):
+        super().__init__(path, control)
+        self.joints = joints
+
     def snapshot(self):
         return {
             **self.control.snapshot(),
@@ -55,6 +59,8 @@ class FleetSocket(TrialSocket):
         return super()._dispatch_client(request, client)
 
     def dispatch(self, request, *, client=None):
+        if request == {"action": "omx_joints"}:
+            return self.joints.snapshot() if self.joints else {}
         if request == {"action": "snapshot"}:
             return self.snapshot()
         if (

@@ -21,12 +21,20 @@ def test_all_types_have_valid_documented_examples():
         endpoint = (
             m["source"]
             if m["type"]
-            in {"robot_state", "robot_pose", "command_status", "host_metrics"}
+            in {
+                "robot_state",
+                "robot_pose",
+                "omx_joint_state",
+                "command_status",
+                "host_metrics",
+            }
             else m["target"]
         )
         assert row["topic"] == wire.topic(endpoint, row["topic"].rsplit("/", 1)[-1])
         assert row["retain"] is False
-        assert row["qos"] == (0 if m["type"] in {"robot_pose", "host_metrics"} else 1)
+        assert row["qos"] == (
+            0 if m["type"] in {"robot_pose", "omx_joint_state", "host_metrics"} else 1
+        )
 
 
 def test_asyncapi_matches_runtime_schema():

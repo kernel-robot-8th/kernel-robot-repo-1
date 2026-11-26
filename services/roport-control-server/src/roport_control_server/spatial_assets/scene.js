@@ -25,6 +25,12 @@ const instances = {},
 const vector = new THREE.Vector3();
 const mapLabels = [];
 const installedPoses = {};
+const shelfArms = ["omx1", "omx2"];
+const jointSamples = {};
+let jointAvailable = false;
+// Estimated from the resting arm photo in model-local axes. Display only.
+const rad = THREE.MathUtils.degToRad;
+const photoPose = {joint2: rad(-100), joint3: rad(92), joint4: rad(78), gripper_joint_1: rad(13)};
 
 function displayedPose(row) {
   return (demo ? installedPoses[row.robot_id] : null) ?? row.pose ?? installedPoses[row.robot_id] ?? null;
@@ -234,6 +240,7 @@ function makeMap(map) {
 }
 function robot(type) {
   const group = models[type].clone(true);
+  group.userData.restPose = type === "omx" ? photoPose : {};
   group.userData.joints = definitions[type].map((j) => {
     const node = group.getObjectByName(j.node);
     if (!node) throw new Error(`model node missing: ${j.node}`);
@@ -245,13 +252,15 @@ function robot(type) {
       axis: new THREE.Vector3(...j.axis),
     };
   });
+  poseModel(group, {});
   return group;
 }
-function poseModel(group, row) {
+function poseModel(group, readings) {
+  const angles = Object.keys(readings).length ? readings : group.userData.restPose;
   for (const j of group.userData.joints) {
-    let angle = row.joints[j.name];
+    let angle = angles[j.name];
     if (j.mimic) {
-      const driver = row.joints[j.mimic.joint];
+      const driver = angles[j.mimic.joint];
       angle =
         driver === undefined
           ? undefined
@@ -269,6 +278,52 @@ function poseModel(group, row) {
         new THREE.Quaternion().setFromAxisAngle(j.axis, angle),
       );
   }
+}
+function readingsFor(row) {
+  if (fleet && shelfArms.includes(row.robot_id)) return jointSamples[row.robot_id]?.joints ?? {};
+  return row.joints ?? {};
+}
+function showJointFrame(frame) {
+  jointAvailable = frame.available;
+  if (jointAvailable) {
+    for (const id of shelfArms) {
+      const sample = frame.arms[id];
+      const old = jointSamples[id];
+      if (sample) jointSamples[id] = {...sample, received: performance.now()};
+      else delete jointSamples[id];
+      if (old?.sequence === sample?.sequence && old?.boot_version === sample?.boot_version) continue;
+      poseModel(instances[id], sample?.joints ?? {});
+      poseModel(previews[id], sample?.joints ?? {});
+      views.map.dirty = true;
+      if (selected === id) views.detail.dirty = true;
+    }
+  }
+  if (shelfArms.includes(selected)) updateDetails();
+}
+function connectJointDisplay() {
+  const url = new URL("/api/state?mode=omx_joints", location.href);
+  url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const stream = new WebSocket(url);
+  let timeout;
+  function armTimeout() {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => stream.close(), 2500);
+  }
+  stream.onopen = armTimeout;
+  stream.onmessage = event => {
+    try {
+      const frame = JSON.parse(event.data);
+      if (typeof frame.available !== "boolean" || !frame.arms) throw new Error("invalid joint frame");
+      showJointFrame(frame);
+      armTimeout();
+    } catch { stream.close(); }
+  };
+  stream.onerror = () => stream.close();
+  stream.onclose = () => {
+    clearTimeout(timeout);
+    showJointFrame({available: false});
+    setTimeout(connectJointDisplay, 1500);
+  };
 }
 function select(id) {
   selected = id;
@@ -308,10 +363,18 @@ function updateDetails() {
   if (installedPoses[selected]) values.push(["설치 배치 (기준값)", "받침 앞 변 · 상호 대향 · 실기 미검증"]);
   if (row?.pose_source) values.push(["위치 근거", row.pose_source]);
   if (row?.pose_age != null) values.push(["위치 관측 경과", `${row.pose_age.toFixed(1)}초${row.pose_stale ? " · 갱신 지연 / 마지막 확인" : " · 수신 중"}`]);
-  for (const [name, angle] of Object.entries(row?.joints ?? {}))
+  const sample = jointSamples[selected];
+  if (sample) {
+    const age = sample.age_s + (performance.now() - sample.received) / 1000;
+    const delayed = !jointAvailable || sample.status === "stale" || (sample.sample_kind === "mission" && age > 2);
+    const source = sample.sample_kind === "idle" ? "대기" : "미션";
+    values.push(["관절 측정", `${source} · ${delayed ? "갱신 지연 · " : ""}마지막 측정 ${age.toFixed(1)}초 전`]);
+  }
+  const readings = row ? readingsFor(row) : sample?.joints ?? {};
+  for (const [name, angle] of Object.entries(readings))
     values.push([name, `${((angle * 180) / Math.PI).toFixed(1)}°`]);
-  if (!Object.keys(row?.joints ?? {}).length)
-    values.push(["관절값", "미수신 · 기준 자세"]);
+  if (!Object.keys(readings).length)
+    values.push(["관절값", kind(selected) === "omx" ? "미수신 · 사진 기준 자세" : "미수신 · 기준 자세"]);
   $("telemetry").replaceChildren(
     ...values.flatMap(([k, v]) => [text("dt", k), text("dd", v)]),
   );
@@ -339,12 +402,16 @@ function receive(raw) {
       const id = row.robot_id,
         model = instances[id];
       if (!model) continue;
+      // The fleet state can report a reboot while the compact stream is down.
+      if (!jointAvailable && jointSamples[id] && row.status?.boot_id &&
+          row.status.boot_id !== jointSamples[id].boot_version) delete jointSamples[id];
       buttons[id].dataset.stale = row.stale;
       buttons[id].querySelector("small").textContent = trial ? row.mode : row.stale
         ? "미수신 / 지연"
         : row.mode;
       const pose = displayedPose(row);
-      const poseKey = JSON.stringify([pose, row.joints]);
+      const readings = readingsFor(row);
+      const poseKey = JSON.stringify([pose, readings]);
       if (model.userData.poseKey !== poseKey) {
         views.map.dirty = true;
         if (id === selected) views.detail.dirty = true;
@@ -352,8 +419,8 @@ function receive(raw) {
       }
       displayMotion(model, pose, row);
       model.visible = !!pose;
-      poseModel(model, row);
-      poseModel(previews[id], row);
+      poseModel(model, readings);
+      poseModel(previews[id], readings);
       labels[id].classList.toggle("stale", row.stale || row.pose_stale === true);
       labels[id].textContent = title(id) + (installedPoses[id] && (demo || !row.pose) ? " · 설치 배치" : (trial || fleet) && row.pose_stale && pose ? " · 마지막 위치" : "");
       labels[id].title = row.pose_source ?? "";
@@ -632,6 +699,7 @@ async function boot() {
   mode = bootstrap.mode;
   await start(bootstrap);
   connect();
+  if (fleet && bootstrap.omx_joint_stream) connectJointDisplay();
   setInterval(() => {
     if (performance.now() - lastReceived > 2500) {
       disconnected();

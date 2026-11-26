@@ -36,7 +36,7 @@ test('measured layout: map origin, node labels and height survive view changes',
   await expect(page.locator('#state')).toContainText('미수신');
   await expect(page.locator('#freshness')).toHaveText('수신 이력 없음');
   await expect(page.locator('#focus')).toBeEnabled();
-  await expect(page.locator('#telemetry')).toContainText('미수신 · 기준 자세');
+  await expect(page.locator('#telemetry')).toContainText('미수신 · 사진 기준 자세');
   await expect(page.locator('[data-robot="pinky1"]')).toBeHidden();
   await expect(page.locator('[data-robot="omx3"]')).toBeHidden();
   expect(errors).toEqual([]);
