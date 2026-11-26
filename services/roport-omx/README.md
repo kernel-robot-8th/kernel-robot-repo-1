@@ -19,6 +19,8 @@ CI 성공은 실로봇·GPU·통합 검증 완료를 의미하지 않습니다.
 - [프로젝트 개요](https://github.com/kernel-robot-8th/kernel-robot-repo-1)
 - [요구사항·설계 문서](../../docs/README.md)
 - [Jira](https://fp-team1.atlassian.net/jira/projects/FFT1)
+- [OMX 현장 운영 안내](docs/omx-operations.md): 제어판 v3·On-site 패널 받기·설치·사용
+- [제어판 연동 기준](docs/control-panel.md): Host가 쓰는 제어판 API와 검증 버전
 
 PR에 관련 Jira 키, 변경 내용, 검증 결과와 미검증 항목을 기록합니다.
 실로봇 적용 전 장비·설정·캘리브레이션, 안전 정지·복구 절차를 확인합니다.
