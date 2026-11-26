@@ -56,15 +56,17 @@ def create_app(
         nonlocal joint_next_read, joint_frame
         loop = asyncio.get_running_loop()
         async with joint_lock:
-            if loop.time() >= joint_next_read:
+            started = loop.time()
+            if started >= joint_next_read:
                 try:
                     arms = await asyncio.to_thread(
                         app.state.fleet.rpc, {"action": "omx_joints"}
                     )
                     joint_frame = {"available": True, "arms": arms}
+                    joint_next_read = started + 0.1
                 except (OSError, ValueError):
                     joint_frame = {"available": False, "arms": {}}
-                joint_next_read = loop.time() + (0.1 if joint_frame["available"] else 1)
+                    joint_next_read = loop.time() + 1
             return joint_frame
 
     @asynccontextmanager
@@ -332,7 +334,13 @@ def create_app(
                     data = display.snapshot()
                 # No unbounded broadcast queue: slow clients time out independently.
                 await asyncio.wait_for(websocket.send_json(data), 3)
-                await asyncio.sleep(0.25 if mode in {"trial", "fleet"} else 0.1)
+                if mode == "omx_joints":
+                    # Readers share a deadline so IPC and send time count toward 100 ms.
+                    await asyncio.sleep(
+                        max(0, joint_next_read - asyncio.get_running_loop().time())
+                    )
+                else:
+                    await asyncio.sleep(0.25 if mode in {"trial", "fleet"} else 0.1)
 
         async def receive():
             while True:
