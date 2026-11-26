@@ -3,6 +3,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from test_fleet import fleet as fleet  # noqa: PLC0414
@@ -48,9 +49,17 @@ def test_owner_rejects_unsupported_environment_before_opening_journal(
     assert not journal.exists()
 
 
-@pytest.mark.parametrize("error", [KeyboardInterrupt, KeyError, TypeError])
+@pytest.mark.parametrize(
+    "error,display_error",
+    [
+        (KeyboardInterrupt, None),
+        (KeyError, None),
+        (TypeError, None),
+        (KeyboardInterrupt, OSError),
+    ],
+)
 def test_owner_exit_persists_hold_and_closes_resources(
-    fleet, tmp_path, monkeypatch, capsys, error
+    fleet, tmp_path, monkeypatch, capsys, caplog, error, display_error
 ):
     config = tmp_path / "config.json"
     config.write_text(json.dumps({**fleet.config, "mode": "simulation"}))
@@ -80,13 +89,16 @@ def test_owner_exit_persists_hold_and_closes_resources(
             start=lambda: None, stop=lambda: closed.append("mqtt")
         ),
     )
-    monkeypatch.setattr(
-        fleet_runtime,
-        "FleetSocket",
-        lambda *_: SimpleNamespace(
-            poll=lambda: None, close=lambda: closed.append("socket")
-        ),
-    )
+    receiver = Mock()
+    receiver.start.side_effect = display_error
+    receiver.stop.side_effect = lambda: closed.append("joint-display")
+    monkeypatch.setattr(fleet_runtime, "OmxJointReceiver", lambda *_: receiver)
+
+    def open_socket(_path, _control, *, joints):
+        assert joints is receiver
+        return SimpleNamespace(poll=lambda: None, close=lambda: closed.append("socket"))
+
+    monkeypatch.setattr(fleet_runtime, "FleetSocket", open_socket)
 
     def fail(_):
         raise error("injected runtime failure")
@@ -99,7 +111,10 @@ def test_owner_exit_persists_hold_and_closes_resources(
             fleet_runtime.main()
     data = json.loads(journal.read_text())
     assert data["fault"] == "owner_stopped" and not data["enabled"]
-    assert closed == ["socket", "mqtt"]
+    receiver.start.assert_called_once_with(timeout=None)
+    assert closed == ["socket", "joint-display", "mqtt"]
+    if display_error:
+        assert "OMX joint display unavailable" in caplog.text
     assert "local socket" in capsys.readouterr().out
 
 

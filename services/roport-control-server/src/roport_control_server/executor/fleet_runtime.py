@@ -18,6 +18,7 @@ from uuid import uuid4
 from roport_control_server.adapters.mqtt import field_wire as wire
 from roport_control_server.adapters.mqtt.journal import Journal
 from roport_control_server.adapters.mqtt.mqtt import MqttTransport
+from roport_control_server.adapters.mqtt.omx_joints import OmxJointReceiver
 from roport_control_server.adapters.mqtt.trial_wire import mqtt_config
 from roport_control_server.contracts.service_policy import dispatch_at
 
@@ -48,6 +49,9 @@ class FleetRuntime:
 
     def handle(self, delivery):
         event = wire.decode(delivery.payload)
+        if event["type"] == "omx_joint_state":
+            # Only the display subscriber consumes joint frames, even if misrouted.
+            return
         source, p = event["source"], event["payload"]
         channel = "motion" if event["type"] == "robot_pose" else "event"
         if (
@@ -525,7 +529,17 @@ def main(*, field_loader=None):
         )
         transport.start()
         stack.callback(transport.stop)
-        web = FleetSocket(args.socket, control)
+        # The display link has its own client, subscriptions and latest-value cache.
+        joints = None
+        try:
+            joints = OmxJointReceiver(
+                connection, config["control_id"], control.observed
+            )
+            stack.callback(joints.stop)
+            joints.start(timeout=None)
+        except (OSError, ValueError, RuntimeError) as exc:
+            LOG.warning("OMX joint display unavailable (%s)", type(exc).__name__)
+        web = FleetSocket(args.socket, control, joints=joints)
         stack.callback(web.close)
         runtime = FleetRuntime(control, transport)
         if service_url:

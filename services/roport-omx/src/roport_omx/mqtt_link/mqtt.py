@@ -98,7 +98,8 @@ class MqttTransport:
     def fault(self) -> str | None:
         return self._fault
 
-    def start(self, timeout: float = 5) -> None:
+    def start(self, timeout: float | None = 5) -> None:
+        """Pass None for an optional display link that must not delay owner startup."""
         if self._started:
             raise RuntimeError("create a new transport after stop or fault")
         self._started = True
@@ -114,7 +115,7 @@ class MqttTransport:
             properties=properties,
         )
         self._client.loop_start()
-        if not self._ready.wait(timeout) or self._fault:
+        if timeout is not None and (not self._ready.wait(timeout) or self._fault):
             self.stop()
             raise ConnectionError(self._fault or "MQTT connect/subscribe timeout")
 
@@ -201,14 +202,14 @@ class MqttTransport:
 
     def publish(self, destination: str, message: dict, timeout: float = 5) -> None:
         """QoS1, non-retained task messages. Waits for broker PUBACK only."""
-        if message.get("type") in {"robot_pose", "host_metrics"}:
+        if message.get("type") in {"robot_pose", "omx_joint_state", "host_metrics"}:
             raise ValueError("display samples use QoS0 sample publishers")
         with self._publish_lock:
             self._publish(destination, message, timeout)
 
     def publish_motion(self, destination, message):
         """Best-effort latest display sample; never wait for PUBACK or replay it."""
-        if message.get("type") == "robot_pose":
+        if message.get("type") in {"robot_pose", "omx_joint_state"}:
             from . import field_wire
 
             raw = field_wire.encode(message)

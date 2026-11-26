@@ -923,5 +923,34 @@
         "max_duration_s": 120
       }
     }
+  },
+  {
+    "label": "OMX1 관절 표시용 합성 샘플",
+    "topic": "roport/robot/omx1/motion",
+    "qos": 0,
+    "retain": false,
+    "message": {
+      "schema_version": "2.0",
+      "profile": "roport-control-v2",
+      "message_id": "sample-omx1-1",
+      "type": "omx_joint_state",
+      "source": "omx1",
+      "target": "control-01",
+      "sent_at": "2026-01-01T00:00:00.100+00:00",
+      "payload": {
+        "boot_version": "sample-omx1-boot",
+        "sequence": 1,
+        "observed_at": "2026-01-01T00:00:00.100+00:00",
+        "sample_kind": "mission",
+        "joints": {
+          "joint1": 0.12,
+          "joint2": -0.65,
+          "joint3": 0.37,
+          "joint4": 0.42,
+          "joint5": -0.1,
+          "gripper_joint_1": 0.3
+        }
+      }
+    }
   }
 ]

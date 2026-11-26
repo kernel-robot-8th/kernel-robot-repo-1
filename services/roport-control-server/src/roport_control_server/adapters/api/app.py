@@ -45,6 +45,27 @@ def create_app(
 ):
     # shortcut: per-worker demo limit; measure with AI load before scaling out.
     stream_slots = asyncio.BoundedSemaphore(8)
+    joint_slots = asyncio.BoundedSemaphore(8)
+    joint_lock = asyncio.Lock()
+    joint_next_read = 0.0
+    joint_frame = {"available": False, "arms": {}}
+
+    async def joint_snapshot():
+        # Share a compact owner read across viewers. A failed display read has
+        # its own retry interval and never affects the full fleet stream.
+        nonlocal joint_next_read, joint_frame
+        loop = asyncio.get_running_loop()
+        async with joint_lock:
+            if loop.time() >= joint_next_read:
+                try:
+                    arms = await asyncio.to_thread(
+                        app.state.fleet.rpc, {"action": "omx_joints"}
+                    )
+                    joint_frame = {"available": True, "arms": arms}
+                except (OSError, ValueError):
+                    joint_frame = {"available": False, "arms": {}}
+                joint_next_read = loop.time() + (0.1 if joint_frame["available"] else 1)
+            return joint_frame
 
     @asynccontextmanager
     async def lifespan(app):
@@ -121,6 +142,7 @@ def create_app(
                 return JSONResponse({"detail": "fleet UI is not configured"}, 503)
             try:
                 result.update(app.state.fleet.bootstrap())
+                result["omx_joint_stream"] = True
             except (OSError, ValueError):
                 return JSONResponse({"detail": "fleet owner/map unavailable"}, 503)
         if mode == "trial":
@@ -275,7 +297,7 @@ def create_app(
     @app.websocket("/api/state")
     async def state(
         websocket: WebSocket,
-        mode: Literal["offline", "demo", "trial", "fleet"] = "offline",
+        mode: Literal["offline", "demo", "trial", "fleet", "omx_joints"] = "offline",
     ):
         scheme = "https" if websocket.url.scheme == "wss" else "http"
         if (
@@ -284,28 +306,30 @@ def create_app(
         ):
             await websocket.close(code=1008)
             return
-        if stream_slots.locked():
+        slots = joint_slots if mode == "omx_joints" else stream_slots
+        if slots.locked():
             await websocket.close(code=1013)
             return
         if mode == "trial" and app.state.trial is None:
             await websocket.close(code=1008)
             return
-        if mode == "fleet" and app.state.fleet is None:
+        if mode in {"fleet", "omx_joints"} and app.state.fleet is None:
             await websocket.close(code=1008)
             return
         display = Display(demo=mode == "demo", map_geometry=app.state.map)
 
         async def send():
             while True:
-                data = (
-                    await asyncio.to_thread(
+                if mode == "omx_joints":
+                    data = await joint_snapshot()
+                elif mode in {"trial", "fleet"}:
+                    data = await asyncio.to_thread(
                         (
                             app.state.fleet if mode == "fleet" else app.state.trial
                         ).snapshot
                     )
-                    if mode in {"trial", "fleet"}
-                    else display.snapshot()
-                )
+                else:
+                    data = display.snapshot()
                 # No unbounded broadcast queue: slow clients time out independently.
                 await asyncio.wait_for(websocket.send_json(data), 3)
                 await asyncio.sleep(0.25 if mode in {"trial", "fleet"} else 0.1)
@@ -315,7 +339,7 @@ def create_app(
                 message = await websocket.receive()
                 if message["type"] == "websocket.disconnect":
                     return
-                if mode in {"trial", "fleet"}:
+                if mode in {"trial", "fleet", "omx_joints"}:
                     await websocket.close(code=1008)
                     return
                 raw = message.get("text")
@@ -333,7 +357,7 @@ def create_app(
                 await asyncio.sleep(0.05)
 
         # No await between the capacity check and acquisition on this event loop.
-        async with stream_slots:
+        async with slots:
             await websocket.accept()
             try:
                 async with asyncio.TaskGroup() as group:

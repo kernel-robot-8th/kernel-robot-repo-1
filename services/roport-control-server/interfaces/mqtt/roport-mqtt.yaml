@@ -39,8 +39,7 @@ channels:
         $ref: '#/components/messages/warehouse_load_command'
     parameters:
       robot_id:
-        description: pinky1/pinky2/pinky3 (motion); pinky1/pinky2/pinky3/omx1/omx2/omx3
-          (others)
+        description: pinky1/pinky2/pinky3/omx1/omx2/omx3
   robotEvent:
     address: roport/robot/{robot_id}/event
     messages:
@@ -50,8 +49,7 @@ channels:
         $ref: '#/components/messages/command_status'
     parameters:
       robot_id:
-        description: pinky1/pinky2/pinky3 (motion); pinky1/pinky2/pinky3/omx1/omx2/omx3
-          (others)
+        description: pinky1/pinky2/pinky3/omx1/omx2/omx3
   robotAck:
     address: roport/robot/{robot_id}/ack
     messages:
@@ -59,17 +57,17 @@ channels:
         $ref: '#/components/messages/event_stored'
     parameters:
       robot_id:
-        description: pinky1/pinky2/pinky3 (motion); pinky1/pinky2/pinky3/omx1/omx2/omx3
-          (others)
+        description: pinky1/pinky2/pinky3/omx1/omx2/omx3
   robotMotion:
     address: roport/robot/{robot_id}/motion
     messages:
+      omx_joint_state:
+        $ref: '#/components/messages/omx_joint_state'
       robot_pose:
         $ref: '#/components/messages/robot_pose'
     parameters:
       robot_id:
-        description: pinky1/pinky2/pinky3 (motion); pinky1/pinky2/pinky3/omx1/omx2/omx3
-          (others)
+        description: Pinky robot_pose / omx1 or omx2 omx_joint_state
   robotHost:
     address: roport/robot/{robot_id}/host
     messages:
@@ -1223,6 +1221,88 @@ components:
           command_id:
             type: string
             pattern: ^[A-Za-z0-9_.:-]{1,128}$
+        additionalProperties: false
+    omx_joint_state:
+      name: omx_joint_state
+      contentType: application/json
+      payload:
+        type: object
+        required:
+        - message_id
+        - source
+        - target
+        - schema_version
+        - profile
+        - type
+        - sent_at
+        - payload
+        properties:
+          message_id:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          source:
+            enum:
+            - omx1
+            - omx2
+          target:
+            type: string
+            pattern: ^[A-Za-z0-9_.:-]{1,128}$
+          schema_version:
+            const: '2.0'
+          profile:
+            const: roport-control-v2
+          type:
+            const: omx_joint_state
+          sent_at:
+            type: string
+            format: date-time
+          payload:
+            type: object
+            properties:
+              boot_version:
+                type: string
+                pattern: ^[A-Za-z0-9_.:-]{1,128}$
+              observed_at:
+                type: string
+                format: date-time
+              sequence:
+                type: integer
+                minimum: 0
+                maximum: 9007199254740991
+              sample_kind:
+                enum:
+                - mission
+                - idle
+              joints:
+                type: object
+                properties:
+                  joint1:
+                    type: number
+                  joint2:
+                    type: number
+                  joint3:
+                    type: number
+                  joint4:
+                    type: number
+                  joint5:
+                    type: number
+                  gripper_joint_1:
+                    type: number
+                required:
+                - joint1
+                - joint2
+                - joint3
+                - joint4
+                - joint5
+                - gripper_joint_1
+                additionalProperties: false
+            required:
+            - boot_version
+            - observed_at
+            - sequence
+            - sample_kind
+            - joints
+            additionalProperties: false
         additionalProperties: false
     robot_pose:
       name: robot_pose

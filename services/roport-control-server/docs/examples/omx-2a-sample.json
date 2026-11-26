@@ -1,0 +1,48 @@
+{
+  "sample_origin": "synthetic",
+  "slot": "2A",
+  "mapping_revision": "synthetic-fk-v1",
+  "evidence": {
+    "dock": "synthetic-dock",
+    "view_direction": "from aisle toward shelf face",
+    "phase": "before_pick",
+    "media_ref": "synthetic-2a-clip.mp4",
+    "clip_offset_ms": 1200
+  },
+  "panel": {
+    "arm": "left",
+    "observed_at": "2030-01-01T00:00:00.100Z",
+    "joints": {
+      "shoulder_pan": 8,
+      "shoulder_lift": -14,
+      "elbow_flex": 18,
+      "wrist_flex": 10,
+      "wrist_roll": -6,
+      "gripper": 25
+    }
+  },
+  "topic": "roport/robot/omx1/motion",
+  "wire": {
+    "schema_version": "2.0",
+    "profile": "roport-control-v2",
+    "type": "omx_joint_state",
+    "message_id": "synthetic-2a-42",
+    "source": "omx1",
+    "target": "control-01",
+    "sent_at": "2030-01-01T00:00:00.130Z",
+    "payload": {
+      "boot_version": "synthetic-boot-1",
+      "sequence": 42,
+      "observed_at": "2030-01-01T00:00:00.100Z",
+      "sample_kind": "mission",
+      "joints": {
+        "joint1": 0.2,
+        "joint2": -0.4,
+        "joint3": 0.5,
+        "joint4": 0.3,
+        "joint5": -0.1,
+        "gripper_joint_1": 0.4
+      }
+    }
+  }
+}

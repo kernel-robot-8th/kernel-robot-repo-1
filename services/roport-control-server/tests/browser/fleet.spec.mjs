@@ -23,6 +23,59 @@ async function fixture(mode = 'simulation', receipt = false, held = false, extra
   } catch (error) { await close(); throw error; }
 }
 
+test('OMX 2A single-arm samples move the model and survive ordinary fleet snapshots', async ({page}) => {
+  const owner = await fixture();
+  let compact, heartbeat;
+  let frame = {available: true, arms: {}};
+  const send = () => compact.send(JSON.stringify(frame));
+  try {
+    await page.routeWebSocket('**/api/state?mode=omx_joints', ws => {
+      compact = ws;
+      send();
+      heartbeat = setInterval(send, 150);
+    });
+    await page.goto(`${owner.url}/ui/?mode=fleet`);
+    await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+    await page.getByRole('button', {name: 'OMX 01 선택'}).click();
+    const telemetry = page.locator('#telemetry'), model = page.locator('#model canvas');
+    await expect(telemetry).toContainText('미수신 · 사진 기준 자세');
+    const rest = await model.screenshot();
+    await expect.poll(() => Boolean(compact)).toBe(true);
+    const sample = {
+      boot_version:'omx1-test-boot', sequence:1, observed_at:new Date().toISOString(),
+      sample_kind:'mission', status:'live', age_s:0.1,
+      joints:{joint1:0, joint2:0, joint3:0, joint4:0, joint5:0, gripper_joint_1:0},
+    };
+    frame = {available:true, arms:{omx1:sample}};
+    send();
+    await expect(telemetry).toContainText('미션 · 마지막 측정');
+    await expect(telemetry.getByText('0.0°', {exact:true})).toHaveCount(6);
+    await expect.poll(async () => !(await model.screenshot()).equals(rest)).toBe(true);
+    sample.status = 'stale'; sample.age_s = 3;
+    send();
+    await expect(telemetry).toContainText('미션 · 갱신 지연');
+    sample.sample_kind = 'idle'; sample.status = 'idle'; sample.age_s = 9;
+    send();
+    await expect(telemetry).toContainText('대기 · 마지막 측정');
+    frame = {available:false, arms:{}};
+    send();
+    await expect(telemetry).toContainText('대기 · 갱신 지연');
+    await expect(telemetry.getByText('0.0°', {exact:true})).toHaveCount(6);
+    for (const id of ['02', '03']) {
+      await page.getByRole('button', {name:`OMX ${id} 선택`}).click();
+      await expect(telemetry).toContainText('미수신 · 사진 기준 자세');
+    }
+    // A successful empty read after a host restart clears the previous boot.
+    frame = {available:true, arms:{}};
+    send();
+    await page.getByRole('button', {name:'OMX 01 선택'}).click();
+    await expect(telemetry).toContainText('미수신 · 사진 기준 자세');
+  } finally {
+    clearInterval(heartbeat);
+    await owner.close();
+  }
+});
+
 test('fleet original UI: authenticate, change roles, accept requests, show stale status and reconnect', async ({page, context}, testInfo) => {
   await page.addInitScript(() => { Object.defineProperty(crypto, 'randomUUID', {value: undefined}); });
   const owner = await fixture();
